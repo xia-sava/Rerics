@@ -1,7 +1,7 @@
-//! 下部ログウィンドウ。`LogState` を自前描画し、レベル別色で行表示する。
+//! 下部ログウィンドウ。`LogState` を自前描画し、レベル別色・太字で行表示する。
 //!
 //! `TabBar` と同様の GDI ダブルバッファ描画。新着行が来たら末尾へ自動追従し、
-//! ホイールで過去ログを遡れる。キーフォーカスは持たない（閲覧専用）。
+//! ホイールと右端スクロールバーで過去ログを遡れる。キーフォーカスは持たない（閲覧専用）。
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -14,8 +14,11 @@ struct Inner {
     colors: Colors,
     font_family: String,
     font_size: i32,
+    scrollbar_width: i32,
     /// 1行の高さ（描画時にフォントメトリクスから更新）。
     line_height: Cell<i32>,
+    /// スクロールバー thumb ドラッグ中の、掴んだ位置の thumb 上端からのオフセット。
+    sb_drag: Cell<Option<i32>>,
 }
 
 /// 下部ログウィンドウコントロール。
@@ -48,7 +51,9 @@ impl LogView {
             colors: cfg.colors,
             font_family: cfg.font.family.clone(),
             font_size: cfg.font.size,
+            scrollbar_width: cfg.layout.scrollbar_width,
             line_height: Cell::new(gui::dpi_y(cfg.font.size + 2)),
+            sb_drag: Cell::new(None),
         });
         let me = Self { wnd, inner };
         me.setup_events();
@@ -59,17 +64,23 @@ impl LogView {
         self.wnd.hwnd()
     }
 
-    /// 情報レベルで追記する。
+    /// 通常レベルで追記する（操作の逐次ログ。白・非太字）。
+    pub fn normal(&self, text: &str) {
+        self.push(LogLevel::Normal, text);
+    }
+
+    /// 情報レベルで追記する（結果サマリ等。太字）。
     pub fn info(&self, text: &str) {
         self.push(LogLevel::Info, text);
     }
 
-    /// 警告レベルで追記する。
+    /// 警告レベルで追記する（Skip 表示等。バックグラウンド処理の実装で使う）。
+    #[allow(dead_code)]
     pub fn warn(&self, text: &str) {
         self.push(LogLevel::Warning, text);
     }
 
-    /// エラーレベルで追記する。
+    /// エラーレベルで追記する（太字）。
     pub fn error(&self, text: &str) {
         self.push(LogLevel::Error, text);
     }
@@ -115,13 +126,40 @@ impl LogView {
         Ok(())
     }
 
-    /// フォントを生成する（設定のファミリ・サイズ）。
-    fn create_font(&self) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
+    /// スクロールバーの (バー左端x, トラック上端y, トラック高, thumb上端y, thumb高) を返す。
+    /// スクロール不要（count <= page）なら None。
+    fn scrollbar_geom(&self, cw: i32, ch: i32) -> Option<(i32, i32, i32, i32, i32)> {
+        let (count, scroll_top) = {
+            let s = self.inner.state.borrow();
+            (s.count(), s.scroll_top)
+        };
+        let page = self.page_rows();
+        if count <= page {
+            return None;
+        }
+        let sbw = gui::dpi_x(self.inner.scrollbar_width);
+        let bar_x = cw - sbw;
+        let track_top = 1;
+        let track_h = ch - track_top;
+        if track_h <= 0 {
+            return None;
+        }
+        let min_thumb = gui::dpi_y(16);
+        let thumb_h = ((track_h * page as i32) / count as i32).max(min_thumb).min(track_h);
+        let max_top = count - page;
+        let pos = scroll_top.min(max_top);
+        let thumb_top = track_top + ((track_h - thumb_h) * pos as i32) / max_top as i32;
+        Some((bar_x, track_top, track_h, thumb_top, thumb_h))
+    }
+
+    /// フォントを生成する（設定のファミリ・サイズ、太字指定）。
+    fn create_font(&self, bold: bool) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
+        let weight = if bold { co::FW::BOLD } else { co::FW::NORMAL };
         w::HFONT::CreateFont(
             w::SIZE { cx: 0, cy: -gui::dpi_y(self.inner.font_size) },
             0,
             0,
-            co::FW::NORMAL,
+            weight,
             false,
             false,
             false,
@@ -144,6 +182,64 @@ impl LogView {
             this.scroll_by_wheel(dist)?;
             Ok(())
         });
+
+        let this = self.clone();
+        self.wnd.on().wm_l_button_down(move |p| {
+            this.on_l_button_down(p.coords)?;
+            Ok(())
+        });
+
+        let this = self.clone();
+        self.wnd.on().wm_l_button_up(move |_p| {
+            this.inner.sb_drag.set(None);
+            Ok(())
+        });
+
+        let this = self.clone();
+        self.wnd.on().wm_mouse_move(move |p| {
+            this.on_mouse_move(p.coords)?;
+            Ok(())
+        });
+    }
+
+    fn on_l_button_down(&self, pt: w::POINT) -> w::AnyResult<()> {
+        let rc = self.hwnd().GetClientRect()?;
+        let (cw, ch) = (rc.right - rc.left, rc.bottom - rc.top);
+        if let Some((bar_x, _track_top, _track_h, thumb_top, thumb_h)) = self.scrollbar_geom(cw, ch) {
+            if pt.x >= bar_x {
+                if pt.y >= thumb_top && pt.y < thumb_top + thumb_h {
+                    self.inner.sb_drag.set(Some(pt.y - thumb_top));
+                } else {
+                    let pr = self.page_rows();
+                    let mut s = self.inner.state.borrow_mut();
+                    let cur = s.scroll_top as isize;
+                    let delta = if pt.y < thumb_top { -(pr as isize) } else { pr as isize };
+                    s.set_scroll_top(cur + delta, pr);
+                    drop(s);
+                    self.refresh()?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn on_mouse_move(&self, pt: w::POINT) -> w::AnyResult<()> {
+        if let Some(grab) = self.inner.sb_drag.get() {
+            let rc = self.hwnd().GetClientRect()?;
+            let (cw, ch) = (rc.right - rc.left, rc.bottom - rc.top);
+            if let Some((_bx, track_top, track_h, _tt, thumb_h)) = self.scrollbar_geom(cw, ch) {
+                let new_thumb_top = pt.y - grab;
+                let denom = (track_h - thumb_h).max(1);
+                let pr = self.page_rows();
+                let mut s = self.inner.state.borrow_mut();
+                let max_top = s.count().saturating_sub(pr) as isize;
+                let pos = ((new_thumb_top - track_top) as i64 * max_top as i64 / denom as i64) as isize;
+                s.set_scroll_top(pos, pr);
+                drop(s);
+                self.refresh()?;
+            }
+        }
+        Ok(())
     }
 
     fn on_paint(&self) -> w::AnyResult<()> {
@@ -157,14 +253,15 @@ impl LogView {
         let mem_dc = hdc.CreateCompatibleDC()?;
         let bmp = hdc.CreateCompatibleBitmap(cw, ch)?;
         let _bmp_sel = mem_dc.SelectObject(&*bmp)?;
-        let font = self.create_font()?;
+        let font = self.create_font(false)?;
+        let font_bold = self.create_font(true)?;
         let _font_sel = mem_dc.SelectObject(&*font)?;
         if let Ok(tm) = mem_dc.GetTextMetrics() {
             self.inner.line_height.set(tm.tmHeight + gui::dpi_y(1));
         }
         mem_dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
 
-        self.paint_to(&mem_dc, cw, ch)?;
+        self.paint_to(&mem_dc, cw, ch, &font, &font_bold)?;
 
         hdc.BitBlt(
             w::POINT { x: 0, y: 0 },
@@ -176,7 +273,14 @@ impl LogView {
         Ok(())
     }
 
-    fn paint_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
+    fn paint_to(
+        &self,
+        dc: &w::HDC,
+        cw: i32,
+        ch: i32,
+        font: &w::HFONT,
+        font_bold: &w::HFONT,
+    ) -> w::AnyResult<()> {
         let colors = self.inner.colors;
 
         // 背景。
@@ -190,26 +294,50 @@ impl LogView {
         dc.MoveToEx(0, 0, None)?;
         dc.LineTo(cw, 0)?;
 
+        let sb = self.scrollbar_geom(cw, ch);
+        let text_right = match sb {
+            Some((bar_x, ..)) => bar_x - 2,
+            None => cw - 4,
+        };
+
         let lh = self.inner.line_height.get().max(1);
-        let s = self.inner.state.borrow();
-        let count = s.count();
-        let mut i = s.scroll_top;
-        let mut y = 1;
-        while i < count && y < ch {
-            let line = &s.lines[i];
-            if !line.text.is_empty() {
-                let color = match line.level {
-                    LogLevel::Info => colors.log_info,
-                    LogLevel::Warning => colors.log_warning,
-                    LogLevel::Error => colors.log_error,
-                };
-                dc.SetTextColor(rgb(color))?;
-                let flags = co::DT::SINGLELINE | co::DT::NOPREFIX | co::DT::END_ELLIPSIS;
-                let rect = w::RECT { left: 4, top: y, right: cw - 4, bottom: y + lh };
-                dc.DrawText(&line.text, rect, flags)?;
+        {
+            let s = self.inner.state.borrow();
+            let count = s.count();
+            let mut i = s.scroll_top;
+            let mut y = 1;
+            while i < count && y < ch {
+                let line = &s.lines[i];
+                if !line.text.is_empty() {
+                    let (color, bold) = match line.level {
+                        LogLevel::Normal => (colors.log_normal, false),
+                        LogLevel::Info => (colors.log_info, true),
+                        LogLevel::Warning => (colors.log_warning, false),
+                        LogLevel::Error => (colors.log_error, true),
+                    };
+                    let _sel = dc.SelectObject(if bold { font_bold } else { font })?;
+                    dc.SetTextColor(rgb(color))?;
+                    let flags = co::DT::SINGLELINE | co::DT::NOPREFIX | co::DT::END_ELLIPSIS;
+                    let rect = w::RECT { left: 4, top: y, right: text_right, bottom: y + lh };
+                    dc.DrawText(&line.text, rect, flags)?;
+                }
+                y += lh;
+                i += 1;
             }
-            y += lh;
-            i += 1;
+        }
+
+        // 右端スクロールバー（トラックは背景同色・thumb はグレー）。
+        if let Some((bar_x, track_top, _track_h, thumb_top, thumb_h)) = sb {
+            let track_brush = w::HBRUSH::CreateSolidBrush(rgb(colors.log_background))?;
+            dc.FillRect(
+                w::RECT { left: bar_x, top: track_top, right: cw, bottom: ch },
+                &track_brush,
+            )?;
+            let thumb_brush = w::HBRUSH::CreateSolidBrush(w::COLORREF::from_rgb(0x55, 0x55, 0x55))?;
+            dc.FillRect(
+                w::RECT { left: bar_x + 1, top: thumb_top, right: cw - 1, bottom: thumb_top + thumb_h },
+                &thumb_brush,
+            )?;
         }
         Ok(())
     }

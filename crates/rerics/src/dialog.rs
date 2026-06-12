@@ -104,3 +104,94 @@ impl InputDialog {
         self.result.borrow().clone()
     }
 }
+
+/// 「はい / いいえ」確認モーダル。はい(Enter)で true、いいえ(Esc/閉じる)で false を返す。
+/// 既定は「いいえ」（何も選ばず閉じた場合も false）。
+pub struct ConfirmDialog {
+    wnd: gui::WindowModal,
+    result: Rc<RefCell<bool>>,
+}
+
+impl ConfirmDialog {
+    /// タイトル・本文を指定して構築する。
+    pub fn new(title: &str, message: &str) -> Self {
+        let wnd = gui::WindowModal::new(gui::WindowModalOpts {
+            title,
+            size: gui::dpi(360, 150),
+            style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
+            process_dlg_msgs: true,
+            ..Default::default()
+        });
+
+        let _label = gui::Label::new(
+            &wnd,
+            gui::LabelOpts {
+                text: message,
+                position: gui::dpi(16, 20),
+                size: gui::dpi(328, 56),
+                ..Default::default()
+            },
+        );
+
+        let yes = gui::Button::new(
+            &wnd,
+            gui::ButtonOpts {
+                text: "はい(&Y)",
+                control_style: co::BS::DEFPUSHBUTTON,
+                ctrl_id: 1,
+                position: gui::dpi(92, 96),
+                width: gui::dpi_x(80),
+                height: gui::dpi_y(26),
+                ..Default::default()
+            },
+        );
+
+        let no = gui::Button::new(
+            &wnd,
+            gui::ButtonOpts {
+                text: "いいえ(&N)",
+                ctrl_id: 2,
+                position: gui::dpi(180, 96),
+                width: gui::dpi_x(88),
+                height: gui::dpi_y(26),
+                ..Default::default()
+            },
+        );
+
+        let result = Rc::new(RefCell::new(false));
+
+        {
+            let yes = yes.clone();
+            wnd.on().wm_create(move |_| {
+                yes.hwnd().SetFocus();
+                Ok(0)
+            });
+        }
+
+        {
+            let result = result.clone();
+            let wnd = wnd.clone();
+            yes.on().bn_clicked(move || {
+                *result.borrow_mut() = true;
+                wnd.close();
+                Ok(())
+            });
+        }
+
+        {
+            let wnd = wnd.clone();
+            no.on().bn_clicked(move || {
+                wnd.close();
+                Ok(())
+            });
+        }
+
+        Self { wnd, result }
+    }
+
+    /// 親ウィンドウ中央にモーダル表示し、はいなら true、いいえ/Esc なら false を返す。
+    pub fn show(self, parent: &impl GuiParent) -> bool {
+        let _ = self.wnd.show_modal(parent);
+        *self.result.borrow()
+    }
+}

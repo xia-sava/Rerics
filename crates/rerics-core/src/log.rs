@@ -3,9 +3,12 @@
 //! `LogLevel`（重要度）・`LogLine`（1行）・`LogState`（行の保持・上限トリム・
 //! スクロール位置）を提供する。描画は GUI 層の責務。
 
-/// ログ行の重要度。文字色の決定に使う。
+/// ログ行の重要度。文字色と太字の決定に使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
+    /// 通常（操作の逐次ログ）。白・非太字。
+    Normal,
+    /// 情報（結果サマリ等）。太字。
     Info,
     Warning,
     Error,

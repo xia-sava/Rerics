@@ -784,19 +784,24 @@ impl MainWindow {
             }
         };
         if names.is_empty() {
+            self.log.error("ファイルが選択されていません。");
             return Ok(());
         }
         let src_dir = self.pane(is_left).borrow().path().to_path_buf();
         let dst_dir = self.pane(!is_left).borrow().path().to_path_buf();
-        if src_dir == dst_dir {
-            self.log.warn("左右が同じディレクトリのため何もしません");
-            return Ok(());
-        }
-        let verb = if move_it { "移動" } else { "コピー" };
+        let op = if move_it { "Move" } else { "Copy" };
         let mut ok = 0usize;
+        let mut err = 0usize;
         for name in &names {
             let src = src_dir.join(name);
             let dst = dst_dir.join(name);
+            if src == dst {
+                let m = if move_it { "移動先が同じです。- " } else { "コピー先が同じです。- " };
+                self.log.error(&format!("{}{}", m, name));
+                err += 1;
+                continue;
+            }
+            self.log.normal(&format!("{} {}", op, name));
             let result = if move_it {
                 match std::fs::rename(&src, &dst) {
                     Ok(()) => Ok(()),
@@ -813,14 +818,18 @@ impl MainWindow {
             };
             match result {
                 Ok(()) => ok += 1,
-                Err(e) => self
-                    .log
-                    .error(&format!("{}に失敗: {}: {}", verb, name, e)),
+                Err(e) => {
+                    let m = if move_it { "移動に失敗しました。- " } else { "コピーに失敗しました。- " };
+                    self.log.error(&format!("{}{}", m, e));
+                    err += 1;
+                }
             }
         }
-        if ok > 0 {
-            self.log
-                .info(&format!("{} 個を{}しました", ok, verb));
+        let result_line = format!("{} Success, 0 Skip, {} Error", ok, err);
+        if err == 0 {
+            self.log.info(&result_line);
+        } else {
+            self.log.error(&result_line);
         }
         self.reload_side(!is_left)?;
         if move_it {
@@ -889,32 +898,44 @@ impl MainWindow {
             }
         };
         if names.is_empty() {
+            self.log.error("ファイルが選択されていません。");
             return Ok(());
         }
-        let msg = format!("{} 個の項目を削除します。よろしいですか？", names.len());
-        let ans = self
-            .wnd
-            .hwnd()
-            .MessageBox(&msg, "削除の確認", co::MB::YESNO | co::MB::ICONWARNING)?;
-        if ans != co::DLGID::YES {
+        let short = if names.len() > 1 {
+            format!("{}他", names[0])
+        } else {
+            names[0].clone()
+        };
+        let msg = format!("{}を削除してもよろしいですか？", short);
+        if !dialog::ConfirmDialog::new("削除", &msg).show(&self.wnd) {
             return Ok(());
         }
         let dir = self.pane(is_left).borrow().path().to_path_buf();
         let mut ok = 0usize;
+        let mut err = 0usize;
         for name in &names {
             let target = dir.join(name);
-            let result = if target.is_dir() {
+            let is_dir = target.is_dir();
+            let op = if is_dir { "DeleteDirectory" } else { "Delete" };
+            self.log.normal(&format!("{} {}", op, name));
+            let result = if is_dir {
                 std::fs::remove_dir_all(&target)
             } else {
                 std::fs::remove_file(&target)
             };
             match result {
                 Ok(()) => ok += 1,
-                Err(e) => self.log.error(&format!("削除に失敗: {}: {}", name, e)),
+                Err(e) => {
+                    self.log.error(&format!("削除に失敗しました。- {}", e));
+                    err += 1;
+                }
             }
         }
-        if ok > 0 {
-            self.log.info(&format!("{} 個を削除しました", ok));
+        let result_line = format!("{} Success, {} Error", ok, err);
+        if err == 0 {
+            self.log.info(&result_line);
+        } else {
+            self.log.error(&result_line);
         }
         self.reload_side(is_left)?;
         Ok(())
