@@ -345,8 +345,35 @@ impl MainWindow {
                 self.copy_or_move(is_left, true)?;
                 return Ok(());
             }
+            Command::SwapPath => {
+                self.swap_paths()?;
+                return Ok(());
+            }
+            Command::OppositeToCurrent => {
+                let p = self.pane(is_left).borrow().path().to_path_buf();
+                *self.pane(!is_left).borrow_mut() = Pane::open(&p);
+                self.reload_side(!is_left)?;
+                return Ok(());
+            }
+            Command::CurrentToOpposite => {
+                let p = self.pane(!is_left).borrow().path().to_path_buf();
+                *self.pane(is_left).borrow_mut() = Pane::open(&p);
+                self.reload_side(is_left)?;
+                return Ok(());
+            }
         }
         view.refresh()?;
+        Ok(())
+    }
+
+    /// 左右ペインのパスを入れ替える。
+    fn swap_paths(&self) -> w::AnyResult<()> {
+        let lp = self.left_pane.borrow().path().to_path_buf();
+        let rp = self.right_pane.borrow().path().to_path_buf();
+        *self.left_pane.borrow_mut() = Pane::open(&rp);
+        *self.right_pane.borrow_mut() = Pane::open(&lp);
+        self.reload_side(true)?;
+        self.reload_side(false)?;
         Ok(())
     }
 

@@ -25,6 +25,7 @@ pub mod vk {
     pub const A: u16 = 0x41;
     pub const C: u16 = 0x43;
     pub const M: u16 = 0x4D;
+    pub const O: u16 = 0x4F;
     pub const T: u16 = 0x54;
     pub const W: u16 = 0x57;
     pub const D0: u16 = 0x30;
@@ -66,6 +67,9 @@ pub enum Command {
     MakeDirectory,
     Copy,
     Move,
+    SwapPath,
+    OppositeToCurrent,
+    CurrentToOpposite,
 }
 
 /// キー＋修飾の組（将来 Ctrl/Shift/Alt も区別する）。
@@ -133,6 +137,8 @@ impl Default for KeyMap {
         m.bind(KeyChord::key(vk::F7), MakeDirectory);
         m.bind(KeyChord::key(vk::C), Copy);
         m.bind(KeyChord::key(vk::M), Move);
+        m.bind(KeyChord::key(vk::O), OppositeToCurrent);
+        m.bind(KeyChord::new(vk::O, false, true, false), CurrentToOpposite);
         m
     }
 }
@@ -232,6 +238,16 @@ mod tests {
         let m = KeyMap::default();
         assert_eq!(m.resolve(&KeyChord::key(vk::C)), Some(Command::Copy));
         assert_eq!(m.resolve(&KeyChord::key(vk::M)), Some(Command::Move));
+    }
+
+    #[test]
+    fn default_binds_pane_sync() {
+        let m = KeyMap::default();
+        assert_eq!(m.resolve(&KeyChord::key(vk::O)), Some(Command::OppositeToCurrent));
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::O, false, true, false)),
+            Some(Command::CurrentToOpposite)
+        );
     }
 
     #[test]
