@@ -1,8 +1,11 @@
+mod file_list;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use file_list::FileListView;
 use rerics_core::{Command, KeyChord, KeyMap, Pane};
-use winsafe::{self as w, co, gui, msg, prelude::*};
+use winsafe::{self as w, co, gui, prelude::*};
 
 const MARGIN: i32 = 8;
 const GAP: i32 = 8;
@@ -18,8 +21,8 @@ fn main() {
 #[derive(Clone)]
 struct MainWindow {
     wnd: gui::WindowMain,
-    left: gui::ListView,
-    right: gui::ListView,
+    left: FileListView,
+    right: FileListView,
     left_bar: gui::Label,
     right_bar: gui::Label,
     left_pane: Rc<RefCell<Pane>>,
@@ -44,19 +47,9 @@ impl MainWindow {
             ..Default::default()
         });
 
-        let make_list = |parent: &gui::WindowMain| {
-            gui::ListView::new(
-                parent,
-                gui::ListViewOpts {
-                    position: gui::dpi(MARGIN, MARGIN),
-                    size: gui::dpi(400, 400),
-                    control_style: co::LVS::REPORT | co::LVS::SHOWSELALWAYS,
-                    control_ex_style: co::LVS_EX::FULLROWSELECT | co::LVS_EX::GRIDLINES,
-                    columns: &[("名前", 300), ("サイズ", 100)],
-                    ..Default::default()
-                },
-            )
-        };
+        let left = FileListView::new(&wnd, gui::dpi(MARGIN, MARGIN), gui::dpi(400, 400));
+        let right = FileListView::new(&wnd, gui::dpi(MARGIN, MARGIN), gui::dpi(400, 400));
+
         let make_bar = |parent: &gui::WindowMain| {
             gui::Label::new(
                 parent,
@@ -68,9 +61,6 @@ impl MainWindow {
                 },
             )
         };
-
-        let left = make_list(&wnd);
-        let right = make_list(&wnd);
         let left_bar = make_bar(&wnd);
         let right_bar = make_bar(&wnd);
 
@@ -78,9 +68,7 @@ impl MainWindow {
         let left_pane = Rc::new(RefCell::new(Pane::open(".")));
         let right_pane = Rc::new(RefCell::new(Pane::open(&home)));
 
-        // キーバインドは KeyMap で自由に差し替え可能（将来は TOML から読む）。
-        // 例: 上下逆 → keymap.bind(KeyChord::key(vk::UP), Command::CursorDown) ...
-        let keymap = KeyMap::records_default();
+        let keymap = KeyMap::default();
 
         Self {
             wnd,
@@ -100,10 +88,15 @@ impl MainWindow {
     }
 
     fn setup_events(&self) {
+        // 各ペインのキー入力とダブルクリックを配線（コントロール生成は済んでいるが、
+        // FileListView のコールバック登録は実行時可で、内部イベントは生成前に配線済み）。
+        self.wire_pane(true);
+        self.wire_pane(false);
+
         let this = self.clone();
         self.wnd.on().wm_create(move |_| {
-            refresh(&this.left, &this.left_bar, &this.left_pane)?;
-            refresh(&this.right, &this.right_bar, &this.right_pane)?;
+            this.reload_side(true)?;
+            this.reload_side(false)?;
             this.layout()?;
             this.left.hwnd().SetFocus();
             Ok(0)
@@ -111,69 +104,93 @@ impl MainWindow {
 
         let this = self.clone();
         self.wnd.on().wm_size(move |_| this.layout());
-
-        self.wire_pane(true);
-        self.wire_pane(false);
     }
 
-    /// 片側ペインのキー（サブクラスで横取り）とマウスを配線する。
     fn wire_pane(&self, is_left: bool) {
-        let list = self.list(is_left);
-
-        // ListView を subclass して WM_KEYDOWN を横取り。バインド済みキーは
-        // コマンド実行＋値返却で既定処理を抑止、未バインドは DefSubclassProc へ委譲。
         let this = self.clone();
-        list.on_subclass().wm(co::WM::KEYDOWN, move |p| {
-            let chord = KeyChord::key(p.wparam as u16);
-            match this.keymap.resolve(&chord) {
-                Some(cmd) => {
-                    this.exec(is_left, cmd)?;
-                    Ok(0)
-                }
-                None => Ok(unsafe { this.list(is_left).hwnd().DefSubclassProc(p) }),
+        self.view(is_left).on_key_down(move |vk, alt, _shift| {
+            let mut chord = KeyChord::key(vk);
+            chord.alt = alt;
+            if let Some(cmd) = this.keymap.resolve(&chord) {
+                let _ = this.exec(is_left, cmd);
             }
         });
 
         let this = self.clone();
-        list.on().nm_dbl_clk(move |p| {
-            if p.iItem >= 0 {
-                this.activate(is_left, p.iItem as usize)?;
-            }
-            Ok(())
+        self.view(is_left).on_activate(move |idx| {
+            let _ = this.activate(is_left, idx);
+        });
+
+        // アクティブ側のカーソルを出し、反対側を消す。
+        let this = self.clone();
+        self.view(is_left).on_got_focus(move || {
+            this.view(!is_left).set_cursor_visible(false);
         });
     }
 
-    /// コマンドを実行する。
     fn exec(&self, is_left: bool, cmd: Command) -> w::AnyResult<()> {
-        let list = self.list(is_left);
+        let view = self.view(is_left);
+        let state = view.state();
+        let pr = view.page_rows();
         match cmd {
-            Command::CursorUp => set_cursor(list, focused_index(list) - 1)?,
-            Command::CursorDown => set_cursor(list, focused_index(list) + 1)?,
-            Command::CursorTop => set_cursor(list, 0)?,
-            Command::CursorEnd => set_cursor(list, list.items().count() as i32 - 1)?,
-            Command::CursorPageUp => set_cursor(list, focused_index(list) - page_size(list))?,
-            Command::CursorPageDown => set_cursor(list, focused_index(list) + page_size(list))?,
+            Command::CursorUp => {
+                let mut s = state.borrow_mut();
+                let c = s.cursor as isize;
+                s.set_cursor(c - 1, pr);
+            }
+            Command::CursorDown => {
+                let mut s = state.borrow_mut();
+                let c = s.cursor as isize;
+                s.set_cursor(c + 1, pr);
+            }
+            Command::CursorTop => {
+                state.borrow_mut().set_cursor(0, pr);
+            }
+            Command::CursorEnd => {
+                let mut s = state.borrow_mut();
+                let last = s.count() as isize - 1;
+                s.set_cursor(last, pr);
+            }
+            Command::CursorPageUp => {
+                let mut s = state.borrow_mut();
+                let c = s.cursor as isize;
+                s.set_cursor(c - pr as isize, pr);
+            }
+            Command::CursorPageDown => {
+                let mut s = state.borrow_mut();
+                let c = s.cursor as isize;
+                s.set_cursor(c + pr as isize, pr);
+            }
             Command::EnterDir => {
-                if let Some(idx) = list.items().focused().map(|i| i.index() as usize) {
-                    self.activate(is_left, idx)?;
-                }
+                let cursor = state.borrow().cursor;
+                self.activate(is_left, cursor)?;
+                return Ok(());
             }
             Command::ToParent => {
-                if self.pane(is_left).borrow_mut().to_parent() {
-                    self.refresh_side(is_left)?;
-                }
+                self.to_parent(is_left)?;
+                return Ok(());
             }
             Command::FocusLeft => {
                 self.left.hwnd().SetFocus();
+                return Ok(());
             }
             Command::FocusRight => {
                 self.right.hwnd().SetFocus();
+                return Ok(());
+            }
+            Command::MarkToggle => {
+                let mut s = state.borrow_mut();
+                let c = s.cursor;
+                s.reverse_file(c, pr);
+                let c = s.cursor as isize;
+                s.set_cursor(c + 1, pr);
             }
         }
+        view.refresh()?;
         Ok(())
     }
 
-    fn list(&self, is_left: bool) -> &gui::ListView {
+    fn view(&self, is_left: bool) -> &FileListView {
         if is_left { &self.left } else { &self.right }
     }
 
@@ -185,15 +202,64 @@ impl MainWindow {
         if is_left { &self.left_pane } else { &self.right_pane }
     }
 
-    fn refresh_side(&self, is_left: bool) -> w::AnyResult<()> {
-        refresh(self.list(is_left), self.bar(is_left), self.pane(is_left))
+    /// ペインの現在パスを読み直して State へ反映し、パスバーを更新する。
+    fn reload_side(&self, is_left: bool) -> w::AnyResult<()> {
+        let view = self.view(is_left);
+        let items = self.pane(is_left).borrow().read();
+        let path = self.pane(is_left).borrow().path().display().to_string();
+        let pr = view.page_rows();
+        {
+            let state = view.state();
+            let mut s = state.borrow_mut();
+            s.items = items;
+            let sort = s.sort_type;
+            let reverse = s.sort_reverse;
+            s.sort(sort, reverse);
+            s.set_cursor(0, pr);
+        }
+        self.bar(is_left).hwnd().SetWindowText(&path)?;
+        view.refresh()?;
+        Ok(())
     }
 
-    /// `index` のエントリへ侵入できたら再描画する。
+    /// カーソル行を侵入する（dir/親なら移動、file は無視）。
     fn activate(&self, is_left: bool, index: usize) -> w::AnyResult<()> {
-        if self.pane(is_left).borrow_mut().enter(index) {
-            self.refresh_side(is_left)?;
+        let view = self.view(is_left);
+        let (is_parent, is_dir, name) = {
+            let state = view.state();
+            let s = state.borrow();
+            let Some(it) = s.items.get(index) else {
+                return Ok(());
+            };
+            (it.is_parent, it.is_dir, it.name.clone())
+        };
+        if is_parent {
+            return self.to_parent(is_left);
         }
+        if is_dir {
+            if self.pane(is_left).borrow_mut().enter(&name) {
+                self.reload_side(is_left)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 親ディレクトリへ移動し、元ディレクトリ名にカーソルを置きセンタリングする。
+    fn to_parent(&self, is_left: bool) -> w::AnyResult<()> {
+        let prev = self.pane(is_left).borrow_mut().to_parent();
+        let Some(prev_name) = prev else {
+            return Ok(());
+        };
+        self.reload_side(is_left)?;
+        let view = self.view(is_left);
+        let pr = view.page_rows();
+        {
+            let state = view.state();
+            let mut s = state.borrow_mut();
+            s.set_cursor_position(&prev_name, pr);
+            s.center_cursor(pr);
+        }
+        view.refresh()?;
         Ok(())
     }
 
@@ -218,62 +284,13 @@ impl MainWindow {
         place(self.left.hwnd(), left_x, list_y, pane_w, list_h)?;
         place(self.right_bar.hwnd(), right_x, my, pane_w, bar_h)?;
         place(self.right.hwnd(), right_x, list_y, pane_w, list_h)?;
+        self.left.refresh()?;
+        self.right.refresh()?;
         Ok(())
     }
 }
 
 fn place(hwnd: &w::HWND, x: i32, y: i32, cx: i32, cy: i32) -> w::AnyResult<()> {
     hwnd.MoveWindow(w::POINT { x, y }, w::SIZE { cx, cy }, true)?;
-    Ok(())
-}
-
-/// 現在のカーソル（フォーカス）行の index。無ければ 0。
-fn focused_index(list: &gui::ListView) -> i32 {
-    list.items().focused().map(|i| i.index() as i32).unwrap_or(0)
-}
-
-/// ListView の1ページの行数。
-fn page_size(list: &gui::ListView) -> i32 {
-    let n = unsafe { list.hwnd().SendMessage(msg::lvm::GetCountPerPage {}) } as i32;
-    n.max(1)
-}
-
-/// カーソルを `target` 行へ移動する（範囲はクランプ）。
-fn set_cursor(list: &gui::ListView, target: i32) -> w::AnyResult<()> {
-    let items = list.items();
-    let count = items.count() as i32;
-    if count == 0 {
-        return Ok(());
-    }
-    let t = target.clamp(0, count - 1);
-    if let Some(cur) = items.focused() {
-        cur.select(false)?;
-    }
-    if let Some(it) = items.iter().nth(t as usize) {
-        it.focus()?;
-        it.select(true)?;
-        it.ensure_visible()?;
-    }
-    Ok(())
-}
-
-/// ペインの内容を ListView に反映し、パスバーを更新し、先頭にカーソルを置く。
-fn refresh(list: &gui::ListView, bar: &gui::Label, pane: &Rc<RefCell<Pane>>) -> w::AnyResult<()> {
-    let pane = pane.borrow();
-    let items = list.items();
-    items.delete_all()?;
-    for e in pane.entries() {
-        let size = if e.is_dir {
-            "<DIR>".to_owned()
-        } else {
-            format!("{} B", e.size)
-        };
-        items.add(&[e.name.as_str(), size.as_str()], None, ())?;
-    }
-    bar.hwnd().SetWindowText(&pane.path().display().to_string())?;
-    if let Some(first) = items.iter().next() {
-        first.focus()?;
-        first.select(true)?;
-    }
     Ok(())
 }

@@ -1,0 +1,689 @@
+//! 自前描画のファイル一覧コントロール。
+//!
+//! 状態は `rerics_core::FileListState` に持たせ、本モジュールは描画・入力・スクロールの
+//! GUI 配線に徹する。ダブルバッファでちらつきを抑える。
+
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+use rerics_core::{Align, ColumnKind, Colors, FileListState, Rgb, SortType};
+use winsafe::{self as w, co, gui, prelude::*};
+
+/// マウス操作の状態機械。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MouseEvent {
+    None,
+    HeaderDrag,
+    HeaderClick,
+    RowClick,
+}
+
+type ActivateCb = Box<dyn Fn(usize)>;
+type KeyCb = Box<dyn Fn(u16, bool, bool)>;
+
+/// 列ドラッグ中の状態。
+#[derive(Clone, Copy)]
+struct HeaderDrag {
+    col: usize,
+    start_x: i32,
+    start_width: i32,
+}
+
+struct Inner {
+    state: Rc<RefCell<FileListState>>,
+    colors: Colors,
+    /// フォント高さ（実測）。
+    font_height: Cell<i32>,
+    /// カーソル表示フラグ（アクティブペイン管理は main 側で配線）。
+    cursor_visible: Cell<bool>,
+    mouse_event: Cell<MouseEvent>,
+    header_click_col: Cell<Option<usize>>,
+    drag: Cell<Option<HeaderDrag>>,
+    on_activate: RefCell<Option<ActivateCb>>,
+    on_key: RefCell<Option<KeyCb>>,
+    on_got_focus: RefCell<Option<Box<dyn Fn()>>>,
+}
+
+/// ファイル一覧コントロール。
+#[derive(Clone)]
+pub struct FileListView {
+    wnd: gui::WindowControl,
+    inner: Rc<Inner>,
+}
+
+impl FileListView {
+    /// 親に子コントロールとして生成する。イベントは生成前にここで配線する。
+    pub fn new(parent: &(impl GuiParent + 'static), position: (i32, i32), size: (i32, i32)) -> Self {
+        let wnd = gui::WindowControl::new(
+            parent,
+            gui::WindowControlOpts {
+                class_bg_brush: gui::Brush::None,
+                position,
+                size,
+                style: co::WS::CHILD
+                    | co::WS::VISIBLE
+                    | co::WS::CLIPSIBLINGS
+                    | co::WS::TABSTOP
+                    | co::WS::VSCROLL,
+                ..Default::default()
+            },
+        );
+        let inner = Rc::new(Inner {
+            state: Rc::new(RefCell::new(FileListState::new())),
+            colors: Colors::default(),
+            font_height: Cell::new(gui::dpi_y(13)),
+            cursor_visible: Cell::new(false),
+            mouse_event: Cell::new(MouseEvent::None),
+            header_click_col: Cell::new(None),
+            drag: Cell::new(None),
+            on_activate: RefCell::new(None),
+            on_key: RefCell::new(None),
+            on_got_focus: RefCell::new(None),
+        });
+        let me = Self { wnd, inner };
+        me.setup_events();
+        me
+    }
+
+    pub fn state(&self) -> Rc<RefCell<FileListState>> {
+        self.inner.state.clone()
+    }
+
+    pub fn hwnd(&self) -> &w::HWND {
+        self.wnd.hwnd()
+    }
+
+    pub fn on_activate(&self, cb: impl Fn(usize) + 'static) {
+        *self.inner.on_activate.borrow_mut() = Some(Box::new(cb));
+    }
+
+    pub fn on_key_down(&self, cb: impl Fn(u16, bool, bool) + 'static) {
+        *self.inner.on_key.borrow_mut() = Some(Box::new(cb));
+    }
+
+    /// フォーカス取得時のコールバック（反対ペインのカーソル消去の配線用）。
+    pub fn on_got_focus(&self, cb: impl Fn() + 'static) {
+        *self.inner.on_got_focus.borrow_mut() = Some(Box::new(cb));
+    }
+
+    /// カーソル下線の表示/非表示を切り替える。
+    pub fn set_cursor_visible(&self, visible: bool) {
+        if self.inner.cursor_visible.get() != visible {
+            self.inner.cursor_visible.set(visible);
+            let _ = self.hwnd().InvalidateRect(None, false);
+        }
+    }
+
+    /// スクロールバー情報を更新し、再描画を促す。
+    pub fn refresh(&self) -> w::AnyResult<()> {
+        self.update_scrollbar()?;
+        self.hwnd().InvalidateRect(None, false)?;
+        Ok(())
+    }
+
+    /// クライアント高から1ページ行数を算出する。
+    pub fn page_rows(&self) -> usize {
+        let Ok(rc) = self.hwnd().GetClientRect() else {
+            return 1;
+        };
+        let client_h = rc.bottom - rc.top;
+        let ih = self.item_height();
+        if ih <= 0 {
+            return 1;
+        }
+        let rows = (client_h - self.header_height()) / ih;
+        rows.max(1) as usize
+    }
+
+    fn font_height(&self) -> i32 {
+        self.inner.font_height.get()
+    }
+
+    fn header_height(&self) -> i32 {
+        self.font_height() + 8
+    }
+
+    fn item_height(&self) -> i32 {
+        self.font_height()
+    }
+
+    /// フォントを生成する（日本語対応モノスペース。将来は設定から）。
+    fn create_font(&self) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
+        w::HFONT::CreateFont(
+            w::SIZE { cx: 0, cy: -gui::dpi_y(13) },
+            0,
+            0,
+            co::FW::NORMAL,
+            false,
+            false,
+            false,
+            co::CHARSET::DEFAULT,
+            co::OUT_PRECIS::DEFAULT,
+            co::CLIP::DEFAULT_PRECIS,
+            co::QUALITY::CLEARTYPE,
+            co::PITCH::FIXED,
+            "BIZ UDGothic",
+        )
+    }
+
+    fn setup_events(&self) {
+        let this = self.clone();
+        self.wnd.on().wm_get_dlg_code(move |_| {
+            let _ = &this;
+            let flags = co::DLGC::WANTARROWS.raw() | co::DLGC::WANTALLKEYS.raw();
+            Ok(unsafe { co::DLGC::from_raw(flags) })
+        });
+
+        let this = self.clone();
+        self.wnd.on().wm_paint(move || this.on_paint());
+
+        let this = self.clone();
+        self.wnd.on().wm_size(move |_| {
+            {
+                let pr = this.page_rows();
+                let mut s = this.inner.state.borrow_mut();
+                let top = s.scroll_top as isize;
+                s.set_scroll_top(top, pr);
+            }
+            this.refresh()?;
+            Ok(())
+        });
+
+        let this = self.clone();
+        self.wnd.on().wm_set_focus(move |_| {
+            this.set_cursor_visible(true);
+            if let Some(cb) = this.inner.on_got_focus.borrow().as_ref() {
+                cb();
+            }
+            Ok(())
+        });
+
+        let this = self.clone();
+        self.wnd.on().wm_v_scroll(move |p| {
+            this.on_v_scroll(p)?;
+            Ok(())
+        });
+
+        let this = self.clone();
+        self.wnd.on().wm_mouse_wheel(move |p| {
+            this.on_mouse_wheel(p.wheel_distance)?;
+            Ok(())
+        });
+
+        let this = self.clone();
+        self.wnd.on().wm_key_down(move |p| {
+            if let Some(cb) = this.inner.on_key.borrow().as_ref() {
+                cb(p.vkey_code.raw(), p.has_alt_key, false);
+            }
+            Ok(())
+        });
+
+        let this = self.clone();
+        self.wnd.on().wm_l_button_down(move |p| {
+            this.on_l_button_down(p.coords, p.vkey_code)?;
+            Ok(())
+        });
+
+        let this = self.clone();
+        self.wnd.on().wm_l_button_up(move |p| {
+            this.on_l_button_up(p.coords)?;
+            Ok(())
+        });
+
+        let this = self.clone();
+        self.wnd.on().wm_mouse_move(move |p| {
+            this.on_mouse_move(p.coords)?;
+            Ok(())
+        });
+
+        let this = self.clone();
+        self.wnd.on().wm_l_button_dbl_clk(move |p| {
+            this.on_l_button_dbl_clk(p.coords)?;
+            Ok(())
+        });
+    }
+
+    /// 縦スクロールバー情報を反映する。
+    fn update_scrollbar(&self) -> w::AnyResult<()> {
+        let page = self.page_rows();
+        let count = self.inner.state.borrow().count();
+        let scroll_top = self.inner.state.borrow().scroll_top;
+        let mut si = w::SCROLLINFO::default();
+        si.fMask = co::SIF::RANGE | co::SIF::PAGE | co::SIF::POS;
+        si.nMin = 0;
+        si.nMax = count.saturating_sub(1) as i32;
+        si.nPage = page as u32;
+        si.nPos = scroll_top as i32;
+        self.hwnd().SetScrollInfo(co::SBB::VERT, &si, true);
+        Ok(())
+    }
+
+    fn on_v_scroll(&self, p: w::msg::wm::VScroll) -> w::AnyResult<()> {
+        let page = self.page_rows() as isize;
+        let (cur, count) = {
+            let s = self.inner.state.borrow();
+            (s.scroll_top as isize, s.count())
+        };
+        let max = (count.saturating_sub(self.page_rows())) as isize;
+        let new = match p.request {
+            co::SB_REQ::LINEUP => cur - 1,
+            co::SB_REQ::LINEDOWN => cur + 1,
+            co::SB_REQ::PAGEUP => cur - page,
+            co::SB_REQ::PAGEDOWN => cur + page,
+            co::SB_REQ::TOP => 0,
+            co::SB_REQ::BOTTOM => max,
+            co::SB_REQ::THUMBPOSITION | co::SB_REQ::THUMBTRACK => {
+                let mut si = w::SCROLLINFO::default();
+                si.fMask = co::SIF::TRACKPOS;
+                self.hwnd().GetScrollInfo(co::SBB::VERT, &mut si)?;
+                si.nTrackPos as isize
+            }
+            _ => return Ok(()),
+        };
+        {
+            let mut s = self.inner.state.borrow_mut();
+            let pr = self.page_rows();
+            s.set_scroll_top(new, pr);
+        }
+        self.refresh()?;
+        Ok(())
+    }
+
+    fn on_mouse_wheel(&self, distance: i16) -> w::AnyResult<()> {
+        let lines = (distance as i32 / 120) * 3;
+        {
+            let mut s = self.inner.state.borrow_mut();
+            let pr = self.page_rows();
+            let top = s.scroll_top as isize - lines as isize;
+            s.set_scroll_top(top, pr);
+        }
+        self.refresh()?;
+        Ok(())
+    }
+
+    /// 列境界(右端±4px)を指している列 index を返す。
+    fn hit_column_border(&self, x: i32) -> Option<usize> {
+        let s = self.inner.state.borrow();
+        let mut left = 0i32;
+        for (i, col) in s.columns.iter().enumerate() {
+            let right = left + gui::dpi_x(col.width);
+            if (x - right).abs() <= 4 {
+                return Some(i);
+            }
+            left = right;
+        }
+        None
+    }
+
+    /// 座標 x がどの列に属するか（ヘッダクリック判定用）。
+    fn column_at(&self, x: i32) -> Option<usize> {
+        let s = self.inner.state.borrow();
+        let mut left = 0i32;
+        for (i, col) in s.columns.iter().enumerate() {
+            let right = left + gui::dpi_x(col.width);
+            if x >= left && x < right {
+                return Some(i);
+            }
+            left = right;
+        }
+        None
+    }
+
+    /// 行 index を座標 y から算出する（ヘッダ以下）。
+    fn row_at(&self, y: i32) -> Option<usize> {
+        let hh = self.header_height();
+        if y < hh {
+            return None;
+        }
+        let ih = self.item_height();
+        if ih <= 0 {
+            return None;
+        }
+        let s = self.inner.state.borrow();
+        let idx = s.scroll_top + ((y - hh) / ih) as usize;
+        if idx < s.count() { Some(idx) } else { None }
+    }
+
+    fn on_l_button_down(&self, pt: w::POINT, keys: co::MK) -> w::AnyResult<()> {
+        let hh = self.header_height();
+        if pt.y < hh {
+            if let Some(col) = self.hit_column_border(pt.x) {
+                let start_width = gui::dpi_x(self.inner.state.borrow().columns[col].width);
+                self.inner.drag.set(Some(HeaderDrag {
+                    col,
+                    start_x: pt.x,
+                    start_width,
+                }));
+                self.inner.mouse_event.set(MouseEvent::HeaderDrag);
+            } else if let Some(col) = self.column_at(pt.x) {
+                self.inner.mouse_event.set(MouseEvent::HeaderClick);
+                self.inner.header_click_col.set(Some(col));
+            }
+            return Ok(());
+        }
+        let Some(idx) = self.row_at(pt.y) else {
+            return Ok(());
+        };
+        self.hwnd().SetFocus();
+        let shift = keys.has(co::MK::SHIFT);
+        let ctrl = keys.has(co::MK::CONTROL);
+        let pr = self.page_rows();
+        self.inner.mouse_event.set(MouseEvent::RowClick);
+        {
+            let mut s = self.inner.state.borrow_mut();
+            s.cursor = idx;
+            if ctrl {
+                s.reverse_file(idx, pr);
+            } else if shift {
+                let start = s.select_start;
+                s.clear_all();
+                s.select_files(start, idx);
+                s.set_cursor(idx as isize, pr);
+            } else {
+                let already = s.items[idx].selected;
+                if !already {
+                    s.clear_all();
+                }
+                s.select_file(idx, pr);
+            }
+        }
+        self.refresh()?;
+        Ok(())
+    }
+
+    fn on_l_button_up(&self, _pt: w::POINT) -> w::AnyResult<()> {
+        match self.inner.mouse_event.get() {
+            MouseEvent::HeaderClick => {
+                if let Some(col) = self.inner.header_click_col.get() {
+                    self.sort_by_column(col)?;
+                }
+            }
+            MouseEvent::RowClick => {
+                // 修飾なしクリックはマークをその1件に確定する。
+                let shift = w::GetAsyncKeyState(co::VK::SHIFT);
+                let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
+                if !shift && !ctrl {
+                    let pr = self.page_rows();
+                    {
+                        let mut s = self.inner.state.borrow_mut();
+                        let cur = s.cursor;
+                        s.clear_all();
+                        s.select_file(cur, pr);
+                    }
+                    self.refresh()?;
+                }
+            }
+            _ => {}
+        }
+        self.inner.mouse_event.set(MouseEvent::None);
+        self.inner.header_click_col.set(None);
+        self.inner.drag.set(None);
+        Ok(())
+    }
+
+    fn on_mouse_move(&self, pt: w::POINT) -> w::AnyResult<()> {
+        if self.inner.mouse_event.get() == MouseEvent::HeaderDrag {
+            if let Some(d) = self.inner.drag.get() {
+                let new_w = (d.start_width + (pt.x - d.start_x)).max(8);
+                {
+                    let mut s = self.inner.state.borrow_mut();
+                    // 物理 px を論理 px へ戻して格納（dpi_x(96)=現在DPI）。
+                    let dpi = gui::dpi_x(96).max(1);
+                    let logical = (new_w * 96 + dpi / 2) / dpi;
+                    s.columns[d.col].width = logical.max(8);
+                }
+                self.refresh()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn on_l_button_dbl_clk(&self, pt: w::POINT) -> w::AnyResult<()> {
+        if let Some(idx) = self.row_at(pt.y) {
+            if let Some(cb) = self.inner.on_activate.borrow().as_ref() {
+                cb(idx);
+            }
+        }
+        Ok(())
+    }
+
+    /// 列のソート種別へ切替える（同種別なら reverse 反転）。
+    fn sort_by_column(&self, col: usize) -> w::AnyResult<()> {
+        let kind = self.inner.state.borrow().columns[col].kind;
+        let target = match kind {
+            ColumnKind::FileName | ColumnKind::FileBaseName => SortType::FileName,
+            ColumnKind::FileExtension => SortType::Extension,
+            ColumnKind::Length => SortType::Length,
+            ColumnKind::CreateTime | ColumnKind::CreateTimeS => SortType::CreateTime,
+            ColumnKind::LastWriteTime | ColumnKind::LastWriteTimeS => SortType::LastWriteTime,
+            ColumnKind::Attribute => SortType::Attribute,
+        };
+        {
+            let mut s = self.inner.state.borrow_mut();
+            let reverse = if s.sort_type == target { !s.sort_reverse } else { false };
+            s.sort(target, reverse);
+        }
+        self.refresh()?;
+        Ok(())
+    }
+
+    fn on_paint(&self) -> w::AnyResult<()> {
+        let hdc = self.hwnd().BeginPaint()?;
+        let rc = self.hwnd().GetClientRect()?;
+        let cw = rc.right - rc.left;
+        let ch = rc.bottom - rc.top;
+        if cw <= 0 || ch <= 0 {
+            return Ok(());
+        }
+        // ダブルバッファ。
+        let mem_dc = hdc.CreateCompatibleDC()?;
+        let bmp = hdc.CreateCompatibleBitmap(cw, ch)?;
+        let _bmp_sel = mem_dc.SelectObject(&*bmp)?;
+        let font = self.create_font()?;
+        let _font_sel = mem_dc.SelectObject(&*font)?;
+        // フォント高さ実測。
+        if let Ok(tm) = mem_dc.GetTextMetrics() {
+            self.inner.font_height.set(tm.tmHeight);
+        }
+        mem_dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
+
+        self.paint_to(&mem_dc, cw, ch)?;
+
+        hdc.BitBlt(
+            w::POINT { x: 0, y: 0 },
+            w::SIZE { cx: cw, cy: ch },
+            &mem_dc,
+            w::POINT { x: 0, y: 0 },
+            co::ROP::SRCCOPY,
+        )?;
+        Ok(())
+    }
+
+    fn paint_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
+        let colors = self.inner.colors;
+        let cursor_visible = self.inner.cursor_visible.get();
+        let header_h = self.header_height();
+        let item_h = self.item_height();
+
+        // 1. 背景全面。
+        let bg = w::HBRUSH::CreateSolidBrush(rgb(colors.background))?;
+        dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &bg)?;
+
+        let s = self.inner.state.borrow();
+
+        // 各列の左端を算出（論理→物理）。
+        let mut col_lefts = Vec::with_capacity(s.columns.len() + 1);
+        let mut x = 0i32;
+        for col in &s.columns {
+            col_lefts.push(x);
+            x += gui::dpi_x(col.width);
+        }
+        let total_w = x;
+        col_lefts.push(total_w);
+
+        // 2. ヘッダ。
+        let face = w::GetSysColor(co::COLOR::BTNFACE);
+        let hl = w::GetSysColor(co::COLOR::BTNHIGHLIGHT);
+        let sh = w::GetSysColor(co::COLOR::BTNSHADOW);
+        let wtext = w::GetSysColor(co::COLOR::WINDOWTEXT);
+        let face_brush = w::HBRUSH::CreateSolidBrush(face)?;
+        for (i, col) in s.columns.iter().enumerate() {
+            let left = col_lefts[i];
+            let right = col_lefts[i + 1];
+            self.draw_header_cell(dc, &s, left, right, header_h, &face_brush, hl, sh, wtext, Some(col))?;
+        }
+        // 末尾余白列。
+        if total_w < cw {
+            dc.FillRect(
+                w::RECT { left: total_w, top: 0, right: cw, bottom: header_h },
+                &face_brush,
+            )?;
+            self.draw_3d_frame(dc, total_w, 0, cw, header_h, hl, sh)?;
+        }
+
+        // 3. 行。
+        let page = self.page_rows();
+        let bottom = s.scroll_bottom(page);
+        let sel_bg = w::HBRUSH::CreateSolidBrush(rgb(colors.selected_file_bg))?;
+        for i in s.scroll_top..=bottom {
+            if i >= s.count() {
+                break;
+            }
+            let item = &s.items[i];
+            let y = header_h + ((i - s.scroll_top) as i32) * item_h;
+            let text_color = if item.selected {
+                dc.FillRect(
+                    w::RECT { left: 0, top: y, right: total_w, bottom: y + item_h + 1 },
+                    &sel_bg,
+                )?;
+                colors.selected_file
+            } else {
+                colors.item_color(item)
+            };
+            dc.SetTextColor(rgb(text_color))?;
+            for (ci, col) in s.columns.iter().enumerate() {
+                let left = col_lefts[ci];
+                let right = col_lefts[ci + 1];
+                let text = s.cell_text(item, col.kind);
+                if text.is_empty() {
+                    continue;
+                }
+                let mut flags = co::DT::SINGLELINE
+                    | co::DT::VCENTER
+                    | co::DT::NOPREFIX
+                    | co::DT::END_ELLIPSIS;
+                if col.align == Align::Right {
+                    flags |= co::DT::RIGHT;
+                }
+                let rect = w::RECT { left: left + 4, top: y, right: right - 4, bottom: y + item_h };
+                dc.DrawText(&text, rect, flags)?;
+            }
+            // 4. カーソル下線。
+            if cursor_visible && i == s.cursor {
+                let y_line = y + (item_h - self.font_height()) / 2 + self.font_height() - 1;
+                let pen = w::HPEN::CreatePen(co::PS::SOLID, 1, rgb(colors.cursor))?;
+                let _pen_sel = dc.SelectObject(&*pen)?;
+                dc.MoveToEx(0, y_line, None)?;
+                dc.LineTo(total_w, y_line)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// ヘッダ1列を描く（3D 枠＋テキスト＋ソート三角）。
+    #[allow(clippy::too_many_arguments)]
+    fn draw_header_cell(
+        &self,
+        dc: &w::HDC,
+        s: &FileListState,
+        left: i32,
+        right: i32,
+        header_h: i32,
+        face_brush: &w::HBRUSH,
+        hl: w::COLORREF,
+        sh: w::COLORREF,
+        wtext: w::COLORREF,
+        col: Option<&rerics_core::Column>,
+    ) -> w::AnyResult<()> {
+        dc.FillRect(w::RECT { left, top: 0, right, bottom: header_h }, face_brush)?;
+        self.draw_3d_frame(dc, left, 0, right, header_h, hl, sh)?;
+        let Some(col) = col else {
+            return Ok(());
+        };
+        // テキスト。
+        dc.SetTextColor(wtext)?;
+        if !col.text.is_empty() {
+            let rect = w::RECT { left: left + 4, top: 4, right: right - 4, bottom: header_h };
+            dc.DrawText(&col.text, rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
+        }
+        // ソート三角。
+        let sort_match = matches!(
+            (col.kind, s.sort_type),
+            (ColumnKind::FileName | ColumnKind::FileBaseName, SortType::FileName)
+                | (ColumnKind::FileName | ColumnKind::FileBaseName, SortType::FileNameExpLike)
+                | (ColumnKind::FileExtension, SortType::Extension)
+                | (ColumnKind::FileExtension, SortType::ExtensionExpLike)
+                | (ColumnKind::Length, SortType::Length)
+                | (ColumnKind::CreateTime | ColumnKind::CreateTimeS, SortType::CreateTime)
+                | (ColumnKind::LastWriteTime | ColumnKind::LastWriteTimeS, SortType::LastWriteTime)
+                | (ColumnKind::Attribute, SortType::Attribute)
+        );
+        if sort_match {
+            let tw = dc.GetTextExtentPoint32(&col.text).map(|sz| sz.cx).unwrap_or(0);
+            let x0 = left + 4 + tw + 8;
+            let top = 6;
+            let bot = header_h - 8;
+            let pen = w::HPEN::CreatePen(co::PS::SOLID, 1, w::COLORREF::from_rgb(64, 64, 64))?;
+            let _pen_sel = dc.SelectObject(&*pen)?;
+            if !s.sort_reverse {
+                // 昇順: 頂点上。
+                dc.MoveToEx(x0, bot, None)?;
+                dc.LineTo(x0 + 3, top)?;
+                dc.LineTo(x0 + 6, bot)?;
+                dc.MoveToEx(x0, bot, None)?;
+                dc.LineTo(x0 + 6, bot)?;
+            } else {
+                // 降順: 頂点下。
+                dc.MoveToEx(x0, top, None)?;
+                dc.LineTo(x0 + 6, top)?;
+                dc.MoveToEx(x0, top, None)?;
+                dc.LineTo(x0 + 3, bot)?;
+                dc.LineTo(x0 + 6, top)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 明(左上)/暗(右下)の 3D 枠を描く。
+    fn draw_3d_frame(
+        &self,
+        dc: &w::HDC,
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+        hl: w::COLORREF,
+        sh: w::COLORREF,
+    ) -> w::AnyResult<()> {
+        let pen_hl = w::HPEN::CreatePen(co::PS::SOLID, 1, hl)?;
+        {
+            let _sel = dc.SelectObject(&*pen_hl)?;
+            dc.MoveToEx(left, bottom - 1, None)?;
+            dc.LineTo(left, top)?;
+            dc.LineTo(right - 1, top)?;
+        }
+        let pen_sh = w::HPEN::CreatePen(co::PS::SOLID, 1, sh)?;
+        {
+            let _sel = dc.SelectObject(&*pen_sh)?;
+            dc.MoveToEx(right - 1, top, None)?;
+            dc.LineTo(right - 1, bottom - 1)?;
+            dc.LineTo(left, bottom - 1)?;
+        }
+        Ok(())
+    }
+}
+
+/// `Rgb` を COLORREF へ変換する。
+fn rgb(c: Rgb) -> w::COLORREF {
+    w::COLORREF::from_rgb(c.r, c.g, c.b)
+}
