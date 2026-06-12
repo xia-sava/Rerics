@@ -1,7 +1,7 @@
 mod file_list;
 mod window_state;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use file_list::FileListView;
@@ -35,6 +35,7 @@ struct MainWindow {
     right_pane: Rc<RefCell<Pane>>,
     keymap: Rc<KeyMap>,
     initial_window: Option<WindowState>,
+    active_right: Rc<Cell<bool>>,
 }
 
 impl MainWindow {
@@ -72,12 +73,17 @@ impl MainWindow {
         let right_bar = make_bar(&wnd);
 
         let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "..".to_owned());
-        let left_pane = Rc::new(RefCell::new(Pane::open(".")));
-        let right_pane = Rc::new(RefCell::new(Pane::open(&home)));
+
+        let state = rerics_core::State::load();
+        let initial_window = state.window.clone();
+        let (left_path, right_path, active_right) = match state.active() {
+            Some(t) => (t.left.clone(), t.right.clone(), t.active_right),
+            None => (".".to_owned(), home.clone(), false),
+        };
+        let left_pane = Rc::new(RefCell::new(open_pane(&left_path, ".")));
+        let right_pane = Rc::new(RefCell::new(open_pane(&right_path, &home)));
 
         let keymap = KeyMap::default();
-
-        let initial_window = rerics_core::State::load().window;
 
         Self {
             wnd,
@@ -89,6 +95,7 @@ impl MainWindow {
             right_pane,
             keymap: Rc::new(keymap),
             initial_window,
+            active_right: Rc::new(Cell::new(active_right)),
         }
     }
 
@@ -120,7 +127,7 @@ impl MainWindow {
             this.reload_side(true)?;
             this.reload_side(false)?;
             this.layout()?;
-            this.left.hwnd().SetFocus();
+            this.view(!this.active_right.get()).hwnd().SetFocus();
             Ok(0)
         });
 
@@ -135,11 +142,19 @@ impl MainWindow {
 
         let this = self.clone();
         self.wnd.on().wm_destroy(move || {
-            if let Some(ws) = window_state::capture(&this.wnd.hwnd()) {
-                let state = rerics_core::State { window: Some(ws) };
-                if let Err(e) = state.save() {
-                    eprintln!("状態の保存に失敗: {}", e);
-                }
+            let window = window_state::capture(&this.wnd.hwnd());
+            let tab = rerics_core::TabState {
+                left: this.left_pane.borrow().path().display().to_string(),
+                right: this.right_pane.borrow().path().display().to_string(),
+                active_right: this.active_right.get(),
+            };
+            let state = rerics_core::State {
+                window,
+                tabs: vec![tab],
+                active_tab: 0,
+            };
+            if let Err(e) = state.save() {
+                eprintln!("状態の保存に失敗: {}", e);
             }
             Ok(())
         });
@@ -160,9 +175,10 @@ impl MainWindow {
             let _ = this.activate(is_left, idx);
         });
 
-        // アクティブ側のカーソルを出し、反対側を消す。
+        // アクティブ側のカーソルを出し、反対側を消す。アクティブ側を記録する。
         let this = self.clone();
         self.view(is_left).on_got_focus(move || {
+            this.active_right.set(!is_left);
             this.view(!is_left).set_cursor_visible(false);
         });
     }
@@ -332,4 +348,13 @@ impl MainWindow {
 fn place(hwnd: &w::HWND, x: i32, y: i32, cx: i32, cy: i32) -> w::AnyResult<()> {
     hwnd.MoveWindow(w::POINT { x, y }, w::SIZE { cx, cy }, true)?;
     Ok(())
+}
+
+/// パスを開く。存在しない（ディレクトリでない）場合は `fallback` を使う。
+fn open_pane(path: &str, fallback: &str) -> Pane {
+    if !path.is_empty() && std::path::Path::new(path).is_dir() {
+        Pane::open(path)
+    } else {
+        Pane::open(fallback)
+    }
 }

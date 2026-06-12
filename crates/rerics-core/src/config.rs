@@ -64,11 +64,24 @@ pub struct WindowState {
     pub maximized: bool,
 }
 
+/// 1タブ分の状態（左右ペインのパスとアクティブ側）。
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct TabState {
+    pub left: String,
+    pub right: String,
+    #[serde(default)]
+    pub active_right: bool,
+}
+
 /// 自動保存される全体状態。
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct State {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowState>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tabs: Vec<TabState>,
+    #[serde(default)]
+    pub active_tab: usize,
 }
 
 impl State {
@@ -80,6 +93,11 @@ impl State {
     /// 状態ファイルへ保存する。
     pub fn save(&self) -> std::io::Result<()> {
         save_toml(&state_path(), self)
+    }
+
+    /// アクティブなタブ状態を返す（範囲外や空なら `None`）。
+    pub fn active(&self) -> Option<&TabState> {
+        self.tabs.get(self.active_tab)
     }
 }
 
@@ -118,6 +136,7 @@ mod tests {
     fn state_roundtrip() {
         let st = State {
             window: Some(WindowState { x: 1, y: 2, width: 3, height: 4, maximized: false }),
+            ..State::default()
         };
         let s = toml::to_string(&st).unwrap();
         let back: State = toml::from_str(&s).unwrap();
@@ -146,11 +165,39 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let st = State {
             window: Some(WindowState { x: 100, y: 200, width: 960, height: 560, maximized: true }),
+            ..State::default()
         };
         save_toml(&path, &st).unwrap();
         let back: State = load_toml(&path);
         assert_eq!(st.window, back.window);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn state_with_tabs_roundtrip() {
+        let st = State {
+            window: None,
+            tabs: vec![
+                TabState { left: "C:\\a".into(), right: "C:\\b".into(), active_right: false },
+                TabState { left: "C:\\c".into(), right: "C:\\d".into(), active_right: true },
+            ],
+            active_tab: 1,
+        };
+        let s = toml::to_string(&st).unwrap();
+        let back: State = toml::from_str(&s).unwrap();
+        assert_eq!(st.tabs, back.tabs);
+        assert_eq!(st.active_tab, back.active_tab);
+        assert_eq!(back.active().unwrap().left, "C:\\c");
+        assert!(back.active().unwrap().active_right);
+    }
+
+    #[test]
+    fn default_state_has_no_tabs() {
+        let st = State::default();
+        assert!(st.tabs.is_empty());
+        assert!(st.active().is_none());
+        let s = toml::to_string(&st).unwrap();
+        assert!(!s.contains("[[tabs]]"));
     }
 
     #[test]
