@@ -481,6 +481,20 @@ impl FileListState {
         self.clamp_scroll(page_rows.max(1));
     }
 
+    /// カーソルが表示範囲外なら、表示範囲内の最も近い行へ寄せる（スクロール後に使う）。
+    pub fn cursor_into_view(&mut self, page_rows: usize) {
+        if self.count() == 0 {
+            return;
+        }
+        let top = self.scroll_top;
+        let bottom = self.scroll_bottom(page_rows);
+        if self.cursor < top {
+            self.cursor = top;
+        } else if self.cursor > bottom {
+            self.cursor = bottom;
+        }
+    }
+
     /// カーソル行が中央に来るようスクロールする。
     pub fn center_cursor(&mut self, page_rows: usize) {
         let page_rows = page_rows.max(1);
@@ -782,6 +796,27 @@ mod tests {
         assert_eq!(s.scroll_top, 90);
         s.set_cursor(0, pr);
         assert_eq!(s.scroll_top, 0);
+    }
+
+    #[test]
+    fn cursor_into_view_clamps() {
+        let mut s = state_with(100);
+        let pr = 10;
+        // カーソルが表示範囲より上 → 先頭可視行へ
+        s.cursor = 5;
+        s.set_scroll_top(40, pr); // 可視 [40,49]
+        s.cursor_into_view(pr);
+        assert_eq!(s.cursor, 40);
+        // カーソルが表示範囲より下 → 末尾可視行へ
+        s.cursor = 95;
+        s.set_scroll_top(40, pr);
+        s.cursor_into_view(pr);
+        assert_eq!(s.cursor, 49);
+        // 範囲内なら不変
+        s.cursor = 45;
+        s.set_scroll_top(40, pr);
+        s.cursor_into_view(pr);
+        assert_eq!(s.cursor, 45);
     }
 
     #[test]

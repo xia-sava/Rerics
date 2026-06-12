@@ -293,6 +293,7 @@ impl FileListView {
             let pr = self.page_rows();
             let top = s.scroll_top as isize - lines as isize;
             s.set_scroll_top(top, pr);
+            s.cursor_into_view(pr);
         }
         self.refresh()?;
         Ok(())
@@ -354,6 +355,7 @@ impl FileListView {
                     let cur = s.scroll_top as isize;
                     let delta = if pt.y < thumb_top { -(pr as isize) } else { pr as isize };
                     s.set_scroll_top(cur + delta, pr);
+                    s.cursor_into_view(pr);
                     drop(s);
                     self.refresh()?;
                 }
@@ -452,6 +454,7 @@ impl FileListView {
                 let max_top = s.count().saturating_sub(pr) as isize;
                 let pos = ((new_thumb_top - track_top) as i64 * max_top as i64 / denom as i64) as isize;
                 s.set_scroll_top(pos, pr);
+                s.cursor_into_view(pr);
                 drop(s);
                 self.refresh()?;
             }
