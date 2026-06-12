@@ -21,6 +21,9 @@ enum MouseEvent {
 type ActivateCb = Box<dyn Fn(usize)>;
 type KeyCb = Box<dyn Fn(u16, bool, bool, bool)>;
 
+/// 自前スクロールバーの幅（論理 px）。
+const SCROLLBAR_W: i32 = 7;
+
 /// 列ドラッグ中の状態。
 #[derive(Clone, Copy)]
 struct HeaderDrag {
@@ -39,6 +42,8 @@ struct Inner {
     mouse_event: Cell<MouseEvent>,
     header_click_col: Cell<Option<usize>>,
     drag: Cell<Option<HeaderDrag>>,
+    /// スクロールバー thumb ドラッグ中の、掴んだ位置の thumb 上端からのオフセット。
+    sb_drag: Cell<Option<i32>>,
     on_activate: RefCell<Option<ActivateCb>>,
     on_key: RefCell<Option<KeyCb>>,
     on_got_focus: RefCell<Option<Box<dyn Fn()>>>,
@@ -63,8 +68,7 @@ impl FileListView {
                 style: co::WS::CHILD
                     | co::WS::VISIBLE
                     | co::WS::CLIPSIBLINGS
-                    | co::WS::TABSTOP
-                    | co::WS::VSCROLL,
+                    | co::WS::TABSTOP,
                 ..Default::default()
             },
         );
@@ -76,6 +80,7 @@ impl FileListView {
             mouse_event: Cell::new(MouseEvent::None),
             header_click_col: Cell::new(None),
             drag: Cell::new(None),
+            sb_drag: Cell::new(None),
             on_activate: RefCell::new(None),
             on_key: RefCell::new(None),
             on_got_focus: RefCell::new(None),
@@ -114,9 +119,8 @@ impl FileListView {
         }
     }
 
-    /// スクロールバー情報を更新し、再描画を促す。
+    /// 再描画を促す。
     pub fn refresh(&self) -> w::AnyResult<()> {
-        self.update_scrollbar()?;
         self.hwnd().InvalidateRect(None, false)?;
         Ok(())
     }
@@ -199,12 +203,6 @@ impl FileListView {
         });
 
         let this = self.clone();
-        self.wnd.on().wm_v_scroll(move |p| {
-            this.on_v_scroll(p)?;
-            Ok(())
-        });
-
-        let this = self.clone();
         self.wnd.on().wm_mouse_wheel(move |p| {
             this.on_mouse_wheel(p.wheel_distance)?;
             Ok(())
@@ -245,50 +243,30 @@ impl FileListView {
         });
     }
 
-    /// 縦スクロールバー情報を反映する。
-    fn update_scrollbar(&self) -> w::AnyResult<()> {
-        let page = self.page_rows();
-        let count = self.inner.state.borrow().count();
-        let scroll_top = self.inner.state.borrow().scroll_top;
-        let mut si = w::SCROLLINFO::default();
-        si.fMask = co::SIF::RANGE | co::SIF::PAGE | co::SIF::POS;
-        si.nMin = 0;
-        si.nMax = count.saturating_sub(1) as i32;
-        si.nPage = page as u32;
-        si.nPos = scroll_top as i32;
-        self.hwnd().SetScrollInfo(co::SBB::VERT, &si, true);
-        Ok(())
-    }
-
-    fn on_v_scroll(&self, p: w::msg::wm::VScroll) -> w::AnyResult<()> {
-        let page = self.page_rows() as isize;
-        let (cur, count) = {
+    /// スクロールバーの (バー左端x, トラック上端y, トラック高, thumb上端y, thumb高) を返す。
+    /// スクロール不要（count <= page）なら None。
+    fn scrollbar_geom(&self, cw: i32, ch: i32) -> Option<(i32, i32, i32, i32, i32)> {
+        let (count, scroll_top) = {
             let s = self.inner.state.borrow();
-            (s.scroll_top as isize, s.count())
+            (s.count(), s.scroll_top)
         };
-        let max = (count.saturating_sub(self.page_rows())) as isize;
-        let new = match p.request {
-            co::SB_REQ::LINEUP => cur - 1,
-            co::SB_REQ::LINEDOWN => cur + 1,
-            co::SB_REQ::PAGEUP => cur - page,
-            co::SB_REQ::PAGEDOWN => cur + page,
-            co::SB_REQ::TOP => 0,
-            co::SB_REQ::BOTTOM => max,
-            co::SB_REQ::THUMBPOSITION | co::SB_REQ::THUMBTRACK => {
-                let mut si = w::SCROLLINFO::default();
-                si.fMask = co::SIF::TRACKPOS;
-                self.hwnd().GetScrollInfo(co::SBB::VERT, &mut si)?;
-                si.nTrackPos as isize
-            }
-            _ => return Ok(()),
-        };
-        {
-            let mut s = self.inner.state.borrow_mut();
-            let pr = self.page_rows();
-            s.set_scroll_top(new, pr);
+        let page = self.page_rows();
+        if count <= page {
+            return None;
         }
-        self.refresh()?;
-        Ok(())
+        let sbw = gui::dpi_x(SCROLLBAR_W);
+        let bar_x = cw - sbw;
+        let track_top = self.header_height();
+        let track_h = ch - track_top;
+        if track_h <= 0 {
+            return None;
+        }
+        let min_thumb = gui::dpi_y(16);
+        let thumb_h = ((track_h * page as i32) / count as i32).max(min_thumb).min(track_h);
+        let max_top = count - page;
+        let pos = scroll_top.min(max_top);
+        let thumb_top = track_top + ((track_h - thumb_h) * pos as i32) / max_top as i32;
+        Some((bar_x, track_top, track_h, thumb_top, thumb_h))
     }
 
     fn on_mouse_wheel(&self, distance: i16) -> w::AnyResult<()> {
@@ -347,6 +325,24 @@ impl FileListView {
     }
 
     fn on_l_button_down(&self, pt: w::POINT, keys: co::MK) -> w::AnyResult<()> {
+        let rc = self.hwnd().GetClientRect()?;
+        let (cw, ch) = (rc.right - rc.left, rc.bottom - rc.top);
+        if let Some((bar_x, _track_top, _track_h, thumb_top, thumb_h)) = self.scrollbar_geom(cw, ch) {
+            if pt.x >= bar_x {
+                if pt.y >= thumb_top && pt.y < thumb_top + thumb_h {
+                    self.inner.sb_drag.set(Some(pt.y - thumb_top));
+                } else {
+                    let pr = self.page_rows();
+                    let mut s = self.inner.state.borrow_mut();
+                    let cur = s.scroll_top as isize;
+                    let delta = if pt.y < thumb_top { -(pr as isize) } else { pr as isize };
+                    s.set_scroll_top(cur + delta, pr);
+                    drop(s);
+                    self.refresh()?;
+                }
+                return Ok(());
+            }
+        }
         let hh = self.header_height();
         if pt.y < hh {
             if let Some(col) = self.hit_column_border(pt.x) {
@@ -394,6 +390,10 @@ impl FileListView {
     }
 
     fn on_l_button_up(&self, _pt: w::POINT) -> w::AnyResult<()> {
+        if self.inner.sb_drag.get().is_some() {
+            self.inner.sb_drag.set(None);
+            return Ok(());
+        }
         match self.inner.mouse_event.get() {
             MouseEvent::HeaderClick => {
                 if let Some(col) = self.inner.header_click_col.get() {
@@ -424,6 +424,22 @@ impl FileListView {
     }
 
     fn on_mouse_move(&self, pt: w::POINT) -> w::AnyResult<()> {
+        if let Some(grab) = self.inner.sb_drag.get() {
+            let rc = self.hwnd().GetClientRect()?;
+            let (cw, ch) = (rc.right - rc.left, rc.bottom - rc.top);
+            if let Some((_bx, track_top, track_h, _tt, thumb_h)) = self.scrollbar_geom(cw, ch) {
+                let new_thumb_top = pt.y - grab;
+                let denom = (track_h - thumb_h).max(1);
+                let pr = self.page_rows();
+                let mut s = self.inner.state.borrow_mut();
+                let max_top = s.count().saturating_sub(pr) as isize;
+                let pos = ((new_thumb_top - track_top) as i64 * max_top as i64 / denom as i64) as isize;
+                s.set_scroll_top(pos, pr);
+                drop(s);
+                self.refresh()?;
+            }
+            return Ok(());
+        }
         if self.inner.mouse_event.get() == MouseEvent::HeaderDrag {
             if let Some(d) = self.inner.drag.get() {
                 let new_w = (d.start_width + (pt.x - d.start_x)).max(8);
@@ -587,6 +603,32 @@ impl FileListView {
                 let _pen_sel = dc.SelectObject(&*pen)?;
                 dc.MoveToEx(0, y_line, None)?;
                 dc.LineTo(total_w, y_line)?;
+            }
+        }
+
+        // 5. 自前スクロールバー（生きている state borrow からインラインに算出）。
+        let count = s.count();
+        if count > page {
+            let sbw = gui::dpi_x(SCROLLBAR_W);
+            let bar_x = cw - sbw;
+            let track_top = header_h;
+            let track_h = ch - track_top;
+            if track_h > 0 {
+                let min_thumb = gui::dpi_y(16);
+                let thumb_h = ((track_h * page as i32) / count as i32).max(min_thumb).min(track_h);
+                let max_top = count - page;
+                let pos = s.scroll_top.min(max_top);
+                let thumb_top = track_top + ((track_h - thumb_h) * pos as i32) / max_top as i32;
+                let track_brush = w::HBRUSH::CreateSolidBrush(rgb(colors.background))?;
+                dc.FillRect(
+                    w::RECT { left: bar_x, top: track_top, right: cw, bottom: ch },
+                    &track_brush,
+                )?;
+                let thumb_brush = w::HBRUSH::CreateSolidBrush(w::COLORREF::from_rgb(0x55, 0x55, 0x55))?;
+                dc.FillRect(
+                    w::RECT { left: bar_x + 1, top: thumb_top, right: cw - 1, bottom: thumb_top + thumb_h },
+                    &thumb_brush,
+                )?;
             }
         }
         Ok(())
