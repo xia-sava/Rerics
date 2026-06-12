@@ -350,6 +350,10 @@ impl MainWindow {
                 self.make_directory(is_left)?;
                 return Ok(());
             }
+            Command::CreateFile => {
+                self.create_file(is_left)?;
+                return Ok(());
+            }
             Command::Copy => {
                 self.copy_or_move(is_left, false)?;
                 return Ok(());
@@ -622,6 +626,37 @@ impl MainWindow {
         Ok(())
     }
 
+    /// 入力ダイアログで新規の空ファイルを作る。既存ファイルは上書きしない。
+    fn create_file(&self, is_left: bool) -> w::AnyResult<()> {
+        let dlg = dialog::InputDialog::new("新規ファイル作成", "新しいファイル名:", "");
+        let name = dlg.show(&self.wnd);
+        let Some(name) = name else {
+            return Ok(());
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(());
+        }
+        let path = self.pane(is_left).borrow().path().join(name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("ファイル作成に失敗: {}", e);
+                return Ok(());
+            }
+        }
+        self.reload_side(is_left)?;
+        let view = self.view(is_left);
+        let pr = view.page_rows();
+        view.state().borrow_mut().set_cursor_position(name, pr);
+        view.refresh()?;
+        Ok(())
+    }
+
     /// アクティブペインの選択（無ければカーソル）を反対側ペインへコピー/移動する。
     fn copy_or_move(&self, is_left: bool, move_it: bool) -> w::AnyResult<()> {
         let names: Vec<String> = {
@@ -786,6 +821,15 @@ impl MainWindow {
         if is_dir {
             if self.pane(is_left).borrow_mut().enter(&name) {
                 self.reload_side(is_left)?;
+            }
+        } else {
+            let path = self.pane(is_left).borrow().path().join(&name);
+            if let Err(e) =
+                self.wnd
+                    .hwnd()
+                    .ShellExecute("open", &path.to_string_lossy(), None, None, co::SW::SHOWNORMAL)
+            {
+                eprintln!("ファイルを開けません: {}: {}", path.display(), e);
             }
         }
         Ok(())

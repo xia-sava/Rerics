@@ -74,6 +74,7 @@ pub enum Command {
     CurrentToOpposite,
     Rename,
     Delete,
+    CreateFile,
 }
 
 /// キー＋修飾の組（将来 Ctrl/Shift/Alt も区別する）。
@@ -145,6 +146,7 @@ impl Default for KeyMap {
         m.bind(KeyChord::new(vk::O, false, true, false), CurrentToOpposite);
         m.bind(KeyChord::key(vk::R), Rename);
         m.bind(KeyChord::key(vk::D), Delete);
+        m.bind(KeyChord::new(vk::F7, false, true, false), CreateFile);
         m
     }
 }
@@ -261,6 +263,15 @@ mod tests {
         let m = KeyMap::default();
         assert_eq!(m.resolve(&KeyChord::key(vk::R)), Some(Command::Rename));
         assert_eq!(m.resolve(&KeyChord::key(vk::D)), Some(Command::Delete));
+    }
+
+    #[test]
+    fn default_binds_create_file() {
+        let m = KeyMap::default();
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::F7, false, true, false)),
+            Some(Command::CreateFile)
+        );
     }
 
     #[test]
