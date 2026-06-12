@@ -199,6 +199,12 @@ impl MainWindow {
         });
 
         let this = self.clone();
+        self.wnd.on().wm_mouse_wheel(move |p| {
+            this.scroll_under_cursor(p.wheel_distance, p.coords)?;
+            Ok(())
+        });
+
+        let this = self.clone();
         self.wnd.on().wm_size(move |_| this.layout());
 
         let this = self.clone();
@@ -247,6 +253,25 @@ impl MainWindow {
             this.active_right.set(!is_left);
             this.view(!is_left).set_cursor_visible(false);
         });
+
+        // ホイールはカーソル下のペインをスクロールする。
+        let this = self.clone();
+        self.view(is_left).on_wheel(move |dist, coords| {
+            let _ = this.scroll_under_cursor(dist, coords);
+        });
+    }
+
+    /// 画面座標 `coords` の下にあるペインをホイール回転分だけスクロールする。
+    fn scroll_under_cursor(&self, distance: i16, coords: w::POINT) -> w::AnyResult<()> {
+        if let Some(hw) = w::HWND::WindowFromPoint(coords) {
+            let p = hw.ptr();
+            if p == self.left.hwnd().ptr() {
+                self.left.scroll_by_wheel(distance)?;
+            } else if p == self.right.hwnd().ptr() {
+                self.right.scroll_by_wheel(distance)?;
+            }
+        }
+        Ok(())
     }
 
     fn exec(&self, is_left: bool, cmd: Command) -> w::AnyResult<()> {

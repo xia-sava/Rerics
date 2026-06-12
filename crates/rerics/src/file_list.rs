@@ -20,6 +20,7 @@ enum MouseEvent {
 
 type ActivateCb = Box<dyn Fn(usize)>;
 type KeyCb = Box<dyn Fn(u16, bool, bool, bool)>;
+type WheelCb = Box<dyn Fn(i16, w::POINT)>;
 
 /// 自前スクロールバーの幅（論理 px）。
 const SCROLLBAR_W: i32 = 7;
@@ -47,6 +48,7 @@ struct Inner {
     on_activate: RefCell<Option<ActivateCb>>,
     on_key: RefCell<Option<KeyCb>>,
     on_got_focus: RefCell<Option<Box<dyn Fn()>>>,
+    on_wheel: RefCell<Option<WheelCb>>,
 }
 
 /// ファイル一覧コントロール。
@@ -84,6 +86,7 @@ impl FileListView {
             on_activate: RefCell::new(None),
             on_key: RefCell::new(None),
             on_got_focus: RefCell::new(None),
+            on_wheel: RefCell::new(None),
         });
         let me = Self { wnd, inner };
         me.setup_events();
@@ -109,6 +112,12 @@ impl FileListView {
     /// フォーカス取得時のコールバック（反対ペインのカーソル消去の配線用）。
     pub fn on_got_focus(&self, cb: impl Fn() + 'static) {
         *self.inner.on_got_focus.borrow_mut() = Some(Box::new(cb));
+    }
+
+    /// ホイール回転時のコールバック（回転量と画面座標を渡す）。設定すると自前スクロールの
+    /// 代わりにこれが呼ばれ、呼び出し側がカーソル下のペインを判定してスクロールする。
+    pub fn on_wheel(&self, cb: impl Fn(i16, w::POINT) + 'static) {
+        *self.inner.on_wheel.borrow_mut() = Some(Box::new(cb));
     }
 
     /// カーソル下線の表示/非表示を切り替える。
@@ -204,7 +213,11 @@ impl FileListView {
 
         let this = self.clone();
         self.wnd.on().wm_mouse_wheel(move |p| {
-            this.on_mouse_wheel(p.wheel_distance)?;
+            if let Some(cb) = this.inner.on_wheel.borrow().as_ref() {
+                cb(p.wheel_distance, p.coords);
+            } else {
+                this.scroll_by_wheel(p.wheel_distance)?;
+            }
             Ok(())
         });
 
@@ -269,7 +282,8 @@ impl FileListView {
         Some((bar_x, track_top, track_h, thumb_top, thumb_h))
     }
 
-    fn on_mouse_wheel(&self, distance: i16) -> w::AnyResult<()> {
+    /// ホイール回転分だけスクロールする（正＝上方向）。
+    pub fn scroll_by_wheel(&self, distance: i16) -> w::AnyResult<()> {
         let lines = (distance as i32 / 120) * 3;
         {
             let mut s = self.inner.state.borrow_mut();
