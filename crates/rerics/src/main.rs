@@ -1,16 +1,22 @@
 mod file_list;
+mod window_state;
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use file_list::FileListView;
-use rerics_core::{Command, KeyChord, KeyMap, Pane};
+use rerics_core::{Command, KeyChord, KeyMap, Pane, WindowState};
 use winsafe::{self as w, co, gui, prelude::*};
 
 const MARGIN: i32 = 8;
 const GAP: i32 = 8;
 const BAR_H: i32 = 22;
 const BAR_GAP: i32 = 4;
+
+/// 表示完了後に最大化を実行させるための自前メッセージ（`WM_APP`）。
+fn wm_restore_maximize() -> co::WM {
+    unsafe { co::WM::from_raw(0x8000) }
+}
 
 fn main() {
     if let Err(e) = MainWindow::new().run() {
@@ -28,6 +34,7 @@ struct MainWindow {
     left_pane: Rc<RefCell<Pane>>,
     right_pane: Rc<RefCell<Pane>>,
     keymap: Rc<KeyMap>,
+    initial_window: Option<WindowState>,
 }
 
 impl MainWindow {
@@ -70,6 +77,8 @@ impl MainWindow {
 
         let keymap = KeyMap::default();
 
+        let initial_window = rerics_core::State::load().window;
+
         Self {
             wnd,
             left,
@@ -79,6 +88,7 @@ impl MainWindow {
             left_pane,
             right_pane,
             keymap: Rc::new(keymap),
+            initial_window,
         }
     }
 
@@ -95,6 +105,18 @@ impl MainWindow {
 
         let this = self.clone();
         self.wnd.on().wm_create(move |_| {
+            if let Some(ws) = &this.initial_window {
+                let applied = window_state::apply(&this.wnd.hwnd(), ws);
+                if applied && ws.maximized {
+                    unsafe {
+                        let _ = this.wnd.hwnd().PostMessage(w::msg::WndMsg {
+                            msg_id: wm_restore_maximize(),
+                            wparam: 0,
+                            lparam: 0,
+                        });
+                    }
+                }
+            }
             this.reload_side(true)?;
             this.reload_side(false)?;
             this.layout()?;
@@ -103,7 +125,24 @@ impl MainWindow {
         });
 
         let this = self.clone();
+        self.wnd.on().wm(wm_restore_maximize(), move |_| {
+            window_state::maximize(&this.wnd.hwnd());
+            Ok(0)
+        });
+
+        let this = self.clone();
         self.wnd.on().wm_size(move |_| this.layout());
+
+        let this = self.clone();
+        self.wnd.on().wm_destroy(move || {
+            if let Some(ws) = window_state::capture(&this.wnd.hwnd()) {
+                let state = rerics_core::State { window: Some(ws) };
+                if let Err(e) = state.save() {
+                    eprintln!("状態の保存に失敗: {}", e);
+                }
+            }
+            Ok(())
+        });
     }
 
     fn wire_pane(&self, is_left: bool) {
