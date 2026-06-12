@@ -75,6 +75,8 @@ pub enum Command {
     Rename,
     Delete,
     CreateFile,
+    NextDrive,
+    PreviousDrive,
 }
 
 /// キー＋修飾の組（将来 Ctrl/Shift/Alt も区別する）。
@@ -147,6 +149,8 @@ impl Default for KeyMap {
         m.bind(KeyChord::key(vk::R), Rename);
         m.bind(KeyChord::key(vk::D), Delete);
         m.bind(KeyChord::new(vk::F7, false, true, false), CreateFile);
+        m.bind(KeyChord::new(vk::RIGHT, false, true, false), NextDrive);
+        m.bind(KeyChord::new(vk::LEFT, false, true, false), PreviousDrive);
         m
     }
 }
@@ -271,6 +275,19 @@ mod tests {
         assert_eq!(
             m.resolve(&KeyChord::new(vk::F7, false, true, false)),
             Some(Command::CreateFile)
+        );
+    }
+
+    #[test]
+    fn default_binds_drive_nav() {
+        let m = KeyMap::default();
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::RIGHT, false, true, false)),
+            Some(Command::NextDrive)
+        );
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::LEFT, false, true, false)),
+            Some(Command::PreviousDrive)
         );
     }
 

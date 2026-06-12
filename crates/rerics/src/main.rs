@@ -366,6 +366,14 @@ impl MainWindow {
                 self.swap_paths()?;
                 return Ok(());
             }
+            Command::NextDrive => {
+                self.change_drive(is_left, 1)?;
+                return Ok(());
+            }
+            Command::PreviousDrive => {
+                self.change_drive(is_left, -1)?;
+                return Ok(());
+            }
             Command::OppositeToCurrent => {
                 let p = self.pane(is_left).borrow().path().to_path_buf();
                 *self.pane(!is_left).borrow_mut() = Pane::open(&p);
@@ -388,6 +396,30 @@ impl MainWindow {
             }
         }
         view.refresh()?;
+        Ok(())
+    }
+
+    /// アクティブペインを次/前のドライブのルートへ移す（`delta` は +1/-1、巡回）。
+    fn change_drive(&self, is_left: bool, delta: isize) -> w::AnyResult<()> {
+        let roots = w::GetLogicalDriveStrings().unwrap_or_default();
+        if roots.is_empty() {
+            return Ok(());
+        }
+        let cur = self
+            .pane(is_left)
+            .borrow()
+            .path()
+            .ancestors()
+            .last()
+            .map(|p| p.to_string_lossy().to_uppercase());
+        let idx = roots
+            .iter()
+            .position(|r| Some(r.to_uppercase()) == cur)
+            .unwrap_or(0) as isize;
+        let n = roots.len() as isize;
+        let next = &roots[((idx + delta).rem_euclid(n)) as usize];
+        *self.pane(is_left).borrow_mut() = Pane::open(next);
+        self.reload_side(is_left)?;
         Ok(())
     }
 
