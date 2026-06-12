@@ -21,6 +21,11 @@ pub mod vk {
     pub const ESCAPE: u16 = 0x1B;
     pub const F5: u16 = 0x74;
     pub const A: u16 = 0x41;
+    pub const D0: u16 = 0x30;
+    pub const D1: u16 = 0x31;
+    pub const D2: u16 = 0x32;
+    pub const D3: u16 = 0x33;
+    pub const D4: u16 = 0x34;
 }
 
 /// ファイラのコマンド（段階的に拡張していく）。
@@ -43,6 +48,11 @@ pub enum Command {
     SelectAllFile,
     ReverseAllFile,
     Reload,
+    SortByName,
+    SortByExtension,
+    SortBySize,
+    SortByDate,
+    SortReverseToggle,
 }
 
 /// キー＋修飾の組（将来 Ctrl/Shift/Alt も区別する）。
@@ -98,6 +108,11 @@ impl Default for KeyMap {
         m.bind(KeyChord::key(vk::F5), Reload);
         m.bind(KeyChord::key(vk::ESCAPE), ClearAll);
         m.bind(KeyChord::new(vk::A, true, false, false), SelectAll);
+        m.bind(KeyChord::new(vk::D1, true, false, false), SortByName);
+        m.bind(KeyChord::new(vk::D2, true, false, false), SortByExtension);
+        m.bind(KeyChord::new(vk::D3, true, false, false), SortBySize);
+        m.bind(KeyChord::new(vk::D4, true, false, false), SortByDate);
+        m.bind(KeyChord::new(vk::D0, true, false, false), SortReverseToggle);
         m
     }
 }
@@ -146,6 +161,20 @@ mod tests {
         assert_eq!(m.resolve(&KeyChord::key(vk::A)), None);
         assert_eq!(m.resolve(&KeyChord::key(vk::F5)), Some(Command::Reload));
         assert_eq!(m.resolve(&KeyChord::key(vk::ESCAPE)), Some(Command::ClearAll));
+    }
+
+    #[test]
+    fn default_binds_sort() {
+        let m = KeyMap::default();
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::D2, true, false, false)),
+            Some(Command::SortByExtension)
+        );
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::D0, true, false, false)),
+            Some(Command::SortReverseToggle)
+        );
+        assert_eq!(m.resolve(&KeyChord::key(vk::D2)), None);
     }
 
     #[test]

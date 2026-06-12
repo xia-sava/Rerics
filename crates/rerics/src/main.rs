@@ -5,7 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use file_list::FileListView;
-use rerics_core::{Command, KeyChord, KeyMap, Pane, WindowState};
+use rerics_core::{Command, KeyChord, KeyMap, Pane, SortType, WindowState};
 use winsafe::{self as w, co, gui, prelude::*};
 
 const MARGIN: i32 = 8;
@@ -259,9 +259,32 @@ impl MainWindow {
                 self.reload_side(false)?;
                 return Ok(());
             }
+            Command::SortByName => self.sort_active(is_left, SortType::FileName, false),
+            Command::SortByExtension => self.sort_active(is_left, SortType::Extension, false),
+            Command::SortBySize => self.sort_active(is_left, SortType::Length, false),
+            Command::SortByDate => self.sort_active(is_left, SortType::LastWriteTime, false),
+            Command::SortReverseToggle => {
+                let t = state.borrow().sort_type;
+                self.sort_active(is_left, t, true);
+            }
         }
         view.refresh()?;
         Ok(())
+    }
+
+    /// 指定ペインを並べ替える。カーソル下のファイルを保持する。`toggle` 時は
+    /// 現在の昇降を反転、そうでなければ昇順にする。
+    fn sort_active(&self, is_left: bool, sort: SortType, toggle: bool) {
+        let view = self.view(is_left);
+        let pr = view.page_rows();
+        let state = view.state();
+        let mut s = state.borrow_mut();
+        let name = s.items.get(s.cursor).map(|i| i.name.clone());
+        let reverse = if toggle { !s.sort_reverse } else { false };
+        s.sort(sort, reverse);
+        if let Some(n) = name {
+            s.set_cursor_position(&n, pr);
+        }
     }
 
     fn view(&self, is_left: bool) -> &FileListView {
