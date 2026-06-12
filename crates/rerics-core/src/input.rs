@@ -20,7 +20,10 @@ pub mod vk {
     pub const DOWN: u16 = 0x28;
     pub const ESCAPE: u16 = 0x1B;
     pub const F5: u16 = 0x74;
+    pub const TAB: u16 = 0x09;
     pub const A: u16 = 0x41;
+    pub const T: u16 = 0x54;
+    pub const W: u16 = 0x57;
     pub const D0: u16 = 0x30;
     pub const D1: u16 = 0x31;
     pub const D2: u16 = 0x32;
@@ -53,6 +56,10 @@ pub enum Command {
     SortBySize,
     SortByDate,
     SortReverseToggle,
+    PageNext,
+    PagePrevious,
+    NewTab,
+    CloseTab,
 }
 
 /// キー＋修飾の組（将来 Ctrl/Shift/Alt も区別する）。
@@ -113,6 +120,10 @@ impl Default for KeyMap {
         m.bind(KeyChord::new(vk::D3, true, false, false), SortBySize);
         m.bind(KeyChord::new(vk::D4, true, false, false), SortByDate);
         m.bind(KeyChord::new(vk::D0, true, false, false), SortReverseToggle);
+        m.bind(KeyChord::new(vk::TAB, true, false, false), PageNext);
+        m.bind(KeyChord::new(vk::TAB, true, true, false), PagePrevious);
+        m.bind(KeyChord::new(vk::T, true, false, false), NewTab);
+        m.bind(KeyChord::new(vk::W, true, false, false), CloseTab);
         m
     }
 }
@@ -175,6 +186,27 @@ mod tests {
             Some(Command::SortReverseToggle)
         );
         assert_eq!(m.resolve(&KeyChord::key(vk::D2)), None);
+    }
+
+    #[test]
+    fn default_binds_tabs() {
+        let m = KeyMap::default();
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::TAB, true, false, false)),
+            Some(Command::PageNext)
+        );
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::TAB, true, true, false)),
+            Some(Command::PagePrevious)
+        );
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::T, true, false, false)),
+            Some(Command::NewTab)
+        );
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::W, true, false, false)),
+            Some(Command::CloseTab)
+        );
     }
 
     #[test]

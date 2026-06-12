@@ -379,6 +379,7 @@ impl Colors {
 }
 
 /// ファイル一覧コントロールの状態モデル（描画と完全分離）。
+#[derive(Clone)]
 pub struct FileListState {
     pub items: Vec<FileItem>,
     pub cursor: usize,

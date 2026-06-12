@@ -5,7 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use file_list::FileListView;
-use rerics_core::{Command, KeyChord, KeyMap, Pane, SortType, WindowState};
+use rerics_core::{Command, FileListState, KeyChord, KeyMap, Pane, SortType, WindowState};
 use winsafe::{self as w, co, gui, prelude::*};
 
 const MARGIN: i32 = 8;
@@ -36,6 +36,19 @@ struct MainWindow {
     keymap: Rc<KeyMap>,
     initial_window: Option<WindowState>,
     active_right: Rc<Cell<bool>>,
+    tabs: Rc<RefCell<Vec<TabSnapshot>>>,
+    active: Rc<Cell<usize>>,
+}
+
+/// 1タブの保存状態（非アクティブ時の退避先）。アクティブタブの実体はライブ側
+/// （left_pane/right_pane/ビューの state/active_right）にあり、ここは切替時に出し入れする。
+#[derive(Clone)]
+struct TabSnapshot {
+    left_path: String,
+    right_path: String,
+    left_state: FileListState,
+    right_state: FileListState,
+    active_right: bool,
 }
 
 impl MainWindow {
@@ -76,12 +89,40 @@ impl MainWindow {
 
         let state = rerics_core::State::load();
         let initial_window = state.window.clone();
-        let (left_path, right_path, active_right) = match state.active() {
-            Some(t) => (t.left.clone(), t.right.clone(), t.active_right),
-            None => (".".to_owned(), home.clone(), false),
-        };
-        let left_pane = Rc::new(RefCell::new(open_pane(&left_path, ".")));
-        let right_pane = Rc::new(RefCell::new(open_pane(&right_path, &home)));
+
+        // 保存タブから退避用スナップショット集合を組む。存在しないパスはフォールバックへ正規化。
+        let mut tabs: Vec<TabSnapshot> = state
+            .tabs
+            .iter()
+            .map(|t| {
+                let left_path = normalize_path(&t.left, ".");
+                let right_path = normalize_path(&t.right, &home);
+                TabSnapshot {
+                    left_state: Self::build_state_for(&left_path),
+                    right_state: Self::build_state_for(&right_path),
+                    left_path,
+                    right_path,
+                    active_right: t.active_right,
+                }
+            })
+            .collect();
+        if tabs.is_empty() {
+            let left_path = ".".to_owned();
+            let right_path = home.clone();
+            tabs.push(TabSnapshot {
+                left_state: Self::build_state_for(&left_path),
+                right_state: Self::build_state_for(&right_path),
+                left_path,
+                right_path,
+                active_right: false,
+            });
+        }
+        let active = state.active_tab.min(tabs.len() - 1);
+
+        let cur = &tabs[active];
+        let left_pane = Rc::new(RefCell::new(Pane::open(&cur.left_path)));
+        let right_pane = Rc::new(RefCell::new(Pane::open(&cur.right_path)));
+        let active_right = cur.active_right;
 
         let keymap = KeyMap::default();
 
@@ -96,6 +137,8 @@ impl MainWindow {
             keymap: Rc::new(keymap),
             initial_window,
             active_right: Rc::new(Cell::new(active_right)),
+            tabs: Rc::new(RefCell::new(tabs)),
+            active: Rc::new(Cell::new(active)),
         }
     }
 
@@ -124,10 +167,10 @@ impl MainWindow {
                     }
                 }
             }
-            this.reload_side(true)?;
-            this.reload_side(false)?;
             this.layout()?;
-            this.view(!this.active_right.get()).hwnd().SetFocus();
+            let snap = this.tabs.borrow()[this.active.get()].clone();
+            this.load_snapshot(&snap)?;
+            this.update_title()?;
             Ok(0)
         });
 
@@ -142,16 +185,22 @@ impl MainWindow {
 
         let this = self.clone();
         self.wnd.on().wm_destroy(move || {
+            this.save_active();
             let window = window_state::capture(&this.wnd.hwnd());
-            let tab = rerics_core::TabState {
-                left: this.left_pane.borrow().path().display().to_string(),
-                right: this.right_pane.borrow().path().display().to_string(),
-                active_right: this.active_right.get(),
-            };
+            let tabs: Vec<rerics_core::TabState> = this
+                .tabs
+                .borrow()
+                .iter()
+                .map(|t| rerics_core::TabState {
+                    left: t.left_path.clone(),
+                    right: t.right_path.clone(),
+                    active_right: t.active_right,
+                })
+                .collect();
             let state = rerics_core::State {
                 window,
-                tabs: vec![tab],
-                active_tab: 0,
+                tabs,
+                active_tab: this.active.get(),
             };
             if let Err(e) = state.save() {
                 eprintln!("状態の保存に失敗: {}", e);
@@ -267,6 +316,22 @@ impl MainWindow {
                 let t = state.borrow().sort_type;
                 self.sort_active(is_left, t, true);
             }
+            Command::PageNext => {
+                self.page_next()?;
+                return Ok(());
+            }
+            Command::PagePrevious => {
+                self.page_previous()?;
+                return Ok(());
+            }
+            Command::NewTab => {
+                self.new_tab()?;
+                return Ok(());
+            }
+            Command::CloseTab => {
+                self.close_tab()?;
+                return Ok(());
+            }
         }
         view.refresh()?;
         Ok(())
@@ -285,6 +350,133 @@ impl MainWindow {
         if let Some(n) = name {
             s.set_cursor_position(&n, pr);
         }
+    }
+
+    /// 指定パスの一覧を読み、既定ソートでカーソル先頭の `FileListState` を組む。
+    fn build_state_for(path: &str) -> FileListState {
+        let items = Pane::open(path).read();
+        let mut s = FileListState::new();
+        let sort = s.sort_type;
+        let reverse = s.sort_reverse;
+        s.items = items;
+        s.sort(sort, reverse);
+        s.cursor = 0;
+        s.scroll_top = 0;
+        s
+    }
+
+    /// 現在のライブ状態を退避用スナップショットに固める。
+    fn snapshot_live(&self) -> TabSnapshot {
+        TabSnapshot {
+            left_path: self.left_pane.borrow().path().display().to_string(),
+            right_path: self.right_pane.borrow().path().display().to_string(),
+            left_state: self.left.state().borrow().clone(),
+            right_state: self.right.state().borrow().clone(),
+            active_right: self.active_right.get(),
+        }
+    }
+
+    /// スナップショットをライブ側へ反映し、再描画とフォーカス設定を行う。
+    fn load_snapshot(&self, snap: &TabSnapshot) -> w::AnyResult<()> {
+        *self.left_pane.borrow_mut() = Pane::open(&snap.left_path);
+        *self.right_pane.borrow_mut() = Pane::open(&snap.right_path);
+        *self.left.state().borrow_mut() = snap.left_state.clone();
+        *self.right.state().borrow_mut() = snap.right_state.clone();
+        self.active_right.set(snap.active_right);
+        self.left_bar.hwnd().SetWindowText(&snap.left_path)?;
+        self.right_bar.hwnd().SetWindowText(&snap.right_path)?;
+        self.left.refresh()?;
+        self.right.refresh()?;
+        self.view(!self.active_right.get()).hwnd().SetFocus();
+        Ok(())
+    }
+
+    /// アクティブタブのスナップショットをライブから更新する。
+    fn save_active(&self) {
+        let snap = self.snapshot_live();
+        let i = self.active.get();
+        self.tabs.borrow_mut()[i] = snap;
+    }
+
+    /// ウィンドウタイトルに `[現在/総数]` を反映する。
+    fn update_title(&self) -> w::AnyResult<()> {
+        let total = self.tabs.borrow().len();
+        let n = self.active.get() + 1;
+        self.wnd
+            .hwnd()
+            .SetWindowText(&format!("Rerics [{}/{}]", n, total))?;
+        Ok(())
+    }
+
+    /// 指定 index のタブへ切替える（範囲外・現在と同じなら何もしない）。
+    fn switch_tab(&self, index: usize) -> w::AnyResult<()> {
+        if index >= self.tabs.borrow().len() || index == self.active.get() {
+            return Ok(());
+        }
+        self.save_active();
+        self.active.set(index);
+        let snap = self.tabs.borrow()[index].clone();
+        self.load_snapshot(&snap)?;
+        self.update_title()?;
+        Ok(())
+    }
+
+    /// 次のタブへ循環移動する。
+    fn page_next(&self) -> w::AnyResult<()> {
+        let total = self.tabs.borrow().len();
+        if total <= 1 {
+            return Ok(());
+        }
+        let cur = self.active.get();
+        self.switch_tab((cur + 1) % total)
+    }
+
+    /// 前のタブへ循環移動する。
+    fn page_previous(&self) -> w::AnyResult<()> {
+        let total = self.tabs.borrow().len();
+        if total <= 1 {
+            return Ok(());
+        }
+        let cur = self.active.get();
+        self.switch_tab((cur + total - 1) % total)
+    }
+
+    /// 現在のパスを複製した新タブをアクティブ直後に挿入して切替える。
+    fn new_tab(&self) -> w::AnyResult<()> {
+        self.save_active();
+        let left_path = self.left_pane.borrow().path().display().to_string();
+        let right_path = self.right_pane.borrow().path().display().to_string();
+        let snap = TabSnapshot {
+            left_state: Self::build_state_for(&left_path),
+            right_state: Self::build_state_for(&right_path),
+            left_path,
+            right_path,
+            active_right: self.active_right.get(),
+        };
+        let index = self.active.get() + 1;
+        self.tabs.borrow_mut().insert(index, snap);
+        self.active.set(index);
+        let snap = self.tabs.borrow()[index].clone();
+        self.load_snapshot(&snap)?;
+        self.update_title()?;
+        Ok(())
+    }
+
+    /// 現在のタブを閉じる（最後の1枚は閉じない）。
+    fn close_tab(&self) -> w::AnyResult<()> {
+        let total = self.tabs.borrow().len();
+        if total <= 1 {
+            return Ok(());
+        }
+        let cur = self.active.get();
+        self.tabs.borrow_mut().remove(cur);
+        let len = self.tabs.borrow().len();
+        let active = cur.min(len - 1);
+        self.active.set(active);
+        let snap = self.tabs.borrow()[active].clone();
+        self.load_snapshot(&snap)?;
+        self.update_title()?;
+        Ok(())
     }
 
     fn view(&self, is_left: bool) -> &FileListView {
@@ -392,11 +584,11 @@ fn place(hwnd: &w::HWND, x: i32, y: i32, cx: i32, cy: i32) -> w::AnyResult<()> {
     Ok(())
 }
 
-/// パスを開く。存在しない（ディレクトリでない）場合は `fallback` を使う。
-fn open_pane(path: &str, fallback: &str) -> Pane {
+/// パスを正規化する。存在しない（ディレクトリでない）場合は `fallback` を返す。
+fn normalize_path(path: &str, fallback: &str) -> String {
     if !path.is_empty() && std::path::Path::new(path).is_dir() {
-        Pane::open(path)
+        path.to_owned()
     } else {
-        Pane::open(fallback)
+        fallback.to_owned()
     }
 }
