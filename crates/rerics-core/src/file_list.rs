@@ -339,6 +339,10 @@ pub struct Colors {
     pub selected_file: Rgb,
     pub selected_file_bg: Rgb,
     pub cursor: Rgb,
+    pub log_background: Rgb,
+    pub log_info: Rgb,
+    pub log_warning: Rgb,
+    pub log_error: Rgb,
 }
 
 impl Default for Colors {
@@ -354,6 +358,10 @@ impl Default for Colors {
             selected_file: Rgb::new(255, 255, 255),
             selected_file_bg: Rgb::new(0x60, 0xa0, 0x80),
             cursor: Rgb::new(0x00, 0xff, 0x80),
+            log_background: Rgb::new(0x10, 0x10, 0x10),
+            log_info: Rgb::new(0xc8, 0xc8, 0xc8),
+            log_warning: Rgb::new(0xff, 0xd0, 0x40),
+            log_error: Rgb::new(0xff, 0x70, 0x70),
         }
     }
 }

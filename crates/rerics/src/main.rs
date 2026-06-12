@@ -1,5 +1,6 @@
 mod dialog;
 mod file_list;
+mod log_view;
 mod tab_bar;
 mod window_state;
 
@@ -7,6 +8,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use file_list::FileListView;
+use log_view::LogView;
 use tab_bar::TabBar;
 use rerics_core::{Command, FileListState, KeyChord, KeyMap, Pane, SortType, WindowState};
 use winsafe::{self as w, co, gui, prelude::*};
@@ -16,6 +18,8 @@ const GAP: i32 = 3;
 const BAR_H: i32 = 20;
 const BAR_GAP: i32 = 2;
 const TAB_H: i32 = 24;
+const LOG_H: i32 = 96;
+const LOG_GAP: i32 = 2;
 
 /// 表示完了後に最大化を実行させるための自前メッセージ（`WM_APP`）。
 fn wm_restore_maximize() -> co::WM {
@@ -36,6 +40,7 @@ struct MainWindow {
     left_bar: gui::Label,
     right_bar: gui::Label,
     tab_bar: TabBar,
+    log: LogView,
     left_pane: Rc<RefCell<Pane>>,
     right_pane: Rc<RefCell<Pane>>,
     keymap: Rc<KeyMap>,
@@ -93,6 +98,7 @@ impl MainWindow {
         let right_bar = make_bar(&wnd);
 
         let tab_bar = TabBar::new(&wnd, gui::dpi(0, 0), gui::dpi(800, TAB_H));
+        let log = LogView::new(&wnd, gui::dpi(MARGIN, MARGIN), gui::dpi(800, LOG_H));
 
         let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "..".to_owned());
 
@@ -142,6 +148,7 @@ impl MainWindow {
             left_bar,
             right_bar,
             tab_bar,
+            log,
             left_pane,
             right_pane,
             keymap: Rc::new(keymap),
@@ -270,6 +277,8 @@ impl MainWindow {
                 self.left.scroll_by_wheel(distance)?;
             } else if p == self.right.hwnd().ptr() {
                 self.right.scroll_by_wheel(distance)?;
+            } else if p == self.log.hwnd().ptr() {
+                self.log.scroll_by_wheel(distance)?;
             }
         }
         Ok(())
@@ -708,9 +717,9 @@ impl MainWindow {
         }
         let dir = self.pane(is_left).borrow().path().join(name);
         match std::fs::create_dir(&dir) {
-            Ok(()) => {}
+            Ok(()) => self.log.info(&format!("ディレクトリを作成しました: {}", name)),
             Err(e) => {
-                eprintln!("ディレクトリ作成に失敗: {}", e);
+                self.log.error(&format!("ディレクトリ作成に失敗: {}: {}", name, e));
                 return Ok(());
             }
         }
@@ -739,9 +748,9 @@ impl MainWindow {
             .create_new(true)
             .open(&path)
         {
-            Ok(_) => {}
+            Ok(_) => self.log.info(&format!("ファイルを作成しました: {}", name)),
             Err(e) => {
-                eprintln!("ファイル作成に失敗: {}", e);
+                self.log.error(&format!("ファイル作成に失敗: {}: {}", name, e));
                 return Ok(());
             }
         }
@@ -779,8 +788,11 @@ impl MainWindow {
         let src_dir = self.pane(is_left).borrow().path().to_path_buf();
         let dst_dir = self.pane(!is_left).borrow().path().to_path_buf();
         if src_dir == dst_dir {
+            self.log.warn("左右が同じディレクトリのため何もしません");
             return Ok(());
         }
+        let verb = if move_it { "移動" } else { "コピー" };
+        let mut ok = 0usize;
         for name in &names {
             let src = src_dir.join(name);
             let dst = dst_dir.join(name);
@@ -798,14 +810,16 @@ impl MainWindow {
             } else {
                 copy_path(&src, &dst)
             };
-            if let Err(e) = result {
-                eprintln!(
-                    "コピー/移動に失敗: {} -> {}: {}",
-                    src.display(),
-                    dst.display(),
-                    e
-                );
+            match result {
+                Ok(()) => ok += 1,
+                Err(e) => self
+                    .log
+                    .error(&format!("{}に失敗: {}: {}", verb, name, e)),
             }
+        }
+        if ok > 0 {
+            self.log
+                .info(&format!("{} 個を{}しました", ok, verb));
         }
         self.reload_side(!is_left)?;
         if move_it {
@@ -837,9 +851,9 @@ impl MainWindow {
         }
         let dir = self.pane(is_left).borrow().path().to_path_buf();
         match std::fs::rename(dir.join(&old), dir.join(new)) {
-            Ok(()) => {}
+            Ok(()) => self.log.info(&format!("名前を変更しました: {} → {}", old, new)),
             Err(e) => {
-                eprintln!("名前の変更に失敗: {}", e);
+                self.log.error(&format!("名前の変更に失敗: {}: {}", old, e));
                 return Ok(());
             }
         }
@@ -885,6 +899,7 @@ impl MainWindow {
             return Ok(());
         }
         let dir = self.pane(is_left).borrow().path().to_path_buf();
+        let mut ok = 0usize;
         for name in &names {
             let target = dir.join(name);
             let result = if target.is_dir() {
@@ -892,9 +907,13 @@ impl MainWindow {
             } else {
                 std::fs::remove_file(&target)
             };
-            if let Err(e) = result {
-                eprintln!("削除に失敗: {}: {}", target.display(), e);
+            match result {
+                Ok(()) => ok += 1,
+                Err(e) => self.log.error(&format!("削除に失敗: {}: {}", name, e)),
             }
+        }
+        if ok > 0 {
+            self.log.info(&format!("{} 個を削除しました", ok));
         }
         self.reload_side(is_left)?;
         Ok(())
@@ -971,7 +990,8 @@ impl MainWindow {
                     .hwnd()
                     .ShellExecute("open", &path.to_string_lossy(), None, None, co::SW::SHOWNORMAL)
             {
-                eprintln!("ファイルを開けません: {}: {}", path.display(), e);
+                self.log
+                    .error(&format!("ファイルを開けません: {}: {}", name, e));
             }
         }
         Ok(())
@@ -1008,21 +1028,27 @@ impl MainWindow {
         let bar_gap = gui::dpi_y(BAR_GAP);
 
         let tab_h = gui::dpi_y(TAB_H);
+        let log_h = gui::dpi_y(LOG_H);
+        let log_gap = gui::dpi_y(LOG_GAP);
         let pane_w = (total_w - m * 2 - gap) / 2;
         let bars_y = tab_h + my;
         let list_y = bars_y + bar_h + bar_gap;
-        let list_h = total_h - list_y - my;
+        let log_y = total_h - my - log_h;
+        let list_h = log_y - log_gap - list_y;
         let left_x = m;
         let right_x = m + pane_w + gap;
+        let log_w = total_w - m * 2;
 
         place(self.tab_bar.hwnd(), 0, 0, total_w, tab_h)?;
         place(self.left_bar.hwnd(), left_x, bars_y, pane_w, bar_h)?;
         place(self.left.hwnd(), left_x, list_y, pane_w, list_h)?;
         place(self.right_bar.hwnd(), right_x, bars_y, pane_w, bar_h)?;
         place(self.right.hwnd(), right_x, list_y, pane_w, list_h)?;
+        place(self.log.hwnd(), left_x, log_y, log_w, log_h)?;
         self.tab_bar.refresh()?;
         self.left.refresh()?;
         self.right.refresh()?;
+        self.log.refresh()?;
         Ok(())
     }
 }

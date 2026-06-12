@@ -5,6 +5,7 @@
 mod config;
 mod file_list;
 mod input;
+mod log;
 
 pub use config::{
     State, TabState, WindowState, clamp_to_work, config_path, data_dir, load_toml, save_toml,
@@ -15,6 +16,7 @@ pub use file_list::{
     glob_match, read_items,
 };
 pub use input::{Command, KeyChord, KeyMap, vk};
+pub use log::{LogLevel, LogLine, LogState};
 
 use std::path::{Path, PathBuf};
 
