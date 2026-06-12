@@ -43,6 +43,8 @@ struct MainWindow {
     active_right: Rc<Cell<bool>>,
     tabs: Rc<RefCell<Vec<TabSnapshot>>>,
     active: Rc<Cell<usize>>,
+    left_mask: Rc<RefCell<Option<String>>>,
+    right_mask: Rc<RefCell<Option<String>>>,
 }
 
 /// 1タブの保存状態（非アクティブ時の退避先）。アクティブタブの実体はライブ側
@@ -147,6 +149,8 @@ impl MainWindow {
             active_right: Rc::new(Cell::new(active_right)),
             tabs: Rc::new(RefCell::new(tabs)),
             active: Rc::new(Cell::new(active)),
+            left_mask: Rc::new(RefCell::new(None)),
+            right_mask: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -394,6 +398,14 @@ impl MainWindow {
                 self.delete(is_left)?;
                 return Ok(());
             }
+            Command::PathMask => {
+                self.path_mask(is_left)?;
+                return Ok(());
+            }
+            Command::SelectMask => {
+                self.select_mask(is_left)?;
+                return Ok(());
+            }
         }
         view.refresh()?;
         Ok(())
@@ -610,10 +622,21 @@ impl MainWindow {
         if is_left { &self.left_pane } else { &self.right_pane }
     }
 
+    fn mask(&self, is_left: bool) -> &Rc<RefCell<Option<String>>> {
+        if is_left { &self.left_mask } else { &self.right_mask }
+    }
+
     /// ペインの現在パスを読み直して State へ反映し、パスバーを更新する。
     fn reload_side(&self, is_left: bool) -> w::AnyResult<()> {
         let view = self.view(is_left);
         let items = self.pane(is_left).borrow().read();
+        let items = match self.mask(is_left).borrow().as_ref() {
+            Some(m) => items
+                .into_iter()
+                .filter(|it| it.is_parent || it.is_dir || rerics_core::glob_match(&it.name, m))
+                .collect(),
+            None => items,
+        };
         let path = self.pane(is_left).borrow().path().display().to_string();
         let pr = view.page_rows();
         {
@@ -833,6 +856,52 @@ impl MainWindow {
             }
         }
         self.reload_side(is_left)?;
+        Ok(())
+    }
+
+    /// 入力ダイアログでパスマスクを尋ね、表示フィルタを設定/解除して一覧を更新する。
+    fn path_mask(&self, is_left: bool) -> w::AnyResult<()> {
+        let cur = self.mask(is_left).borrow().clone().unwrap_or_default();
+        let input = dialog::InputDialog::new(
+            "パスマスク",
+            "表示するマスク（* で解除・カンマ区切り）:",
+            &cur,
+        )
+        .show(&self.wnd);
+        let Some(input) = input else {
+            return Ok(());
+        };
+        let input = input.trim();
+        if input.is_empty() || input == "*" {
+            *self.mask(is_left).borrow_mut() = None;
+        } else {
+            *self.mask(is_left).borrow_mut() = Some(input.to_owned());
+        }
+        self.reload_side(is_left)?;
+        Ok(())
+    }
+
+    /// 入力ダイアログでマスクを尋ね、一致するファイルの選択状態を立てる。
+    fn select_mask(&self, is_left: bool) -> w::AnyResult<()> {
+        let input = dialog::InputDialog::new("マスクで選択", "選択するマスク（カンマ区切り）:", "")
+            .show(&self.wnd);
+        let Some(input) = input else {
+            return Ok(());
+        };
+        let input = input.trim();
+        if input.is_empty() {
+            return Ok(());
+        }
+        {
+            let state = self.view(is_left).state();
+            let mut s = state.borrow_mut();
+            for it in &mut s.items {
+                if !it.is_parent && rerics_core::glob_match(&it.name, input) {
+                    it.selected = true;
+                }
+            }
+        }
+        self.view(is_left).refresh()?;
         Ok(())
     }
 

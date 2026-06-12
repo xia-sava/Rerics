@@ -12,7 +12,7 @@ pub use config::{
 };
 pub use file_list::{
     Align, Colors, Column, ColumnKind, FileItem, FileListState, Rgb, SortType, default_columns,
-    read_items,
+    glob_match, read_items,
 };
 pub use input::{Command, KeyChord, KeyMap, vk};
 

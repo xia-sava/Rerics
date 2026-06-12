@@ -77,6 +77,8 @@ pub enum Command {
     CreateFile,
     NextDrive,
     PreviousDrive,
+    PathMask,
+    SelectMask,
 }
 
 /// キー＋修飾の組（将来 Ctrl/Shift/Alt も区別する）。
@@ -151,6 +153,8 @@ impl Default for KeyMap {
         m.bind(KeyChord::new(vk::F7, false, true, false), CreateFile);
         m.bind(KeyChord::new(vk::RIGHT, false, true, false), NextDrive);
         m.bind(KeyChord::new(vk::LEFT, false, true, false), PreviousDrive);
+        m.bind(KeyChord::key(vk::W), PathMask);
+        m.bind(KeyChord::new(vk::W, false, true, false), SelectMask);
         m
     }
 }
@@ -288,6 +292,16 @@ mod tests {
         assert_eq!(
             m.resolve(&KeyChord::new(vk::LEFT, false, true, false)),
             Some(Command::PreviousDrive)
+        );
+    }
+
+    #[test]
+    fn default_binds_mask() {
+        let m = KeyMap::default();
+        assert_eq!(m.resolve(&KeyChord::key(vk::W)), Some(Command::PathMask));
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::W, false, true, false)),
+            Some(Command::SelectMask)
         );
     }
 

@@ -693,6 +693,51 @@ pub fn read_items(path: impl AsRef<Path>) -> std::io::Result<Vec<FileItem>> {
     Ok(items)
 }
 
+/// カンマ区切りのグロブパターン（`*`=任意長, `?`=任意1文字）のいずれかに
+/// `name` が（大文字小文字を無視して）一致するか。空パターンや "*" は全一致。
+pub fn glob_match(name: &str, patterns: &str) -> bool {
+    let pats: Vec<&str> = patterns
+        .split(',')
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if pats.is_empty() {
+        return true;
+    }
+    let name_lower: Vec<char> = name.to_lowercase().chars().collect();
+    pats.iter().any(|p| {
+        let pat_lower: Vec<char> = p.to_lowercase().chars().collect();
+        glob_one(&name_lower, &pat_lower)
+    })
+}
+
+/// 1パターンとの照合（`*`=0文字以上, `?`=任意1文字）。引数は小文字化済みの `char` 列。
+fn glob_one(name: &[char], pat: &[char]) -> bool {
+    let (mut ni, mut pi) = (0usize, 0usize);
+    let mut star: Option<usize> = None;
+    let mut star_n = 0usize;
+    while ni < name.len() {
+        if pi < pat.len() && (pat[pi] == '?' || pat[pi] == name[ni]) {
+            ni += 1;
+            pi += 1;
+        } else if pi < pat.len() && pat[pi] == '*' {
+            star = Some(pi);
+            star_n = ni;
+            pi += 1;
+        } else if let Some(s) = star {
+            pi = s + 1;
+            star_n += 1;
+            ni = star_n;
+        } else {
+            return false;
+        }
+    }
+    while pi < pat.len() && pat[pi] == '*' {
+        pi += 1;
+    }
+    pi == pat.len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -881,6 +926,18 @@ mod tests {
         let txt = FileListState::new().cell_text(&tf, ColumnKind::LastWriteTime);
         assert_eq!(txt.len(), "yyyy/MM/dd HH:mm".len());
         assert_eq!(txt.matches('/').count(), 2);
+    }
+
+    #[test]
+    fn glob_match_basics() {
+        assert!(glob_match("a.txt", "*.txt"));
+        assert!(!glob_match("a.png", "*.txt"));
+        assert!(glob_match("README", "*"));
+        assert!(glob_match("x", ""));
+        assert!(glob_match("a.txt", "*.png, *.txt"));
+        assert!(glob_match("Foo.TXT", "*.txt"));
+        assert!(glob_match("ab", "a?"));
+        assert!(!glob_match("abc", "a?"));
     }
 
     #[test]
