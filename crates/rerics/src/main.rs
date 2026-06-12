@@ -1,11 +1,13 @@
 mod dialog;
 mod file_list;
+mod tab_bar;
 mod window_state;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use file_list::FileListView;
+use tab_bar::TabBar;
 use rerics_core::{Command, FileListState, KeyChord, KeyMap, Pane, SortType, WindowState};
 use winsafe::{self as w, co, gui, prelude::*};
 
@@ -13,6 +15,7 @@ const MARGIN: i32 = 8;
 const GAP: i32 = 8;
 const BAR_H: i32 = 22;
 const BAR_GAP: i32 = 4;
+const TAB_H: i32 = 26;
 
 /// 表示完了後に最大化を実行させるための自前メッセージ（`WM_APP`）。
 fn wm_restore_maximize() -> co::WM {
@@ -32,6 +35,7 @@ struct MainWindow {
     right: FileListView,
     left_bar: gui::Label,
     right_bar: gui::Label,
+    tab_bar: TabBar,
     left_pane: Rc<RefCell<Pane>>,
     right_pane: Rc<RefCell<Pane>>,
     keymap: Rc<KeyMap>,
@@ -86,6 +90,8 @@ impl MainWindow {
         let left_bar = make_bar(&wnd);
         let right_bar = make_bar(&wnd);
 
+        let tab_bar = TabBar::new(&wnd, gui::dpi(0, 0), gui::dpi(800, TAB_H));
+
         let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "..".to_owned());
 
         let state = rerics_core::State::load();
@@ -133,6 +139,7 @@ impl MainWindow {
             right,
             left_bar,
             right_bar,
+            tab_bar,
             left_pane,
             right_pane,
             keymap: Rc::new(keymap),
@@ -155,6 +162,11 @@ impl MainWindow {
         self.wire_pane(false);
 
         let this = self.clone();
+        self.tab_bar.on_click(move |index| {
+            let _ = this.switch_tab(index);
+        });
+
+        let this = self.clone();
         self.wnd.on().wm_create(move |_| {
             if let Some(ws) = &this.initial_window {
                 let applied = window_state::apply(&this.wnd.hwnd(), ws);
@@ -172,6 +184,7 @@ impl MainWindow {
             let snap = this.tabs.borrow()[this.active.get()].clone();
             this.load_snapshot(&snap)?;
             this.update_title()?;
+            this.refresh_tab_bar()?;
             Ok(0)
         });
 
@@ -456,6 +469,25 @@ impl MainWindow {
         Ok(())
     }
 
+    /// タブ帯のラベルとアクティブ位置を更新し、再描画する。
+    fn refresh_tab_bar(&self) -> w::AnyResult<()> {
+        let labels: Vec<String> = self
+            .tabs
+            .borrow()
+            .iter()
+            .map(|t| {
+                let p = if t.active_right { &t.right_path } else { &t.left_path };
+                std::path::Path::new(p)
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| p.clone())
+            })
+            .collect();
+        self.tab_bar.set_tabs(labels, self.active.get());
+        self.tab_bar.refresh()?;
+        Ok(())
+    }
+
     /// 指定 index のタブへ切替える（範囲外・現在と同じなら何もしない）。
     fn switch_tab(&self, index: usize) -> w::AnyResult<()> {
         if index >= self.tabs.borrow().len() || index == self.active.get() {
@@ -466,6 +498,7 @@ impl MainWindow {
         let snap = self.tabs.borrow()[index].clone();
         self.load_snapshot(&snap)?;
         self.update_title()?;
+        self.refresh_tab_bar()?;
         Ok(())
     }
 
@@ -507,6 +540,7 @@ impl MainWindow {
         let snap = self.tabs.borrow()[index].clone();
         self.load_snapshot(&snap)?;
         self.update_title()?;
+        self.refresh_tab_bar()?;
         Ok(())
     }
 
@@ -524,6 +558,7 @@ impl MainWindow {
         let snap = self.tabs.borrow()[active].clone();
         self.load_snapshot(&snap)?;
         self.update_title()?;
+        self.refresh_tab_bar()?;
         Ok(())
     }
 
@@ -786,16 +821,20 @@ impl MainWindow {
         let bar_h = gui::dpi_y(BAR_H);
         let bar_gap = gui::dpi_y(BAR_GAP);
 
+        let tab_h = gui::dpi_y(TAB_H);
         let pane_w = (total_w - m * 2 - gap) / 2;
-        let list_y = my + bar_h + bar_gap;
+        let bars_y = tab_h + my;
+        let list_y = bars_y + bar_h + bar_gap;
         let list_h = total_h - list_y - my;
         let left_x = m;
         let right_x = m + pane_w + gap;
 
-        place(self.left_bar.hwnd(), left_x, my, pane_w, bar_h)?;
+        place(self.tab_bar.hwnd(), 0, 0, total_w, tab_h)?;
+        place(self.left_bar.hwnd(), left_x, bars_y, pane_w, bar_h)?;
         place(self.left.hwnd(), left_x, list_y, pane_w, list_h)?;
-        place(self.right_bar.hwnd(), right_x, my, pane_w, bar_h)?;
+        place(self.right_bar.hwnd(), right_x, bars_y, pane_w, bar_h)?;
         place(self.right.hwnd(), right_x, list_y, pane_w, list_h)?;
+        self.tab_bar.refresh()?;
         self.left.refresh()?;
         self.right.refresh()?;
         Ok(())
