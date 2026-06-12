@@ -213,10 +213,13 @@ impl FileListView {
 
         let this = self.clone();
         self.wnd.on().wm_mouse_wheel(move |p| {
+            // winsafe 0.0.27 は wheel_distance と keys を取り違えるため、回転量は
+            // keys（実際は HIWORD=回転量）から取り出す。
+            let dist = p.keys.raw() as i16;
             if let Some(cb) = this.inner.on_wheel.borrow().as_ref() {
-                cb(p.wheel_distance, p.coords);
+                cb(dist, p.coords);
             } else {
-                this.scroll_by_wheel(p.wheel_distance)?;
+                this.scroll_by_wheel(dist)?;
             }
             Ok(())
         });

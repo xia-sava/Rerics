@@ -200,7 +200,8 @@ impl MainWindow {
 
         let this = self.clone();
         self.wnd.on().wm_mouse_wheel(move |p| {
-            this.scroll_under_cursor(p.wheel_distance, p.coords)?;
+            let dist = p.keys.raw() as i16;
+            this.scroll_under_cursor(dist, p.coords)?;
             Ok(())
         });
 
