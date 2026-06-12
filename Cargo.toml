@@ -1,6 +1,11 @@
-[package]
-name = "Rerics"
+[workspace]
+resolver = "3"
+members = ["crates/rerics", "crates/rerics-core"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+[workspace.dependencies]
+winsafe = { version = "0.0.27", features = ["gui"] }
+rerics-core = { path = "crates/rerics-core" }

@@ -1,0 +1,10 @@
+# 既定はテキスト自動判別（リポジトリ内は LF で保存）
+* text=auto
+
+# Windows バッチ／PowerShell はチェックアウト時 CRLF（cmd/pwsh 用）
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# シェルスクリプトは LF
+*.sh text eol=lf

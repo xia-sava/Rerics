@@ -1,0 +1,8 @@
+[package]
+name = "rerics"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rerics-core.workspace = true
+winsafe.workspace = true
