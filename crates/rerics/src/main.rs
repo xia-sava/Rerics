@@ -361,6 +361,14 @@ impl MainWindow {
                 self.reload_side(is_left)?;
                 return Ok(());
             }
+            Command::Rename => {
+                self.rename(is_left)?;
+                return Ok(());
+            }
+            Command::Delete => {
+                self.delete(is_left)?;
+                return Ok(());
+            }
         }
         view.refresh()?;
         Ok(())
@@ -639,6 +647,90 @@ impl MainWindow {
         }
         self.view(is_left).state().borrow_mut().clear_all();
         self.view(is_left).refresh()?;
+        Ok(())
+    }
+
+    /// カーソル位置の項目を入力ダイアログでリネームする。完了後は新名へカーソルを移す。
+    fn rename(&self, is_left: bool) -> w::AnyResult<()> {
+        let view = self.view(is_left);
+        let old = {
+            let state = view.state();
+            let s = state.borrow();
+            match s.items.get(s.cursor) {
+                Some(it) if !it.is_parent => it.name.clone(),
+                _ => return Ok(()),
+            }
+        };
+        let new = dialog::InputDialog::new("名前の変更", "新しい名前:", &old).show(&self.wnd);
+        let Some(new) = new else {
+            return Ok(());
+        };
+        let new = new.trim();
+        if new.is_empty() || new == old {
+            return Ok(());
+        }
+        let dir = self.pane(is_left).borrow().path().to_path_buf();
+        match std::fs::rename(dir.join(&old), dir.join(new)) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("名前の変更に失敗: {}", e);
+                return Ok(());
+            }
+        }
+        self.reload_side(is_left)?;
+        let pr = self.view(is_left).page_rows();
+        self.view(is_left)
+            .state()
+            .borrow_mut()
+            .set_cursor_position(new, pr);
+        self.view(is_left).refresh()?;
+        Ok(())
+    }
+
+    /// アクティブペインの選択（無ければカーソル）を確認ダイアログ付きで削除する。
+    fn delete(&self, is_left: bool) -> w::AnyResult<()> {
+        let names: Vec<String> = {
+            let state = self.view(is_left).state();
+            let s = state.borrow();
+            let selected: Vec<String> = s
+                .items
+                .iter()
+                .filter(|it| it.selected && !it.is_parent)
+                .map(|it| it.name.clone())
+                .collect();
+            if selected.is_empty() {
+                match s.items.get(s.cursor) {
+                    Some(it) if !it.is_parent => vec![it.name.clone()],
+                    _ => Vec::new(),
+                }
+            } else {
+                selected
+            }
+        };
+        if names.is_empty() {
+            return Ok(());
+        }
+        let msg = format!("{} 個の項目を削除します。よろしいですか？", names.len());
+        let ans = self
+            .wnd
+            .hwnd()
+            .MessageBox(&msg, "削除の確認", co::MB::YESNO | co::MB::ICONWARNING)?;
+        if ans != co::DLGID::YES {
+            return Ok(());
+        }
+        let dir = self.pane(is_left).borrow().path().to_path_buf();
+        for name in &names {
+            let target = dir.join(name);
+            let result = if target.is_dir() {
+                std::fs::remove_dir_all(&target)
+            } else {
+                std::fs::remove_file(&target)
+            };
+            if let Err(e) = result {
+                eprintln!("削除に失敗: {}: {}", target.display(), e);
+            }
+        }
+        self.reload_side(is_left)?;
         Ok(())
     }
 

@@ -46,6 +46,7 @@ impl InputDialog {
             gui::ButtonOpts {
                 text: "OK",
                 control_style: co::BS::DEFPUSHBUTTON,
+                ctrl_id: 1,
                 position: gui::dpi(150, 76),
                 width: gui::dpi_x(80),
                 height: gui::dpi_y(26),

@@ -26,6 +26,8 @@ pub mod vk {
     pub const C: u16 = 0x43;
     pub const M: u16 = 0x4D;
     pub const O: u16 = 0x4F;
+    pub const R: u16 = 0x52;
+    pub const D: u16 = 0x44;
     pub const T: u16 = 0x54;
     pub const W: u16 = 0x57;
     pub const D0: u16 = 0x30;
@@ -70,6 +72,8 @@ pub enum Command {
     SwapPath,
     OppositeToCurrent,
     CurrentToOpposite,
+    Rename,
+    Delete,
 }
 
 /// キー＋修飾の組（将来 Ctrl/Shift/Alt も区別する）。
@@ -139,6 +143,8 @@ impl Default for KeyMap {
         m.bind(KeyChord::key(vk::M), Move);
         m.bind(KeyChord::key(vk::O), OppositeToCurrent);
         m.bind(KeyChord::new(vk::O, false, true, false), CurrentToOpposite);
+        m.bind(KeyChord::key(vk::R), Rename);
+        m.bind(KeyChord::key(vk::D), Delete);
         m
     }
 }
@@ -248,6 +254,13 @@ mod tests {
             m.resolve(&KeyChord::new(vk::O, false, true, false)),
             Some(Command::CurrentToOpposite)
         );
+    }
+
+    #[test]
+    fn default_binds_rename_delete() {
+        let m = KeyMap::default();
+        assert_eq!(m.resolve(&KeyChord::key(vk::R)), Some(Command::Rename));
+        assert_eq!(m.resolve(&KeyChord::key(vk::D)), Some(Command::Delete));
     }
 
     #[test]
