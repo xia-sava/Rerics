@@ -6,7 +6,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use rerics_core::{Align, ColumnKind, Colors, FileListState, Rgb, SortType};
+use rerics_core::{Align, ColumnKind, Colors, Config, FileListState, Rgb, SortType};
 use winsafe::{self as w, co, gui, prelude::*};
 
 /// マウス操作の状態機械。
@@ -22,9 +22,6 @@ type ActivateCb = Box<dyn Fn(usize)>;
 type KeyCb = Box<dyn Fn(u16, bool, bool, bool)>;
 type WheelCb = Box<dyn Fn(i16, w::POINT)>;
 
-/// 自前スクロールバーの幅（論理 px）。
-const SCROLLBAR_W: i32 = 7;
-
 /// 列ドラッグ中の状態。
 #[derive(Clone, Copy)]
 struct HeaderDrag {
@@ -36,6 +33,10 @@ struct HeaderDrag {
 struct Inner {
     state: Rc<RefCell<FileListState>>,
     colors: Colors,
+    font_family: String,
+    font_size: i32,
+    /// 自前スクロールバーの幅（論理 px）。
+    scrollbar_width: i32,
     /// フォント高さ（実測）。
     font_height: Cell<i32>,
     /// カーソル表示フラグ（アクティブペイン管理は main 側で配線）。
@@ -60,7 +61,12 @@ pub struct FileListView {
 
 impl FileListView {
     /// 親に子コントロールとして生成する。イベントは生成前にここで配線する。
-    pub fn new(parent: &(impl GuiParent + 'static), position: (i32, i32), size: (i32, i32)) -> Self {
+    pub fn new(
+        parent: &(impl GuiParent + 'static),
+        position: (i32, i32),
+        size: (i32, i32),
+        cfg: &Config,
+    ) -> Self {
         let wnd = gui::WindowControl::new(
             parent,
             gui::WindowControlOpts {
@@ -76,8 +82,11 @@ impl FileListView {
         );
         let inner = Rc::new(Inner {
             state: Rc::new(RefCell::new(FileListState::new())),
-            colors: Colors::default(),
-            font_height: Cell::new(gui::dpi_y(13)),
+            colors: cfg.colors,
+            font_family: cfg.font.family.clone(),
+            font_size: cfg.font.size,
+            scrollbar_width: cfg.layout.scrollbar_width,
+            font_height: Cell::new(gui::dpi_y(cfg.font.size)),
             cursor_visible: Cell::new(false),
             mouse_event: Cell::new(MouseEvent::None),
             header_click_col: Cell::new(None),
@@ -160,10 +169,10 @@ impl FileListView {
         self.font_height()
     }
 
-    /// フォントを生成する（日本語対応モノスペース。将来は設定から）。
+    /// フォントを生成する（設定のファミリ・サイズ）。
     fn create_font(&self) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
         w::HFONT::CreateFont(
-            w::SIZE { cx: 0, cy: -gui::dpi_y(13) },
+            w::SIZE { cx: 0, cy: -gui::dpi_y(self.inner.font_size) },
             0,
             0,
             co::FW::NORMAL,
@@ -175,7 +184,7 @@ impl FileListView {
             co::CLIP::DEFAULT_PRECIS,
             co::QUALITY::CLEARTYPE,
             co::PITCH::FIXED,
-            "BIZ UDGothic",
+            &self.inner.font_family,
         )
     }
 
@@ -270,7 +279,7 @@ impl FileListView {
         if count <= page {
             return None;
         }
-        let sbw = gui::dpi_x(SCROLLBAR_W);
+        let sbw = gui::dpi_x(self.inner.scrollbar_width);
         let bar_x = cw - sbw;
         let track_top = self.header_height();
         let track_h = ch - track_top;
@@ -629,7 +638,7 @@ impl FileListView {
         // 5. 自前スクロールバー（生きている state borrow からインラインに算出）。
         let count = s.count();
         if count > page {
-            let sbw = gui::dpi_x(SCROLLBAR_W);
+            let sbw = gui::dpi_x(self.inner.scrollbar_width);
             let bar_x = cw - sbw;
             let track_top = header_h;
             let track_h = ch - track_top;

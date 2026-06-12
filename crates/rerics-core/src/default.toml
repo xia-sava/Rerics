@@ -1,0 +1,96 @@
+[font]
+family = "BIZ UDGothic"
+size = 13
+
+[layout]
+margin = 2
+gap = 3
+bar_height = 20
+bar_gap = 2
+tab_height = 24
+log_height = 96
+log_gap = 2
+scrollbar_width = 7
+
+[colors]
+file_normal = "#ffffff"
+directory = "#ffffe8"
+readonly = "#80ff80"
+system = "#80ffff"
+hidden = "#8080ff"
+background = "#000000"
+background2 = "#202020"
+selected_file = "#ffffff"
+selected_file_bg = "#60a080"
+cursor = "#00ff80"
+log_background = "#101010"
+log_info = "#c8c8c8"
+log_warning = "#ffd040"
+log_error = "#ff7070"
+
+[[columns]]
+kind = "FileBaseName"
+text = "ファイル名"
+width = 230
+align = "Left"
+
+[[columns]]
+kind = "FileExtension"
+text = "種類"
+width = 60
+align = "Left"
+
+[[columns]]
+kind = "Length"
+text = "サイズ"
+width = 90
+align = "Right"
+
+[[columns]]
+kind = "LastWriteTime"
+text = "更新日時"
+width = 120
+align = "Left"
+
+[[columns]]
+kind = "Attribute"
+text = "属性"
+width = 50
+align = "Left"
+
+[keybinds]
+BackSpace = "ToParent"
+C = "Copy"
+"Ctrl+0" = "SortReverseToggle"
+"Ctrl+1" = "SortByName"
+"Ctrl+2" = "SortByExtension"
+"Ctrl+3" = "SortBySize"
+"Ctrl+4" = "SortByDate"
+"Ctrl+A" = "SelectAll"
+"Ctrl+Shift+Tab" = "PagePrevious"
+"Ctrl+T" = "NewTab"
+"Ctrl+Tab" = "PageNext"
+"Ctrl+W" = "CloseTab"
+D = "Delete"
+Down = "CursorDown"
+End = "CursorEnd"
+Enter = "EnterDir"
+Esc = "ClearAll"
+F5 = "Reload"
+F7 = "MakeDirectory"
+Home = "CursorTop"
+Left = "FocusLeft"
+M = "Move"
+O = "OppositeToCurrent"
+PageDown = "CursorPageDown"
+PageUp = "CursorPageUp"
+R = "Rename"
+Right = "FocusRight"
+"Shift+F7" = "CreateFile"
+"Shift+Left" = "PreviousDrive"
+"Shift+O" = "CurrentToOpposite"
+"Shift+Right" = "NextDrive"
+"Shift+W" = "SelectMask"
+Space = "MarkToggle"
+Up = "CursorUp"
+W = "PathMask"

@@ -10,16 +10,10 @@ use std::rc::Rc;
 use file_list::FileListView;
 use log_view::LogView;
 use tab_bar::TabBar;
-use rerics_core::{Command, FileListState, KeyChord, KeyMap, Pane, SortType, WindowState};
+use rerics_core::{
+    Column, Command, Config, FileListState, KeyChord, KeyMap, Pane, SortType, WindowState,
+};
 use winsafe::{self as w, co, gui, prelude::*};
-
-const MARGIN: i32 = 2;
-const GAP: i32 = 3;
-const BAR_H: i32 = 20;
-const BAR_GAP: i32 = 2;
-const TAB_H: i32 = 24;
-const LOG_H: i32 = 96;
-const LOG_GAP: i32 = 2;
 
 /// 表示完了後に最大化を実行させるための自前メッセージ（`WM_APP`）。
 fn wm_restore_maximize() -> co::WM {
@@ -41,6 +35,7 @@ struct MainWindow {
     right_bar: gui::Label,
     tab_bar: TabBar,
     log: LogView,
+    config: Rc<Config>,
     left_pane: Rc<RefCell<Pane>>,
     right_pane: Rc<RefCell<Pane>>,
     keymap: Rc<KeyMap>,
@@ -80,16 +75,20 @@ impl MainWindow {
             ..Default::default()
         });
 
-        let left = FileListView::new(&wnd, gui::dpi(MARGIN, MARGIN), gui::dpi(400, 400));
-        let right = FileListView::new(&wnd, gui::dpi(MARGIN, MARGIN), gui::dpi(400, 400));
+        let config = Config::load();
+        let m = config.layout.margin;
 
+        let left = FileListView::new(&wnd, gui::dpi(m, m), gui::dpi(400, 400), &config);
+        let right = FileListView::new(&wnd, gui::dpi(m, m), gui::dpi(400, 400), &config);
+
+        let bar_h = config.layout.bar_height;
         let make_bar = |parent: &gui::WindowMain| {
             gui::Label::new(
                 parent,
                 gui::LabelOpts {
                     text: "",
-                    position: gui::dpi(MARGIN, MARGIN),
-                    size: gui::dpi(400, BAR_H),
+                    position: gui::dpi(m, m),
+                    size: gui::dpi(400, bar_h),
                     ..Default::default()
                 },
             )
@@ -97,8 +96,8 @@ impl MainWindow {
         let left_bar = make_bar(&wnd);
         let right_bar = make_bar(&wnd);
 
-        let tab_bar = TabBar::new(&wnd, gui::dpi(0, 0), gui::dpi(800, TAB_H));
-        let log = LogView::new(&wnd, gui::dpi(MARGIN, MARGIN), gui::dpi(800, LOG_H));
+        let tab_bar = TabBar::new(&wnd, gui::dpi(0, 0), gui::dpi(800, config.layout.tab_height), &config);
+        let log = LogView::new(&wnd, gui::dpi(m, m), gui::dpi(800, config.layout.log_height), &config);
 
         let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "..".to_owned());
 
@@ -113,8 +112,8 @@ impl MainWindow {
                 let left_path = normalize_path(&t.left, ".");
                 let right_path = normalize_path(&t.right, &home);
                 TabSnapshot {
-                    left_state: Self::build_state_for(&left_path),
-                    right_state: Self::build_state_for(&right_path),
+                    left_state: Self::build_state_for(&left_path, &config.columns),
+                    right_state: Self::build_state_for(&right_path, &config.columns),
                     left_path,
                     right_path,
                     active_right: t.active_right,
@@ -125,8 +124,8 @@ impl MainWindow {
             let left_path = ".".to_owned();
             let right_path = home.clone();
             tabs.push(TabSnapshot {
-                left_state: Self::build_state_for(&left_path),
-                right_state: Self::build_state_for(&right_path),
+                left_state: Self::build_state_for(&left_path, &config.columns),
+                right_state: Self::build_state_for(&right_path, &config.columns),
                 left_path,
                 right_path,
                 active_right: false,
@@ -139,7 +138,7 @@ impl MainWindow {
         let right_pane = Rc::new(RefCell::new(Pane::open(&cur.right_path)));
         let active_right = cur.active_right;
 
-        let keymap = KeyMap::default();
+        let keymap = config.keymap();
 
         Self {
             wnd,
@@ -149,6 +148,7 @@ impl MainWindow {
             right_bar,
             tab_bar,
             log,
+            config: Rc::new(config),
             left_pane,
             right_pane,
             keymap: Rc::new(keymap),
@@ -497,9 +497,10 @@ impl MainWindow {
     }
 
     /// 指定パスの一覧を読み、既定ソートでカーソル先頭の `FileListState` を組む。
-    fn build_state_for(path: &str) -> FileListState {
+    fn build_state_for(path: &str, columns: &[Column]) -> FileListState {
         let items = Pane::open(path).read();
         let mut s = FileListState::new();
+        s.columns = columns.to_vec();
         let sort = s.sort_type;
         let reverse = s.sort_reverse;
         s.items = items;
@@ -625,8 +626,8 @@ impl MainWindow {
         let left_path = self.left_pane.borrow().path().display().to_string();
         let right_path = self.right_pane.borrow().path().display().to_string();
         let snap = TabSnapshot {
-            left_state: Self::build_state_for(&left_path),
-            right_state: Self::build_state_for(&right_path),
+            left_state: Self::build_state_for(&left_path, &self.config.columns),
+            right_state: Self::build_state_for(&right_path, &self.config.columns),
             left_path,
             right_path,
             active_right: self.active_right.get(),
@@ -1021,15 +1022,16 @@ impl MainWindow {
         let rc = self.wnd.hwnd().GetClientRect()?;
         let total_w = rc.right - rc.left;
         let total_h = rc.bottom - rc.top;
-        let m = gui::dpi_x(MARGIN);
-        let gap = gui::dpi_x(GAP);
-        let my = gui::dpi_y(MARGIN);
-        let bar_h = gui::dpi_y(BAR_H);
-        let bar_gap = gui::dpi_y(BAR_GAP);
+        let lay = &self.config.layout;
+        let m = gui::dpi_x(lay.margin);
+        let gap = gui::dpi_x(lay.gap);
+        let my = gui::dpi_y(lay.margin);
+        let bar_h = gui::dpi_y(lay.bar_height);
+        let bar_gap = gui::dpi_y(lay.bar_gap);
 
-        let tab_h = gui::dpi_y(TAB_H);
-        let log_h = gui::dpi_y(LOG_H);
-        let log_gap = gui::dpi_y(LOG_GAP);
+        let tab_h = gui::dpi_y(lay.tab_height);
+        let log_h = gui::dpi_y(lay.log_height);
+        let log_gap = gui::dpi_y(lay.log_gap);
         let pane_w = (total_w - m * 2 - gap) / 2;
         let bars_y = tab_h + my;
         let list_y = bars_y + bar_h + bar_gap;

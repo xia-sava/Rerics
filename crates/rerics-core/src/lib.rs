@@ -8,8 +8,8 @@ mod input;
 mod log;
 
 pub use config::{
-    State, TabState, WindowState, clamp_to_work, config_path, data_dir, load_toml, save_toml,
-    state_path,
+    Config, DEFAULT_CONFIG_TOML, FontSpec, Layout, State, TabState, WindowState, clamp_to_work,
+    config_path, data_dir, load_toml, save_toml, state_path,
 };
 pub use file_list::{
     Align, Colors, Column, ColumnKind, FileItem, FileListState, Rgb, SortType, default_columns,

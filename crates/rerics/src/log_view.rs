@@ -6,12 +6,14 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use rerics_core::{Colors, LogLevel, LogState, Rgb};
+use rerics_core::{Colors, Config, LogLevel, LogState, Rgb};
 use winsafe::{self as w, co, gui, prelude::*};
 
 struct Inner {
     state: RefCell<LogState>,
     colors: Colors,
+    font_family: String,
+    font_size: i32,
     /// 1行の高さ（描画時にフォントメトリクスから更新）。
     line_height: Cell<i32>,
 }
@@ -25,7 +27,12 @@ pub struct LogView {
 
 impl LogView {
     /// 親に子コントロールとして生成する。
-    pub fn new(parent: &(impl GuiParent + 'static), position: (i32, i32), size: (i32, i32)) -> Self {
+    pub fn new(
+        parent: &(impl GuiParent + 'static),
+        position: (i32, i32),
+        size: (i32, i32),
+        cfg: &Config,
+    ) -> Self {
         let wnd = gui::WindowControl::new(
             parent,
             gui::WindowControlOpts {
@@ -38,8 +45,10 @@ impl LogView {
         );
         let inner = Rc::new(Inner {
             state: RefCell::new(LogState::new()),
-            colors: Colors::default(),
-            line_height: Cell::new(gui::dpi_y(15)),
+            colors: cfg.colors,
+            font_family: cfg.font.family.clone(),
+            font_size: cfg.font.size,
+            line_height: Cell::new(gui::dpi_y(cfg.font.size + 2)),
         });
         let me = Self { wnd, inner };
         me.setup_events();
@@ -106,10 +115,10 @@ impl LogView {
         Ok(())
     }
 
-    /// フォントを生成する（日本語対応モノスペース）。
+    /// フォントを生成する（設定のファミリ・サイズ）。
     fn create_font(&self) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
         w::HFONT::CreateFont(
-            w::SIZE { cx: 0, cy: -gui::dpi_y(12) },
+            w::SIZE { cx: 0, cy: -gui::dpi_y(self.inner.font_size) },
             0,
             0,
             co::FW::NORMAL,
@@ -121,7 +130,7 @@ impl LogView {
             co::CLIP::DEFAULT_PRECIS,
             co::QUALITY::CLEARTYPE,
             co::PITCH::FIXED,
-            "BIZ UDGothic",
+            &self.inner.font_family,
         )
     }
 

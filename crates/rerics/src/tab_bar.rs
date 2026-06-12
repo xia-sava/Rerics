@@ -6,13 +6,15 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use rerics_core::{Colors, Rgb};
+use rerics_core::{Colors, Config, Rgb};
 use winsafe::{self as w, co, gui, prelude::*};
 
 struct Inner {
     labels: RefCell<Vec<String>>,
     active: Cell<usize>,
     colors: Colors,
+    font_family: String,
+    font_size: i32,
     font_height: Cell<i32>,
     on_click: RefCell<Option<Box<dyn Fn(usize)>>>,
 }
@@ -26,7 +28,12 @@ pub struct TabBar {
 
 impl TabBar {
     /// 親に子コントロールとして生成する。イベントは生成前にここで配線する。
-    pub fn new(parent: &(impl GuiParent + 'static), position: (i32, i32), size: (i32, i32)) -> Self {
+    pub fn new(
+        parent: &(impl GuiParent + 'static),
+        position: (i32, i32),
+        size: (i32, i32),
+        cfg: &Config,
+    ) -> Self {
         let wnd = gui::WindowControl::new(
             parent,
             gui::WindowControlOpts {
@@ -40,8 +47,10 @@ impl TabBar {
         let inner = Rc::new(Inner {
             labels: RefCell::new(Vec::new()),
             active: Cell::new(0),
-            colors: Colors::default(),
-            font_height: Cell::new(gui::dpi_y(13)),
+            colors: cfg.colors,
+            font_family: cfg.font.family.clone(),
+            font_size: cfg.font.size,
+            font_height: Cell::new(gui::dpi_y(cfg.font.size)),
             on_click: RefCell::new(None),
         });
         let me = Self { wnd, inner };
@@ -70,10 +79,10 @@ impl TabBar {
         Ok(())
     }
 
-    /// フォントを生成する（日本語対応モノスペース）。
+    /// フォントを生成する（設定のファミリ・サイズ）。
     fn create_font(&self) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
         w::HFONT::CreateFont(
-            w::SIZE { cx: 0, cy: -gui::dpi_y(13) },
+            w::SIZE { cx: 0, cy: -gui::dpi_y(self.inner.font_size) },
             0,
             0,
             co::FW::NORMAL,
@@ -85,7 +94,7 @@ impl TabBar {
             co::CLIP::DEFAULT_PRECIS,
             co::QUALITY::CLEARTYPE,
             co::PITCH::FIXED,
-            "BIZ UDGothic",
+            &self.inner.font_family,
         )
     }
 

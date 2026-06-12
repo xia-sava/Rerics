@@ -7,6 +7,7 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use chrono::{DateTime, Local, TimeZone};
+use serde::{Deserialize, Serialize};
 
 /// ファイル一覧の1エントリ。
 #[derive(Debug, Clone)]
@@ -266,7 +267,7 @@ impl<'a> ExpMatcher<'a> {
 }
 
 /// 列の表示種別（Icon/Information は今回なし）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColumnKind {
     FileName,
     FileBaseName,
@@ -280,14 +281,14 @@ pub enum ColumnKind {
 }
 
 /// 列のテキスト揃え。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Align {
     Left,
     Right,
 }
 
 /// 1列の表示定義。`width` は論理 px（DPI スケールは GUI 層）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Column {
     pub kind: ColumnKind,
     pub text: String,
@@ -313,6 +314,7 @@ pub fn default_columns() -> Vec<Column> {
 }
 
 /// RGB 三つ組の配色（GUI 層で COLORREF へ変換）。
+/// TOML へは `"#rrggbb"` の16進文字列として直列化する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgb {
     pub r: u8,
@@ -324,10 +326,40 @@ impl Rgb {
     pub const fn new(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b }
     }
+
+    /// `"#rrggbb"` 文字列を解釈する（`#` 省略可・大小無視）。
+    pub fn parse_hex(s: &str) -> Option<Self> {
+        let h = s.trim().strip_prefix('#').unwrap_or(s.trim());
+        if h.len() != 6 {
+            return None;
+        }
+        let r = u8::from_str_radix(&h[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&h[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&h[4..6], 16).ok()?;
+        Some(Self { r, g, b })
+    }
+
+    /// `"#rrggbb"` 文字列へ変換する。
+    pub fn to_hex(self) -> String {
+        format!("#{:02x}{:02x}{:02x}", self.r, self.g, self.b)
+    }
+}
+
+impl Serialize for Rgb {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_str(&self.to_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for Rgb {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(de)?;
+        Rgb::parse_hex(&s).ok_or_else(|| serde::de::Error::custom(format!("invalid color: {s}")))
+    }
 }
 
 /// 配色モデル（既定は黒背景のダークテーマ）。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Colors {
     pub file_normal: Rgb,
     pub directory: Rgb,

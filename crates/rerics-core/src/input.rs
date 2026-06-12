@@ -3,7 +3,7 @@
 //! GUI 層はキー入力を [`KeyChord`] にして [`KeyMap::resolve`] で [`Command`] に解決し、
 //! その Command を自前で実行する。全コマンドが自由にリマップ可能。
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// 仮想キーコード（Win32 VK と同値の `u16`。winsafe `co::VK` とも一致）。
 pub mod vk {
@@ -81,6 +81,120 @@ pub enum Command {
     SelectMask,
 }
 
+impl Command {
+    /// コマンドと設定トークン名の対応表（双方向変換の単一の出どころ）。
+    const ALL: &'static [(Command, &'static str)] = {
+        use Command::*;
+        &[
+            (CursorUp, "CursorUp"),
+            (CursorDown, "CursorDown"),
+            (CursorTop, "CursorTop"),
+            (CursorEnd, "CursorEnd"),
+            (CursorPageUp, "CursorPageUp"),
+            (CursorPageDown, "CursorPageDown"),
+            (EnterDir, "EnterDir"),
+            (ToParent, "ToParent"),
+            (FocusLeft, "FocusLeft"),
+            (FocusRight, "FocusRight"),
+            (MarkToggle, "MarkToggle"),
+            (SelectAll, "SelectAll"),
+            (ClearAll, "ClearAll"),
+            (ReverseAll, "ReverseAll"),
+            (SelectAllFile, "SelectAllFile"),
+            (ReverseAllFile, "ReverseAllFile"),
+            (Reload, "Reload"),
+            (SortByName, "SortByName"),
+            (SortByExtension, "SortByExtension"),
+            (SortBySize, "SortBySize"),
+            (SortByDate, "SortByDate"),
+            (SortReverseToggle, "SortReverseToggle"),
+            (PageNext, "PageNext"),
+            (PagePrevious, "PagePrevious"),
+            (NewTab, "NewTab"),
+            (CloseTab, "CloseTab"),
+            (MakeDirectory, "MakeDirectory"),
+            (Copy, "Copy"),
+            (Move, "Move"),
+            (SwapPath, "SwapPath"),
+            (OppositeToCurrent, "OppositeToCurrent"),
+            (CurrentToOpposite, "CurrentToOpposite"),
+            (Rename, "Rename"),
+            (Delete, "Delete"),
+            (CreateFile, "CreateFile"),
+            (NextDrive, "NextDrive"),
+            (PreviousDrive, "PreviousDrive"),
+            (PathMask, "PathMask"),
+            (SelectMask, "SelectMask"),
+        ]
+    };
+
+    /// 設定トークン名を返す。
+    pub fn as_token(self) -> &'static str {
+        Self::ALL
+            .iter()
+            .find(|(c, _)| *c == self)
+            .map(|(_, s)| *s)
+            .unwrap_or("")
+    }
+
+    /// 設定トークン名から解釈する。
+    pub fn from_token(s: &str) -> Option<Command> {
+        Self::ALL
+            .iter()
+            .find(|(_, t)| *t == s)
+            .map(|(c, _)| *c)
+    }
+
+    /// 全コマンドを列挙する（設定 UI 用）。
+    pub fn all() -> impl Iterator<Item = Command> {
+        Self::ALL.iter().map(|(c, _)| *c)
+    }
+}
+
+/// 特殊キーの VK ⇔ トークン名の対応表。英数字は別途生成する。
+const KEY_NAMES: &[(u16, &str)] = &[
+    (vk::BACK, "BackSpace"),
+    (vk::RETURN, "Enter"),
+    (vk::SPACE, "Space"),
+    (vk::PRIOR, "PageUp"),
+    (vk::NEXT, "PageDown"),
+    (vk::END, "End"),
+    (vk::HOME, "Home"),
+    (vk::LEFT, "Left"),
+    (vk::UP, "Up"),
+    (vk::RIGHT, "Right"),
+    (vk::DOWN, "Down"),
+    (vk::ESCAPE, "Esc"),
+    (vk::F5, "F5"),
+    (vk::F7, "F7"),
+    (vk::TAB, "Tab"),
+];
+
+/// VK をトークン名へ変換する（A-Z/0-9 はその文字）。
+fn vk_to_name(vk: u16) -> Option<String> {
+    if let Some((_, n)) = KEY_NAMES.iter().find(|(v, _)| *v == vk) {
+        return Some((*n).to_owned());
+    }
+    if (0x41..=0x5A).contains(&vk) || (0x30..=0x39).contains(&vk) {
+        return Some((vk as u8 as char).to_string());
+    }
+    None
+}
+
+/// トークン名を VK へ変換する。
+fn name_to_vk(name: &str) -> Option<u16> {
+    if let Some((v, _)) = KEY_NAMES.iter().find(|(_, n)| n.eq_ignore_ascii_case(name)) {
+        return Some(*v);
+    }
+    if name.len() == 1 {
+        let c = name.chars().next().unwrap().to_ascii_uppercase();
+        if c.is_ascii_alphabetic() || c.is_ascii_digit() {
+            return Some(c as u16);
+        }
+    }
+    None
+}
+
 /// キー＋修飾の組（将来 Ctrl/Shift/Alt も区別する）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct KeyChord {
@@ -104,6 +218,39 @@ impl KeyChord {
     /// 修飾キー付きのチョード。
     pub const fn new(vk: u16, ctrl: bool, shift: bool, alt: bool) -> Self {
         Self { vk, ctrl, shift, alt }
+    }
+
+    /// `"Ctrl+Shift+Tab"` のような設定トークンを解釈する（修飾子は順不同・大小無視）。
+    pub fn parse(s: &str) -> Option<Self> {
+        let parts: Vec<&str> = s.split('+').map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
+        let (key, mods) = parts.split_last()?;
+        let mut chord = Self::key(name_to_vk(key)?);
+        for m in mods {
+            match m.to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => chord.ctrl = true,
+                "shift" => chord.shift = true,
+                "alt" => chord.alt = true,
+                _ => return None,
+            }
+        }
+        Some(chord)
+    }
+
+    /// `"Ctrl+Shift+Tab"` のような設定トークンへ変換する（未知キーは `None`）。
+    pub fn to_token(&self) -> Option<String> {
+        let name = vk_to_name(self.vk)?;
+        let mut s = String::new();
+        if self.ctrl {
+            s.push_str("Ctrl+");
+        }
+        if self.shift {
+            s.push_str("Shift+");
+        }
+        if self.alt {
+            s.push_str("Alt+");
+        }
+        s.push_str(&name);
+        Some(s)
     }
 }
 
@@ -176,6 +323,29 @@ impl KeyMap {
 
     pub fn resolve(&self, chord: &KeyChord) -> Option<Command> {
         self.map.get(chord).copied()
+    }
+
+    /// トークン文字列のマップ（チョード→コマンド）からキーマップを組む。
+    /// 解釈できない行は無視する。
+    pub fn from_string_map(map: &BTreeMap<String, String>) -> Self {
+        let mut m = Self::new();
+        for (k, v) in map {
+            if let (Some(chord), Some(cmd)) = (KeyChord::parse(k), Command::from_token(v)) {
+                m.bind(chord, cmd);
+            }
+        }
+        m
+    }
+
+    /// トークン文字列のマップ（チョード→コマンド）へ変換する。
+    pub fn to_string_map(&self) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        for (chord, cmd) in &self.map {
+            if let Some(tok) = chord.to_token() {
+                out.insert(tok, cmd.as_token().to_owned());
+            }
+        }
+        out
     }
 }
 
@@ -303,6 +473,35 @@ mod tests {
             m.resolve(&KeyChord::new(vk::W, false, true, false)),
             Some(Command::SelectMask)
         );
+    }
+
+    #[test]
+    fn chord_token_roundtrip() {
+        for s in ["Up", "Ctrl+A", "Ctrl+Shift+Tab", "Shift+F7", "C", "Ctrl+0", "Esc"] {
+            let chord = KeyChord::parse(s).unwrap();
+            assert_eq!(chord.to_token().as_deref(), Some(s));
+        }
+        // 修飾子は順不同で受理する。
+        assert_eq!(KeyChord::parse("Shift+Ctrl+Tab"), KeyChord::parse("Ctrl+Shift+Tab"));
+        assert_eq!(KeyChord::parse("ctrl+a"), KeyChord::parse("Ctrl+A"));
+        assert!(KeyChord::parse("Bogus+X").is_none());
+    }
+
+    #[test]
+    fn command_token_roundtrip() {
+        for c in Command::all() {
+            assert_eq!(Command::from_token(c.as_token()), Some(c));
+        }
+        assert!(Command::from_token("Nonexistent").is_none());
+    }
+
+    #[test]
+    fn keymap_string_map_roundtrip() {
+        let m = KeyMap::default();
+        let sm = m.to_string_map();
+        let back = KeyMap::from_string_map(&sm);
+        assert_eq!(back.to_string_map(), sm);
+        assert_eq!(back.resolve(&KeyChord::key(vk::DOWN)), Some(Command::CursorDown));
     }
 
     #[test]
