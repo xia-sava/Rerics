@@ -162,9 +162,8 @@ impl MainWindow {
 
     fn wire_pane(&self, is_left: bool) {
         let this = self.clone();
-        self.view(is_left).on_key_down(move |vk, alt, _shift| {
-            let mut chord = KeyChord::key(vk);
-            chord.alt = alt;
+        self.view(is_left).on_key_down(move |vk, ctrl, shift, alt| {
+            let chord = KeyChord::new(vk, ctrl, shift, alt);
             if let Some(cmd) = this.keymap.resolve(&chord) {
                 let _ = this.exec(is_left, cmd);
             }
@@ -239,6 +238,26 @@ impl MainWindow {
                 s.reverse_file(c, pr);
                 let c = s.cursor as isize;
                 s.set_cursor(c + 1, pr);
+            }
+            Command::SelectAll => {
+                state.borrow_mut().select_all(false);
+            }
+            Command::SelectAllFile => {
+                state.borrow_mut().select_all(true);
+            }
+            Command::ReverseAll => {
+                state.borrow_mut().reverse_all(false);
+            }
+            Command::ReverseAllFile => {
+                state.borrow_mut().reverse_all(true);
+            }
+            Command::ClearAll => {
+                state.borrow_mut().clear_all();
+            }
+            Command::Reload => {
+                self.reload_side(true)?;
+                self.reload_side(false)?;
+                return Ok(());
             }
         }
         view.refresh()?;

@@ -18,6 +18,9 @@ pub mod vk {
     pub const UP: u16 = 0x26;
     pub const RIGHT: u16 = 0x27;
     pub const DOWN: u16 = 0x28;
+    pub const ESCAPE: u16 = 0x1B;
+    pub const F5: u16 = 0x74;
+    pub const A: u16 = 0x41;
 }
 
 /// ファイラのコマンド（段階的に拡張していく）。
@@ -34,6 +37,12 @@ pub enum Command {
     FocusLeft,
     FocusRight,
     MarkToggle,
+    SelectAll,
+    ClearAll,
+    ReverseAll,
+    SelectAllFile,
+    ReverseAllFile,
+    Reload,
 }
 
 /// キー＋修飾の組（将来 Ctrl/Shift/Alt も区別する）。
@@ -54,6 +63,11 @@ impl KeyChord {
             shift: false,
             alt: false,
         }
+    }
+
+    /// 修飾キー付きのチョード。
+    pub const fn new(vk: u16, ctrl: bool, shift: bool, alt: bool) -> Self {
+        Self { vk, ctrl, shift, alt }
     }
 }
 
@@ -81,6 +95,9 @@ impl Default for KeyMap {
         m.bind(KeyChord::key(vk::LEFT), FocusLeft);
         m.bind(KeyChord::key(vk::RIGHT), FocusRight);
         m.bind(KeyChord::key(vk::SPACE), MarkToggle);
+        m.bind(KeyChord::key(vk::F5), Reload);
+        m.bind(KeyChord::key(vk::ESCAPE), ClearAll);
+        m.bind(KeyChord::new(vk::A, true, false, false), SelectAll);
         m
     }
 }
@@ -117,6 +134,18 @@ mod tests {
         assert_eq!(m.resolve(&KeyChord::key(vk::RETURN)), Some(Command::EnterDir));
         assert_eq!(m.resolve(&KeyChord::key(vk::SPACE)), Some(Command::MarkToggle));
         assert_eq!(m.resolve(&KeyChord::key(0x00FF)), None);
+    }
+
+    #[test]
+    fn default_binds_select_and_reload() {
+        let m = KeyMap::default();
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::A, true, false, false)),
+            Some(Command::SelectAll)
+        );
+        assert_eq!(m.resolve(&KeyChord::key(vk::A)), None);
+        assert_eq!(m.resolve(&KeyChord::key(vk::F5)), Some(Command::Reload));
+        assert_eq!(m.resolve(&KeyChord::key(vk::ESCAPE)), Some(Command::ClearAll));
     }
 
     #[test]

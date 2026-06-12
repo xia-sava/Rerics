@@ -19,7 +19,7 @@ enum MouseEvent {
 }
 
 type ActivateCb = Box<dyn Fn(usize)>;
-type KeyCb = Box<dyn Fn(u16, bool, bool)>;
+type KeyCb = Box<dyn Fn(u16, bool, bool, bool)>;
 
 /// 列ドラッグ中の状態。
 #[derive(Clone, Copy)]
@@ -97,7 +97,7 @@ impl FileListView {
         *self.inner.on_activate.borrow_mut() = Some(Box::new(cb));
     }
 
-    pub fn on_key_down(&self, cb: impl Fn(u16, bool, bool) + 'static) {
+    pub fn on_key_down(&self, cb: impl Fn(u16, bool, bool, bool) + 'static) {
         *self.inner.on_key.borrow_mut() = Some(Box::new(cb));
     }
 
@@ -213,7 +213,9 @@ impl FileListView {
         let this = self.clone();
         self.wnd.on().wm_key_down(move |p| {
             if let Some(cb) = this.inner.on_key.borrow().as_ref() {
-                cb(p.vkey_code.raw(), p.has_alt_key, false);
+                let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
+                let shift = w::GetAsyncKeyState(co::VK::SHIFT);
+                cb(p.vkey_code.raw(), ctrl, shift, p.has_alt_key);
             }
             Ok(())
         });
