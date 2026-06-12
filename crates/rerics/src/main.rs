@@ -1,3 +1,4 @@
+mod dialog;
 mod file_list;
 mod window_state;
 
@@ -332,6 +333,10 @@ impl MainWindow {
                 self.close_tab()?;
                 return Ok(());
             }
+            Command::MakeDirectory => {
+                self.make_directory(is_left)?;
+                return Ok(());
+            }
         }
         view.refresh()?;
         Ok(())
@@ -507,6 +512,34 @@ impl MainWindow {
             s.set_cursor(0, pr);
         }
         self.bar(is_left).hwnd().SetWindowText(&path)?;
+        view.refresh()?;
+        Ok(())
+    }
+
+    /// 入力ダイアログで名前を尋ね、アクティブペインの現在パス直下にディレクトリを作る。
+    /// 作成後は一覧を更新し、新ディレクトリへカーソルを移す。
+    fn make_directory(&self, is_left: bool) -> w::AnyResult<()> {
+        let dlg = dialog::InputDialog::new("ディレクトリ作成", "新しいディレクトリ名:", "");
+        let name = dlg.show(&self.wnd);
+        let Some(name) = name else {
+            return Ok(());
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(());
+        }
+        let dir = self.pane(is_left).borrow().path().join(name);
+        match std::fs::create_dir(&dir) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("ディレクトリ作成に失敗: {}", e);
+                return Ok(());
+            }
+        }
+        self.reload_side(is_left)?;
+        let view = self.view(is_left);
+        let pr = view.page_rows();
+        view.state().borrow_mut().set_cursor_position(name, pr);
         view.refresh()?;
         Ok(())
     }

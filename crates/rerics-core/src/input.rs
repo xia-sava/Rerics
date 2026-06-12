@@ -20,6 +20,7 @@ pub mod vk {
     pub const DOWN: u16 = 0x28;
     pub const ESCAPE: u16 = 0x1B;
     pub const F5: u16 = 0x74;
+    pub const F7: u16 = 0x76;
     pub const TAB: u16 = 0x09;
     pub const A: u16 = 0x41;
     pub const T: u16 = 0x54;
@@ -60,6 +61,7 @@ pub enum Command {
     PagePrevious,
     NewTab,
     CloseTab,
+    MakeDirectory,
 }
 
 /// キー＋修飾の組（将来 Ctrl/Shift/Alt も区別する）。
@@ -124,6 +126,7 @@ impl Default for KeyMap {
         m.bind(KeyChord::new(vk::TAB, true, true, false), PagePrevious);
         m.bind(KeyChord::new(vk::T, true, false, false), NewTab);
         m.bind(KeyChord::new(vk::W, true, false, false), CloseTab);
+        m.bind(KeyChord::key(vk::F7), MakeDirectory);
         m
     }
 }
@@ -206,6 +209,15 @@ mod tests {
         assert_eq!(
             m.resolve(&KeyChord::new(vk::W, true, false, false)),
             Some(Command::CloseTab)
+        );
+    }
+
+    #[test]
+    fn default_binds_make_directory() {
+        let m = KeyMap::default();
+        assert_eq!(
+            m.resolve(&KeyChord::key(vk::F7)),
+            Some(Command::MakeDirectory)
         );
     }
 
