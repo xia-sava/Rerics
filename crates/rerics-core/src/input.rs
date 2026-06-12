@@ -23,6 +23,8 @@ pub mod vk {
     pub const F7: u16 = 0x76;
     pub const TAB: u16 = 0x09;
     pub const A: u16 = 0x41;
+    pub const C: u16 = 0x43;
+    pub const M: u16 = 0x4D;
     pub const T: u16 = 0x54;
     pub const W: u16 = 0x57;
     pub const D0: u16 = 0x30;
@@ -62,6 +64,8 @@ pub enum Command {
     NewTab,
     CloseTab,
     MakeDirectory,
+    Copy,
+    Move,
 }
 
 /// キー＋修飾の組（将来 Ctrl/Shift/Alt も区別する）。
@@ -127,6 +131,8 @@ impl Default for KeyMap {
         m.bind(KeyChord::new(vk::T, true, false, false), NewTab);
         m.bind(KeyChord::new(vk::W, true, false, false), CloseTab);
         m.bind(KeyChord::key(vk::F7), MakeDirectory);
+        m.bind(KeyChord::key(vk::C), Copy);
+        m.bind(KeyChord::key(vk::M), Move);
         m
     }
 }
@@ -219,6 +225,13 @@ mod tests {
             m.resolve(&KeyChord::key(vk::F7)),
             Some(Command::MakeDirectory)
         );
+    }
+
+    #[test]
+    fn default_binds_copy_move() {
+        let m = KeyMap::default();
+        assert_eq!(m.resolve(&KeyChord::key(vk::C)), Some(Command::Copy));
+        assert_eq!(m.resolve(&KeyChord::key(vk::M)), Some(Command::Move));
     }
 
     #[test]

@@ -337,6 +337,14 @@ impl MainWindow {
                 self.make_directory(is_left)?;
                 return Ok(());
             }
+            Command::Copy => {
+                self.copy_or_move(is_left, false)?;
+                return Ok(());
+            }
+            Command::Move => {
+                self.copy_or_move(is_left, true)?;
+                return Ok(());
+            }
         }
         view.refresh()?;
         Ok(())
@@ -544,6 +552,69 @@ impl MainWindow {
         Ok(())
     }
 
+    /// アクティブペインの選択（無ければカーソル）を反対側ペインへコピー/移動する。
+    fn copy_or_move(&self, is_left: bool, move_it: bool) -> w::AnyResult<()> {
+        let names: Vec<String> = {
+            let state = self.view(is_left).state();
+            let s = state.borrow();
+            let selected: Vec<String> = s
+                .items
+                .iter()
+                .filter(|it| it.selected && !it.is_parent)
+                .map(|it| it.name.clone())
+                .collect();
+            if selected.is_empty() {
+                match s.items.get(s.cursor) {
+                    Some(it) if !it.is_parent => vec![it.name.clone()],
+                    _ => Vec::new(),
+                }
+            } else {
+                selected
+            }
+        };
+        if names.is_empty() {
+            return Ok(());
+        }
+        let src_dir = self.pane(is_left).borrow().path().to_path_buf();
+        let dst_dir = self.pane(!is_left).borrow().path().to_path_buf();
+        if src_dir == dst_dir {
+            return Ok(());
+        }
+        for name in &names {
+            let src = src_dir.join(name);
+            let dst = dst_dir.join(name);
+            let result = if move_it {
+                match std::fs::rename(&src, &dst) {
+                    Ok(()) => Ok(()),
+                    Err(_) => copy_path(&src, &dst).and_then(|()| {
+                        if src.is_dir() {
+                            std::fs::remove_dir_all(&src)
+                        } else {
+                            std::fs::remove_file(&src)
+                        }
+                    }),
+                }
+            } else {
+                copy_path(&src, &dst)
+            };
+            if let Err(e) = result {
+                eprintln!(
+                    "コピー/移動に失敗: {} -> {}: {}",
+                    src.display(),
+                    dst.display(),
+                    e
+                );
+            }
+        }
+        self.reload_side(!is_left)?;
+        if move_it {
+            self.reload_side(is_left)?;
+        }
+        self.view(is_left).state().borrow_mut().clear_all();
+        self.view(is_left).refresh()?;
+        Ok(())
+    }
+
     /// カーソル行を侵入する（dir/親なら移動、file は無視）。
     fn activate(&self, is_left: bool, index: usize) -> w::AnyResult<()> {
         let view = self.view(is_left);
@@ -615,6 +686,24 @@ impl MainWindow {
 fn place(hwnd: &w::HWND, x: i32, y: i32, cx: i32, cy: i32) -> w::AnyResult<()> {
     hwnd.MoveWindow(w::POINT { x, y }, w::SIZE { cx, cy }, true)?;
     Ok(())
+}
+
+/// src を dst へコピーする。ディレクトリは再帰的に複製する。
+fn copy_path(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    if src.is_dir() {
+        std::fs::create_dir_all(dst)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            copy_path(&entry.path(), &dst.join(&name))?;
+        }
+        Ok(())
+    } else {
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(src, dst).map(|_| ())
+    }
 }
 
 /// パスを正規化する。存在しない（ディレクトリでない）場合は `fallback` を返す。
