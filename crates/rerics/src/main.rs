@@ -11,11 +11,11 @@ use tab_bar::TabBar;
 use rerics_core::{Command, FileListState, KeyChord, KeyMap, Pane, SortType, WindowState};
 use winsafe::{self as w, co, gui, prelude::*};
 
-const MARGIN: i32 = 8;
-const GAP: i32 = 8;
-const BAR_H: i32 = 22;
-const BAR_GAP: i32 = 4;
-const TAB_H: i32 = 26;
+const MARGIN: i32 = 2;
+const GAP: i32 = 3;
+const BAR_H: i32 = 20;
+const BAR_GAP: i32 = 2;
+const TAB_H: i32 = 24;
 
 /// 表示完了後に最大化を実行させるための自前メッセージ（`WM_APP`）。
 fn wm_restore_maximize() -> co::WM {
@@ -519,19 +519,33 @@ impl MainWindow {
 
     /// タブ帯のラベルとアクティブ位置を更新し、再描画する。
     fn refresh_tab_bar(&self) -> w::AnyResult<()> {
+        let active = self.active.get();
+        // アクティブタブのラベルはライブのペインパスから（スナップショットは切替時のみ更新の
+        // ため、同一タブ内で移動するとラベルが古くなる）。非アクティブタブはスナップショット。
+        let live = {
+            let p = self.pane(!self.active_right.get()).borrow();
+            p.path().to_path_buf()
+        };
         let labels: Vec<String> = self
             .tabs
             .borrow()
             .iter()
-            .map(|t| {
-                let p = if t.active_right { &t.right_path } else { &t.left_path };
-                std::path::Path::new(p)
+            .enumerate()
+            .map(|(i, t)| {
+                let path = if i == active {
+                    live.display().to_string()
+                } else if t.active_right {
+                    t.right_path.clone()
+                } else {
+                    t.left_path.clone()
+                };
+                std::path::Path::new(&path)
                     .file_name()
                     .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| p.clone())
+                    .unwrap_or(path)
             })
             .collect();
-        self.tab_bar.set_tabs(labels, self.active.get());
+        self.tab_bar.set_tabs(labels, active);
         self.tab_bar.refresh()?;
         Ok(())
     }
@@ -650,6 +664,7 @@ impl MainWindow {
         }
         self.bar(is_left).hwnd().SetWindowText(&path)?;
         view.refresh()?;
+        self.refresh_tab_bar()?;
         Ok(())
     }
 
