@@ -333,6 +333,8 @@ pub fn default_columns() -> Vec<Column> {
 /// 最初の名前列（`FileName`/`FileBaseName`）をフレックス列とし、残り幅を埋める。
 /// それ以外の列は `measured + pad` を `avail * max_ratio` で上限クランプする
 /// （上限により、種類列など可変長のものが極端に広がるのを防ぐ）。
+/// フレックス列は `min_flex` を下限とし、それより狭くはならない。pane がさらに狭いと
+/// 列の合計が `avail` を超え、右端の固定列が描画時に画面外へはみ出る（呼び出し側でクリップ）。
 /// 引数の単位は呼び出し側の任意（全て同一単位なら px でも論理 px でもよい）。
 pub fn auto_adjust_columns(
     columns: &mut [Column],
@@ -341,6 +343,7 @@ pub fn auto_adjust_columns(
     scrollbar_w: i32,
     pad: i32,
     max_ratio: f64,
+    min_flex: i32,
 ) {
     if columns.is_empty() {
         return;
@@ -360,7 +363,7 @@ pub fn auto_adjust_columns(
     }
     if let Some(fi) = flex {
         let rest = avail - scrollbar_w - fixed_total;
-        columns[fi].width = rest.max(8);
+        columns[fi].width = rest.max(min_flex.max(1));
     }
 }
 
@@ -1084,7 +1087,7 @@ mod tests {
         let mut cols = default_columns();
         // measured[0] はフレックスなので無視される。[3] は cap(=100) を超えるのでクランプ。
         let measured = [999, 30, 40, 200, 20];
-        auto_adjust_columns(&mut cols, &measured, 400, 16, 10, 0.25);
+        auto_adjust_columns(&mut cols, &measured, 400, 16, 10, 0.25, 8);
         // 非フレックスは measured+pad、上限 cap=400*0.25=100。
         assert_eq!(cols[1].width, 40); // 30+10
         assert_eq!(cols[2].width, 50); // 40+10
@@ -1096,11 +1099,12 @@ mod tests {
 
     #[test]
     fn auto_adjust_flex_floors_at_min() {
-        // 固定列が広すぎて残りが負になるケースはフレックスが 8 で下げ止まる。
+        // 固定列が広すぎて残りが負になっても、フレックスは min_flex(=50) で下げ止まる
+        // （pane がさらに狭いと固定列が描画で画面外へはみ出る）。
         let mut cols = default_columns();
         let measured = [0, 80, 80, 80, 80];
-        auto_adjust_columns(&mut cols, &measured, 120, 16, 4, 0.5);
-        assert_eq!(cols[0].width, 8);
+        auto_adjust_columns(&mut cols, &measured, 120, 16, 4, 0.5, 50);
+        assert_eq!(cols[0].width, 50);
     }
 
     #[test]
@@ -1133,12 +1137,12 @@ mod tests {
     fn auto_adjust_measured_short_and_empty() {
         // measured が短いと不足分は 0 として扱う（min 8 でクランプ）。
         let mut cols = default_columns();
-        auto_adjust_columns(&mut cols, &[0, 0], 400, 0, 0, 0.25);
+        auto_adjust_columns(&mut cols, &[0, 0], 400, 0, 0, 0.25, 8);
         assert_eq!(cols[1].width, 8);
         assert_eq!(cols[4].width, 8);
         // 空 columns は no-op（パニックしない）。
         let mut none: Vec<Column> = Vec::new();
-        auto_adjust_columns(&mut none, &[], 400, 0, 4, 0.25);
+        auto_adjust_columns(&mut none, &[], 400, 0, 4, 0.25, 8);
         assert!(none.is_empty());
     }
 }

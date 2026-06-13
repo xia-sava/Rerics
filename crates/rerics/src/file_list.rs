@@ -189,6 +189,9 @@ impl FileListView {
             measured[ci] = to_logical(header_w.max(content_w));
         }
         // スクロールバー幅は常時予約する（有無で列幅がガチャガチャしないよう一定に保つ）。
+        // フレックス（名前列）は「見える10文字＋左右マージン2文字＝12文字分」を最小幅とし、
+        // pane がそれより狭い時は名前列を縮めず、右端の固定列が描画で画面外へはみ出る
+        // （カラム幅は不変のまま右から圏外になる）。
         rerics_core::auto_adjust_columns(
             &mut s.columns,
             &measured,
@@ -196,6 +199,7 @@ impl FileListView {
             self.inner.scrollbar_width,
             to_logical(n_w * 2),
             AUTOFIT_MAX_RATIO,
+            to_logical(n_w * 12),
         );
         Ok(())
     }
