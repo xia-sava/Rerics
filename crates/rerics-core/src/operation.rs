@@ -85,6 +85,12 @@ enum Flow {
     Cancel,
 }
 
+/// 1ファイルコピーの結末（完了か、バイト境界での中止か）。
+enum CopyOutcome {
+    Completed,
+    Cancelled,
+}
+
 /// ファイル境界のチェックポイント。中断中は待機し、中止要求があれば `true` を返す。
 fn should_stop(host: &dyn OperationHost) -> bool {
     if host.cancelled() {
@@ -227,11 +233,17 @@ fn copy_item(
                 };
                 host.update_progress(handle, &text);
             }
+            !host.cancelled()
         });
         match result {
-            Ok(()) => {
+            Ok(CopyOutcome::Completed) => {
                 host.update_progress(handle, &line);
                 sum.ok += 1;
+                Flow::Continue
+            }
+            Ok(CopyOutcome::Cancelled) => {
+                host.update_progress(handle, &line);
+                Flow::Cancel
             }
             Err(e) => {
                 let reason = e.to_string();
@@ -243,9 +255,9 @@ fn copy_item(
                 };
                 host.log(LogLevel::Error, &fail);
                 sum.err += 1;
+                Flow::Continue
             }
         }
-        Flow::Continue
     }
 }
 
@@ -406,15 +418,16 @@ impl ProgressTracker {
 }
 
 /// 1ファイルをコピーし、移動なら元を消す。コピー中は `progress(transferred, total)`
-/// を適時呼んで進捗を通知する。Windows は `CopyFileExW` のコールバックから随時、
-/// それ以外はコピー完了後に1度だけ呼ぶ。
+/// を適時呼んで進捗を通知する。`progress` が `false` を返したら中止する。Windows は
+/// `CopyFileExW` のコールバックから随時、それ以外はコピー完了後に1度だけ呼ぶ。
+/// 中止された場合は宛先ファイルを残さず [`CopyOutcome::Cancelled`] を返す。
 #[cfg(windows)]
 fn copy_file(
     src: &Path,
     dst: &Path,
     move_it: bool,
-    progress: &mut dyn FnMut(u64, u64),
-) -> std::io::Result<()> {
+    progress: &mut dyn FnMut(u64, u64) -> bool,
+) -> std::io::Result<CopyOutcome> {
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
 
@@ -443,6 +456,9 @@ fn copy_file(
     }
 
     const PROGRESS_CONTINUE: u32 = 0;
+    // 中止して宛先を削除する（PROGRESS_STOP は残すが、こちらは消す＝原作と同じ）。
+    const PROGRESS_CANCEL: u32 = 1;
+    const ERROR_REQUEST_ABORTED: i32 = 1235;
 
     unsafe extern "system" fn routine(
         total: i64,
@@ -456,8 +472,10 @@ fn copy_file(
         data: *mut c_void,
     ) -> u32 {
         if !data.is_null() {
-            let cb = unsafe { &mut *(data as *mut &mut dyn FnMut(u64, u64)) };
-            cb(transferred.max(0) as u64, total.max(0) as u64);
+            let cb = unsafe { &mut *(data as *mut &mut dyn FnMut(u64, u64) -> bool) };
+            if !cb(transferred.max(0) as u64, total.max(0) as u64) {
+                return PROGRESS_CANCEL;
+            }
         }
         PROGRESS_CONTINUE
     }
@@ -467,37 +485,45 @@ fn copy_file(
     }
     let src_w: Vec<u16> = src.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
     let dst_w: Vec<u16> = dst.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
-    let mut cb: &mut dyn FnMut(u64, u64) = progress;
-    let data = (&mut cb) as *mut &mut dyn FnMut(u64, u64) as *mut c_void;
+    let mut cb: &mut dyn FnMut(u64, u64) -> bool = progress;
+    let data = (&mut cb) as *mut &mut dyn FnMut(u64, u64) -> bool as *mut c_void;
     let ok = unsafe {
         CopyFileExW(src_w.as_ptr(), dst_w.as_ptr(), Some(routine), data, std::ptr::null_mut(), 0)
     };
     if ok == 0 {
-        return Err(std::io::Error::last_os_error());
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(ERROR_REQUEST_ABORTED) {
+            return Ok(CopyOutcome::Cancelled);
+        }
+        return Err(err);
     }
     if move_it {
         std::fs::remove_file(src)?;
     }
-    Ok(())
+    Ok(CopyOutcome::Completed)
 }
 
 /// 非 Windows ではバイト進捗を取れないため、完了後に1度だけ通知する。
+/// `progress` が `false` を返したら宛先を消して中止扱いにする。
 #[cfg(not(windows))]
 fn copy_file(
     src: &Path,
     dst: &Path,
     move_it: bool,
-    progress: &mut dyn FnMut(u64, u64),
-) -> std::io::Result<()> {
+    progress: &mut dyn FnMut(u64, u64) -> bool,
+) -> std::io::Result<CopyOutcome> {
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let bytes = std::fs::copy(src, dst)?;
-    progress(bytes, bytes);
+    if !progress(bytes, bytes) {
+        let _ = std::fs::remove_file(dst);
+        return Ok(CopyOutcome::Cancelled);
+    }
     if move_it {
         std::fs::remove_file(src)?;
     }
-    Ok(())
+    Ok(CopyOutcome::Completed)
 }
 
 #[cfg(test)]
@@ -697,13 +723,26 @@ mod tests {
         let dst = TempDir::new();
         src.write_file("a.txt", "1");
         src.write_file("b.txt", "2");
-        let host = FakeHost::cancelling(1);
+        let host = FakeHost::cancelling(2);
         let names = vec!["a.txt".to_owned(), "b.txt".to_owned()];
         let sum = run_copy(&host, &src.path, &dst.path, &names, false);
         assert!(sum.cancelled);
         assert_eq!(sum.ok, 1);
         assert!(dst.join("a.txt").exists());
         assert!(!dst.join("b.txt").exists());
+    }
+
+    #[test]
+    fn cancel_during_file_copy_leaves_no_partial() {
+        let src = TempDir::new();
+        let dst = TempDir::new();
+        src.write_file("a.txt", "hello");
+        // 1件目のコピー中（begin_progress で Copy 行が出た直後）に中止が立つ。
+        let host = FakeHost::cancelling(1);
+        let sum = run_copy(&host, &src.path, &dst.path, &["a.txt".to_owned()], false);
+        assert!(sum.cancelled);
+        assert_eq!(sum.ok, 0);
+        assert!(!dst.join("a.txt").exists());
     }
 
     #[test]
