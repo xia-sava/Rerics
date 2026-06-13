@@ -11,9 +11,19 @@ pub fn copy(name: &str) -> String {
     format!("Copy {name}")
 }
 
+/// `Copy {0} {1}%`（コピー進捗の逐次ログ更新）。
+pub fn copy_progress(name: &str, percent: u32) -> String {
+    format!("Copy {name} {percent}%")
+}
+
 /// `Move {0}`（移動操作の逐次ログ）。
 pub fn move_(name: &str) -> String {
     format!("Move {name}")
+}
+
+/// `Move {0} {1}%`（移動進捗の逐次ログ更新）。
+pub fn move_progress(name: &str, percent: u32) -> String {
+    format!("Move {name} {percent}%")
 }
 
 /// `Delete {0}`（ファイル削除の逐次ログ）。

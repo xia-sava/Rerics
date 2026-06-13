@@ -10,7 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
 
@@ -58,6 +58,7 @@ struct MainWindow {
     task_rx: Rc<Receiver<WorkerEvent>>,
     tasks: Rc<RefCell<Vec<TaskEntry>>>,
     next_task_id: Rc<Cell<u64>>,
+    progress_seq: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
     in_dialog: Rc<Cell<bool>>,
 }
@@ -179,6 +180,7 @@ impl MainWindow {
             task_rx: Rc::new(task_rx),
             tasks: Rc::new(RefCell::new(Vec::new())),
             next_task_id: Rc::new(Cell::new(0)),
+            progress_seq: Arc::new(AtomicU64::new(0)),
             shutdown: Arc::new(AtomicBool::new(false)),
             in_dialog: Rc::new(Cell::new(false)),
         }
@@ -844,7 +846,12 @@ impl MainWindow {
         move_it: bool,
     ) -> w::AnyResult<()> {
         let control = Arc::new(TaskControl::new());
-        let host = ChannelHost::new(self.task_tx.clone(), self.shutdown.clone(), control.clone());
+        let host = ChannelHost::new(
+            self.task_tx.clone(),
+            self.shutdown.clone(),
+            control.clone(),
+            self.progress_seq.clone(),
+        );
         let kind = if move_it { OpKind::Move } else { OpKind::Copy };
         let id = self.next_id();
         let text = if move_it { "移動" } else { "コピー" };
@@ -860,7 +867,12 @@ impl MainWindow {
     /// 削除をワーカースレッドで起動する。
     fn start_delete(&self, dir: PathBuf, names: Vec<String>) -> w::AnyResult<()> {
         let control = Arc::new(TaskControl::new());
-        let host = ChannelHost::new(self.task_tx.clone(), self.shutdown.clone(), control.clone());
+        let host = ChannelHost::new(
+            self.task_tx.clone(),
+            self.shutdown.clone(),
+            control.clone(),
+            self.progress_seq.clone(),
+        );
         let id = self.next_id();
         self.register_task(id, "削除", short_desc(&names), control)?;
         std::thread::spawn(move || {
@@ -928,6 +940,12 @@ impl MainWindow {
                     LogLevel::Warning => self.log.warn(&text),
                     LogLevel::Error => self.log.error(&text),
                 },
+                WorkerEvent::LogLine { id, level, text } => {
+                    self.log.push_with_id(id, level, &text);
+                }
+                WorkerEvent::LogUpdate { id, text } => {
+                    self.log.update(id, &text);
+                }
                 WorkerEvent::AskConflict { name, reply } => {
                     self.in_dialog.set(true);
                     let (choice, all) = dialog::conflict_box(&self.wnd, &name);

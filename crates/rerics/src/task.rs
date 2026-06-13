@@ -6,11 +6,11 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
-use rerics_core::{ConflictResolution, DeleteWarnChoice, LogLevel, OperationHost};
+use rerics_core::{ConflictResolution, DeleteWarnChoice, LogLevel, OperationHost, ProgressHandle};
 
 use crate::dialog::MessageResult;
 
@@ -111,6 +111,10 @@ pub struct ConflictReply {
 pub enum WorkerEvent {
     /// ログ1行を追記する。
     Log { level: LogLevel, text: String },
+    /// インプレース更新できる `id` 付きの行を追記する（進捗行の開始）。
+    LogLine { id: u64, level: LogLevel, text: String },
+    /// `id` 付き行の本文を書き換える（進捗の更新・確定）。
+    LogUpdate { id: u64, text: String },
     /// 同名衝突の解決を UI に問い合わせる（回答を `reply` で受け取る）。
     AskConflict { name: String, reply: Sender<ConflictReply> },
     /// 属性付きファイルの削除可否を UI に問い合わせる。
@@ -130,16 +134,24 @@ pub struct ChannelHost {
     pub tx: Sender<WorkerEvent>,
     pub shutdown: Arc<AtomicBool>,
     pub control: Arc<TaskControl>,
+    /// 進捗行 id の払い出し元（全タスクで共有し一意にする）。
+    pub progress_seq: Arc<AtomicU64>,
     pub conflict_cache: RefCell<Option<ConflictResolution>>,
     pub delete_warn_cache: RefCell<Option<DeleteWarnChoice>>,
 }
 
 impl ChannelHost {
-    pub fn new(tx: Sender<WorkerEvent>, shutdown: Arc<AtomicBool>, control: Arc<TaskControl>) -> Self {
+    pub fn new(
+        tx: Sender<WorkerEvent>,
+        shutdown: Arc<AtomicBool>,
+        control: Arc<TaskControl>,
+        progress_seq: Arc<AtomicU64>,
+    ) -> Self {
         Self {
             tx,
             shutdown,
             control,
+            progress_seq,
             conflict_cache: RefCell::new(None),
             delete_warn_cache: RefCell::new(None),
         }
@@ -159,6 +171,16 @@ impl OperationHost for ChannelHost {
         while self.control.is_suspended() && !self.shutdown.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
+    }
+
+    fn begin_progress(&self, level: LogLevel, text: &str) -> ProgressHandle {
+        let id = self.progress_seq.fetch_add(1, Ordering::Relaxed);
+        let _ = self.tx.send(WorkerEvent::LogLine { id, level, text: text.to_owned() });
+        ProgressHandle(id)
+    }
+
+    fn update_progress(&self, handle: ProgressHandle, text: &str) {
+        let _ = self.tx.send(WorkerEvent::LogUpdate { id: handle.0, text: text.to_owned() });
     }
 
     fn resolve_conflict(&self, name: &str) -> ConflictResolution {

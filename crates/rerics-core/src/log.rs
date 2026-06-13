@@ -19,6 +19,8 @@ pub enum LogLevel {
 pub struct LogLine {
     pub text: String,
     pub level: LogLevel,
+    /// インプレース更新用の識別子（進捗行のみ `Some`、通常行は `None`）。
+    pub id: Option<u64>,
 }
 
 /// ログウィンドウの状態モデル（描画と完全分離）。
@@ -52,17 +54,36 @@ impl LogState {
     /// レベル付きでメッセージを追加する。`text` 内の改行は行ごとに分割して
     /// 個別の行にする（末尾空白は落とす）。上限超過分は先頭から捨てる。
     pub fn push(&mut self, level: LogLevel, text: &str) {
+        self.push_line(level, text, None);
+    }
+
+    /// インプレース更新用の `id` を伴って1行追加する（[`Self::update`] で書き換えられる）。
+    pub fn push_with_id(&mut self, id: u64, level: LogLevel, text: &str) {
+        self.push_line(level, text, Some(id));
+    }
+
+    fn push_line(&mut self, level: LogLevel, text: &str, id: Option<u64>) {
         for raw in text.split('\n') {
             let line = raw.trim_end_matches('\r').trim_end();
             self.lines.push(LogLine {
                 text: line.to_owned(),
                 level,
+                id,
             });
         }
         let max = self.max_lines.max(1);
         if self.lines.len() > max {
             let excess = self.lines.len() - max;
             self.lines.drain(0..excess);
+        }
+    }
+
+    /// `id` 付きの行の本文を書き換える（[`Self::push_with_id`] で追加した行）。
+    /// 該当行が無ければ（トリムで消えた等）何もしない。
+    pub fn update(&mut self, id: u64, text: &str) {
+        let body = text.trim_end_matches('\r').trim_end().to_owned();
+        if let Some(line) = self.lines.iter_mut().rev().find(|l| l.id == Some(id)) {
+            line.text = body;
         }
     }
 
@@ -158,6 +179,27 @@ mod tests {
         }
         s.scroll_to_bottom(10);
         assert_eq!(s.scroll_top, 0);
+    }
+
+    #[test]
+    fn update_rewrites_line_by_id() {
+        let mut s = LogState::new();
+        s.push(LogLevel::Normal, "Copy a.bin");
+        s.push_with_id(7, LogLevel::Normal, "Copy b.bin");
+        s.update(7, "Copy b.bin 50%");
+        assert_eq!(s.lines[0].text, "Copy a.bin");
+        assert_eq!(s.lines[1].text, "Copy b.bin 50%");
+        s.update(7, "Copy b.bin");
+        assert_eq!(s.lines[1].text, "Copy b.bin");
+    }
+
+    #[test]
+    fn update_missing_id_is_noop() {
+        let mut s = LogState::new();
+        s.push(LogLevel::Normal, "Copy a.bin");
+        s.update(99, "ignored");
+        assert_eq!(s.count(), 1);
+        assert_eq!(s.lines[0].text, "Copy a.bin");
     }
 
     #[test]

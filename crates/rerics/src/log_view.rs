@@ -96,6 +96,23 @@ impl LogView {
         let _ = self.refresh();
     }
 
+    /// インプレース更新できる `id` 付き行を追記する（進捗行用）。末尾へ追従する。
+    pub fn push_with_id(&self, id: u64, level: LogLevel, text: &str) {
+        let pr = self.page_rows();
+        {
+            let mut s = self.inner.state.borrow_mut();
+            s.push_with_id(id, level, text);
+            s.scroll_to_bottom(pr);
+        }
+        let _ = self.refresh();
+    }
+
+    /// `id` 付き行の本文を書き換えて再描画する（スクロール位置は変えない）。
+    pub fn update(&self, id: u64, text: &str) {
+        self.inner.state.borrow_mut().update(id, text);
+        let _ = self.refresh();
+    }
+
     /// 1画面に収まる行数。
     fn page_rows(&self) -> usize {
         let lh = self.inner.line_height.get().max(1);

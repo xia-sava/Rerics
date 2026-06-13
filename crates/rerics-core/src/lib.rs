@@ -20,7 +20,8 @@ pub use file_list::{
 pub use input::{Command, KeyChord, KeyMap, vk};
 pub use log::{LogLevel, LogLine, LogState};
 pub use operation::{
-    ConflictResolution, DeleteWarnChoice, OpSummary, OperationHost, run_copy, run_delete,
+    ConflictResolution, DeleteWarnChoice, OpSummary, OperationHost, ProgressHandle, run_copy,
+    run_delete,
 };
 
 use std::path::{Path, PathBuf};
