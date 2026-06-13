@@ -1,6 +1,7 @@
 mod dialog;
 mod file_list;
 mod log_view;
+mod messages;
 mod tab_bar;
 mod window_state;
 
@@ -707,8 +708,13 @@ impl MainWindow {
     /// 入力ダイアログで名前を尋ね、アクティブペインの現在パス直下にディレクトリを作る。
     /// 作成後は一覧を更新し、新ディレクトリへカーソルを移す。
     fn make_directory(&self, is_left: bool) -> w::AnyResult<()> {
-        let dlg = dialog::InputDialog::new("ディレクトリ作成", "新しいディレクトリ名:", "");
-        let name = dlg.show(&self.wnd);
+        let name = dialog::input_box(
+            &self.wnd,
+            "ディレクトリの作成",
+            &messages::directory_name_question(),
+            "新しいディレクトリ",
+            dialog::InputMode::Plain,
+        );
         let Some(name) = name else {
             return Ok(());
         };
@@ -717,13 +723,17 @@ impl MainWindow {
             return Ok(());
         }
         let dir = self.pane(is_left).borrow().path().join(name);
-        match std::fs::create_dir(&dir) {
-            Ok(()) => self.log.info(&format!("ディレクトリを作成しました: {}", name)),
-            Err(e) => {
-                self.log.error(&format!("ディレクトリ作成に失敗: {}: {}", name, e));
-                return Ok(());
-            }
+        if std::fs::create_dir(&dir).is_err() {
+            self.log.error(&messages::create_directory_failure(name));
+            dialog::message_box(
+                &self.wnd,
+                "ディレクトリの作成",
+                &messages::create_directory_failure(name),
+                dialog::MessageStyle::Error,
+            );
+            return Ok(());
         }
+        self.log.normal(&messages::create_directory(name));
         self.reload_side(is_left)?;
         let view = self.view(is_left);
         let pr = view.page_rows();
@@ -734,8 +744,13 @@ impl MainWindow {
 
     /// 入力ダイアログで新規の空ファイルを作る。既存ファイルは上書きしない。
     fn create_file(&self, is_left: bool) -> w::AnyResult<()> {
-        let dlg = dialog::InputDialog::new("新規ファイル作成", "新しいファイル名:", "");
-        let name = dlg.show(&self.wnd);
+        let name = dialog::input_box(
+            &self.wnd,
+            "新規ファイルの作成",
+            "ファイル名を入力して下さい。",
+            "",
+            dialog::InputMode::Plain,
+        );
         let Some(name) = name else {
             return Ok(());
         };
@@ -744,16 +759,18 @@ impl MainWindow {
             return Ok(());
         }
         let path = self.pane(is_left).borrow().path().join(name);
-        match std::fs::OpenOptions::new()
+        if let Err(e) = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&path)
         {
-            Ok(_) => self.log.info(&format!("ファイルを作成しました: {}", name)),
-            Err(e) => {
-                self.log.error(&format!("ファイル作成に失敗: {}: {}", name, e));
-                return Ok(());
-            }
+            let msg = if e.kind() == std::io::ErrorKind::AlreadyExists {
+                messages::all_ready_exists(name)
+            } else {
+                format!("{e}")
+            };
+            dialog::message_box(&self.wnd, "新規ファイルの作成", &msg, dialog::MessageStyle::Error);
+            return Ok(());
         }
         self.reload_side(is_left)?;
         let view = self.view(is_left);
@@ -784,24 +801,32 @@ impl MainWindow {
             }
         };
         if names.is_empty() {
-            self.log.error("ファイルが選択されていません。");
+            self.log.error(&messages::not_selected_error());
             return Ok(());
         }
         let src_dir = self.pane(is_left).borrow().path().to_path_buf();
         let dst_dir = self.pane(!is_left).borrow().path().to_path_buf();
-        let op = if move_it { "Move" } else { "Copy" };
         let mut ok = 0usize;
         let mut err = 0usize;
         for name in &names {
             let src = src_dir.join(name);
             let dst = dst_dir.join(name);
             if src == dst {
-                let m = if move_it { "移動先が同じです。- " } else { "コピー先が同じです。- " };
-                self.log.error(&format!("{}{}", m, name));
+                let line = if move_it {
+                    messages::same_move_path(name)
+                } else {
+                    messages::same_copy_path(name)
+                };
+                self.log.error(&line);
                 err += 1;
                 continue;
             }
-            self.log.normal(&format!("{} {}", op, name));
+            let line = if move_it {
+                messages::move_(name)
+            } else {
+                messages::copy(name)
+            };
+            self.log.normal(&line);
             let result = if move_it {
                 match std::fs::rename(&src, &dst) {
                     Ok(()) => Ok(()),
@@ -818,14 +843,18 @@ impl MainWindow {
             };
             match result {
                 Ok(()) => ok += 1,
-                Err(e) => {
-                    let m = if move_it { "移動に失敗しました。- " } else { "コピーに失敗しました。- " };
-                    self.log.error(&format!("{}{}", m, e));
+                Err(_) => {
+                    let line = if move_it {
+                        messages::move_failure(name)
+                    } else {
+                        messages::copy_failure(name)
+                    };
+                    self.log.error(&line);
                     err += 1;
                 }
             }
         }
-        let result_line = format!("{} Success, 0 Skip, {} Error", ok, err);
+        let result_line = messages::copy_result(ok, 0, err);
         if err == 0 {
             self.log.info(&result_line);
         } else {
@@ -851,7 +880,13 @@ impl MainWindow {
                 _ => return Ok(()),
             }
         };
-        let new = dialog::InputDialog::new("名前の変更", "新しい名前:", &old).show(&self.wnd);
+        let new = dialog::input_box(
+            &self.wnd,
+            "名前の変更",
+            "新しい名前を入力して下さい。",
+            &old,
+            dialog::InputMode::Plain,
+        );
         let Some(new) = new else {
             return Ok(());
         };
@@ -860,13 +895,17 @@ impl MainWindow {
             return Ok(());
         }
         let dir = self.pane(is_left).borrow().path().to_path_buf();
-        match std::fs::rename(dir.join(&old), dir.join(new)) {
-            Ok(()) => self.log.info(&format!("名前を変更しました: {} → {}", old, new)),
-            Err(e) => {
-                self.log.error(&format!("名前の変更に失敗: {}: {}", old, e));
-                return Ok(());
-            }
+        if std::fs::rename(dir.join(&old), dir.join(new)).is_err() {
+            self.log.error(&messages::rename_failure(&old));
+            dialog::message_box(
+                &self.wnd,
+                "名前の変更",
+                &messages::rename_failure(&old),
+                dialog::MessageStyle::Error,
+            );
+            return Ok(());
         }
+        self.log.normal(&messages::rename(&old, new));
         self.reload_side(is_left)?;
         let pr = self.view(is_left).page_rows();
         self.view(is_left)
@@ -898,7 +937,7 @@ impl MainWindow {
             }
         };
         if names.is_empty() {
-            self.log.error("ファイルが選択されていません。");
+            self.log.error(&messages::not_selected_error());
             return Ok(());
         }
         let short = if names.len() > 1 {
@@ -906,8 +945,13 @@ impl MainWindow {
         } else {
             names[0].clone()
         };
-        let msg = format!("{}を削除してもよろしいですか？", short);
-        if !dialog::ConfirmDialog::new("削除", &msg).show(&self.wnd) {
+        let ans = dialog::message_box(
+            &self.wnd,
+            "削除",
+            &messages::delete_question(&short),
+            dialog::MessageStyle::YesNo,
+        );
+        if ans != dialog::MessageResult::Yes {
             return Ok(());
         }
         let dir = self.pane(is_left).borrow().path().to_path_buf();
@@ -916,8 +960,12 @@ impl MainWindow {
         for name in &names {
             let target = dir.join(name);
             let is_dir = target.is_dir();
-            let op = if is_dir { "DeleteDirectory" } else { "Delete" };
-            self.log.normal(&format!("{} {}", op, name));
+            let line = if is_dir {
+                messages::delete_directory(name)
+            } else {
+                messages::delete(name)
+            };
+            self.log.normal(&line);
             let result = if is_dir {
                 std::fs::remove_dir_all(&target)
             } else {
@@ -925,13 +973,13 @@ impl MainWindow {
             };
             match result {
                 Ok(()) => ok += 1,
-                Err(e) => {
-                    self.log.error(&format!("削除に失敗しました。- {}", e));
+                Err(_) => {
+                    self.log.error(&messages::delete_failure(name));
                     err += 1;
                 }
             }
         }
-        let result_line = format!("{} Success, {} Error", ok, err);
+        let result_line = messages::delete_result(ok, err);
         if err == 0 {
             self.log.info(&result_line);
         } else {
@@ -944,12 +992,13 @@ impl MainWindow {
     /// 入力ダイアログでパスマスクを尋ね、表示フィルタを設定/解除して一覧を更新する。
     fn path_mask(&self, is_left: bool) -> w::AnyResult<()> {
         let cur = self.mask(is_left).borrow().clone().unwrap_or_default();
-        let input = dialog::InputDialog::new(
+        let input = dialog::input_box(
+            &self.wnd,
             "パスマスク",
             "表示するマスク（* で解除・カンマ区切り）:",
             &cur,
-        )
-        .show(&self.wnd);
+            dialog::InputMode::Plain,
+        );
         let Some(input) = input else {
             return Ok(());
         };
@@ -965,8 +1014,13 @@ impl MainWindow {
 
     /// 入力ダイアログでマスクを尋ね、一致するファイルの選択状態を立てる。
     fn select_mask(&self, is_left: bool) -> w::AnyResult<()> {
-        let input = dialog::InputDialog::new("マスクで選択", "選択するマスク（カンマ区切り）:", "")
-            .show(&self.wnd);
+        let input = dialog::input_box(
+            &self.wnd,
+            "マスクで選択",
+            "選択するマスク（カンマ区切り）:",
+            "",
+            dialog::InputMode::Plain,
+        );
         let Some(input) = input else {
             return Ok(());
         };
