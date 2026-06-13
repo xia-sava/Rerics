@@ -4,6 +4,7 @@
 //! 追加といった後続の作り込みをペイン単位で扱えるようにする。将来ステータスバー（下）も
 //! ここに加える。
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use rerics_core::{Config, Rgb};
@@ -20,9 +21,9 @@ pub struct PaneView {
     bar: PathBarView,
     list: FileListView,
     status: StatusBarView,
-    bar_height: i32,
-    bar_gap: i32,
-    status_bar_height: i32,
+    bar_height: Rc<Cell<i32>>,
+    bar_gap: Rc<Cell<i32>>,
+    status_bar_height: Rc<Cell<i32>>,
     /// コンテナ背景ブラシの寿命を保持する（`class_bg_brush` へ raw コピーを渡すため）。
     _bg: Rc<w::guard::DeleteObjectGuard<w::HBRUSH>>,
 }
@@ -65,9 +66,9 @@ impl PaneView {
             bar,
             list,
             status,
-            bar_height: gui::dpi_y(cfg.layout.bar_height),
-            bar_gap: gui::dpi_y(cfg.layout.bar_gap),
-            status_bar_height: gui::dpi_y(cfg.layout.status_bar_height),
+            bar_height: Rc::new(Cell::new(gui::dpi_y(cfg.layout.bar_height))),
+            bar_gap: Rc::new(Cell::new(gui::dpi_y(cfg.layout.bar_gap))),
+            status_bar_height: Rc::new(Cell::new(gui::dpi_y(cfg.layout.status_bar_height))),
             _bg: Rc::new(bg),
         }
     }
@@ -88,16 +89,28 @@ impl PaneView {
         &self.status
     }
 
+    /// 設定をペイン配下（パスバー・リスト・ステータス）へ反映し、寸法を更新する。
+    pub fn apply_config(&self, cfg: &Config) {
+        self.bar_height.set(gui::dpi_y(cfg.layout.bar_height));
+        self.bar_gap.set(gui::dpi_y(cfg.layout.bar_gap));
+        self.status_bar_height.set(gui::dpi_y(cfg.layout.status_bar_height));
+        self.bar.apply_config(cfg);
+        self.list.apply_config(cfg);
+        self.status.apply_config(cfg);
+    }
+
     /// コンテナ内でパスバー（上）・ファイルリスト（中）・ステータスバー（下）を再配置する。
     pub fn relayout(&self) -> w::AnyResult<()> {
         let rc = self.container.hwnd().GetClientRect()?;
         let cw = rc.right - rc.left;
         let ch = rc.bottom - rc.top;
-        let list_y = self.bar_height + self.bar_gap;
-        let status_y = ch - self.status_bar_height;
-        place(self.bar.hwnd(), 0, 0, cw, self.bar_height)?;
+        let bar_height = self.bar_height.get();
+        let status_bar_height = self.status_bar_height.get();
+        let list_y = bar_height + self.bar_gap.get();
+        let status_y = ch - status_bar_height;
+        place(self.bar.hwnd(), 0, 0, cw, bar_height)?;
         place(self.list.hwnd(), 0, list_y, cw, (status_y - list_y).max(0))?;
-        place(self.status.hwnd(), 0, status_y, cw, self.status_bar_height)?;
+        place(self.status.hwnd(), 0, status_y, cw, status_bar_height)?;
         self.list.refresh()?;
         self.status.refresh()?;
         Ok(())

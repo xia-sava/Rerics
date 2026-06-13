@@ -14,8 +14,8 @@ use crate::chrome;
 struct Inner {
     labels: RefCell<Vec<String>>,
     active: Cell<usize>,
-    font_family: String,
-    font_size: i32,
+    font_family: RefCell<String>,
+    font_size: Cell<i32>,
     font_height: Cell<i32>,
     on_click: RefCell<Option<Box<dyn Fn(usize)>>>,
 }
@@ -48,8 +48,8 @@ impl TabBar {
         let inner = Rc::new(Inner {
             labels: RefCell::new(Vec::new()),
             active: Cell::new(0),
-            font_family: cfg.font.family.clone(),
-            font_size: cfg.font.size,
+            font_family: RefCell::new(cfg.font.family.clone()),
+            font_size: Cell::new(cfg.font.size),
             font_height: Cell::new(gui::dpi_y(cfg.font.size)),
             on_click: RefCell::new(None),
         });
@@ -79,10 +79,17 @@ impl TabBar {
         Ok(())
     }
 
+    /// 設定のフォントを反映して再描画する（chrome の色はシステム固定なので対象外）。
+    pub fn apply_config(&self, cfg: &Config) {
+        *self.inner.font_family.borrow_mut() = cfg.font.family.clone();
+        self.inner.font_size.set(cfg.font.size);
+        let _ = self.refresh();
+    }
+
     /// フォントを生成する（設定のファミリ・サイズ）。
     fn create_font(&self) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
         w::HFONT::CreateFont(
-            w::SIZE { cx: 0, cy: -gui::dpi_y(self.inner.font_size) },
+            w::SIZE { cx: 0, cy: -gui::dpi_y(self.inner.font_size.get()) },
             0,
             0,
             co::FW::NORMAL,
@@ -94,7 +101,7 @@ impl TabBar {
             co::CLIP::DEFAULT_PRECIS,
             co::QUALITY::CLEARTYPE,
             co::PITCH::FIXED,
-            &self.inner.font_family,
+            &self.inner.font_family.borrow(),
         )
     }
 

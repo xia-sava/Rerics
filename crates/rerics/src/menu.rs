@@ -34,7 +34,7 @@ const MENUS: &[MenuDef] = &[
     MenuDef {
         label: "Records(&X)",
         items: &[
-            off("設定(&S)"),
+            on("設定(&S)", Command::OpenSettings),
             off("プラグインの設定"),
             SEP,
             on("タブを閉じる(&C)", Command::CloseTab),

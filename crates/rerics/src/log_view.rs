@@ -11,10 +11,10 @@ use winsafe::{self as w, co, gui, prelude::*};
 
 struct Inner {
     state: RefCell<LogState>,
-    colors: Colors,
-    font_family: String,
-    font_size: i32,
-    scrollbar_width: i32,
+    colors: Cell<Colors>,
+    font_family: RefCell<String>,
+    font_size: Cell<i32>,
+    scrollbar_width: Cell<i32>,
     /// 1行の高さ（描画時にフォントメトリクスから更新）。
     line_height: Cell<i32>,
     /// スクロールバー thumb ドラッグ中の、掴んだ位置の thumb 上端からのオフセット。
@@ -48,10 +48,10 @@ impl LogView {
         );
         let inner = Rc::new(Inner {
             state: RefCell::new(LogState::new()),
-            colors: cfg.active_colors(),
-            font_family: cfg.font.family.clone(),
-            font_size: cfg.font.size,
-            scrollbar_width: cfg.layout.scrollbar_width,
+            colors: Cell::new(cfg.active_colors()),
+            font_family: RefCell::new(cfg.font.family.clone()),
+            font_size: Cell::new(cfg.font.size),
+            scrollbar_width: Cell::new(cfg.layout.scrollbar_width),
             line_height: Cell::new(gui::dpi_y(cfg.font.size + 2)),
             sb_drag: Cell::new(None),
         });
@@ -143,6 +143,15 @@ impl LogView {
         Ok(())
     }
 
+    /// 設定の配色・フォント・スクロールバー幅を反映して再描画する。
+    pub fn apply_config(&self, cfg: &Config) {
+        self.inner.colors.set(cfg.active_colors());
+        *self.inner.font_family.borrow_mut() = cfg.font.family.clone();
+        self.inner.font_size.set(cfg.font.size);
+        self.inner.scrollbar_width.set(cfg.layout.scrollbar_width);
+        let _ = self.refresh();
+    }
+
     /// スクロールバーの (バー左端x, トラック上端y, トラック高, thumb上端y, thumb高) を返す。
     /// スクロール不要（count <= page）なら None。
     fn scrollbar_geom(&self, cw: i32, ch: i32) -> Option<(i32, i32, i32, i32, i32)> {
@@ -154,7 +163,7 @@ impl LogView {
         if count <= page {
             return None;
         }
-        let sbw = gui::dpi_x(self.inner.scrollbar_width);
+        let sbw = gui::dpi_x(self.inner.scrollbar_width.get());
         let bar_x = cw - sbw;
         let track_top = 1;
         let track_h = ch - track_top;
@@ -173,7 +182,7 @@ impl LogView {
     fn create_font(&self, bold: bool) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
         let weight = if bold { co::FW::BOLD } else { co::FW::NORMAL };
         w::HFONT::CreateFont(
-            w::SIZE { cx: 0, cy: -gui::dpi_y(self.inner.font_size) },
+            w::SIZE { cx: 0, cy: -gui::dpi_y(self.inner.font_size.get()) },
             0,
             0,
             weight,
@@ -185,7 +194,7 @@ impl LogView {
             co::CLIP::DEFAULT_PRECIS,
             co::QUALITY::CLEARTYPE,
             co::PITCH::FIXED,
-            &self.inner.font_family,
+            &self.inner.font_family.borrow(),
         )
     }
 
@@ -301,7 +310,7 @@ impl LogView {
         font: &w::HFONT,
         font_bold: &w::HFONT,
     ) -> w::AnyResult<()> {
-        let colors = self.inner.colors;
+        let colors = self.inner.colors.get();
 
         // 背景。
         let bg = w::HBRUSH::CreateSolidBrush(rgb(colors.log_background))?;

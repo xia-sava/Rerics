@@ -34,11 +34,11 @@ struct HeaderDrag {
 
 struct Inner {
     state: Rc<RefCell<FileListState>>,
-    colors: Colors,
-    font_family: String,
-    font_size: i32,
+    colors: Cell<Colors>,
+    font_family: RefCell<String>,
+    font_size: Cell<i32>,
     /// 自前スクロールバーの幅（論理 px）。
-    scrollbar_width: i32,
+    scrollbar_width: Cell<i32>,
     /// フォント高さ（実測）。
     font_height: Cell<i32>,
     /// カーソル表示フラグ（アクティブペイン管理は main 側で配線）。
@@ -83,10 +83,10 @@ impl FileListView {
         );
         let inner = Rc::new(Inner {
             state: Rc::new(RefCell::new(FileListState::new())),
-            colors: cfg.active_colors(),
-            font_family: cfg.font.family.clone(),
-            font_size: cfg.font.size,
-            scrollbar_width: cfg.layout.scrollbar_width,
+            colors: Cell::new(cfg.active_colors()),
+            font_family: RefCell::new(cfg.font.family.clone()),
+            font_size: Cell::new(cfg.font.size),
+            scrollbar_width: Cell::new(cfg.layout.scrollbar_width),
             font_height: Cell::new(gui::dpi_y(cfg.font.size)),
             cursor_visible: Cell::new(false),
             mouse_event: Cell::new(MouseEvent::None),
@@ -137,6 +137,15 @@ impl FileListView {
     pub fn refresh(&self) -> w::AnyResult<()> {
         self.hwnd().InvalidateRect(None, false)?;
         Ok(())
+    }
+
+    /// 設定の配色・フォント・スクロールバー幅を反映して再描画する。
+    pub fn apply_config(&self, cfg: &Config) {
+        self.inner.colors.set(cfg.active_colors());
+        *self.inner.font_family.borrow_mut() = cfg.font.family.clone();
+        self.inner.font_size.set(cfg.font.size);
+        self.inner.scrollbar_width.set(cfg.layout.scrollbar_width);
+        let _ = self.refresh();
     }
 
     /// 列幅を内容に合わせて自動調整する（content-fit）。
@@ -196,7 +205,7 @@ impl FileListView {
             &mut s.columns,
             &measured,
             to_logical(cw),
-            self.inner.scrollbar_width,
+            self.inner.scrollbar_width.get(),
             to_logical(n_w * 2),
             AUTOFIT_MAX_RATIO,
             to_logical(n_w * 12),
@@ -238,7 +247,7 @@ impl FileListView {
     /// フォントを生成する（設定のファミリ・サイズ）。
     fn create_font(&self) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
         w::HFONT::CreateFont(
-            w::SIZE { cx: 0, cy: -gui::dpi_y(self.inner.font_size) },
+            w::SIZE { cx: 0, cy: -gui::dpi_y(self.inner.font_size.get()) },
             0,
             0,
             co::FW::NORMAL,
@@ -250,7 +259,7 @@ impl FileListView {
             co::CLIP::DEFAULT_PRECIS,
             co::QUALITY::CLEARTYPE,
             co::PITCH::FIXED,
-            &self.inner.font_family,
+            &self.inner.font_family.borrow(),
         )
     }
 
@@ -341,7 +350,7 @@ impl FileListView {
         if count <= page {
             return None;
         }
-        let sbw = gui::dpi_x(self.inner.scrollbar_width);
+        let sbw = gui::dpi_x(self.inner.scrollbar_width.get());
         let bar_x = cw - sbw;
         let track_top = self.header_height();
         let track_h = ch - track_top;
@@ -637,7 +646,7 @@ impl FileListView {
     }
 
     fn paint_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
-        let colors = self.inner.colors;
+        let colors = self.inner.colors.get();
         let cursor_visible = self.inner.cursor_visible.get();
         let header_h = self.header_height();
         let item_h = self.item_height();
@@ -729,7 +738,7 @@ impl FileListView {
         // 5. 自前スクロールバー（生きている state borrow からインラインに算出）。
         // トラック（溝）は常時描画して列幅予約分を「スクロールバーの定位置」に見せ、見た目を
         // 安定させる。thumb はスクロール可能な時だけ出す。
-        let sbw = gui::dpi_x(self.inner.scrollbar_width);
+        let sbw = gui::dpi_x(self.inner.scrollbar_width.get());
         let bar_x = cw - sbw;
         let track_top = header_h;
         let track_h = ch - track_top;
