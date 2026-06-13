@@ -193,10 +193,10 @@ impl TabBar {
                 dc.SetTextColor(rgb(colors.file_normal))?;
                 let flags = co::DT::SINGLELINE
                     | co::DT::VCENTER
-                    | co::DT::CENTER
+                    | co::DT::LEFT
                     | co::DT::NOPREFIX
-                    | co::DT::END_ELLIPSIS;
-                let rect = w::RECT { left: left + 4, top: 0, right: right - 4, bottom: ch };
+                    | co::DT::PATH_ELLIPSIS;
+                let rect = w::RECT { left: left + 6, top: 0, right: right - 6, bottom: ch };
                 dc.DrawText(label, rect, flags)?;
             }
         }

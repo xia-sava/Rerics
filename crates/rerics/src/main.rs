@@ -601,17 +601,13 @@ impl MainWindow {
             .iter()
             .enumerate()
             .map(|(i, t)| {
-                let path = if i == active {
+                if i == active {
                     live.display().to_string()
                 } else if t.active_right {
                     t.right_path.clone()
                 } else {
                     t.left_path.clone()
-                };
-                std::path::Path::new(&path)
-                    .file_name()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or(path)
+                }
             })
             .collect();
         self.tab_bar.set_tabs(labels, active);
