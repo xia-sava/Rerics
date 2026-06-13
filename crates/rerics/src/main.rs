@@ -1095,9 +1095,15 @@ impl MainWindow {
     /// 設定ダイアログを開く。開いた時点で OS テーマを再判定し、OK なら設定をライブ反映して
     /// 差分を `config.toml` へ保存する。
     fn open_settings(&self) -> w::AnyResult<()> {
+        if self.in_dialog.get() {
+            return Ok(());
+        }
         let mut current = self.config.borrow().clone();
         current.resolve_theme(system_is_light());
-        if let Some(mut new) = settings_dialog::show(&self.wnd, &current) {
+        self.in_dialog.set(true);
+        let edited = settings_dialog::show(&self.wnd, &current);
+        self.in_dialog.set(false);
+        if let Some(mut new) = edited {
             new.resolve_theme(system_is_light());
             self.apply_config(new)?;
             if let Err(e) = self.config.borrow().save() {
