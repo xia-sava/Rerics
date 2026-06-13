@@ -6,13 +6,14 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use rerics_core::{Colors, Config, Rgb};
+use rerics_core::Config;
 use winsafe::{self as w, co, gui, prelude::*};
+
+use crate::chrome;
 
 struct Inner {
     labels: RefCell<Vec<String>>,
     active: Cell<usize>,
-    colors: Colors,
     font_family: String,
     font_size: i32,
     font_height: Cell<i32>,
@@ -47,7 +48,6 @@ impl TabBar {
         let inner = Rc::new(Inner {
             labels: RefCell::new(Vec::new()),
             active: Cell::new(0),
-            colors: cfg.active_colors(),
             font_family: cfg.font.family.clone(),
             font_size: cfg.font.size,
             font_height: Cell::new(gui::dpi_y(cfg.font.size)),
@@ -160,11 +160,11 @@ impl TabBar {
     }
 
     fn paint_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
-        let colors = self.inner.colors;
+        let sh = chrome::shadow();
 
-        // 背景全面。
-        let bg = w::HBRUSH::CreateSolidBrush(rgb(colors.background))?;
-        dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &bg)?;
+        // タブが乗る背後（BTNFACE）。
+        let band = w::HBRUSH::CreateSolidBrush(chrome::face())?;
+        dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &band)?;
 
         let labels = self.inner.labels.borrow();
         let n = labels.len();
@@ -172,28 +172,26 @@ impl TabBar {
             return Ok(());
         }
         let active = self.inner.active.get();
-
         let cell_w = cw / n as i32;
-        let active_bg = w::HBRUSH::CreateSolidBrush(rgb(colors.selected_file_bg))?;
-        let inactive_bg = w::HBRUSH::CreateSolidBrush(rgb(colors.background2))?;
-        let border = w::COLORREF::from_rgb(0x60, 0x60, 0x60);
 
         for (i, label) in labels.iter().enumerate() {
             let left = (i as i32) * cell_w;
             // 端数は最後のセルで吸収する。
             let right = if i == n - 1 { cw } else { left + cell_w };
-            let brush = if i == active { &active_bg } else { &inactive_bg };
-            dc.FillRect(w::RECT { left, top: 0, right, bottom: ch }, brush)?;
 
-            // 区切り線。
-            let pen = w::HPEN::CreatePen(co::PS::SOLID, 1, border)?;
-            let _pen_sel = dc.SelectObject(&*pen)?;
-            dc.MoveToEx(right - 1, 0, None)?;
-            dc.LineTo(right - 1, ch)?;
+            // 選択タブだけ白背景＋枠（上＋左＋右、下辺は開放して直下のバーへ繋げる）。
+            // 非選択タブはバー地のグレーのままフラット。
+            if i == active {
+                let card = w::HBRUSH::CreateSolidBrush(chrome::window())?;
+                dc.FillRect(w::RECT { left, top: 0, right, bottom: ch }, &card)?;
+                chrome::hline(dc, left, right, 0, sh)?;
+                chrome::vline(dc, left, 0, ch, sh)?;
+                chrome::vline(dc, right - 1, 0, ch, sh)?;
+            }
 
-            // テキスト。
             if !label.is_empty() {
-                dc.SetTextColor(rgb(colors.file_normal))?;
+                let text_col = if i == active { chrome::text() } else { chrome::gray_text() };
+                dc.SetTextColor(text_col)?;
                 let flags = co::DT::SINGLELINE
                     | co::DT::VCENTER
                     | co::DT::LEFT
@@ -205,9 +203,4 @@ impl TabBar {
         }
         Ok(())
     }
-}
-
-/// `Rgb` を COLORREF へ変換する。
-fn rgb(c: Rgb) -> w::COLORREF {
-    w::COLORREF::from_rgb(c.r, c.g, c.b)
 }

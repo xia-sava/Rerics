@@ -1,8 +1,10 @@
+mod chrome;
 mod dialog;
 mod file_list;
 mod log_view;
 mod menu;
 mod pane_view;
+mod path_bar;
 mod splitter;
 mod status_bar;
 mod tab_bar;
@@ -21,6 +23,7 @@ use std::time::Instant;
 use file_list::FileListView;
 use log_view::LogView;
 use pane_view::PaneView;
+use path_bar::PathBarView;
 use status_bar::StatusBarView;
 use tab_bar::TabBar;
 use task::{ChannelHost, OpKind, TaskControl, TaskEntry, WorkerEvent};
@@ -677,8 +680,8 @@ impl MainWindow {
         *self.view(true).state().borrow_mut() = snap.left_state.clone();
         *self.view(false).state().borrow_mut() = snap.right_state.clone();
         self.active_right.set(snap.active_right);
-        self.bar(true).hwnd().SetWindowText(&snap.left_path)?;
-        self.bar(false).hwnd().SetWindowText(&snap.right_path)?;
+        self.bar(true).set_path(&snap.left_path);
+        self.bar(false).set_path(&snap.right_path);
         self.view(true).autofit_columns()?;
         self.view(false).autofit_columns()?;
         self.view(true).refresh()?;
@@ -833,7 +836,7 @@ impl MainWindow {
         if is_left { self.left.list() } else { self.right.list() }
     }
 
-    fn bar(&self, is_left: bool) -> &gui::Label {
+    fn bar(&self, is_left: bool) -> &PathBarView {
         if is_left { self.left.bar() } else { self.right.bar() }
     }
 
@@ -884,7 +887,7 @@ impl MainWindow {
             s.sort(sort, reverse);
             s.set_cursor(0, pr);
         }
-        self.bar(is_left).hwnd().SetWindowText(&path)?;
+        self.bar(is_left).set_path(&path);
         view.autofit_columns()?;
         view.refresh()?;
         self.update_selected_info(is_left);
@@ -1364,7 +1367,7 @@ impl MainWindow {
         let tab_h = gui::dpi_y(lay.tab_height);
         let log_h = gui::dpi_y(lay.log_height);
         let log_gap = gui::dpi_y(lay.log_gap);
-        let bars_y = tab_h + my;
+        let bars_y = tab_h;
         let log_y = total_h - my - log_h;
         let pane_h = (log_y - log_gap - bars_y).max(0);
 

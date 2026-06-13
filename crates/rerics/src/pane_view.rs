@@ -10,13 +10,14 @@ use rerics_core::{Config, Rgb};
 use winsafe::{self as w, co, gui, prelude::*};
 
 use crate::file_list::FileListView;
+use crate::path_bar::PathBarView;
 use crate::status_bar::StatusBarView;
 
 /// 左右いずれかのペイン全体（パスバー＋ファイルリスト＋ステータスバー）。
 #[derive(Clone)]
 pub struct PaneView {
     container: gui::WindowControl,
-    bar: gui::Label,
+    bar: PathBarView,
     list: FileListView,
     status: StatusBarView,
     bar_height: i32,
@@ -51,14 +52,11 @@ impl PaneView {
         );
         // クリックされてもフォーカスを奪わない（キー入力はキーシンクへ集約する）。
         container.on().wm(co::WM::MOUSEACTIVATE, |_| Ok(3));
-        let bar = gui::Label::new(
+        let bar = PathBarView::new(
             &container,
-            gui::LabelOpts {
-                text: "",
-                position: gui::dpi(0, 0),
-                size: gui::dpi(100, cfg.layout.bar_height),
-                ..Default::default()
-            },
+            gui::dpi(0, 0),
+            gui::dpi(100, cfg.layout.bar_height),
+            cfg,
         );
         let list = FileListView::new(&container, gui::dpi(0, 0), gui::dpi(100, 100), cfg);
         let status = StatusBarView::new(&container, gui::dpi(0, 0), gui::dpi(100, cfg.layout.status_bar_height), cfg);
@@ -82,7 +80,7 @@ impl PaneView {
         &self.list
     }
 
-    pub fn bar(&self) -> &gui::Label {
+    pub fn bar(&self) -> &PathBarView {
         &self.bar
     }
 

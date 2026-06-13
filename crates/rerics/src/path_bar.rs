@@ -1,7 +1,7 @@
-//! ペイン下部のステータスバー。左に選択情報・右にドライブ容量を1行で自前描画する。
+//! ペイン上部のパスバー。現在パスを左寄せで自前描画する。
 //!
-//! `LogView` と同様の GDI ダブルバッファ描画。表示する文字列は外から設定し、本体は
-//! 描画に徹する。キーフォーカスは持たない（表示専用）。
+//! ステータスバーと同じ GDI ダブルバッファ描画＋共通ベベル（`chrome`）で、上下のバーが
+//! 揃った帯の外見になる。キーフォーカスは持たない（表示専用）。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -12,20 +12,19 @@ use winsafe::{self as w, co, gui, prelude::*};
 use crate::chrome;
 
 struct Inner {
-    left: RefCell<String>,
-    right: RefCell<String>,
+    text: RefCell<String>,
     font_family: String,
     font_size: i32,
 }
 
-/// ペイン下部のステータスバーコントロール。
+/// ペイン上部のパスバーコントロール。
 #[derive(Clone)]
-pub struct StatusBarView {
+pub struct PathBarView {
     wnd: gui::WindowControl,
     inner: Rc<Inner>,
 }
 
-impl StatusBarView {
+impl PathBarView {
     /// 親に子コントロールとして生成する。
     pub fn new(
         parent: &(impl GuiParent + 'static),
@@ -44,8 +43,7 @@ impl StatusBarView {
             },
         );
         let inner = Rc::new(Inner {
-            left: RefCell::new(String::new()),
-            right: RefCell::new(String::new()),
+            text: RefCell::new(String::new()),
             font_family: cfg.font.family.clone(),
             font_size: cfg.font.size,
         });
@@ -58,18 +56,10 @@ impl StatusBarView {
         self.wnd.hwnd()
     }
 
-    /// 左側（選択情報）の文字列を設定して再描画する。
-    pub fn set_left(&self, text: &str) {
-        if *self.inner.left.borrow() != text {
-            *self.inner.left.borrow_mut() = text.to_owned();
-            let _ = self.refresh();
-        }
-    }
-
-    /// 右側（ドライブ容量）の文字列を設定して再描画する。
-    pub fn set_right(&self, text: &str) {
-        if *self.inner.right.borrow() != text {
-            *self.inner.right.borrow_mut() = text.to_owned();
+    /// 表示するパス文字列を設定して再描画する。
+    pub fn set_path(&self, text: &str) {
+        if *self.inner.text.borrow() != text {
+            *self.inner.text.borrow_mut() = text.to_owned();
             let _ = self.refresh();
         }
     }
@@ -136,27 +126,18 @@ impl StatusBarView {
     fn paint_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
         chrome::fill_bar(dc, cw, ch)?;
 
-        dc.SetTextColor(chrome::text())?;
-
-        // 端の余白と要素間の隙間は2文字分（等幅フォントの字幅基準）。
-        let pad = dc.GetTextExtentPoint32("0")?.cx.max(1) * 2;
-
-        // 選択情報（左）を優先して左寄せでフル表示し、その右端を覚える。
-        let mut left_edge = pad;
-        let left = self.inner.left.borrow();
-        if !left.is_empty() {
-            let flags = co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX | co::DT::END_ELLIPSIS;
+        let text = self.inner.text.borrow();
+        if !text.is_empty() {
+            dc.SetTextColor(chrome::text())?;
+            // 左右端の余白は1文字分（等幅フォントの字幅基準）。
+            let pad = dc.GetTextExtentPoint32("0")?.cx.max(1);
+            let flags = co::DT::SINGLELINE
+                | co::DT::VCENTER
+                | co::DT::LEFT
+                | co::DT::NOPREFIX
+                | co::DT::PATH_ELLIPSIS;
             let rect = w::RECT { left: pad, top: 0, right: cw - pad, bottom: ch };
-            dc.DrawText(&left, rect, flags)?;
-            left_edge = pad + dc.GetTextExtentPoint32(&left)?.cx;
-        }
-
-        // ドライブ容量（右）を選択情報の右側の残り幅に右寄せで入れる（足りなければ省略）。
-        let right = self.inner.right.borrow();
-        if !right.is_empty() {
-            let flags = co::DT::SINGLELINE | co::DT::VCENTER | co::DT::RIGHT | co::DT::NOPREFIX | co::DT::END_ELLIPSIS;
-            let rect = w::RECT { left: (left_edge + pad).min(cw - pad), top: 0, right: cw - pad, bottom: ch };
-            dc.DrawText(&right, rect, flags)?;
+            dc.DrawText(&text, rect, flags)?;
         }
         Ok(())
     }
