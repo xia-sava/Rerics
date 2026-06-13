@@ -15,8 +15,8 @@ pub use config::{
     config_path, data_dir, load_toml, save_toml, state_path,
 };
 pub use file_list::{
-    Align, Colors, Column, ColumnKind, FileItem, FileListState, Rgb, SortType, default_columns,
-    glob_match, read_items,
+    Align, Colors, Column, ColumnKind, FileItem, FileListState, Rgb, SortType, auto_adjust_columns,
+    column_sample, default_columns, glob_match, read_items,
 };
 pub use input::{Command, KeyChord, KeyMap, vk};
 pub use log::{LogLevel, LogLine, LogState};

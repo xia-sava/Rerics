@@ -20,7 +20,8 @@ param(
     [string]$Out = "",
     [switch]$NoShot,
     [switch]$NoFront,
-    [int]$DelayMs = 500
+    [switch]$NoMinimize,
+    [int]$DelayMs = 300
 )
 
 $ErrorActionPreference = "Stop"
@@ -62,9 +63,9 @@ if (-not $NoShot) {
     # キー送出でフォーカスが移ることがあるので、撮る直前に再度前面化（-NoFront 時は抑止）
     if (-not $NoFront) {
         [RericsUi]::ShowWindow($h, 6) | Out-Null
-        Start-Sleep -Milliseconds 200
+        Start-Sleep -Milliseconds 150
         [RericsUi]::ShowWindow($h, 9) | Out-Null
-        Start-Sleep -Milliseconds 400
+        Start-Sleep -Milliseconds 250
     }
 
     $r = New-Object RericsUi+RECT
@@ -77,6 +78,10 @@ if (-not $NoShot) {
     $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $bmp.Size)
     $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)
     $g.Dispose(); $bmp.Dispose()
+    # 撮影が終わったら即座に最小化（ユーザの作業画面に被せたまま放置しない）。
+    if (-not $NoFront -and -not $NoMinimize) {
+        [RericsUi]::ShowWindow($h, 6) | Out-Null   # SW_MINIMIZE
+    }
     Write-Output "SHOT $Out ($($w)x$($ht))"
 } else {
     Write-Output "KEYS sent: $Keys"

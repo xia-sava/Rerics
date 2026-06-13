@@ -21,6 +21,9 @@ enum MouseEvent {
 type ActivateCb = Box<dyn Fn(usize)>;
 type WheelCb = Box<dyn Fn(i16, w::POINT)>;
 
+/// content-fit で各非フレックス列に与える上限（クライアント幅に対する割合）。
+const AUTOFIT_MAX_RATIO: f64 = 0.25;
+
 /// 列ドラッグ中の状態。
 #[derive(Clone, Copy)]
 struct HeaderDrag {
@@ -136,6 +139,66 @@ impl FileListView {
         Ok(())
     }
 
+    /// 列幅を内容に合わせて自動調整する（content-fit）。
+    /// 名前列はフレックス（残り幅）なので測定を飛ばす。可変なのは拡張子列だけで、ここは
+    /// 全セルを実測する。サイズ/日時/属性は内容に依らずジャンプしないよう、`column_sample` の
+    /// 代表文字列を「平均的な文字 `n` の幅 × 文字数」で測った固定幅にする（プロポーショナルでも安定）。
+    /// いずれもヘッダラベル幅を下限とし、物理 px で測って格納先の `width`（論理 px）へ変換する。
+    pub fn autofit_columns(&self) -> w::AnyResult<()> {
+        let rc = self.hwnd().GetClientRect()?;
+        let cw = rc.right - rc.left;
+        if cw <= 0 {
+            return Ok(());
+        }
+        let dc = self.hwnd().GetDC()?;
+        let font = self.create_font()?;
+        let _font_sel = dc.SelectObject(&*font)?;
+        let dpi = gui::dpi_x(96).max(1);
+        let to_logical = |phys: i32| (phys * 96 + dpi / 2) / dpi;
+        // 代表幅の基準となる平均的な文字幅。
+        let n_w = dc.GetTextExtentPoint32("n").map(|sz| sz.cx).unwrap_or(0);
+
+        let mut s = self.inner.state.borrow_mut();
+        let flex = s
+            .columns
+            .iter()
+            .position(|c| matches!(c.kind, ColumnKind::FileName | ColumnKind::FileBaseName));
+        let mut measured = vec![0i32; s.columns.len()];
+        for (ci, col) in s.columns.iter().enumerate() {
+            if Some(ci) == flex {
+                continue;
+            }
+            let header_w = dc.GetTextExtentPoint32(&col.text).map(|sz| sz.cx).unwrap_or(0);
+            let sample = rerics_core::column_sample(col.kind);
+            let content_w = if sample.is_empty() {
+                // 可変列（拡張子）：全セルを実測して最長に合わせる。
+                let mut m = 0;
+                for item in &s.items {
+                    let text = s.cell_text(item, col.kind);
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let w = dc.GetTextExtentPoint32(&text).map(|sz| sz.cx).unwrap_or(0);
+                    m = m.max(w);
+                }
+                m
+            } else {
+                // 固定列：代表文字列の文字数 × 平均文字幅。
+                sample.chars().count() as i32 * n_w
+            };
+            measured[ci] = to_logical(header_w.max(content_w));
+        }
+        rerics_core::auto_adjust_columns(
+            &mut s.columns,
+            &measured,
+            to_logical(cw),
+            self.inner.scrollbar_width,
+            to_logical(n_w * 2),
+            AUTOFIT_MAX_RATIO,
+        );
+        Ok(())
+    }
+
     /// クライアント高から1ページ行数を算出する。
     pub fn page_rows(&self) -> usize {
         let Ok(rc) = self.hwnd().GetClientRect() else {
@@ -152,6 +215,11 @@ impl FileListView {
 
     fn font_height(&self) -> i32 {
         self.inner.font_height.get()
+    }
+
+    /// セル左右のテキストマージン（平均的な文字 `n` の幅）。フォント選択済みの DC で測る。
+    fn text_margin(dc: &w::HDC) -> i32 {
+        dc.GetTextExtentPoint32("n").map(|sz| sz.cx).unwrap_or(4).max(1)
     }
 
     fn header_height(&self) -> i32 {
@@ -546,6 +614,7 @@ impl FileListView {
         let bg = w::HBRUSH::CreateSolidBrush(rgb(colors.background))?;
         dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &bg)?;
 
+        let margin = Self::text_margin(dc);
         let s = self.inner.state.borrow();
 
         // 各列の左端を算出（論理→物理）。
@@ -612,7 +681,7 @@ impl FileListView {
                 if col.align == Align::Right {
                     flags |= co::DT::RIGHT;
                 }
-                let rect = w::RECT { left: left + 4, top: y, right: right - 4, bottom: y + item_h };
+                let rect = w::RECT { left: left + margin, top: y, right: right - margin, bottom: y + item_h };
                 dc.DrawText(&text, rect, flags)?;
             }
             // 4. カーソル下線。
@@ -674,9 +743,10 @@ impl FileListView {
             return Ok(());
         };
         // テキスト。
+        let margin = Self::text_margin(dc);
         dc.SetTextColor(wtext)?;
         if !col.text.is_empty() {
-            let rect = w::RECT { left: left + 4, top: 4, right: right - 4, bottom: header_h };
+            let rect = w::RECT { left: left + margin, top: 4, right: right - margin, bottom: header_h };
             dc.DrawText(&col.text, rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
         }
         // ソート三角。
@@ -693,7 +763,7 @@ impl FileListView {
         );
         if sort_match {
             let tw = dc.GetTextExtentPoint32(&col.text).map(|sz| sz.cx).unwrap_or(0);
-            let x0 = left + 4 + tw + 8;
+            let x0 = left + margin + tw + 8;
             let top = 6;
             let bot = header_h - 8;
             let pen = w::HPEN::CreatePen(co::PS::SOLID, 1, w::COLORREF::from_rgb(64, 64, 64))?;

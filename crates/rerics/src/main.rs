@@ -588,6 +588,8 @@ impl MainWindow {
         self.active_right.set(snap.active_right);
         self.bar(true).hwnd().SetWindowText(&snap.left_path)?;
         self.bar(false).hwnd().SetWindowText(&snap.right_path)?;
+        self.view(true).autofit_columns()?;
+        self.view(false).autofit_columns()?;
         self.view(true).refresh()?;
         self.view(false).refresh()?;
         self.update_selected_info(true);
@@ -792,6 +794,7 @@ impl MainWindow {
             s.set_cursor(0, pr);
         }
         self.bar(is_left).hwnd().SetWindowText(&path)?;
+        view.autofit_columns()?;
         view.refresh()?;
         self.update_selected_info(is_left);
         self.update_drive_info(is_left);
@@ -1283,6 +1286,9 @@ impl MainWindow {
         self.left.relayout()?;
         place(self.right.hwnd(), right_x, bars_y, pane_w, pane_h)?;
         self.right.relayout()?;
+        // 利用可能幅が変わったので content-fit を再計算する（フレックス列が残り幅に追従）。
+        self.view(true).autofit_columns()?;
+        self.view(false).autofit_columns()?;
         place(self.log.hwnd(), left_x, log_y, log_w, log_h)?;
         self.tab_bar.refresh()?;
         self.log.refresh()?;

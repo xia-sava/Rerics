@@ -302,6 +302,20 @@ impl Column {
     }
 }
 
+/// 固定幅列の「最悪幅の代表文字列」。`cell_text` の書式と対になっており、
+/// 内容に依らずジャンプしない列幅を測るために使う（GUI 層が文字数×平均文字幅で測定）。
+/// 内容追従させたい列（フレックスの名前列・可変の拡張子列）は空文字列を返す。
+pub fn column_sample(kind: ColumnKind) -> &'static str {
+    match kind {
+        ColumnKind::FileName | ColumnKind::FileBaseName | ColumnKind::FileExtension => "",
+        // 生バイト＋3桁区切り。12桁（〜約931GiB）まで固定し、それ以上は手動拡張に委ねる。
+        ColumnKind::Length => "999,999,999,999",
+        ColumnKind::CreateTime | ColumnKind::LastWriteTime => "0000/00/00 00:00",
+        ColumnKind::CreateTimeS | ColumnKind::LastWriteTimeS => "00/00/00 00:00",
+        ColumnKind::Attribute => "DSHRA",
+    }
+}
+
 /// デフォルトの列構成。
 pub fn default_columns() -> Vec<Column> {
     vec![
@@ -311,6 +325,43 @@ pub fn default_columns() -> Vec<Column> {
         Column::new(ColumnKind::LastWriteTime, "更新日時", 120, Align::Left),
         Column::new(ColumnKind::Attribute, "属性", 50, Align::Left),
     ]
+}
+
+/// 列幅を内容に合わせて調整する（content-fit）。
+///
+/// `measured[i]` は列 i の内容実幅（ヘッダラベルと最長セルの大きい方・パディング無し）。
+/// 最初の名前列（`FileName`/`FileBaseName`）をフレックス列とし、残り幅を埋める。
+/// それ以外の列は `measured + pad` を `avail * max_ratio` で上限クランプする
+/// （上限により、種類列など可変長のものが極端に広がるのを防ぐ）。
+/// 引数の単位は呼び出し側の任意（全て同一単位なら px でも論理 px でもよい）。
+pub fn auto_adjust_columns(
+    columns: &mut [Column],
+    measured: &[i32],
+    avail: i32,
+    scrollbar_w: i32,
+    pad: i32,
+    max_ratio: f64,
+) {
+    if columns.is_empty() {
+        return;
+    }
+    let cap = (avail as f64 * max_ratio).max(8.0) as i32;
+    let flex = columns
+        .iter()
+        .position(|c| matches!(c.kind, ColumnKind::FileName | ColumnKind::FileBaseName));
+    let mut fixed_total = 0;
+    for (i, col) in columns.iter_mut().enumerate() {
+        if Some(i) == flex {
+            continue;
+        }
+        let w = (measured.get(i).copied().unwrap_or(0) + pad).clamp(8, cap);
+        col.width = w;
+        fixed_total += w;
+    }
+    if let Some(fi) = flex {
+        let rest = avail - scrollbar_w - fixed_total;
+        columns[fi].width = rest.max(8);
+    }
 }
 
 /// RGB 三つ組の配色（GUI 層で COLORREF へ変換）。
@@ -1025,5 +1076,69 @@ mod tests {
         it.system = true;
         // system が最後勝ち。
         assert_eq!(colors.item_color(&it), colors.system);
+    }
+
+    #[test]
+    fn auto_adjust_flex_and_clamp() {
+        // [0]=FileBaseName(flex) [1]=種類 [2]=サイズ [3]=更新日時 [4]=属性。
+        let mut cols = default_columns();
+        // measured[0] はフレックスなので無視される。[3] は cap(=100) を超えるのでクランプ。
+        let measured = [999, 30, 40, 200, 20];
+        auto_adjust_columns(&mut cols, &measured, 400, 16, 10, 0.25);
+        // 非フレックスは measured+pad、上限 cap=400*0.25=100。
+        assert_eq!(cols[1].width, 40); // 30+10
+        assert_eq!(cols[2].width, 50); // 40+10
+        assert_eq!(cols[3].width, 100); // 200+10=210 → 100 にクランプ
+        assert_eq!(cols[4].width, 30); // 20+10
+        // フレックスは残り幅 = avail - scrollbar - 固定合計(40+50+100+30=220)。
+        assert_eq!(cols[0].width, 400 - 16 - 220);
+    }
+
+    #[test]
+    fn auto_adjust_flex_floors_at_min() {
+        // 固定列が広すぎて残りが負になるケースはフレックスが 8 で下げ止まる。
+        let mut cols = default_columns();
+        let measured = [0, 80, 80, 80, 80];
+        auto_adjust_columns(&mut cols, &measured, 120, 16, 4, 0.5);
+        assert_eq!(cols[0].width, 8);
+    }
+
+    #[test]
+    fn column_sample_matches_cell_format() {
+        // 内容追従させる列は空（フレックス／可変）。
+        assert_eq!(column_sample(ColumnKind::FileBaseName), "");
+        assert_eq!(column_sample(ColumnKind::FileExtension), "");
+        // 日時の代表は実セルと同じ文字数（書式が一致している保証）。
+        let dt = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(0);
+        let mut tf = file("t");
+        tf.modified = Some(dt);
+        let cell = FileListState::new().cell_text(&tf, ColumnKind::LastWriteTime);
+        assert_eq!(
+            column_sample(ColumnKind::LastWriteTime).chars().count(),
+            cell.chars().count()
+        );
+        // 属性の代表は全フラグ立ての実セル以上の長さ。
+        let mut attr = file("x");
+        attr.system = true;
+        attr.hidden = true;
+        attr.readonly = true;
+        attr.archive = true;
+        let acell = FileListState::new().cell_text(&attr, ColumnKind::Attribute);
+        assert!(column_sample(ColumnKind::Attribute).chars().count() >= acell.chars().count());
+        // サイズの代表は12桁＋3桁区切り。
+        assert_eq!(column_sample(ColumnKind::Length), "999,999,999,999");
+    }
+
+    #[test]
+    fn auto_adjust_measured_short_and_empty() {
+        // measured が短いと不足分は 0 として扱う（min 8 でクランプ）。
+        let mut cols = default_columns();
+        auto_adjust_columns(&mut cols, &[0, 0], 400, 0, 0, 0.25);
+        assert_eq!(cols[1].width, 8);
+        assert_eq!(cols[4].width, 8);
+        // 空 columns は no-op（パニックしない）。
+        let mut none: Vec<Column> = Vec::new();
+        auto_adjust_columns(&mut none, &[], 400, 0, 4, 0.25);
+        assert!(none.is_empty());
     }
 }
