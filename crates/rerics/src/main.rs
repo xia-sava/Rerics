@@ -1,6 +1,7 @@
 mod dialog;
 mod file_list;
 mod log_view;
+mod pane_view;
 mod tab_bar;
 mod task;
 mod task_manager;
@@ -16,6 +17,7 @@ use std::time::Instant;
 
 use file_list::FileListView;
 use log_view::LogView;
+use pane_view::PaneView;
 use tab_bar::TabBar;
 use task::{ChannelHost, OpKind, TaskControl, TaskEntry, WorkerEvent};
 use rerics_core::{
@@ -38,10 +40,8 @@ fn main() {
 #[derive(Clone)]
 struct MainWindow {
     wnd: gui::WindowMain,
-    left: FileListView,
-    right: FileListView,
-    left_bar: gui::Label,
-    right_bar: gui::Label,
+    left: PaneView,
+    right: PaneView,
     tab_bar: TabBar,
     log: LogView,
     config: Rc<Config>,
@@ -94,23 +94,8 @@ impl MainWindow {
         let config = Config::load();
         let m = config.layout.margin;
 
-        let left = FileListView::new(&wnd, gui::dpi(m, m), gui::dpi(400, 400), &config);
-        let right = FileListView::new(&wnd, gui::dpi(m, m), gui::dpi(400, 400), &config);
-
-        let bar_h = config.layout.bar_height;
-        let make_bar = |parent: &gui::WindowMain| {
-            gui::Label::new(
-                parent,
-                gui::LabelOpts {
-                    text: "",
-                    position: gui::dpi(m, m),
-                    size: gui::dpi(400, bar_h),
-                    ..Default::default()
-                },
-            )
-        };
-        let left_bar = make_bar(&wnd);
-        let right_bar = make_bar(&wnd);
+        let left = PaneView::new(&wnd, gui::dpi(m, m), gui::dpi(400, 400), &config);
+        let right = PaneView::new(&wnd, gui::dpi(m, m), gui::dpi(400, 400), &config);
 
         let tab_bar = TabBar::new(&wnd, gui::dpi(0, 0), gui::dpi(800, config.layout.tab_height), &config);
         let log = LogView::new(&wnd, gui::dpi(m, m), gui::dpi(800, config.layout.log_height), &config);
@@ -162,8 +147,6 @@ impl MainWindow {
             wnd,
             left,
             right,
-            left_bar,
-            right_bar,
             tab_bar,
             log,
             config: Rc::new(config),
@@ -302,10 +285,10 @@ impl MainWindow {
     fn scroll_under_cursor(&self, distance: i16, coords: w::POINT) -> w::AnyResult<()> {
         if let Some(hw) = w::HWND::WindowFromPoint(coords) {
             let p = hw.ptr();
-            if p == self.left.hwnd().ptr() {
-                self.left.scroll_by_wheel(distance)?;
-            } else if p == self.right.hwnd().ptr() {
-                self.right.scroll_by_wheel(distance)?;
+            if p == self.view(true).hwnd().ptr() {
+                self.view(true).scroll_by_wheel(distance)?;
+            } else if p == self.view(false).hwnd().ptr() {
+                self.view(false).scroll_by_wheel(distance)?;
             } else if p == self.log.hwnd().ptr() {
                 self.log.scroll_by_wheel(distance)?;
             }
@@ -356,11 +339,11 @@ impl MainWindow {
                 return Ok(());
             }
             Command::FocusLeft => {
-                self.left.hwnd().SetFocus();
+                self.view(true).hwnd().SetFocus();
                 return Ok(());
             }
             Command::FocusRight => {
-                self.right.hwnd().SetFocus();
+                self.view(false).hwnd().SetFocus();
                 return Ok(());
             }
             Command::MarkToggle => {
@@ -548,8 +531,8 @@ impl MainWindow {
         TabSnapshot {
             left_path: self.left_pane.borrow().path().display().to_string(),
             right_path: self.right_pane.borrow().path().display().to_string(),
-            left_state: self.left.state().borrow().clone(),
-            right_state: self.right.state().borrow().clone(),
+            left_state: self.view(true).state().borrow().clone(),
+            right_state: self.view(false).state().borrow().clone(),
             active_right: self.active_right.get(),
         }
     }
@@ -558,13 +541,13 @@ impl MainWindow {
     fn load_snapshot(&self, snap: &TabSnapshot) -> w::AnyResult<()> {
         *self.left_pane.borrow_mut() = Pane::open(&snap.left_path);
         *self.right_pane.borrow_mut() = Pane::open(&snap.right_path);
-        *self.left.state().borrow_mut() = snap.left_state.clone();
-        *self.right.state().borrow_mut() = snap.right_state.clone();
+        *self.view(true).state().borrow_mut() = snap.left_state.clone();
+        *self.view(false).state().borrow_mut() = snap.right_state.clone();
         self.active_right.set(snap.active_right);
-        self.left_bar.hwnd().SetWindowText(&snap.left_path)?;
-        self.right_bar.hwnd().SetWindowText(&snap.right_path)?;
-        self.left.refresh()?;
-        self.right.refresh()?;
+        self.bar(true).hwnd().SetWindowText(&snap.left_path)?;
+        self.bar(false).hwnd().SetWindowText(&snap.right_path)?;
+        self.view(true).refresh()?;
+        self.view(false).refresh()?;
         self.view(!self.active_right.get()).hwnd().SetFocus();
         Ok(())
     }
@@ -690,11 +673,11 @@ impl MainWindow {
     }
 
     fn view(&self, is_left: bool) -> &FileListView {
-        if is_left { &self.left } else { &self.right }
+        if is_left { self.left.list() } else { self.right.list() }
     }
 
     fn bar(&self, is_left: bool) -> &gui::Label {
-        if is_left { &self.left_bar } else { &self.right_bar }
+        if is_left { self.left.bar() } else { self.right.bar() }
     }
 
     fn pane(&self, is_left: bool) -> &Rc<RefCell<Pane>> {
@@ -1199,30 +1182,25 @@ impl MainWindow {
         let m = gui::dpi_x(lay.margin);
         let gap = gui::dpi_x(lay.gap);
         let my = gui::dpi_y(lay.margin);
-        let bar_h = gui::dpi_y(lay.bar_height);
-        let bar_gap = gui::dpi_y(lay.bar_gap);
 
         let tab_h = gui::dpi_y(lay.tab_height);
         let log_h = gui::dpi_y(lay.log_height);
         let log_gap = gui::dpi_y(lay.log_gap);
         let pane_w = (total_w - m * 2 - gap) / 2;
         let bars_y = tab_h + my;
-        let list_y = bars_y + bar_h + bar_gap;
         let log_y = total_h - my - log_h;
-        let list_h = log_y - log_gap - list_y;
+        let pane_h = (log_y - log_gap - bars_y).max(0);
         let left_x = m;
         let right_x = m + pane_w + gap;
         let log_w = total_w - m * 2;
 
         place(self.tab_bar.hwnd(), 0, 0, total_w, tab_h)?;
-        place(self.left_bar.hwnd(), left_x, bars_y, pane_w, bar_h)?;
-        place(self.left.hwnd(), left_x, list_y, pane_w, list_h)?;
-        place(self.right_bar.hwnd(), right_x, bars_y, pane_w, bar_h)?;
-        place(self.right.hwnd(), right_x, list_y, pane_w, list_h)?;
+        place(self.left.hwnd(), left_x, bars_y, pane_w, pane_h)?;
+        self.left.relayout()?;
+        place(self.right.hwnd(), right_x, bars_y, pane_w, pane_h)?;
+        self.right.relayout()?;
         place(self.log.hwnd(), left_x, log_y, log_w, log_h)?;
         self.tab_bar.refresh()?;
-        self.left.refresh()?;
-        self.right.refresh()?;
         self.log.refresh()?;
         Ok(())
     }
