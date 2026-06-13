@@ -44,6 +44,8 @@ pub trait OperationHost {
     fn log(&self, level: LogLevel, text: &str);
     /// 中止が要求されていれば `true`（各ファイルの区切りで確認する）。
     fn cancelled(&self) -> bool;
+    /// 中断要求中はここでブロックする（再開/中止まで。各ファイルの区切りで呼ぶ）。
+    fn wait_while_suspended(&self);
     /// 同名ファイル `name` が衝突したときの解決方法を尋ねる。
     fn resolve_conflict(&self, name: &str) -> ConflictResolution;
     /// 属性付き（`attr`＝読み込み専用/隠し/システム）ファイル `name` の削除可否を尋ねる。
@@ -65,6 +67,15 @@ enum Flow {
     Cancel,
 }
 
+/// ファイル境界のチェックポイント。中断中は待機し、中止要求があれば `true` を返す。
+fn should_stop(host: &dyn OperationHost) -> bool {
+    if host.cancelled() {
+        return true;
+    }
+    host.wait_while_suspended();
+    host.cancelled()
+}
+
 /// コピー/移動を実行する。`move_it` が `true` なら移動。
 pub fn run_copy(
     host: &dyn OperationHost,
@@ -75,7 +86,7 @@ pub fn run_copy(
 ) -> OpSummary {
     let mut sum = OpSummary::default();
     for name in names {
-        if host.cancelled() {
+        if should_stop(host) {
             sum.cancelled = true;
             break;
         }
@@ -140,7 +151,7 @@ fn copy_item(
             }
         };
         for entry in entries {
-            if host.cancelled() {
+            if should_stop(host) {
                 return Flow::Cancel;
             }
             let Ok(entry) = entry else { continue };
@@ -209,7 +220,7 @@ fn copy_item(
 pub fn run_delete(host: &dyn OperationHost, dir: &Path, names: &[String]) -> OpSummary {
     let mut sum = OpSummary::default();
     for name in names {
-        if host.cancelled() {
+        if should_stop(host) {
             sum.cancelled = true;
             break;
         }
@@ -345,7 +356,7 @@ fn copy_file(src: &Path, dst: &Path, move_it: bool) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::{Cell, RefCell};
+    use std::cell::RefCell;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -379,11 +390,10 @@ mod tests {
         }
     }
 
-    /// ログを記録し、指定回数のチェック後に中止を返すフェイクホスト。
+    /// ログを記録し、指定件数のコピー後に中止を返すフェイクホスト。
     struct FakeHost {
         logs: RefCell<Vec<(LogLevel, String)>>,
         cancel_after: isize,
-        checks: Cell<isize>,
         conflict: ConflictResolution,
         delete_warn: DeleteWarnChoice,
     }
@@ -393,7 +403,6 @@ mod tests {
             Self {
                 logs: RefCell::new(Vec::new()),
                 cancel_after: -1,
-                checks: Cell::new(0),
                 conflict: ConflictResolution::Overwrite,
                 delete_warn: DeleteWarnChoice::Yes,
             }
@@ -425,10 +434,18 @@ mod tests {
             if self.cancel_after < 0 {
                 return false;
             }
-            let c = self.checks.get();
-            self.checks.set(c + 1);
-            c >= self.cancel_after
+            let copies = self
+                .logs
+                .borrow()
+                .iter()
+                .filter(|(lvl, t)| {
+                    *lvl == LogLevel::Normal && (t.starts_with("Copy ") || t.starts_with("Move "))
+                })
+                .count() as isize;
+            copies >= self.cancel_after
         }
+
+        fn wait_while_suspended(&self) {}
 
         fn resolve_conflict(&self, _name: &str) -> ConflictResolution {
             self.conflict.clone()

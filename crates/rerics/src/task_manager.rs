@@ -44,11 +44,33 @@ pub fn show(parent: &impl GuiParent, tasks: &Registry) {
         },
     );
 
+    let suspend = gui::Button::new(
+        &wnd,
+        gui::ButtonOpts {
+            text: "中断(&S)",
+            position: gui::dpi(110, 294),
+            width: gui::dpi_x(90),
+            height: gui::dpi_y(26),
+            ..Default::default()
+        },
+    );
+
+    let resume = gui::Button::new(
+        &wnd,
+        gui::ButtonOpts {
+            text: "再開(&R)",
+            position: gui::dpi(208, 294),
+            width: gui::dpi_x(90),
+            height: gui::dpi_y(26),
+            ..Default::default()
+        },
+    );
+
     let refresh = gui::Button::new(
         &wnd,
         gui::ButtonOpts {
-            text: "最新(&R)",
-            position: gui::dpi(110, 294),
+            text: "最新",
+            position: gui::dpi(306, 294),
             width: gui::dpi_x(90),
             height: gui::dpi_y(26),
             ..Default::default()
@@ -89,13 +111,25 @@ pub fn show(parent: &impl GuiParent, tasks: &Registry) {
         let list = list.clone();
         let tasks = tasks.clone();
         stop.on().bn_clicked(move || {
-            if let Some(item) = list.items().iter_selected().next() {
-                let id = *item.data().borrow();
-                if let Some(entry) = tasks.borrow().iter().find(|e| e.id == id) {
-                    entry.control.stop();
-                }
-            }
-            populate(&list, &tasks);
+            act_on_selected(&list, &tasks, |c| c.stop());
+            Ok(())
+        });
+    }
+
+    {
+        let list = list.clone();
+        let tasks = tasks.clone();
+        suspend.on().bn_clicked(move || {
+            act_on_selected(&list, &tasks, |c| c.suspend());
+            Ok(())
+        });
+    }
+
+    {
+        let list = list.clone();
+        let tasks = tasks.clone();
+        resume.on().bn_clicked(move || {
+            act_on_selected(&list, &tasks, |c| c.resume());
             Ok(())
         });
     }
@@ -109,11 +143,27 @@ pub fn show(parent: &impl GuiParent, tasks: &Registry) {
     }
 
     let _ = wnd.show_modal(parent);
-    let _ = (stop, refresh, close);
+    let _ = (stop, suspend, resume, refresh, close);
 }
 
-/// 一覧をレジストリの現在内容で再描画する。
+/// 選択行のタスクに `action`（中止/中断/再開）を適用し、一覧を再描画する。
+fn act_on_selected(
+    list: &gui::ListView<u64>,
+    tasks: &Registry,
+    action: impl Fn(&crate::task::TaskControl),
+) {
+    if let Some(item) = list.items().iter_selected().next() {
+        let id = *item.data().borrow();
+        if let Some(entry) = tasks.borrow().iter().find(|e| e.id == id) {
+            action(&entry.control);
+        }
+    }
+    populate(list, tasks);
+}
+
+/// 一覧をレジストリの現在内容で再描画する。選択行（task id）は復元する。
 fn populate(list: &gui::ListView<u64>, tasks: &Registry) {
+    let prev = list.items().iter_selected().next().map(|it| *it.data().borrow());
     let _ = list.items().delete_all();
     for entry in tasks.borrow().iter() {
         let elapsed = fmt_elapsed(Instant::now().saturating_duration_since(entry.start));
@@ -123,7 +173,12 @@ fn populate(list: &gui::ListView<u64>, tasks: &Registry) {
             entry.control.state_label().to_owned(),
             elapsed,
         ];
-        let _ = list.items().add(&row, None, entry.id);
+        if let Ok(item) = list.items().add(&row, None, entry.id) {
+            if Some(entry.id) == prev {
+                let _ = item.select(true);
+                let _ = item.focus();
+            }
+        }
     }
 }
 

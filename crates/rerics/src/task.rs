@@ -21,6 +21,7 @@ pub const TASK_TIMER_MS: u32 = 50;
 
 const TASK_RUNNING: u8 = 0;
 const TASK_STOP: u8 = 1;
+const TASK_SUSPEND: u8 = 2;
 
 /// 操作の種別。完了時の再読込・選択解除の出し分けに使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,18 +41,46 @@ impl TaskControl {
         Self { state: AtomicU8::new(TASK_RUNNING) }
     }
 
-    /// 中止を要求する（ワーカーが次のファイル境界で気付く）。
+    /// 中止を要求する（ワーカーが次のファイル境界で気付く。中断中からも中止できる）。
     pub fn stop(&self) {
         self.state.store(TASK_STOP, Ordering::Relaxed);
+    }
+
+    /// 中断を要求する（実行中のときのみ）。
+    pub fn suspend(&self) {
+        let _ = self.state.compare_exchange(
+            TASK_RUNNING,
+            TASK_SUSPEND,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    }
+
+    /// 再開する（中断中のときのみ）。
+    pub fn resume(&self) {
+        let _ = self.state.compare_exchange(
+            TASK_SUSPEND,
+            TASK_RUNNING,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
     }
 
     pub fn is_stopped(&self) -> bool {
         self.state.load(Ordering::Relaxed) == TASK_STOP
     }
 
+    pub fn is_suspended(&self) -> bool {
+        self.state.load(Ordering::Relaxed) == TASK_SUSPEND
+    }
+
     /// タスクマネージャ表示用の状態ラベル。
     pub fn state_label(&self) -> &'static str {
-        if self.is_stopped() { "中止" } else { "実行中" }
+        match self.state.load(Ordering::Relaxed) {
+            TASK_STOP => "中止",
+            TASK_SUSPEND => "中断",
+            _ => "実行中",
+        }
     }
 }
 
@@ -124,6 +153,12 @@ impl OperationHost for ChannelHost {
 
     fn cancelled(&self) -> bool {
         self.control.is_stopped() || self.shutdown.load(Ordering::Relaxed)
+    }
+
+    fn wait_while_suspended(&self) {
+        while self.control.is_suspended() && !self.shutdown.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 
     fn resolve_conflict(&self, name: &str) -> ConflictResolution {
