@@ -81,7 +81,12 @@ impl OperationHost for ChannelHost {
         }
         match reply_rx.recv() {
             Ok(reply) => {
-                if reply.all && reply.choice != ConflictResolution::Cancel {
+                // Rename は各ファイルで別名が要るのでキャッシュしない（原作も all と排他）。
+                let cacheable = !matches!(
+                    reply.choice,
+                    ConflictResolution::Cancel | ConflictResolution::Rename(_)
+                );
+                if reply.all && cacheable {
                     *self.conflict_cache.borrow_mut() = Some(reply.choice.clone());
                 }
                 reply.choice

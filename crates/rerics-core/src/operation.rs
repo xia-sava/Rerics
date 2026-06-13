@@ -17,6 +17,10 @@ pub enum ConflictResolution {
     Newest,
     /// 上書きする。
     Overwrite,
+    /// 読み込み専用/隠し/システム属性を消してから上書きする。
+    OverwriteForce,
+    /// 別名でコピーする。
+    Rename(String),
     /// スキップする。
     Skip,
     /// 操作全体を中止する。
@@ -137,10 +141,23 @@ fn copy_item(
         }
         Flow::Continue
     } else {
+        let mut target = dst.to_path_buf();
         let do_copy = if dst.exists() {
             match host.resolve_conflict(&name) {
                 ConflictResolution::Newest => is_src_newer(src, dst),
                 ConflictResolution::Overwrite => true,
+                ConflictResolution::OverwriteForce => {
+                    clear_attributes(dst);
+                    true
+                }
+                ConflictResolution::Rename(new) => {
+                    if new.is_empty() || new == name {
+                        false
+                    } else {
+                        target = dst.with_file_name(&new);
+                        true
+                    }
+                }
                 ConflictResolution::Skip => false,
                 ConflictResolution::Cancel => return Flow::Cancel,
             }
@@ -158,7 +175,7 @@ fn copy_item(
             messages::copy(&name)
         };
         host.log(LogLevel::Normal, &line);
-        match copy_file(src, dst, move_it) {
+        match copy_file(src, &target, move_it) {
             Ok(()) => sum.ok += 1,
             Err(e) => {
                 let reason = e.to_string();
@@ -225,6 +242,32 @@ fn is_src_newer(src: &Path, dst: &Path) -> bool {
     ) {
         (Ok(a), Ok(b)) => a > b,
         _ => true,
+    }
+}
+
+/// dst の読み込み専用/隠し/システム属性を解除する（強制上書き用）。
+#[cfg(windows)]
+fn clear_attributes(path: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+    const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn SetFileAttributesW(path: *const u16, attrs: u32) -> i32;
+    }
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    unsafe {
+        SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_NORMAL);
+    }
+}
+
+/// 非 Windows では読み込み専用のみ解除する。
+#[cfg(not(windows))]
+fn clear_attributes(path: &Path) {
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mut perms = meta.permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        let _ = std::fs::set_permissions(path, perms);
     }
 }
 
@@ -421,6 +464,35 @@ mod tests {
         let sum = run_copy(&host, &src.path, &dst.path, &["a.txt".to_owned()], false);
         assert_eq!(sum.ok, 1);
         assert_eq!(std::fs::read_to_string(dst.join("a.txt")).unwrap(), "new");
+    }
+
+    #[test]
+    fn conflict_rename_copies_to_new_name() {
+        let src = TempDir::new();
+        let dst = TempDir::new();
+        src.write_file("a.txt", "new");
+        dst.write_file("a.txt", "old");
+        let host = FakeHost::with_conflict(ConflictResolution::Rename("a2.txt".to_owned()));
+        let sum = run_copy(&host, &src.path, &dst.path, &["a.txt".to_owned()], false);
+        assert_eq!(sum.ok, 1);
+        assert_eq!(std::fs::read_to_string(dst.join("a.txt")).unwrap(), "old");
+        assert_eq!(std::fs::read_to_string(dst.join("a2.txt")).unwrap(), "new");
+    }
+
+    #[test]
+    fn conflict_force_overwrites_readonly() {
+        let src = TempDir::new();
+        let dst = TempDir::new();
+        src.write_file("a.txt", "new");
+        dst.write_file("a.txt", "old");
+        let ro = dst.join("a.txt");
+        let mut perms = std::fs::metadata(&ro).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&ro, perms).unwrap();
+        let host = FakeHost::with_conflict(ConflictResolution::OverwriteForce);
+        let sum = run_copy(&host, &src.path, &dst.path, &["a.txt".to_owned()], false);
+        assert_eq!(sum.ok, 1);
+        assert_eq!(std::fs::read_to_string(&ro).unwrap(), "new");
     }
 
     #[test]

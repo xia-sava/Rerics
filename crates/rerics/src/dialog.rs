@@ -384,12 +384,12 @@ pub fn input_box(
 }
 
 /// 原作 `frmCopyOption`（「同名ファイルの処理」）相当。コピー/移動先に同名ファイルが
-/// 在るとき、解決方法（最新ならコピー/上書き/スキップ）と「すべてに適用」を尋ねる。
-/// OK でラジオ選択＋チェック状態を、中止/Esc で `Cancel` を返す。
+/// 在るとき、解決方法（最新ならコピー/上書き/強制上書き/名前変更/スキップ）と
+/// 「すべてに適用」を尋ねる。OK でラジオ選択＋チェック状態を、中止/Esc で `Cancel` を返す。
 pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution, bool) {
     let wnd = gui::WindowModal::new(gui::WindowModalOpts {
         title: "同名ファイルの処理",
-        size: gui::dpi(380, 200),
+        size: gui::dpi(380, 250),
         style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
         process_dlg_msgs: true,
         ..Default::default()
@@ -422,19 +422,43 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
                 ..Default::default()
             },
             gui::RadioButtonOpts {
-                text: "スキップ(&K)",
+                text: "強制上書き(&F)",
                 position: gui::dpi(16, 88),
+                size: gui::dpi(220, 20),
+                ..Default::default()
+            },
+            gui::RadioButtonOpts {
+                text: "名前を変更してコピー(&R)",
+                position: gui::dpi(16, 112),
+                size: gui::dpi(180, 20),
+                ..Default::default()
+            },
+            gui::RadioButtonOpts {
+                text: "スキップ(&K)",
+                position: gui::dpi(16, 136),
                 size: gui::dpi(220, 20),
                 ..Default::default()
             },
         ],
     );
 
+    let rename = gui::Edit::new(
+        &wnd,
+        gui::EditOpts {
+            text: name,
+            control_style: co::ES::AUTOHSCROLL,
+            position: gui::dpi(200, 112),
+            width: gui::dpi_x(150),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+
     let all = gui::CheckBox::new(
         &wnd,
         gui::CheckBoxOpts {
             text: "すべてに適用(&A)",
-            position: gui::dpi(16, 118),
+            position: gui::dpi(16, 166),
             size: gui::dpi(220, 18),
             ..Default::default()
         },
@@ -446,7 +470,7 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
             text: "OK",
             control_style: co::BS::DEFPUSHBUTTON,
             ctrl_id: 1,
-            position: gui::dpi(190, 150),
+            position: gui::dpi(190, 196),
             width: gui::dpi_x(80),
             height: gui::dpi_y(26),
             ..Default::default()
@@ -458,7 +482,7 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
         gui::ButtonOpts {
             text: "中止(&S)",
             ctrl_id: 2,
-            position: gui::dpi(278, 150),
+            position: gui::dpi(278, 196),
             width: gui::dpi_x(86),
             height: gui::dpi_y(26),
             ..Default::default()
@@ -478,12 +502,15 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
     {
         let result = result.clone();
         let radios = radios.clone();
+        let rename = rename.clone();
         let all = all.clone();
         let wnd2 = wnd.clone();
         ok.on().bn_clicked(move || {
             let choice = match radios.selected_index() {
                 Some(1) => ConflictResolution::Overwrite,
-                Some(2) => ConflictResolution::Skip,
+                Some(2) => ConflictResolution::OverwriteForce,
+                Some(3) => ConflictResolution::Rename(rename.text().unwrap_or_default()),
+                Some(4) => ConflictResolution::Skip,
                 _ => ConflictResolution::Newest,
             };
             *result.borrow_mut() = (choice, all.is_checked());
