@@ -44,6 +44,7 @@ struct MainWindow {
     right: PaneView,
     tab_bar: TabBar,
     log: LogView,
+    key_sink: gui::WindowControl,
     config: Rc<Config>,
     left_pane: Rc<RefCell<Pane>>,
     right_pane: Rc<RefCell<Pane>>,
@@ -100,6 +101,18 @@ impl MainWindow {
         let tab_bar = TabBar::new(&wnd, gui::dpi(0, 0), gui::dpi(800, config.layout.tab_height), &config);
         let log = LogView::new(&wnd, gui::dpi(m, m), gui::dpi(800, config.layout.log_height), &config);
 
+        // 全キー入力を集約する 1x1 の不可視コントロール（Win32 フォーカスはここに固定し、
+        // 左右ペインはフォーカスを持たない）。
+        let key_sink = gui::WindowControl::new(
+            &wnd,
+            gui::WindowControlOpts {
+                position: gui::dpi(0, 0),
+                size: gui::dpi(1, 1),
+                style: co::WS::CHILD | co::WS::VISIBLE | co::WS::TABSTOP,
+                ..Default::default()
+            },
+        );
+
         let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "..".to_owned());
 
         let state = rerics_core::State::load();
@@ -149,6 +162,7 @@ impl MainWindow {
             right,
             tab_bar,
             log,
+            key_sink,
             config: Rc::new(config),
             left_pane,
             right_pane,
@@ -179,6 +193,14 @@ impl MainWindow {
         // FileListView のコールバック登録は実行時可で、内部イベントは生成前に配線済み）。
         self.wire_pane(true);
         self.wire_pane(false);
+        self.wire_key_sink();
+
+        // アクティブ化のたびにフォーカスをキーシンクへ集約する。
+        let this = self.clone();
+        self.wnd.on().wm(co::WM::ACTIVATE, move |_| {
+            this.key_sink.hwnd().SetFocus();
+            Ok(0)
+        });
 
         let this = self.clone();
         self.tab_bar.on_click(move |index| {
@@ -255,23 +277,18 @@ impl MainWindow {
 
     fn wire_pane(&self, is_left: bool) {
         let this = self.clone();
-        self.view(is_left).on_key_down(move |vk, ctrl, shift, alt| {
-            let chord = KeyChord::new(vk, ctrl, shift, alt);
-            if let Some(cmd) = this.keymap.resolve(&chord) {
-                let _ = this.exec(is_left, cmd);
-            }
-        });
-
-        let this = self.clone();
         self.view(is_left).on_activate(move |idx| {
             let _ = this.activate(is_left, idx);
         });
 
-        // アクティブ側のカーソルを出し、反対側を消す。アクティブ側を記録する。
+        // クリックでアクティブ側を切り替える（カーソルを出し、反対側を消す）。キー入力は
+        // キーシンクに集約するので、ここではフォーカスをキーシンクへ戻すだけにする。
         let this = self.clone();
         self.view(is_left).on_got_focus(move || {
             this.active_right.set(!is_left);
+            this.view(is_left).set_cursor_visible(true);
             this.view(!is_left).set_cursor_visible(false);
+            this.key_sink.hwnd().SetFocus();
         });
 
         // ホイールはカーソル下のペインをスクロールする。
@@ -548,7 +565,7 @@ impl MainWindow {
         self.bar(false).hwnd().SetWindowText(&snap.right_path)?;
         self.view(true).refresh()?;
         self.view(false).refresh()?;
-        self.view(!self.active_right.get()).hwnd().SetFocus();
+        self.key_sink.hwnd().SetFocus();
         Ok(())
     }
 
@@ -670,6 +687,24 @@ impl MainWindow {
         self.update_title()?;
         self.refresh_tab_bar()?;
         Ok(())
+    }
+
+    fn wire_key_sink(&self) {
+        self.key_sink.on().wm_get_dlg_code(move |_| {
+            let flags = co::DLGC::WANTARROWS.raw() | co::DLGC::WANTALLKEYS.raw();
+            Ok(unsafe { co::DLGC::from_raw(flags) })
+        });
+        let this = self.clone();
+        self.key_sink.on().wm_key_down(move |p| {
+            let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
+            let shift = w::GetAsyncKeyState(co::VK::SHIFT);
+            let chord = KeyChord::new(p.vkey_code.raw(), ctrl, shift, p.has_alt_key);
+            if let Some(cmd) = this.keymap.resolve(&chord) {
+                let is_left = !this.active_right.get();
+                let _ = this.exec(is_left, cmd);
+            }
+            Ok(())
+        });
     }
 
     fn view(&self, is_left: bool) -> &FileListView {

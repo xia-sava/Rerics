@@ -19,7 +19,6 @@ enum MouseEvent {
 }
 
 type ActivateCb = Box<dyn Fn(usize)>;
-type KeyCb = Box<dyn Fn(u16, bool, bool, bool)>;
 type WheelCb = Box<dyn Fn(i16, w::POINT)>;
 
 /// 列ドラッグ中の状態。
@@ -47,7 +46,6 @@ struct Inner {
     /// スクロールバー thumb ドラッグ中の、掴んだ位置の thumb 上端からのオフセット。
     sb_drag: Cell<Option<i32>>,
     on_activate: RefCell<Option<ActivateCb>>,
-    on_key: RefCell<Option<KeyCb>>,
     on_got_focus: RefCell<Option<Box<dyn Fn()>>>,
     on_wheel: RefCell<Option<WheelCb>>,
 }
@@ -93,7 +91,6 @@ impl FileListView {
             drag: Cell::new(None),
             sb_drag: Cell::new(None),
             on_activate: RefCell::new(None),
-            on_key: RefCell::new(None),
             on_got_focus: RefCell::new(None),
             on_wheel: RefCell::new(None),
         });
@@ -112,10 +109,6 @@ impl FileListView {
 
     pub fn on_activate(&self, cb: impl Fn(usize) + 'static) {
         *self.inner.on_activate.borrow_mut() = Some(Box::new(cb));
-    }
-
-    pub fn on_key_down(&self, cb: impl Fn(u16, bool, bool, bool) + 'static) {
-        *self.inner.on_key.borrow_mut() = Some(Box::new(cb));
     }
 
     /// フォーカス取得時のコールバック（反対ペインのカーソル消去の配線用）。
@@ -189,6 +182,9 @@ impl FileListView {
     }
 
     fn setup_events(&self) {
+        // クリックされてもフォーカスを奪わない（キー入力はキーシンクへ集約する）。
+        self.wnd.on().wm(co::WM::MOUSEACTIVATE, |_| Ok(3));
+
         let this = self.clone();
         self.wnd.on().wm_get_dlg_code(move |_| {
             let _ = &this;
@@ -229,16 +225,6 @@ impl FileListView {
                 cb(dist, p.coords);
             } else {
                 this.scroll_by_wheel(dist)?;
-            }
-            Ok(())
-        });
-
-        let this = self.clone();
-        self.wnd.on().wm_key_down(move |p| {
-            if let Some(cb) = this.inner.on_key.borrow().as_ref() {
-                let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
-                let shift = w::GetAsyncKeyState(co::VK::SHIFT);
-                cb(p.vkey_code.raw(), ctrl, shift, p.has_alt_key);
             }
             Ok(())
         });
@@ -352,6 +338,10 @@ impl FileListView {
     }
 
     fn on_l_button_down(&self, pt: w::POINT, keys: co::MK) -> w::AnyResult<()> {
+        // クリックされたペインをアクティブにする（Win32 フォーカスは取らず内部状態のみ更新）。
+        if let Some(cb) = self.inner.on_got_focus.borrow().as_ref() {
+            cb();
+        }
         let rc = self.hwnd().GetClientRect()?;
         let (cw, ch) = (rc.right - rc.left, rc.bottom - rc.top);
         if let Some((bar_x, _track_top, _track_h, thumb_top, thumb_h)) = self.scrollbar_geom(cw, ch) {

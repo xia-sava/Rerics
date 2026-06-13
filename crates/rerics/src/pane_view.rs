@@ -46,6 +46,8 @@ impl PaneView {
                 ..Default::default()
             },
         );
+        // クリックされてもフォーカスを奪わない（キー入力はキーシンクへ集約する）。
+        container.on().wm(co::WM::MOUSEACTIVATE, |_| Ok(3));
         let bar = gui::Label::new(
             &container,
             gui::LabelOpts {

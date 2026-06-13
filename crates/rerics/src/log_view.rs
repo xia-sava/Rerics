@@ -190,6 +190,9 @@ impl LogView {
     }
 
     fn setup_events(&self) {
+        // クリックされてもフォーカスを奪わない（キー入力はキーシンクへ集約する）。
+        self.wnd.on().wm(co::WM::MOUSEACTIVATE, |_| Ok(3));
+
         let this = self.clone();
         self.wnd.on().wm_paint(move || this.on_paint());
 
