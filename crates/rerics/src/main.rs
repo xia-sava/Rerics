@@ -56,6 +56,7 @@ struct MainWindow {
     task_rx: Rc<Receiver<WorkerEvent>>,
     active_tasks: Rc<Cell<usize>>,
     shutdown: Arc<AtomicBool>,
+    in_dialog: Rc<Cell<bool>>,
 }
 
 /// 1タブの保存状態（非アクティブ時の退避先）。アクティブタブの実体はライブ側
@@ -175,6 +176,7 @@ impl MainWindow {
             task_rx: Rc::new(task_rx),
             active_tasks: Rc::new(Cell::new(0)),
             shutdown: Arc::new(AtomicBool::new(false)),
+            in_dialog: Rc::new(Cell::new(false)),
         }
     }
 
@@ -833,7 +835,7 @@ impl MainWindow {
         names: Vec<String>,
         move_it: bool,
     ) -> w::AnyResult<()> {
-        let host = ChannelHost { tx: self.task_tx.clone(), shutdown: self.shutdown.clone() };
+        let host = ChannelHost::new(self.task_tx.clone(), self.shutdown.clone());
         let kind = if move_it { OpKind::Move } else { OpKind::Copy };
         std::thread::spawn(move || {
             rerics_core::run_copy(&host, &src_dir, &dst_dir, &names, move_it);
@@ -844,7 +846,7 @@ impl MainWindow {
 
     /// 削除をワーカースレッドで起動する。
     fn start_delete(&self, dir: PathBuf, names: Vec<String>) -> w::AnyResult<()> {
-        let host = ChannelHost { tx: self.task_tx.clone(), shutdown: self.shutdown.clone() };
+        let host = ChannelHost::new(self.task_tx.clone(), self.shutdown.clone());
         std::thread::spawn(move || {
             rerics_core::run_delete(&host, &dir, &names);
             let _ = host.tx.send(WorkerEvent::Done {
@@ -869,7 +871,13 @@ impl MainWindow {
     }
 
     /// ワーカーからのイベントを取り込み、ログ反映・完了処理を行う。
+    ///
+    /// 衝突モーダル表示中はモーダルの内部ループから `WM_TIMER` が再入するため、
+    /// `in_dialog` ガードで多重取り込みを抑止する。
     fn pump_tasks(&self) -> w::AnyResult<()> {
+        if self.in_dialog.get() {
+            return Ok(());
+        }
         while let Ok(ev) = self.task_rx.try_recv() {
             match ev {
                 WorkerEvent::Log { level, text } => match level {
@@ -878,6 +886,12 @@ impl MainWindow {
                     LogLevel::Warning => self.log.warn(&text),
                     LogLevel::Error => self.log.error(&text),
                 },
+                WorkerEvent::AskConflict { name, reply } => {
+                    self.in_dialog.set(true);
+                    let (choice, all) = dialog::conflict_box(&self.wnd, &name);
+                    self.in_dialog.set(false);
+                    let _ = reply.send(task::ConflictReply { choice, all });
+                }
                 WorkerEvent::Done { kind, src_dir, dst_dir, .. } => {
                     self.on_op_done(kind, &src_dir, &dst_dir)?;
                     let n = self.active_tasks.get().saturating_sub(1);

@@ -19,6 +19,7 @@ param(
     [string]$Keys = "",
     [string]$Out = "",
     [switch]$NoShot,
+    [switch]$NoFront,
     [int]$DelayMs = 500
 )
 
@@ -42,11 +43,14 @@ $h = (Get-Process -Name $Process -ErrorAction SilentlyContinue |
         Select-Object -First 1).MainWindowHandle
 if (-not $h) { Write-Error "プロセス '$Process' のウィンドウが見つかりません（起動してる？）"; exit 1 }
 
-# 最小化→復元で確実に前面化（SetForegroundWindow は背景プロセスからは効かないため）
-[RericsUi]::ShowWindow($h, 6) | Out-Null   # SW_MINIMIZE
-Start-Sleep -Milliseconds 250
-[RericsUi]::ShowWindow($h, 9) | Out-Null   # SW_RESTORE
-Start-Sleep -Milliseconds $DelayMs
+# 最小化→復元で確実に前面化（SetForegroundWindow は背景プロセスからは効かないため）。
+# -NoFront 時は前面化しない（既に開いているモーダルのフォーカスを奪わないため）。
+if (-not $NoFront) {
+    [RericsUi]::ShowWindow($h, 6) | Out-Null   # SW_MINIMIZE
+    Start-Sleep -Milliseconds 250
+    [RericsUi]::ShowWindow($h, 9) | Out-Null   # SW_RESTORE
+    Start-Sleep -Milliseconds $DelayMs
+}
 
 if ($Keys) {
     Add-Type -AssemblyName System.Windows.Forms
@@ -55,11 +59,13 @@ if ($Keys) {
 }
 
 if (-not $NoShot) {
-    # キー送出でフォーカスが移ることがあるので、撮る直前に再度前面化
-    [RericsUi]::ShowWindow($h, 6) | Out-Null
-    Start-Sleep -Milliseconds 200
-    [RericsUi]::ShowWindow($h, 9) | Out-Null
-    Start-Sleep -Milliseconds 400
+    # キー送出でフォーカスが移ることがあるので、撮る直前に再度前面化（-NoFront 時は抑止）
+    if (-not $NoFront) {
+        [RericsUi]::ShowWindow($h, 6) | Out-Null
+        Start-Sleep -Milliseconds 200
+        [RericsUi]::ShowWindow($h, 9) | Out-Null
+        Start-Sleep -Milliseconds 400
+    }
 
     $r = New-Object RericsUi+RECT
     [RericsUi]::GetWindowRect($h, [ref]$r) | Out-Null

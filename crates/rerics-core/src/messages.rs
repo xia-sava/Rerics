@@ -26,6 +26,11 @@ pub fn delete_directory(name: &str) -> String {
     format!("DeleteDirectory {name}")
 }
 
+/// `Skip {0}`（スキップの逐次ログ）。
+pub fn skip(name: &str) -> String {
+    format!("Skip {name}")
+}
+
 /// `CreateDirectory {0}`（ディレクトリ作成成功ログ）。
 pub fn create_directory(name: &str) -> String {
     format!("CreateDirectory {name}")

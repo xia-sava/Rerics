@@ -7,6 +7,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use rerics_core::ConflictResolution;
 use winsafe::{self as w, co, gui, prelude::*};
 
 #[allow(non_snake_case)]
@@ -378,6 +379,129 @@ pub fn input_box(
 
     let _ = wnd.show_modal(parent);
     let _ = cancel;
+    let r = result.borrow().clone();
+    r
+}
+
+/// 原作 `frmCopyOption`（「同名ファイルの処理」）相当。コピー/移動先に同名ファイルが
+/// 在るとき、解決方法（最新ならコピー/上書き/スキップ）と「すべてに適用」を尋ねる。
+/// OK でラジオ選択＋チェック状態を、中止/Esc で `Cancel` を返す。
+pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution, bool) {
+    let wnd = gui::WindowModal::new(gui::WindowModalOpts {
+        title: "同名ファイルの処理",
+        size: gui::dpi(380, 200),
+        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
+        process_dlg_msgs: true,
+        ..Default::default()
+    });
+
+    let _label = gui::Label::new(
+        &wnd,
+        gui::LabelOpts {
+            text: name,
+            position: gui::dpi(16, 12),
+            size: gui::dpi(348, 18),
+            ..Default::default()
+        },
+    );
+
+    let radios = gui::RadioGroup::new(
+        &wnd,
+        &[
+            gui::RadioButtonOpts {
+                text: "最新ならコピー(&N)",
+                position: gui::dpi(16, 40),
+                size: gui::dpi(220, 20),
+                selected: true,
+                ..Default::default()
+            },
+            gui::RadioButtonOpts {
+                text: "上書き(&O)",
+                position: gui::dpi(16, 64),
+                size: gui::dpi(220, 20),
+                ..Default::default()
+            },
+            gui::RadioButtonOpts {
+                text: "スキップ(&K)",
+                position: gui::dpi(16, 88),
+                size: gui::dpi(220, 20),
+                ..Default::default()
+            },
+        ],
+    );
+
+    let all = gui::CheckBox::new(
+        &wnd,
+        gui::CheckBoxOpts {
+            text: "すべてに適用(&A)",
+            position: gui::dpi(16, 118),
+            size: gui::dpi(220, 18),
+            ..Default::default()
+        },
+    );
+
+    let ok = gui::Button::new(
+        &wnd,
+        gui::ButtonOpts {
+            text: "OK",
+            control_style: co::BS::DEFPUSHBUTTON,
+            ctrl_id: 1,
+            position: gui::dpi(190, 150),
+            width: gui::dpi_x(80),
+            height: gui::dpi_y(26),
+            ..Default::default()
+        },
+    );
+
+    let cancel = gui::Button::new(
+        &wnd,
+        gui::ButtonOpts {
+            text: "中止(&S)",
+            ctrl_id: 2,
+            position: gui::dpi(278, 150),
+            width: gui::dpi_x(86),
+            height: gui::dpi_y(26),
+            ..Default::default()
+        },
+    );
+
+    let result = Rc::new(RefCell::new((ConflictResolution::Cancel, false)));
+
+    {
+        let ok = ok.clone();
+        wnd.on().wm_create(move |_| {
+            ok.hwnd().SetFocus();
+            Ok(0)
+        });
+    }
+
+    {
+        let result = result.clone();
+        let radios = radios.clone();
+        let all = all.clone();
+        let wnd2 = wnd.clone();
+        ok.on().bn_clicked(move || {
+            let choice = match radios.selected_index() {
+                Some(1) => ConflictResolution::Overwrite,
+                Some(2) => ConflictResolution::Skip,
+                _ => ConflictResolution::Newest,
+            };
+            *result.borrow_mut() = (choice, all.is_checked());
+            wnd2.close();
+            Ok(())
+        });
+    }
+
+    {
+        let wnd2 = wnd.clone();
+        cancel.on().bn_clicked(move || {
+            wnd2.close();
+            Ok(())
+        });
+    }
+
+    let _ = wnd.show_modal(parent);
+    let _ = (ok, cancel);
     let r = result.borrow().clone();
     r
 }
