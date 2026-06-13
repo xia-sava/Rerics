@@ -47,7 +47,7 @@ impl TabBar {
         let inner = Rc::new(Inner {
             labels: RefCell::new(Vec::new()),
             active: Cell::new(0),
-            colors: cfg.colors,
+            colors: cfg.active_colors(),
             font_family: cfg.font.family.clone(),
             font_size: cfg.font.size,
             font_height: Cell::new(gui::dpi_y(cfg.font.size)),

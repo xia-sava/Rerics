@@ -1,3 +1,5 @@
+theme = "system"
+
 [font]
 family = "BIZ UDGothic"
 size = 13
@@ -16,7 +18,7 @@ splitter_width = 4
 maximize_margin = 200
 border_unit = 50
 
-[colors]
+[colors.dark]
 file_normal = "#ffffff"
 directory = "#ffffe8"
 readonly = "#80ff80"
@@ -32,6 +34,23 @@ log_normal = "#ffffff"
 log_info = "#c8c8c8"
 log_warning = "#ffd040"
 log_error = "#ff7070"
+
+[colors.light]
+file_normal = "#000000"
+directory = "#705800"
+readonly = "#008000"
+system = "#008080"
+hidden = "#4040a0"
+background = "#ffffff"
+background2 = "#f0f0f0"
+selected_file = "#ffffff"
+selected_file_bg = "#0078d7"
+cursor = "#0060c0"
+log_background = "#ffffff"
+log_normal = "#000000"
+log_info = "#404040"
+log_warning = "#9a5a00"
+log_error = "#c00000"
 
 [[columns]]
 kind = "FileBaseName"

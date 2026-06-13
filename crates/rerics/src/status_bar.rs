@@ -45,7 +45,7 @@ impl StatusBarView {
         let inner = Rc::new(Inner {
             left: RefCell::new(String::new()),
             right: RefCell::new(String::new()),
-            colors: cfg.colors,
+            colors: cfg.active_colors(),
             font_family: cfg.font.family.clone(),
             font_size: cfg.font.size,
         });

@@ -48,7 +48,7 @@ impl LogView {
         );
         let inner = Rc::new(Inner {
             state: RefCell::new(LogState::new()),
-            colors: cfg.colors,
+            colors: cfg.active_colors(),
             font_family: cfg.font.family.clone(),
             font_size: cfg.font.size,
             scrollbar_width: cfg.layout.scrollbar_width,

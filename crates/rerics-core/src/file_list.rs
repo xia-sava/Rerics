@@ -434,6 +434,13 @@ pub struct Colors {
 
 impl Default for Colors {
     fn default() -> Self {
+        Self::dark()
+    }
+}
+
+impl Colors {
+    /// ダークテーマの既定色（黒背景・明るい属性色）。
+    pub fn dark() -> Self {
         Self {
             file_normal: Rgb::new(255, 255, 255),
             directory: Rgb::new(0xff, 0xff, 0xe8),
@@ -450,6 +457,28 @@ impl Default for Colors {
             log_info: Rgb::new(0xc8, 0xc8, 0xc8),
             log_warning: Rgb::new(0xff, 0xd0, 0x40),
             log_error: Rgb::new(0xff, 0x70, 0x70),
+        }
+    }
+
+    /// ライトテーマの既定色（白背景・Windows 標準配色を再現。属性色はダークと
+    /// 同系統の低明度に落としたもの）。
+    pub fn light() -> Self {
+        Self {
+            file_normal: Rgb::new(0x00, 0x00, 0x00),
+            directory: Rgb::new(0x70, 0x58, 0x00),
+            readonly: Rgb::new(0x00, 0x80, 0x00),
+            system: Rgb::new(0x00, 0x80, 0x80),
+            hidden: Rgb::new(0x40, 0x40, 0xa0),
+            background: Rgb::new(0xff, 0xff, 0xff),
+            background2: Rgb::new(0xf0, 0xf0, 0xf0),
+            selected_file: Rgb::new(0xff, 0xff, 0xff),
+            selected_file_bg: Rgb::new(0x00, 0x78, 0xd7),
+            cursor: Rgb::new(0x00, 0x60, 0xc0),
+            log_background: Rgb::new(0xff, 0xff, 0xff),
+            log_normal: Rgb::new(0x00, 0x00, 0x00),
+            log_info: Rgb::new(0x40, 0x40, 0x40),
+            log_warning: Rgb::new(0x9a, 0x5a, 0x00),
+            log_error: Rgb::new(0xc0, 0x00, 0x00),
         }
     }
 }

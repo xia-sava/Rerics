@@ -11,8 +11,9 @@ mod operation;
 mod status;
 
 pub use config::{
-    Config, DEFAULT_CONFIG_TOML, FontSpec, Layout, State, TabState, WindowState, clamp_to_work,
-    config_path, data_dir, load_toml, save_toml, state_path,
+    Config, DEFAULT_CONFIG_TOML, FontSpec, Layout, ResolvedTheme, State, TabState, Theme,
+    ThemeColors, WindowState, clamp_to_work, config_path, data_dir, load_toml, save_toml,
+    state_path,
 };
 pub use file_list::{
     Align, Colors, Column, ColumnKind, FileItem, FileListState, Rgb, SortType, auto_adjust_columns,

@@ -34,7 +34,7 @@ impl PaneView {
         size: (i32, i32),
         cfg: &Config,
     ) -> Self {
-        let bg = w::HBRUSH::CreateSolidBrush(rgb(cfg.colors.background)).expect("背景ブラシの生成");
+        let bg = w::HBRUSH::CreateSolidBrush(rgb(cfg.active_colors().background)).expect("背景ブラシの生成");
         let bg_raw = unsafe { bg.raw_copy() };
         let container = gui::WindowControl::new(
             parent,

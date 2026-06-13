@@ -114,27 +114,75 @@ impl Default for Layout {
     }
 }
 
+/// 配色テーマの選択。`System` は OS のライト/ダーク設定に追従する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    Dark,
+    Light,
+    System,
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Theme::System
+    }
+}
+
+/// `System` を OS 設定で解決した後の実テーマ（ダークかライトのいずれか）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedTheme {
+    Dark,
+    Light,
+}
+
+impl Default for ResolvedTheme {
+    fn default() -> Self {
+        ResolvedTheme::Dark
+    }
+}
+
+/// テーマ別の配色セット。実効色は解決済みテーマに応じてどちらかを選ぶ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThemeColors {
+    pub dark: Colors,
+    pub light: Colors,
+}
+
+impl Default for ThemeColors {
+    fn default() -> Self {
+        Self { dark: Colors::dark(), light: Colors::light() }
+    }
+}
+
 /// アプリ全体の設定。デフォルトは埋め込み `default.toml`、ユーザ `config.toml` は
 /// デフォルトとの差分のみを記録し、適用時に再帰マージする。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub theme: Theme,
     pub font: FontSpec,
     pub layout: Layout,
-    pub colors: Colors,
+    pub colors: ThemeColors,
     pub columns: Vec<Column>,
     /// キーバインド（チョード文字列 → コマンドトークン）。
     pub keybinds: BTreeMap<String, String>,
+    /// 起動時に解決した実テーマ。ファイルには保存しない（`resolve_theme` で設定）。
+    #[serde(skip)]
+    pub resolved: ResolvedTheme,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
+            theme: Theme::default(),
             font: FontSpec::default(),
             layout: Layout::default(),
-            colors: Colors::default(),
+            colors: ThemeColors::default(),
             columns: default_columns(),
             keybinds: KeyMap::default().to_string_map(),
+            resolved: ResolvedTheme::default(),
         }
     }
 }
@@ -228,6 +276,30 @@ impl Config {
     /// 設定からキーマップを組む。
     pub fn keymap(&self) -> KeyMap {
         KeyMap::from_string_map(&self.keybinds)
+    }
+
+    /// OS のライト判定（`system_is_light`）を渡して実テーマを解決する。
+    /// `theme=System` のときだけ判定を参照し、`Dark`/`Light` 固定なら無視する。
+    pub fn resolve_theme(&mut self, system_is_light: bool) {
+        self.resolved = match self.theme {
+            Theme::Dark => ResolvedTheme::Dark,
+            Theme::Light => ResolvedTheme::Light,
+            Theme::System => {
+                if system_is_light {
+                    ResolvedTheme::Light
+                } else {
+                    ResolvedTheme::Dark
+                }
+            }
+        };
+    }
+
+    /// 解決済みテーマに対応する実効配色。
+    pub fn active_colors(&self) -> Colors {
+        match self.resolved {
+            ResolvedTheme::Light => self.colors.light,
+            ResolvedTheme::Dark => self.colors.dark,
+        }
     }
 }
 
@@ -346,13 +418,14 @@ mod tests {
         let path = std::env::temp_dir().join("rerics_cfg_partial.toml");
         std::fs::write(
             &path,
-            "[colors]\ncursor = \"#ff0000\"\n\n[keybinds]\n\"Ctrl+T\" = \"Reload\"\n",
+            "[colors.dark]\ncursor = \"#ff0000\"\n\n[keybinds]\n\"Ctrl+T\" = \"Reload\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(&path);
         // 上書きしたキーだけ変わり、他はデフォルトのまま。
-        assert_eq!(cfg.colors.cursor, crate::Rgb::new(0xff, 0, 0));
-        assert_eq!(cfg.colors.background, Config::default().colors.background);
+        assert_eq!(cfg.colors.dark.cursor, crate::Rgb::new(0xff, 0, 0));
+        assert_eq!(cfg.colors.dark.background, Config::default().colors.dark.background);
+        assert_eq!(cfg.colors.light, Config::default().colors.light);
         assert_eq!(cfg.keybinds.get("Ctrl+T").map(String::as_str), Some("Reload"));
         assert_eq!(cfg.keybinds.get("Down").map(String::as_str), Some("CursorDown"));
         let _ = std::fs::remove_file(&path);
@@ -363,7 +436,7 @@ mod tests {
         let path = std::env::temp_dir().join("rerics_cfg_savediff.toml");
         let _ = std::fs::remove_file(&path);
         let mut cfg = Config::default();
-        cfg.colors.cursor = crate::Rgb::new(0x12, 0x34, 0x56);
+        cfg.colors.dark.cursor = crate::Rgb::new(0x12, 0x34, 0x56);
         cfg.save_to(&path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         // 変更点だけが書かれる（他のセクションは出ない）。
