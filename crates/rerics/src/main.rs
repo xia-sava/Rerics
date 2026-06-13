@@ -2,6 +2,7 @@ mod dialog;
 mod file_list;
 mod log_view;
 mod pane_view;
+mod status_bar;
 mod tab_bar;
 mod task;
 mod task_manager;
@@ -18,6 +19,7 @@ use std::time::Instant;
 use file_list::FileListView;
 use log_view::LogView;
 use pane_view::PaneView;
+use status_bar::StatusBarView;
 use tab_bar::TabBar;
 use task::{ChannelHost, OpKind, TaskControl, TaskEntry, WorkerEvent};
 use rerics_core::{
@@ -476,6 +478,7 @@ impl MainWindow {
             }
         }
         view.refresh()?;
+        self.update_selected_info(is_left);
         Ok(())
     }
 
@@ -565,6 +568,10 @@ impl MainWindow {
         self.bar(false).hwnd().SetWindowText(&snap.right_path)?;
         self.view(true).refresh()?;
         self.view(false).refresh()?;
+        self.update_selected_info(true);
+        self.update_selected_info(false);
+        self.update_drive_info(true);
+        self.update_drive_info(false);
         self.key_sink.hwnd().SetFocus();
         Ok(())
     }
@@ -715,6 +722,23 @@ impl MainWindow {
         if is_left { self.left.bar() } else { self.right.bar() }
     }
 
+    fn status(&self, is_left: bool) -> &StatusBarView {
+        if is_left { self.left.status() } else { self.right.status() }
+    }
+
+    /// ペインの選択数/サイズをステータスバー左へ反映する（0件なら空）。
+    fn update_selected_info(&self, is_left: bool) {
+        let (count, size) = self.view(is_left).state().borrow().selected_count_size();
+        let text = rerics_core::format_selected(count, size).unwrap_or_default();
+        self.status(is_left).set_left(&text);
+    }
+
+    /// ペインのドライブ容量をステータスバー右へ反映する。
+    fn update_drive_info(&self, is_left: bool) {
+        let path = self.pane(is_left).borrow().path().to_path_buf();
+        self.status(is_left).set_right(&drive_info_text(&path));
+    }
+
     fn pane(&self, is_left: bool) -> &Rc<RefCell<Pane>> {
         if is_left { &self.left_pane } else { &self.right_pane }
     }
@@ -747,6 +771,8 @@ impl MainWindow {
         }
         self.bar(is_left).hwnd().SetWindowText(&path)?;
         view.refresh()?;
+        self.update_selected_info(is_left);
+        self.update_drive_info(is_left);
         self.refresh_tab_bar()?;
         Ok(())
     }
@@ -1154,6 +1180,7 @@ impl MainWindow {
             }
         }
         self.view(is_left).refresh()?;
+        self.update_selected_info(is_left);
         Ok(())
     }
 
@@ -1253,6 +1280,25 @@ fn short_desc(names: &[String]) -> String {
 fn place(hwnd: &w::HWND, x: i32, y: i32, cx: i32, cy: i32) -> w::AnyResult<()> {
     hwnd.MoveWindow(w::POINT { x, y }, w::SIZE { cx, cy }, true)?;
     Ok(())
+}
+
+/// パスの属するドライブの容量を「C: 空き ◯ / 全 ◯」形式で返す。取得できなければ空。
+fn drive_info_text(path: &Path) -> String {
+    let dir = path.to_string_lossy();
+    let mut free = 0u64;
+    let mut total = 0u64;
+    if w::GetDiskFreeSpaceEx(Some(dir.as_ref()), Some(&mut free), Some(&mut total), None).is_err() {
+        return String::new();
+    }
+    rerics_core::format_drive(&drive_label(path), free, total)
+}
+
+/// パスのドライブレター表記（"C:"）。求められなければ空。
+fn drive_label(path: &Path) -> String {
+    path.ancestors()
+        .last()
+        .map(|r| r.to_string_lossy().trim_end_matches(['\\', '/']).to_uppercase())
+        .unwrap_or_default()
 }
 
 /// パスを正規化する。存在しない（ディレクトリでない）場合は `fallback` を返す。

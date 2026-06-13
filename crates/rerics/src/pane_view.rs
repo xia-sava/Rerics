@@ -10,15 +10,18 @@ use rerics_core::{Config, Rgb};
 use winsafe::{self as w, co, gui, prelude::*};
 
 use crate::file_list::FileListView;
+use crate::status_bar::StatusBarView;
 
-/// 左右いずれかのペイン全体（パスバー＋ファイルリスト）。
+/// 左右いずれかのペイン全体（パスバー＋ファイルリスト＋ステータスバー）。
 #[derive(Clone)]
 pub struct PaneView {
     container: gui::WindowControl,
     bar: gui::Label,
     list: FileListView,
+    status: StatusBarView,
     bar_height: i32,
     bar_gap: i32,
+    status_bar_height: i32,
     /// コンテナ背景ブラシの寿命を保持する（`class_bg_brush` へ raw コピーを渡すため）。
     _bg: Rc<w::guard::DeleteObjectGuard<w::HBRUSH>>,
 }
@@ -58,12 +61,15 @@ impl PaneView {
             },
         );
         let list = FileListView::new(&container, gui::dpi(0, 0), gui::dpi(100, 100), cfg);
+        let status = StatusBarView::new(&container, gui::dpi(0, 0), gui::dpi(100, cfg.layout.status_bar_height), cfg);
         Self {
             container,
             bar,
             list,
+            status,
             bar_height: gui::dpi_y(cfg.layout.bar_height),
             bar_gap: gui::dpi_y(cfg.layout.bar_gap),
+            status_bar_height: gui::dpi_y(cfg.layout.status_bar_height),
             _bg: Rc::new(bg),
         }
     }
@@ -80,15 +86,22 @@ impl PaneView {
         &self.bar
     }
 
-    /// コンテナ内でパスバー（上）とファイルリスト（残り）を再配置する。
+    pub fn status(&self) -> &StatusBarView {
+        &self.status
+    }
+
+    /// コンテナ内でパスバー（上）・ファイルリスト（中）・ステータスバー（下）を再配置する。
     pub fn relayout(&self) -> w::AnyResult<()> {
         let rc = self.container.hwnd().GetClientRect()?;
         let cw = rc.right - rc.left;
         let ch = rc.bottom - rc.top;
         let list_y = self.bar_height + self.bar_gap;
+        let status_y = ch - self.status_bar_height;
         place(self.bar.hwnd(), 0, 0, cw, self.bar_height)?;
-        place(self.list.hwnd(), 0, list_y, cw, (ch - list_y).max(0))?;
+        place(self.list.hwnd(), 0, list_y, cw, (status_y - list_y).max(0))?;
+        place(self.status.hwnd(), 0, status_y, cw, self.status_bar_height)?;
         self.list.refresh()?;
+        self.status.refresh()?;
         Ok(())
     }
 }

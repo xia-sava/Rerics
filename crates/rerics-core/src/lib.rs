@@ -8,6 +8,7 @@ mod input;
 mod log;
 pub mod messages;
 mod operation;
+mod status;
 
 pub use config::{
     Config, DEFAULT_CONFIG_TOML, FontSpec, Layout, State, TabState, WindowState, clamp_to_work,
@@ -23,6 +24,7 @@ pub use operation::{
     ConflictResolution, DeleteWarnChoice, OpSummary, OperationHost, ProgressHandle, run_copy,
     run_delete,
 };
+pub use status::{format_drive, format_selected, format_size};
 
 use std::path::{Path, PathBuf};
 
