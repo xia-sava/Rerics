@@ -188,6 +188,7 @@ impl FileListView {
             };
             measured[ci] = to_logical(header_w.max(content_w));
         }
+        // スクロールバー幅は常時予約する（有無で列幅がガチャガチャしないよう一定に保つ）。
         rerics_core::auto_adjust_columns(
             &mut s.columns,
             &measured,
@@ -262,6 +263,9 @@ impl FileListView {
 
         let this = self.clone();
         self.wnd.on().wm_paint(move || this.on_paint());
+
+        let this = self.clone();
+        self.wnd.on().wm_set_cursor(move |_| Ok(this.on_set_cursor()));
 
         let this = self.clone();
         self.wnd.on().wm_size(move |_| {
@@ -360,6 +364,30 @@ impl FileListView {
         }
         self.refresh()?;
         Ok(())
+    }
+
+    /// ヘッダの列境界上なら横リサイズカーソル（⟷）、それ以外は矢印にする。
+    /// winsafe は false を返しても DefWindowProc を呼ばない（＝既定の矢印に戻らない）ため、
+    /// 境界外でも明示的に ARROW をセットして常に true（処理済み）を返す。
+    fn on_set_cursor(&self) -> bool {
+        let on_border =
+            self.inner.mouse_event.get() == MouseEvent::HeaderDrag || self.cursor_on_border();
+        let idc = if on_border { co::IDC::SIZEWE } else { co::IDC::ARROW };
+        if let Ok(mut cur) = w::HINSTANCE::NULL.LoadCursor(w::IdIdcStr::Idc(idc)) {
+            unsafe { SetCursor(cur.leak().ptr()) };
+        }
+        true
+    }
+
+    /// 現在のカーソルがヘッダ内の列境界上にあるか。
+    fn cursor_on_border(&self) -> bool {
+        let Ok(pt) = w::GetCursorPos() else {
+            return false;
+        };
+        let Ok(cp) = self.hwnd().ScreenToClient(pt) else {
+            return false;
+        };
+        cp.y < self.header_height() && self.hit_column_border(cp.x).is_some()
     }
 
     /// 列境界(右端±4px)を指している列 index を返す。
@@ -695,23 +723,25 @@ impl FileListView {
         }
 
         // 5. 自前スクロールバー（生きている state borrow からインラインに算出）。
-        let count = s.count();
-        if count > page {
-            let sbw = gui::dpi_x(self.inner.scrollbar_width);
-            let bar_x = cw - sbw;
-            let track_top = header_h;
-            let track_h = ch - track_top;
-            if track_h > 0 {
+        // トラック（溝）は常時描画して列幅予約分を「スクロールバーの定位置」に見せ、見た目を
+        // 安定させる。thumb はスクロール可能な時だけ出す。
+        let sbw = gui::dpi_x(self.inner.scrollbar_width);
+        let bar_x = cw - sbw;
+        let track_top = header_h;
+        let track_h = ch - track_top;
+        if track_h > 0 {
+            let track_brush = w::HBRUSH::CreateSolidBrush(rgb(colors.background2))?;
+            dc.FillRect(
+                w::RECT { left: bar_x, top: track_top, right: cw, bottom: ch },
+                &track_brush,
+            )?;
+            let count = s.count();
+            if count > page {
                 let min_thumb = gui::dpi_y(16);
                 let thumb_h = ((track_h * page as i32) / count as i32).max(min_thumb).min(track_h);
                 let max_top = count - page;
                 let pos = s.scroll_top.min(max_top);
                 let thumb_top = track_top + ((track_h - thumb_h) * pos as i32) / max_top as i32;
-                let track_brush = w::HBRUSH::CreateSolidBrush(rgb(colors.background))?;
-                dc.FillRect(
-                    w::RECT { left: bar_x, top: track_top, right: cw, bottom: ch },
-                    &track_brush,
-                )?;
                 let thumb_brush = w::HBRUSH::CreateSolidBrush(w::COLORREF::from_rgb(0x55, 0x55, 0x55))?;
                 dc.FillRect(
                     w::RECT { left: bar_x + 1, top: thumb_top, right: cw - 1, bottom: thumb_top + thumb_h },
@@ -814,6 +844,11 @@ impl FileListView {
         }
         Ok(())
     }
+}
+
+// winsafe 0.0.27 は `SetCursor` を公開していないので生 FFI で叩く（`SetSystemCursor` は別物）。
+unsafe extern "system" {
+    fn SetCursor(hcursor: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
 }
 
 /// `Rgb` を COLORREF へ変換する。
