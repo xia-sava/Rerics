@@ -28,6 +28,7 @@ pub mod vk {
     pub const O: u16 = 0x4F;
     pub const R: u16 = 0x52;
     pub const D: u16 = 0x44;
+    pub const L: u16 = 0x4C;
     pub const T: u16 = 0x54;
     pub const W: u16 = 0x57;
     pub const D0: u16 = 0x30;
@@ -79,6 +80,7 @@ pub enum Command {
     PreviousDrive,
     PathMask,
     SelectMask,
+    OpenTaskManager,
 }
 
 impl Command {
@@ -125,6 +127,7 @@ impl Command {
             (PreviousDrive, "PreviousDrive"),
             (PathMask, "PathMask"),
             (SelectMask, "SelectMask"),
+            (OpenTaskManager, "OpenTaskManager"),
         ]
     };
 
@@ -302,6 +305,7 @@ impl Default for KeyMap {
         m.bind(KeyChord::new(vk::LEFT, false, true, false), PreviousDrive);
         m.bind(KeyChord::key(vk::W), PathMask);
         m.bind(KeyChord::new(vk::W, false, true, false), SelectMask);
+        m.bind(KeyChord::new(vk::L, true, false, false), OpenTaskManager);
         m
     }
 }

@@ -3,6 +3,7 @@ mod file_list;
 mod log_view;
 mod tab_bar;
 mod task;
+mod task_manager;
 mod window_state;
 
 use std::cell::{Cell, RefCell};
@@ -11,11 +12,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
+use std::time::Instant;
 
 use file_list::FileListView;
 use log_view::LogView;
 use tab_bar::TabBar;
-use task::{ChannelHost, OpKind, WorkerEvent};
+use task::{ChannelHost, OpKind, TaskControl, TaskEntry, WorkerEvent};
 use rerics_core::{
     Column, Command, Config, FileListState, KeyChord, KeyMap, LogLevel, Pane, SortType,
     WindowState, messages,
@@ -54,7 +56,8 @@ struct MainWindow {
     right_mask: Rc<RefCell<Option<String>>>,
     task_tx: Sender<WorkerEvent>,
     task_rx: Rc<Receiver<WorkerEvent>>,
-    active_tasks: Rc<Cell<usize>>,
+    tasks: Rc<RefCell<Vec<TaskEntry>>>,
+    next_task_id: Rc<Cell<u64>>,
     shutdown: Arc<AtomicBool>,
     in_dialog: Rc<Cell<bool>>,
 }
@@ -174,7 +177,8 @@ impl MainWindow {
             right_mask: Rc::new(RefCell::new(None)),
             task_tx,
             task_rx: Rc::new(task_rx),
-            active_tasks: Rc::new(Cell::new(0)),
+            tasks: Rc::new(RefCell::new(Vec::new())),
+            next_task_id: Rc::new(Cell::new(0)),
             shutdown: Arc::new(AtomicBool::new(false)),
             in_dialog: Rc::new(Cell::new(false)),
         }
@@ -462,6 +466,10 @@ impl MainWindow {
             }
             Command::SelectMask => {
                 self.select_mask(is_left)?;
+                return Ok(());
+            }
+            Command::OpenTaskManager => {
+                self.open_task_manager()?;
                 return Ok(());
             }
         }
@@ -835,38 +843,72 @@ impl MainWindow {
         names: Vec<String>,
         move_it: bool,
     ) -> w::AnyResult<()> {
-        let host = ChannelHost::new(self.task_tx.clone(), self.shutdown.clone());
+        let control = Arc::new(TaskControl::new());
+        let host = ChannelHost::new(self.task_tx.clone(), self.shutdown.clone(), control.clone());
         let kind = if move_it { OpKind::Move } else { OpKind::Copy };
+        let id = self.next_id();
+        let text = if move_it { "移動" } else { "コピー" };
+        let desc = format!("{} -> {}", short_desc(&names), dst_dir.display());
+        self.register_task(id, text, desc, control)?;
         std::thread::spawn(move || {
             rerics_core::run_copy(&host, &src_dir, &dst_dir, &names, move_it);
-            let _ = host.tx.send(WorkerEvent::Done { kind, src_dir, dst_dir });
+            let _ = host.tx.send(WorkerEvent::Done { id, kind, src_dir, dst_dir });
         });
-        self.begin_task()
+        Ok(())
     }
 
     /// 削除をワーカースレッドで起動する。
     fn start_delete(&self, dir: PathBuf, names: Vec<String>) -> w::AnyResult<()> {
-        let host = ChannelHost::new(self.task_tx.clone(), self.shutdown.clone());
+        let control = Arc::new(TaskControl::new());
+        let host = ChannelHost::new(self.task_tx.clone(), self.shutdown.clone(), control.clone());
+        let id = self.next_id();
+        self.register_task(id, "削除", short_desc(&names), control)?;
         std::thread::spawn(move || {
             rerics_core::run_delete(&host, &dir, &names);
             let _ = host.tx.send(WorkerEvent::Done {
+                id,
                 kind: OpKind::Delete,
                 src_dir: dir.clone(),
                 dst_dir: dir,
             });
         });
-        self.begin_task()
+        Ok(())
     }
 
-    /// 走行タスク数を増やし、最初の1件なら取り込みタイマを起動する。
-    fn begin_task(&self) -> w::AnyResult<()> {
-        let n = self.active_tasks.get();
-        self.active_tasks.set(n + 1);
-        if n == 0 {
+    /// 新しいタスク ID を払い出す。
+    fn next_id(&self) -> u64 {
+        let n = self.next_task_id.get();
+        self.next_task_id.set(n + 1);
+        n
+    }
+
+    /// タスクをレジストリに登録し、最初の1件なら取り込みタイマを起動する。
+    fn register_task(
+        &self,
+        id: u64,
+        text: &str,
+        description: String,
+        control: Arc<TaskControl>,
+    ) -> w::AnyResult<()> {
+        let was_empty = self.tasks.borrow().is_empty();
+        self.tasks.borrow_mut().push(TaskEntry {
+            id,
+            text: text.to_owned(),
+            description,
+            control,
+            start: Instant::now(),
+        });
+        if was_empty {
             self.wnd
                 .hwnd()
                 .SetTimer(task::TASK_TIMER_ID, task::TASK_TIMER_MS, None)?;
         }
+        Ok(())
+    }
+
+    /// タスクマネージャ・モーダルを開く。
+    fn open_task_manager(&self) -> w::AnyResult<()> {
+        task_manager::show(&self.wnd, &self.tasks);
         Ok(())
     }
 
@@ -904,11 +946,10 @@ impl MainWindow {
                     self.in_dialog.set(false);
                     let _ = reply.send(r);
                 }
-                WorkerEvent::Done { kind, src_dir, dst_dir, .. } => {
+                WorkerEvent::Done { id, kind, src_dir, dst_dir } => {
                     self.on_op_done(kind, &src_dir, &dst_dir)?;
-                    let n = self.active_tasks.get().saturating_sub(1);
-                    self.active_tasks.set(n);
-                    if n == 0 {
+                    self.tasks.borrow_mut().retain(|e| e.id != id);
+                    if self.tasks.borrow().is_empty() {
                         let _ = self.wnd.hwnd().KillTimer(task::TASK_TIMER_ID);
                     }
                 }
@@ -1170,6 +1211,15 @@ impl MainWindow {
         self.right.refresh()?;
         self.log.refresh()?;
         Ok(())
+    }
+}
+
+/// タスク詳細用の短い対象表記（複数なら先頭名＋「他」）。
+fn short_desc(names: &[String]) -> String {
+    match names.split_first() {
+        Some((first, rest)) if !rest.is_empty() => format!("{first}他"),
+        Some((first, _)) => first.clone(),
+        None => String::new(),
     }
 }
 

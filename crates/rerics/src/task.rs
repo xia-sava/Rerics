@@ -6,8 +6,9 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::Sender;
+use std::time::Instant;
 
 use rerics_core::{ConflictResolution, DeleteWarnChoice, LogLevel, OperationHost};
 
@@ -18,12 +19,57 @@ pub const TASK_TIMER_ID: usize = 1;
 /// 取り込みタイマの間隔（ミリ秒）。
 pub const TASK_TIMER_MS: u32 = 50;
 
+const TASK_RUNNING: u8 = 0;
+const TASK_STOP: u8 = 1;
+
 /// 操作の種別。完了時の再読込・選択解除の出し分けに使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpKind {
     Copy,
     Move,
     Delete,
+}
+
+/// ワーカーと UI（タスクマネージャ）で共有する1タスクの制御状態。
+pub struct TaskControl {
+    state: AtomicU8,
+}
+
+impl TaskControl {
+    pub fn new() -> Self {
+        Self { state: AtomicU8::new(TASK_RUNNING) }
+    }
+
+    /// 中止を要求する（ワーカーが次のファイル境界で気付く）。
+    pub fn stop(&self) {
+        self.state.store(TASK_STOP, Ordering::Relaxed);
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.state.load(Ordering::Relaxed) == TASK_STOP
+    }
+
+    /// タスクマネージャ表示用の状態ラベル。
+    pub fn state_label(&self) -> &'static str {
+        if self.is_stopped() { "中止" } else { "実行中" }
+    }
+}
+
+impl Default for TaskControl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// 走行中タスク1件の表示・制御情報（タスクマネージャが参照する）。
+pub struct TaskEntry {
+    pub id: u64,
+    /// タスク種別名（コピー/移動/削除）。
+    pub text: String,
+    /// 詳細（"先頭名他 -> 宛先" など）。
+    pub description: String,
+    pub control: Arc<TaskControl>,
+    pub start: Instant,
 }
 
 /// 衝突ダイアログの回答（解決方法＋「すべてに適用」）。
@@ -40,8 +86,9 @@ pub enum WorkerEvent {
     AskConflict { name: String, reply: Sender<ConflictReply> },
     /// 属性付きファイルの削除可否を UI に問い合わせる。
     AskDeleteWarn { name: String, attr: String, reply: Sender<MessageResult> },
-    /// 操作完了。関与したディレクトリを伴う（再読込・選択解除の判定に使う）。
+    /// 操作完了。タスク id と関与したディレクトリを伴う（除去・再読込の判定に使う）。
     Done {
+        id: u64,
         kind: OpKind,
         src_dir: PathBuf,
         dst_dir: PathBuf,
@@ -53,15 +100,17 @@ pub enum WorkerEvent {
 pub struct ChannelHost {
     pub tx: Sender<WorkerEvent>,
     pub shutdown: Arc<AtomicBool>,
+    pub control: Arc<TaskControl>,
     pub conflict_cache: RefCell<Option<ConflictResolution>>,
     pub delete_warn_cache: RefCell<Option<DeleteWarnChoice>>,
 }
 
 impl ChannelHost {
-    pub fn new(tx: Sender<WorkerEvent>, shutdown: Arc<AtomicBool>) -> Self {
+    pub fn new(tx: Sender<WorkerEvent>, shutdown: Arc<AtomicBool>, control: Arc<TaskControl>) -> Self {
         Self {
             tx,
             shutdown,
+            control,
             conflict_cache: RefCell::new(None),
             delete_warn_cache: RefCell::new(None),
         }
@@ -74,7 +123,7 @@ impl OperationHost for ChannelHost {
     }
 
     fn cancelled(&self) -> bool {
-        self.shutdown.load(Ordering::Relaxed)
+        self.control.is_stopped() || self.shutdown.load(Ordering::Relaxed)
     }
 
     fn resolve_conflict(&self, name: &str) -> ConflictResolution {
