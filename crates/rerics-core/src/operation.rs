@@ -27,6 +27,17 @@ pub enum ConflictResolution {
     Cancel,
 }
 
+/// 読み込み専用/隠し/システム属性ファイルの削除確認に対する回答。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteWarnChoice {
+    /// 属性を解除して削除する。
+    Yes,
+    /// 削除しない。
+    No,
+    /// 操作全体を中止する。
+    Cancel,
+}
+
 /// 操作ロジックと GUI のあいだのフック。ワーカースレッドから呼ばれる。
 pub trait OperationHost {
     /// ログを1行追記する。
@@ -35,6 +46,8 @@ pub trait OperationHost {
     fn cancelled(&self) -> bool;
     /// 同名ファイル `name` が衝突したときの解決方法を尋ねる。
     fn resolve_conflict(&self, name: &str) -> ConflictResolution;
+    /// 属性付き（`attr`＝読み込み専用/隠し/システム）ファイル `name` の削除可否を尋ねる。
+    fn confirm_delete_attr(&self, name: &str, attr: &str) -> DeleteWarnChoice;
 }
 
 /// 操作の結果サマリ。
@@ -201,6 +214,16 @@ pub fn run_delete(host: &dyn OperationHost, dir: &Path, names: &[String]) -> OpS
             break;
         }
         let target = dir.join(name);
+        if let Some(label) = attribute_label(&target) {
+            match host.confirm_delete_attr(name, label) {
+                DeleteWarnChoice::Yes => clear_attributes(&target),
+                DeleteWarnChoice::No => continue,
+                DeleteWarnChoice::Cancel => {
+                    sum.cancelled = true;
+                    break;
+                }
+            }
+        }
         let is_dir = target.is_dir();
         let line = if is_dir {
             messages::delete_directory(name)
@@ -271,6 +294,42 @@ fn clear_attributes(path: &Path) {
     }
 }
 
+/// path の属性ラベルを返す（優先度 システム > 隠し > 読み込み専用、無ければ `None`）。
+#[cfg(windows)]
+fn attribute_label(path: &Path) -> Option<&'static str> {
+    use std::os::windows::ffi::OsStrExt;
+    const INVALID_FILE_ATTRIBUTES: u32 = u32::MAX;
+    const FILE_ATTRIBUTE_READONLY: u32 = 0x1;
+    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+    const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetFileAttributesW(path: *const u16) -> u32;
+    }
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let attrs = unsafe { GetFileAttributesW(wide.as_ptr()) };
+    if attrs == INVALID_FILE_ATTRIBUTES {
+        None
+    } else if attrs & FILE_ATTRIBUTE_SYSTEM != 0 {
+        Some("システム")
+    } else if attrs & FILE_ATTRIBUTE_HIDDEN != 0 {
+        Some("隠し")
+    } else if attrs & FILE_ATTRIBUTE_READONLY != 0 {
+        Some("読み込み専用")
+    } else {
+        None
+    }
+}
+
+/// 非 Windows では読み込み専用のみ判定する。
+#[cfg(not(windows))]
+fn attribute_label(path: &Path) -> Option<&'static str> {
+    match std::fs::metadata(path) {
+        Ok(m) if m.permissions().readonly() => Some("読み込み専用"),
+        _ => None,
+    }
+}
+
 /// 1ファイルをコピーし、移動なら元を消す。
 fn copy_file(src: &Path, dst: &Path, move_it: bool) -> std::io::Result<()> {
     if let Some(parent) = dst.parent() {
@@ -326,6 +385,7 @@ mod tests {
         cancel_after: isize,
         checks: Cell<isize>,
         conflict: ConflictResolution,
+        delete_warn: DeleteWarnChoice,
     }
 
     impl FakeHost {
@@ -335,6 +395,7 @@ mod tests {
                 cancel_after: -1,
                 checks: Cell::new(0),
                 conflict: ConflictResolution::Overwrite,
+                delete_warn: DeleteWarnChoice::Yes,
             }
         }
 
@@ -344,6 +405,10 @@ mod tests {
 
         fn with_conflict(res: ConflictResolution) -> Self {
             Self { conflict: res, ..Self::new() }
+        }
+
+        fn with_delete_warn(choice: DeleteWarnChoice) -> Self {
+            Self { delete_warn: choice, ..Self::new() }
         }
 
         fn lines(&self) -> Vec<String> {
@@ -367,6 +432,10 @@ mod tests {
 
         fn resolve_conflict(&self, _name: &str) -> ConflictResolution {
             self.conflict.clone()
+        }
+
+        fn confirm_delete_attr(&self, _name: &str, _attr: &str) -> DeleteWarnChoice {
+            self.delete_warn
         }
     }
 
@@ -424,6 +493,38 @@ mod tests {
         let sum = run_delete(&host, &dir.path, &["a.txt".to_owned()]);
         assert_eq!(sum.ok, 1);
         assert!(!dir.join("a.txt").exists());
+    }
+
+    #[test]
+    fn delete_readonly_warns_and_no_keeps_file() {
+        let dir = TempDir::new();
+        dir.write_file("a.txt", "x");
+        let ro = dir.join("a.txt");
+        let mut perms = std::fs::metadata(&ro).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&ro, perms).unwrap();
+        let host = FakeHost::with_delete_warn(DeleteWarnChoice::No);
+        let sum = run_delete(&host, &dir.path, &["a.txt".to_owned()]);
+        assert_eq!(sum.ok, 0);
+        assert!(ro.exists());
+        // 後始末のため属性を戻す。
+        let mut perms = std::fs::metadata(&ro).unwrap().permissions();
+        perms.set_readonly(false);
+        std::fs::set_permissions(&ro, perms).unwrap();
+    }
+
+    #[test]
+    fn delete_readonly_yes_clears_and_deletes() {
+        let dir = TempDir::new();
+        dir.write_file("a.txt", "x");
+        let ro = dir.join("a.txt");
+        let mut perms = std::fs::metadata(&ro).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&ro, perms).unwrap();
+        let host = FakeHost::with_delete_warn(DeleteWarnChoice::Yes);
+        let sum = run_delete(&host, &dir.path, &["a.txt".to_owned()]);
+        assert_eq!(sum.ok, 1);
+        assert!(!ro.exists());
     }
 
     #[test]

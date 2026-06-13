@@ -892,6 +892,18 @@ impl MainWindow {
                     self.in_dialog.set(false);
                     let _ = reply.send(task::ConflictReply { choice, all });
                 }
+                WorkerEvent::AskDeleteWarn { name, attr, reply } => {
+                    self.in_dialog.set(true);
+                    let msg = messages::delete_warning_question(&name, &attr);
+                    let r = dialog::message_box(
+                        &self.wnd,
+                        "削除",
+                        &msg,
+                        dialog::MessageStyle::YesNoCancelAll,
+                    );
+                    self.in_dialog.set(false);
+                    let _ = reply.send(r);
+                }
                 WorkerEvent::Done { kind, src_dir, dst_dir, .. } => {
                     self.on_op_done(kind, &src_dir, &dst_dir)?;
                     let n = self.active_tasks.get().saturating_sub(1);

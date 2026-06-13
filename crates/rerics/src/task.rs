@@ -9,7 +9,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 
-use rerics_core::{ConflictResolution, LogLevel, OperationHost};
+use rerics_core::{ConflictResolution, DeleteWarnChoice, LogLevel, OperationHost};
+
+use crate::dialog::MessageResult;
 
 /// イベント取り込みタイマの ID。
 pub const TASK_TIMER_ID: usize = 1;
@@ -36,6 +38,8 @@ pub enum WorkerEvent {
     Log { level: LogLevel, text: String },
     /// 同名衝突の解決を UI に問い合わせる（回答を `reply` で受け取る）。
     AskConflict { name: String, reply: Sender<ConflictReply> },
+    /// 属性付きファイルの削除可否を UI に問い合わせる。
+    AskDeleteWarn { name: String, attr: String, reply: Sender<MessageResult> },
     /// 操作完了。関与したディレクトリを伴う（再読込・選択解除の判定に使う）。
     Done {
         kind: OpKind,
@@ -50,11 +54,17 @@ pub struct ChannelHost {
     pub tx: Sender<WorkerEvent>,
     pub shutdown: Arc<AtomicBool>,
     pub conflict_cache: RefCell<Option<ConflictResolution>>,
+    pub delete_warn_cache: RefCell<Option<DeleteWarnChoice>>,
 }
 
 impl ChannelHost {
     pub fn new(tx: Sender<WorkerEvent>, shutdown: Arc<AtomicBool>) -> Self {
-        Self { tx, shutdown, conflict_cache: RefCell::new(None) }
+        Self {
+            tx,
+            shutdown,
+            conflict_cache: RefCell::new(None),
+            delete_warn_cache: RefCell::new(None),
+        }
     }
 }
 
@@ -92,6 +102,37 @@ impl OperationHost for ChannelHost {
                 reply.choice
             }
             Err(_) => ConflictResolution::Cancel,
+        }
+    }
+
+    fn confirm_delete_attr(&self, name: &str, attr: &str) -> DeleteWarnChoice {
+        if let Some(c) = *self.delete_warn_cache.borrow() {
+            return c;
+        }
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        if self
+            .tx
+            .send(WorkerEvent::AskDeleteWarn {
+                name: name.to_owned(),
+                attr: attr.to_owned(),
+                reply: reply_tx,
+            })
+            .is_err()
+        {
+            return DeleteWarnChoice::Cancel;
+        }
+        match reply_rx.recv() {
+            Ok(MessageResult::YesAll) => {
+                *self.delete_warn_cache.borrow_mut() = Some(DeleteWarnChoice::Yes);
+                DeleteWarnChoice::Yes
+            }
+            Ok(MessageResult::NoAll) => {
+                *self.delete_warn_cache.borrow_mut() = Some(DeleteWarnChoice::No);
+                DeleteWarnChoice::No
+            }
+            Ok(MessageResult::Yes) => DeleteWarnChoice::Yes,
+            Ok(MessageResult::No) => DeleteWarnChoice::No,
+            _ => DeleteWarnChoice::Cancel,
         }
     }
 }

@@ -138,9 +138,12 @@ pub fn message_box(
     message: &str,
     style: MessageStyle,
 ) -> MessageResult {
+    let style_has_all = style.has_all_checkbox();
+    // 「すべてに適用」付きのスタイルはチェックを独立行にするぶん縦に広げる。
+    let win_h = if style_has_all { 185 } else { 150 };
     let wnd = gui::WindowModal::new(gui::WindowModalOpts {
         title,
-        size: gui::dpi(400, 150),
+        size: gui::dpi(400, win_h),
         style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
         process_dlg_msgs: true,
         ..Default::default()
@@ -160,32 +163,27 @@ pub fn message_box(
 
     let specs = style.buttons();
     let cancel_index = style.cancel_index();
-    let has_all = style.has_all_checkbox();
+    let has_all = style_has_all;
     let result = Rc::new(RefCell::new(style.default_result()));
 
     let btn_w = 96;
     let gap = 8;
-    let chk_w = 130;
     let n = specs.len() as i32;
-    let mut total = n * btn_w + (n - 1) * gap;
-    if has_all {
-        total += chk_w + gap;
-    }
+    // ボタンは中央寄せの独立行。チェックは（あれば）その上の独立行に左寄せで置く。
+    let total = n * btn_w + (n - 1) * gap;
     let mut x = (400 - total) / 2;
-    let btn_y = 96;
+    let btn_y = if has_all { 122 } else { 96 };
 
     let checkbox = if has_all {
-        let c = gui::CheckBox::new(
+        Some(gui::CheckBox::new(
             &wnd,
             gui::CheckBoxOpts {
                 text: "すべてに適用(&A)",
-                position: gui::dpi(x, btn_y + 4),
-                size: gui::dpi(chk_w, 18),
+                position: gui::dpi(16, 92),
+                size: gui::dpi(160, 18),
                 ..Default::default()
             },
-        );
-        x += chk_w + gap;
-        Some(c)
+        ))
     } else {
         None
     };

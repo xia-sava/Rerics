@@ -106,6 +106,11 @@ pub fn delete_question(name: &str) -> String {
     format!("{name}を削除してもよろしいですか？")
 }
 
+/// `{0}は{1}ファイルです。削除してよろしいですか？`（属性付きファイルの削除確認）。
+pub fn delete_warning_question(name: &str, attr: &str) -> String {
+    format!("{name}は{attr}ファイルです。削除してよろしいですか？")
+}
+
 /// `{0}をコピーしてもよろしいですか？`（コピー確認）。
 pub fn copy_question(name: &str) -> String {
     format!("{name}をコピーしてもよろしいですか？")
