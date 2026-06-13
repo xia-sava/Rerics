@@ -46,29 +46,29 @@ pub fn delete_result(ok: usize, err: usize) -> String {
     format!("{ok} Success, {err} Error")
 }
 
-/// `コピーに失敗しました。- {0}`（原作は {0}=ファイル名）。
-pub fn copy_failure(name: &str) -> String {
-    format!("コピーに失敗しました。- {name}")
+/// `コピーに失敗しました。- {0}`（原作 {0}=ファイル名。理由も併記する）。
+pub fn copy_failure(name: &str, reason: &str) -> String {
+    format!("コピーに失敗しました。- {name} ({reason})")
 }
 
-/// `移動に失敗しました。- {0}`（原作は {0}=ファイル名）。
-pub fn move_failure(name: &str) -> String {
-    format!("移動に失敗しました。- {name}")
+/// `移動に失敗しました。- {0}`（原作 {0}=ファイル名。理由も併記する）。
+pub fn move_failure(name: &str, reason: &str) -> String {
+    format!("移動に失敗しました。- {name} ({reason})")
 }
 
-/// `削除に失敗しました。- {0}`（原作は {0}=ファイル名）。
-pub fn delete_failure(name: &str) -> String {
-    format!("削除に失敗しました。- {name}")
+/// `削除に失敗しました。- {0}`（原作 {0}=ファイル名。理由も併記する）。
+pub fn delete_failure(name: &str, reason: &str) -> String {
+    format!("削除に失敗しました。- {name} ({reason})")
 }
 
-/// `名前を変更出来ません。- {0}`（原作は {0}=ファイル名）。
-pub fn rename_failure(name: &str) -> String {
-    format!("名前を変更出来ません。- {name}")
+/// `名前を変更出来ません。- {0}`（原作 {0}=ファイル名。理由も併記する）。
+pub fn rename_failure(name: &str, reason: &str) -> String {
+    format!("名前を変更出来ません。- {name} ({reason})")
 }
 
-/// `ディレクトリが作成出来ません。- {0}`（原作は {0}=ディレクトリ名）。
-pub fn create_directory_failure(name: &str) -> String {
-    format!("ディレクトリが作成出来ません。- {name}")
+/// `ディレクトリが作成出来ません。- {0}`（原作 {0}=ディレクトリ名。理由も併記する）。
+pub fn create_directory_failure(name: &str, reason: &str) -> String {
+    format!("ディレクトリが作成出来ません。- {name} ({reason})")
 }
 
 /// `コピー先が同じです。- {0}`。

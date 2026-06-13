@@ -723,14 +723,10 @@ impl MainWindow {
             return Ok(());
         }
         let dir = self.pane(is_left).borrow().path().join(name);
-        if std::fs::create_dir(&dir).is_err() {
-            self.log.error(&messages::create_directory_failure(name));
-            dialog::message_box(
-                &self.wnd,
-                "ディレクトリの作成",
-                &messages::create_directory_failure(name),
-                dialog::MessageStyle::Error,
-            );
+        if let Err(e) = std::fs::create_dir(&dir) {
+            let line = messages::create_directory_failure(name, &e.to_string());
+            self.log.error(&line);
+            dialog::message_box(&self.wnd, "ディレクトリの作成", &line, dialog::MessageStyle::Error);
             return Ok(());
         }
         self.log.normal(&messages::create_directory(name));
@@ -843,11 +839,12 @@ impl MainWindow {
             };
             match result {
                 Ok(()) => ok += 1,
-                Err(_) => {
+                Err(e) => {
+                    let reason = e.to_string();
                     let line = if move_it {
-                        messages::move_failure(name)
+                        messages::move_failure(name, &reason)
                     } else {
-                        messages::copy_failure(name)
+                        messages::copy_failure(name, &reason)
                     };
                     self.log.error(&line);
                     err += 1;
@@ -895,14 +892,10 @@ impl MainWindow {
             return Ok(());
         }
         let dir = self.pane(is_left).borrow().path().to_path_buf();
-        if std::fs::rename(dir.join(&old), dir.join(new)).is_err() {
-            self.log.error(&messages::rename_failure(&old));
-            dialog::message_box(
-                &self.wnd,
-                "名前の変更",
-                &messages::rename_failure(&old),
-                dialog::MessageStyle::Error,
-            );
+        if let Err(e) = std::fs::rename(dir.join(&old), dir.join(new)) {
+            let line = messages::rename_failure(&old, &e.to_string());
+            self.log.error(&line);
+            dialog::message_box(&self.wnd, "名前の変更", &line, dialog::MessageStyle::Error);
             return Ok(());
         }
         self.log.normal(&messages::rename(&old, new));
@@ -973,8 +966,8 @@ impl MainWindow {
             };
             match result {
                 Ok(()) => ok += 1,
-                Err(_) => {
-                    self.log.error(&messages::delete_failure(name));
+                Err(e) => {
+                    self.log.error(&messages::delete_failure(name, &e.to_string()));
                     err += 1;
                 }
             }
