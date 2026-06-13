@@ -81,6 +81,13 @@ pub enum Command {
     PathMask,
     SelectMask,
     OpenTaskManager,
+    MaximizeLeft,
+    MaximizeRight,
+    MaximizeLeftForce,
+    MaximizeRightForce,
+    BorderLeft,
+    BorderRight,
+    BorderReset,
     Quit,
 }
 
@@ -129,6 +136,13 @@ impl Command {
             (PathMask, "PathMask"),
             (SelectMask, "SelectMask"),
             (OpenTaskManager, "OpenTaskManager"),
+            (MaximizeLeft, "MaximizeLeft"),
+            (MaximizeRight, "MaximizeRight"),
+            (MaximizeLeftForce, "MaximizeLeftForce"),
+            (MaximizeRightForce, "MaximizeRightForce"),
+            (BorderLeft, "BorderLeft"),
+            (BorderRight, "BorderRight"),
+            (BorderReset, "BorderReset"),
             (Quit, "Quit"),
         ]
     };
@@ -305,6 +319,10 @@ impl Default for KeyMap {
         m.bind(KeyChord::new(vk::F7, false, true, false), CreateFile);
         m.bind(KeyChord::new(vk::RIGHT, false, true, false), NextDrive);
         m.bind(KeyChord::new(vk::LEFT, false, true, false), PreviousDrive);
+        m.bind(KeyChord::new(vk::RIGHT, true, false, false), MaximizeLeft);
+        m.bind(KeyChord::new(vk::LEFT, true, false, false), MaximizeRight);
+        m.bind(KeyChord::new(vk::RIGHT, true, true, false), BorderRight);
+        m.bind(KeyChord::new(vk::LEFT, true, true, false), BorderLeft);
         m.bind(KeyChord::key(vk::W), PathMask);
         m.bind(KeyChord::new(vk::W, false, true, false), SelectMask);
         m.bind(KeyChord::new(vk::L, true, false, false), OpenTaskManager);

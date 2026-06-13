@@ -87,6 +87,12 @@ pub struct Layout {
     pub log_height: i32,
     pub log_gap: i32,
     pub scrollbar_width: i32,
+    /// 左右ペイン間のスプリッタ（境界線）の幅。ここをドラッグして分割比を変える。
+    pub splitter_width: i32,
+    /// ペイン最大化時に反対ペインへ残す幅（原作 Other/MaxmizeMargin 相当）。
+    pub maximize_margin: i32,
+    /// 境界線をキーで動かす1回あたりの移動量（原作 Other/BorderUnit 相当）。
+    pub border_unit: i32,
 }
 
 impl Default for Layout {
@@ -101,6 +107,9 @@ impl Default for Layout {
             log_height: 96,
             log_gap: 2,
             scrollbar_width: 7,
+            splitter_width: 4,
+            maximize_margin: 200,
+            border_unit: 50,
         }
     }
 }
@@ -242,7 +251,7 @@ pub struct TabState {
 }
 
 /// 自動保存される全体状態。
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct State {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowState>,
@@ -250,6 +259,24 @@ pub struct State {
     pub tabs: Vec<TabState>,
     #[serde(default)]
     pub active_tab: usize,
+    /// 左ペインの幅比（0.0〜1.0）。スプリッタ位置の永続化。
+    #[serde(default = "default_split_ratio")]
+    pub split_ratio: f64,
+}
+
+fn default_split_ratio() -> f64 {
+    0.5
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            window: None,
+            tabs: Vec::new(),
+            active_tab: 0,
+            split_ratio: default_split_ratio(),
+        }
+    }
 }
 
 impl State {
@@ -430,6 +457,7 @@ mod tests {
                 TabState { left: "C:\\c".into(), right: "C:\\d".into(), active_right: true },
             ],
             active_tab: 1,
+            ..State::default()
         };
         let s = toml::to_string(&st).unwrap();
         let back: State = toml::from_str(&s).unwrap();

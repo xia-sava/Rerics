@@ -3,6 +3,7 @@ mod file_list;
 mod log_view;
 mod menu;
 mod pane_view;
+mod splitter;
 mod status_bar;
 mod tab_bar;
 mod task;
@@ -45,6 +46,7 @@ struct MainWindow {
     wnd: gui::WindowMain,
     left: PaneView,
     right: PaneView,
+    splitter: splitter::SplitterView,
     tab_bar: TabBar,
     log: LogView,
     key_sink: gui::WindowControl,
@@ -56,6 +58,10 @@ struct MainWindow {
     keymap: Rc<KeyMap>,
     initial_window: Option<WindowState>,
     active_right: Rc<Cell<bool>>,
+    /// 左ペインの幅比（0.0〜1.0）。スプリッタのドラッグ／最大化／境界移動で変わる。
+    split_ratio: Rc<Cell<f64>>,
+    /// いずれかのペインが最大化中か（Maximize トグルの状態・原作 MaximizeFileList 相当）。
+    maximized: Rc<Cell<bool>>,
     tabs: Rc<RefCell<Vec<TabSnapshot>>>,
     active: Rc<Cell<usize>>,
     left_mask: Rc<RefCell<Option<String>>>,
@@ -102,6 +108,11 @@ impl MainWindow {
 
         let left = PaneView::new(&wnd, gui::dpi(m, m), gui::dpi(400, 400), &config);
         let right = PaneView::new(&wnd, gui::dpi(m, m), gui::dpi(400, 400), &config);
+        let splitter = splitter::SplitterView::new(
+            &wnd,
+            gui::dpi(0, 0),
+            gui::dpi(config.layout.splitter_width, 400),
+        );
 
         let tab_bar = TabBar::new(&wnd, gui::dpi(0, 0), gui::dpi(800, config.layout.tab_height), &config);
         let log = LogView::new(&wnd, gui::dpi(m, m), gui::dpi(800, config.layout.log_height), &config);
@@ -122,6 +133,7 @@ impl MainWindow {
 
         let state = rerics_core::State::load();
         let initial_window = state.window.clone();
+        let initial_split = state.split_ratio.clamp(0.05, 0.95);
 
         // 保存タブから退避用スナップショット集合を組む。存在しないパスはフォールバックへ正規化。
         let mut tabs: Vec<TabSnapshot> = state
@@ -167,6 +179,7 @@ impl MainWindow {
             wnd,
             left,
             right,
+            splitter,
             tab_bar,
             log,
             key_sink,
@@ -178,6 +191,8 @@ impl MainWindow {
             keymap: Rc::new(keymap),
             initial_window,
             active_right: Rc::new(Cell::new(active_right)),
+            split_ratio: Rc::new(Cell::new(initial_split)),
+            maximized: Rc::new(Cell::new(false)),
             tabs: Rc::new(RefCell::new(tabs)),
             active: Rc::new(Cell::new(active)),
             left_mask: Rc::new(RefCell::new(None)),
@@ -219,6 +234,11 @@ impl MainWindow {
         self.wnd.on().wm(co::WM::ACTIVATE, move |_| {
             this.key_sink.hwnd().SetFocus();
             Ok(0)
+        });
+
+        let this = self.clone();
+        self.splitter.on_drag(move |splitter_left| {
+            let _ = this.drag_splitter(splitter_left);
         });
 
         let this = self.clone();
@@ -287,6 +307,7 @@ impl MainWindow {
                 window,
                 tabs,
                 active_tab: this.active.get(),
+                split_ratio: this.split_ratio.get(),
             };
             if let Err(e) = state.save() {
                 eprintln!("状態の保存に失敗: {}", e);
@@ -492,6 +513,34 @@ impl MainWindow {
             }
             Command::OpenTaskManager => {
                 self.open_task_manager()?;
+                return Ok(());
+            }
+            Command::MaximizeLeft => {
+                self.maximize_left(false)?;
+                return Ok(());
+            }
+            Command::MaximizeRight => {
+                self.maximize_right(false)?;
+                return Ok(());
+            }
+            Command::MaximizeLeftForce => {
+                self.maximize_left(true)?;
+                return Ok(());
+            }
+            Command::MaximizeRightForce => {
+                self.maximize_right(true)?;
+                return Ok(());
+            }
+            Command::BorderRight => {
+                self.border_move(gui::dpi_x(self.config.layout.border_unit))?;
+                return Ok(());
+            }
+            Command::BorderLeft => {
+                self.border_move(-gui::dpi_x(self.config.layout.border_unit))?;
+                return Ok(());
+            }
+            Command::BorderReset => {
+                self.border_reset()?;
                 return Ok(());
             }
             Command::Quit => {
@@ -1260,31 +1309,38 @@ impl MainWindow {
         Ok(())
     }
 
-    /// 左右2ペイン（パスバー＋リスト）をクライアント領域に均等割り付けする。
+    /// 左右2ペイン（パスバー＋リスト）と境界線を `split_ratio` に従って割り付ける。
     fn layout(&self) -> w::AnyResult<()> {
         let rc = self.wnd.hwnd().GetClientRect()?;
         let total_w = rc.right - rc.left;
         let total_h = rc.bottom - rc.top;
         let lay = &self.config.layout;
         let m = gui::dpi_x(lay.margin);
-        let gap = gui::dpi_x(lay.gap);
         let my = gui::dpi_y(lay.margin);
+        let splitter_w = gui::dpi_x(lay.splitter_width);
 
         let tab_h = gui::dpi_y(lay.tab_height);
         let log_h = gui::dpi_y(lay.log_height);
         let log_gap = gui::dpi_y(lay.log_gap);
-        let pane_w = (total_w - m * 2 - gap) / 2;
         let bars_y = tab_h + my;
         let log_y = total_h - my - log_h;
         let pane_h = (log_y - log_gap - bars_y).max(0);
+
+        let panes_total = (total_w - m * 2 - splitter_w).max(0);
+        let min_pane = gui::dpi_x(24).min(panes_total / 2);
+        let left_w = ((panes_total as f64 * self.split_ratio.get()).round() as i32)
+            .clamp(min_pane, (panes_total - min_pane).max(min_pane));
+        let right_w = panes_total - left_w;
         let left_x = m;
-        let right_x = m + pane_w + gap;
+        let splitter_x = m + left_w;
+        let right_x = splitter_x + splitter_w;
         let log_w = total_w - m * 2;
 
         place(self.tab_bar.hwnd(), 0, 0, total_w, tab_h)?;
-        place(self.left.hwnd(), left_x, bars_y, pane_w, pane_h)?;
+        place(self.left.hwnd(), left_x, bars_y, left_w, pane_h)?;
         self.left.relayout()?;
-        place(self.right.hwnd(), right_x, bars_y, pane_w, pane_h)?;
+        place(self.splitter.hwnd(), splitter_x, bars_y, splitter_w, pane_h)?;
+        place(self.right.hwnd(), right_x, bars_y, right_w, pane_h)?;
         self.right.relayout()?;
         // 利用可能幅が変わったので content-fit を再計算する（フレックス列が残り幅に追従）。
         self.view(true).autofit_columns()?;
@@ -1293,6 +1349,66 @@ impl MainWindow {
         self.tab_bar.refresh()?;
         self.log.refresh()?;
         Ok(())
+    }
+
+    /// 現在のクライアント幅でのペイン合計幅（左右の幅の和・物理px）。
+    fn panes_total(&self) -> w::AnyResult<i32> {
+        let rc = self.wnd.hwnd().GetClientRect()?;
+        let total_w = rc.right - rc.left;
+        let lay = &self.config.layout;
+        let m = gui::dpi_x(lay.margin);
+        let splitter_w = gui::dpi_x(lay.splitter_width);
+        Ok((total_w - m * 2 - splitter_w).max(1))
+    }
+
+    /// 左ペイン幅（物理px）から分割比を更新して再レイアウトする。
+    fn set_left_width(&self, left_w: i32) -> w::AnyResult<()> {
+        let pt = self.panes_total()?;
+        let ratio = (left_w as f64 / pt as f64).clamp(0.05, 0.95);
+        self.split_ratio.set(ratio);
+        self.layout()
+    }
+
+    /// スプリッタのドラッグ（親座標の希望左端）を分割比へ反映する。
+    fn drag_splitter(&self, splitter_left: i32) -> w::AnyResult<()> {
+        let m = gui::dpi_x(self.config.layout.margin);
+        self.maximized.set(false);
+        self.set_left_width(splitter_left - m)
+    }
+
+    /// 左ペイン最大化（トグル。最大化中はトグルで中央へ）。`force` は常に最大化。
+    fn maximize_left(&self, force: bool) -> w::AnyResult<()> {
+        if !force && self.maximized.get() {
+            return self.border_reset();
+        }
+        let pt = self.panes_total()?;
+        let margin = gui::dpi_x(self.config.layout.maximize_margin);
+        self.maximized.set(true);
+        self.set_left_width(pt - margin)
+    }
+
+    /// 右ペイン最大化（トグル）。`force` は常に最大化。
+    fn maximize_right(&self, force: bool) -> w::AnyResult<()> {
+        if !force && self.maximized.get() {
+            return self.border_reset();
+        }
+        let margin = gui::dpi_x(self.config.layout.maximize_margin);
+        self.maximized.set(true);
+        self.set_left_width(margin)
+    }
+
+    /// 境界を中央50%へ戻す（最大化状態を解除）。
+    fn border_reset(&self) -> w::AnyResult<()> {
+        self.maximized.set(false);
+        self.split_ratio.set(0.5);
+        self.layout()
+    }
+
+    /// 境界を `delta`（物理px・左ペインが正で広がる）だけ動かす。
+    fn border_move(&self, delta: i32) -> w::AnyResult<()> {
+        let pt = self.panes_total()?;
+        let cur_left = (pt as f64 * self.split_ratio.get()).round() as i32;
+        self.set_left_width(cur_left + delta)
     }
 }
 

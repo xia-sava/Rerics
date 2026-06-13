@@ -12,6 +12,9 @@ tab_height = 24
 log_height = 96
 log_gap = 2
 scrollbar_width = 7
+splitter_width = 4
+maximize_margin = 200
+border_unit = 50
 
 [colors]
 file_normal = "#ffffff"
@@ -70,6 +73,10 @@ C = "Copy"
 "Ctrl+4" = "SortByDate"
 "Ctrl+A" = "SelectAll"
 "Ctrl+L" = "OpenTaskManager"
+"Ctrl+Left" = "MaximizeRight"
+"Ctrl+Right" = "MaximizeLeft"
+"Ctrl+Shift+Left" = "BorderLeft"
+"Ctrl+Shift+Right" = "BorderRight"
 "Ctrl+Shift+Tab" = "PagePrevious"
 "Ctrl+T" = "NewTab"
 "Ctrl+Tab" = "PageNext"
