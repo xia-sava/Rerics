@@ -6,6 +6,8 @@ mod config;
 mod file_list;
 mod input;
 mod log;
+pub mod messages;
+mod operation;
 
 pub use config::{
     Config, DEFAULT_CONFIG_TOML, FontSpec, Layout, State, TabState, WindowState, clamp_to_work,
@@ -17,6 +19,7 @@ pub use file_list::{
 };
 pub use input::{Command, KeyChord, KeyMap, vk};
 pub use log::{LogLevel, LogLine, LogState};
+pub use operation::{OpSummary, OperationHost, run_copy, run_delete};
 
 use std::path::{Path, PathBuf};
 

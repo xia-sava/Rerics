@@ -1,18 +1,24 @@
 mod dialog;
 mod file_list;
 mod log_view;
-mod messages;
 mod tab_bar;
+mod task;
 mod window_state;
 
 use std::cell::{Cell, RefCell};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
 
 use file_list::FileListView;
 use log_view::LogView;
 use tab_bar::TabBar;
+use task::{ChannelHost, OpKind, WorkerEvent};
 use rerics_core::{
-    Column, Command, Config, FileListState, KeyChord, KeyMap, Pane, SortType, WindowState,
+    Column, Command, Config, FileListState, KeyChord, KeyMap, LogLevel, Pane, SortType,
+    WindowState, messages,
 };
 use winsafe::{self as w, co, gui, prelude::*};
 
@@ -46,6 +52,10 @@ struct MainWindow {
     active: Rc<Cell<usize>>,
     left_mask: Rc<RefCell<Option<String>>>,
     right_mask: Rc<RefCell<Option<String>>>,
+    task_tx: Sender<WorkerEvent>,
+    task_rx: Rc<Receiver<WorkerEvent>>,
+    active_tasks: Rc<Cell<usize>>,
+    shutdown: Arc<AtomicBool>,
 }
 
 /// 1タブの保存状態（非アクティブ時の退避先）。アクティブタブの実体はライブ側
@@ -141,6 +151,8 @@ impl MainWindow {
 
         let keymap = config.keymap();
 
+        let (task_tx, task_rx) = std::sync::mpsc::channel();
+
         Self {
             wnd,
             left,
@@ -159,6 +171,10 @@ impl MainWindow {
             active: Rc::new(Cell::new(active)),
             left_mask: Rc::new(RefCell::new(None)),
             right_mask: Rc::new(RefCell::new(None)),
+            task_tx,
+            task_rx: Rc::new(task_rx),
+            active_tasks: Rc::new(Cell::new(0)),
+            shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -217,7 +233,11 @@ impl MainWindow {
         self.wnd.on().wm_size(move |_| this.layout());
 
         let this = self.clone();
+        self.wnd.on().wm_timer(task::TASK_TIMER_ID, move || this.pump_tasks());
+
+        let this = self.clone();
         self.wnd.on().wm_destroy(move || {
+            this.shutdown.store(true, Ordering::Relaxed);
             this.save_active();
             let window = window_state::capture(&this.wnd.hwnd());
             let tabs: Vec<rerics_core::TabState> = this
@@ -802,67 +822,102 @@ impl MainWindow {
         }
         let src_dir = self.pane(is_left).borrow().path().to_path_buf();
         let dst_dir = self.pane(!is_left).borrow().path().to_path_buf();
-        let mut ok = 0usize;
-        let mut err = 0usize;
-        for name in &names {
-            let src = src_dir.join(name);
-            let dst = dst_dir.join(name);
-            if src == dst {
-                let line = if move_it {
-                    messages::same_move_path(name)
-                } else {
-                    messages::same_copy_path(name)
-                };
-                self.log.error(&line);
-                err += 1;
-                continue;
-            }
-            let line = if move_it {
-                messages::move_(name)
-            } else {
-                messages::copy(name)
-            };
-            self.log.normal(&line);
-            let result = if move_it {
-                match std::fs::rename(&src, &dst) {
-                    Ok(()) => Ok(()),
-                    Err(_) => copy_path(&src, &dst).and_then(|()| {
-                        if src.is_dir() {
-                            std::fs::remove_dir_all(&src)
-                        } else {
-                            std::fs::remove_file(&src)
-                        }
-                    }),
+        self.start_copy(src_dir, dst_dir, names, move_it)
+    }
+
+    /// コピー/移動をワーカースレッドで起動する。完了は `wm_timer` 経由で取り込む。
+    fn start_copy(
+        &self,
+        src_dir: PathBuf,
+        dst_dir: PathBuf,
+        names: Vec<String>,
+        move_it: bool,
+    ) -> w::AnyResult<()> {
+        let host = ChannelHost { tx: self.task_tx.clone(), shutdown: self.shutdown.clone() };
+        let kind = if move_it { OpKind::Move } else { OpKind::Copy };
+        std::thread::spawn(move || {
+            rerics_core::run_copy(&host, &src_dir, &dst_dir, &names, move_it);
+            let _ = host.tx.send(WorkerEvent::Done { kind, src_dir, dst_dir });
+        });
+        self.begin_task()
+    }
+
+    /// 削除をワーカースレッドで起動する。
+    fn start_delete(&self, dir: PathBuf, names: Vec<String>) -> w::AnyResult<()> {
+        let host = ChannelHost { tx: self.task_tx.clone(), shutdown: self.shutdown.clone() };
+        std::thread::spawn(move || {
+            rerics_core::run_delete(&host, &dir, &names);
+            let _ = host.tx.send(WorkerEvent::Done {
+                kind: OpKind::Delete,
+                src_dir: dir.clone(),
+                dst_dir: dir,
+            });
+        });
+        self.begin_task()
+    }
+
+    /// 走行タスク数を増やし、最初の1件なら取り込みタイマを起動する。
+    fn begin_task(&self) -> w::AnyResult<()> {
+        let n = self.active_tasks.get();
+        self.active_tasks.set(n + 1);
+        if n == 0 {
+            self.wnd
+                .hwnd()
+                .SetTimer(task::TASK_TIMER_ID, task::TASK_TIMER_MS, None)?;
+        }
+        Ok(())
+    }
+
+    /// ワーカーからのイベントを取り込み、ログ反映・完了処理を行う。
+    fn pump_tasks(&self) -> w::AnyResult<()> {
+        while let Ok(ev) = self.task_rx.try_recv() {
+            match ev {
+                WorkerEvent::Log { level, text } => match level {
+                    LogLevel::Normal => self.log.normal(&text),
+                    LogLevel::Info => self.log.info(&text),
+                    LogLevel::Warning => self.log.warn(&text),
+                    LogLevel::Error => self.log.error(&text),
+                },
+                WorkerEvent::Done { kind, src_dir, dst_dir, .. } => {
+                    self.on_op_done(kind, &src_dir, &dst_dir)?;
+                    let n = self.active_tasks.get().saturating_sub(1);
+                    self.active_tasks.set(n);
+                    if n == 0 {
+                        let _ = self.wnd.hwnd().KillTimer(task::TASK_TIMER_ID);
+                    }
                 }
-            } else {
-                copy_path(&src, &dst)
-            };
-            match result {
-                Ok(()) => ok += 1,
-                Err(e) => {
-                    let reason = e.to_string();
-                    let line = if move_it {
-                        messages::move_failure(name, &reason)
-                    } else {
-                        messages::copy_failure(name, &reason)
-                    };
-                    self.log.error(&line);
-                    err += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// 操作完了に応じて関与した側のペインを再読込・選択解除する。
+    fn on_op_done(&self, kind: OpKind, src_dir: &Path, dst_dir: &Path) -> w::AnyResult<()> {
+        for is_left in [true, false] {
+            let path = self.pane(is_left).borrow().path().to_path_buf();
+            let is_src = path == src_dir;
+            let is_dst = path == dst_dir;
+            match kind {
+                OpKind::Copy => {
+                    if is_dst {
+                        self.reload_side(is_left)?;
+                    } else if is_src {
+                        self.view(is_left).state().borrow_mut().clear_all();
+                        self.view(is_left).refresh()?;
+                    }
+                }
+                OpKind::Move => {
+                    if is_src || is_dst {
+                        self.reload_side(is_left)?;
+                    }
+                }
+                OpKind::Delete => {
+                    if is_src {
+                        self.reload_side(is_left)?;
+                    }
                 }
             }
         }
-        let result_line = messages::copy_result(ok, 0, err);
-        if err == 0 {
-            self.log.info(&result_line);
-        } else {
-            self.log.error(&result_line);
-        }
-        self.reload_side(!is_left)?;
-        if move_it {
-            self.reload_side(is_left)?;
-        }
-        self.view(is_left).state().borrow_mut().clear_all();
-        self.view(is_left).refresh()?;
         Ok(())
     }
 
@@ -948,38 +1003,7 @@ impl MainWindow {
             return Ok(());
         }
         let dir = self.pane(is_left).borrow().path().to_path_buf();
-        let mut ok = 0usize;
-        let mut err = 0usize;
-        for name in &names {
-            let target = dir.join(name);
-            let is_dir = target.is_dir();
-            let line = if is_dir {
-                messages::delete_directory(name)
-            } else {
-                messages::delete(name)
-            };
-            self.log.normal(&line);
-            let result = if is_dir {
-                std::fs::remove_dir_all(&target)
-            } else {
-                std::fs::remove_file(&target)
-            };
-            match result {
-                Ok(()) => ok += 1,
-                Err(e) => {
-                    self.log.error(&messages::delete_failure(name, &e.to_string()));
-                    err += 1;
-                }
-            }
-        }
-        let result_line = messages::delete_result(ok, err);
-        if err == 0 {
-            self.log.info(&result_line);
-        } else {
-            self.log.error(&result_line);
-        }
-        self.reload_side(is_left)?;
-        Ok(())
+        self.start_delete(dir, names)
     }
 
     /// 入力ダイアログでパスマスクを尋ね、表示フィルタを設定/解除して一覧を更新する。
@@ -1126,24 +1150,6 @@ impl MainWindow {
 fn place(hwnd: &w::HWND, x: i32, y: i32, cx: i32, cy: i32) -> w::AnyResult<()> {
     hwnd.MoveWindow(w::POINT { x, y }, w::SIZE { cx, cy }, true)?;
     Ok(())
-}
-
-/// src を dst へコピーする。ディレクトリは再帰的に複製する。
-fn copy_path(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
-    if src.is_dir() {
-        std::fs::create_dir_all(dst)?;
-        for entry in std::fs::read_dir(src)? {
-            let entry = entry?;
-            let name = entry.file_name();
-            copy_path(&entry.path(), &dst.join(&name))?;
-        }
-        Ok(())
-    } else {
-        if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::copy(src, dst).map(|_| ())
-    }
 }
 
 /// パスを正規化する。存在しない（ディレクトリでない）場合は `fallback` を返す。
