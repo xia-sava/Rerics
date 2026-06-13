@@ -1,6 +1,7 @@
 mod dialog;
 mod file_list;
 mod log_view;
+mod menu;
 mod pane_view;
 mod status_bar;
 mod tab_bar;
@@ -47,6 +48,8 @@ struct MainWindow {
     tab_bar: TabBar,
     log: LogView,
     key_sink: gui::WindowControl,
+    menu_bar: Rc<w::HMENU>,
+    menu_cmds: Rc<std::collections::HashMap<u16, Command>>,
     config: Rc<Config>,
     left_pane: Rc<RefCell<Pane>>,
     right_pane: Rc<RefCell<Pane>>,
@@ -156,6 +159,8 @@ impl MainWindow {
 
         let keymap = config.keymap();
 
+        let (menu_bar, menu_cmds) = menu::build().expect("メニューバーの構築");
+
         let (task_tx, task_rx) = std::sync::mpsc::channel();
 
         Self {
@@ -165,6 +170,8 @@ impl MainWindow {
             tab_bar,
             log,
             key_sink,
+            menu_bar: Rc::new(menu_bar),
+            menu_cmds: Rc::new(menu_cmds),
             config: Rc::new(config),
             left_pane,
             right_pane,
@@ -197,6 +204,16 @@ impl MainWindow {
         self.wire_pane(false);
         self.wire_key_sink();
 
+        // メニュー項目（有効なもの）をアクティブ側ペインへのコマンド実行に配線する。
+        for (&id, &cmd) in self.menu_cmds.iter() {
+            let this = self.clone();
+            self.wnd.on().wm_command_acc_menu(id, move || {
+                let is_left = !this.active_right.get();
+                this.exec(is_left, cmd)?;
+                Ok(())
+            });
+        }
+
         // アクティブ化のたびにフォーカスをキーシンクへ集約する。
         let this = self.clone();
         self.wnd.on().wm(co::WM::ACTIVATE, move |_| {
@@ -211,6 +228,7 @@ impl MainWindow {
 
         let this = self.clone();
         self.wnd.on().wm_create(move |_| {
+            this.wnd.hwnd().SetMenu(&this.menu_bar)?;
             if let Some(ws) = &this.initial_window {
                 let applied = window_state::apply(&this.wnd.hwnd(), ws);
                 if applied && ws.maximized {
@@ -474,6 +492,10 @@ impl MainWindow {
             }
             Command::OpenTaskManager => {
                 self.open_task_manager()?;
+                return Ok(());
+            }
+            Command::Quit => {
+                self.wnd.hwnd().DestroyWindow()?;
                 return Ok(());
             }
         }

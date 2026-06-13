@@ -81,6 +81,7 @@ pub enum Command {
     PathMask,
     SelectMask,
     OpenTaskManager,
+    Quit,
 }
 
 impl Command {
@@ -128,6 +129,7 @@ impl Command {
             (PathMask, "PathMask"),
             (SelectMask, "SelectMask"),
             (OpenTaskManager, "OpenTaskManager"),
+            (Quit, "Quit"),
         ]
     };
 
