@@ -40,6 +40,16 @@ pub trait ArchiveBackend {
     fn list(&self) -> io::Result<Vec<ArchiveEntry>>;
     /// 1エントリの bytes を取り出す。`inner` は '/' 区切り・正規化済みの書庫内パス。
     fn read(&self, inner: &str) -> io::Result<Vec<u8>>;
+    /// 先頭 `cap` バイトまでを取り出す（超過していたら `truncated=true`）。ビューア表示
+    /// 用途で巨大/展開爆弾エントリのフル解凍を避けるための上限付き読取。既定実装は
+    /// `read` 後に切り詰めるだけ（解凍総量は減らない）＝ストリーム読みできる backend は
+    /// 解凍自体を打ち切るよう override する。
+    fn read_capped(&self, inner: &str, cap: usize) -> io::Result<(Vec<u8>, bool)> {
+        let mut bytes = self.read(inner)?;
+        let truncated = bytes.len() > cap;
+        bytes.truncate(cap);
+        Ok((bytes, truncated))
+    }
 }
 
 /// 書込みバックエンド（後付け用の seam・現状は実装しない）。
@@ -85,6 +95,49 @@ impl ZipBackend {
         let f = std::fs::File::open(&self.path)?;
         zip::ZipArchive::new(f).map_err(zip_err)
     }
+
+    /// 名前一致するエントリを最大 `limit` バイト読む（`None` で全部）。戻りは `(bytes, truncated)`。
+    /// `by_name` は zip 内部の UTF-8 化名を使い CP932 名と一致しないため、index 走査で
+    /// 生バイト名を自前デコードして突き合わせる。`limit` 指定時は解凍自体を `take` で打ち切る。
+    fn read_entry(&self, inner: &str, limit: Option<usize>) -> io::Result<(Vec<u8>, bool)> {
+        use std::io::Read;
+        let want = normalize_inner(inner);
+        let mut zip = self.archive()?;
+        for i in 0..zip.len() {
+            let mut f = zip.by_index(i).map_err(zip_err)?;
+            let name = normalize_inner(&decode_name(f.name_raw()));
+            if name != want {
+                continue;
+            }
+            if f.is_dir() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "ディレクトリは読めません",
+                ));
+            }
+            return match limit {
+                Some(cap) => {
+                    let mut buf = Vec::new();
+                    f.take(cap as u64 + 1).read_to_end(&mut buf)?;
+                    let truncated = buf.len() > cap;
+                    buf.truncate(cap);
+                    Ok((buf, truncated))
+                }
+                None => {
+                    // 申告サイズは未検証（壊れた/細工書庫は巨大値を書けて、事前確保だけで
+                    // OOM abort し得る）。上限でクランプし、不足分は read_to_end の拡張に任せる。
+                    const PREALLOC_CAP: usize = 16 * 1024 * 1024;
+                    let mut buf = Vec::with_capacity((f.size() as usize).min(PREALLOC_CAP));
+                    f.read_to_end(&mut buf)?;
+                    Ok((buf, false))
+                }
+            };
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "書庫内ファイルが見つかりません",
+        ))
+    }
 }
 
 impl ArchiveBackend for ZipBackend {
@@ -119,33 +172,11 @@ impl ArchiveBackend for ZipBackend {
     }
 
     fn read(&self, inner: &str) -> io::Result<Vec<u8>> {
-        use std::io::Read;
-        let want = normalize_inner(inner);
-        let mut zip = self.archive()?;
-        // `by_name` は zip 内部の名前（UTF-8 化済み）を使うため、CP932 名と一致しない。
-        // index 走査で生バイト名を自前デコードして突き合わせる。
-        for i in 0..zip.len() {
-            let mut f = zip.by_index(i).map_err(zip_err)?;
-            let name = normalize_inner(&decode_name(f.name_raw()));
-            if name == want {
-                if f.is_dir() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "ディレクトリは読めません",
-                    ));
-                }
-                // 申告サイズは未検証（壊れた/細工書庫は巨大値を書けて、事前確保だけで
-                // OOM abort し得る）。上限でクランプし、不足分は read_to_end の自動拡張に任せる。
-                const PREALLOC_CAP: usize = 16 * 1024 * 1024;
-                let mut buf = Vec::with_capacity((f.size() as usize).min(PREALLOC_CAP));
-                f.read_to_end(&mut buf)?;
-                return Ok(buf);
-            }
-        }
-        Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "書庫内ファイルが見つかりません",
-        ))
+        Ok(self.read_entry(inner, None)?.0)
+    }
+
+    fn read_capped(&self, inner: &str, cap: usize) -> io::Result<(Vec<u8>, bool)> {
+        self.read_entry(inner, Some(cap))
     }
 }
 
@@ -359,6 +390,20 @@ mod tests {
         assert_eq!(be.read("a.txt").unwrap(), b"AAA");
         assert_eq!(be.read("b/c.txt").unwrap(), b"CCC");
         assert!(be.read("missing").is_err());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_capped_truncates_and_passes_through() {
+        let path = temp_path("capped");
+        build_zip(&path, &[("big.txt", b"0123456789ABCDEF")]);
+        let be = ZipBackend::open(&path).unwrap();
+        let (head, truncated) = be.read_capped("big.txt", 4).unwrap();
+        assert_eq!(head, b"0123");
+        assert!(truncated);
+        let (full, trunc2) = be.read_capped("big.txt", 100).unwrap();
+        assert_eq!(full, b"0123456789ABCDEF");
+        assert!(!trunc2);
         let _ = std::fs::remove_file(&path);
     }
 

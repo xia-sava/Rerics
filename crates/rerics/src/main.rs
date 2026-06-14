@@ -1131,12 +1131,17 @@ impl MainWindow {
         }
     }
 
-    /// 書庫から取り出したファイルの一時展開先（起動時/終了時に空にする）。
+    /// 書庫から取り出したファイルの一時展開先。**プロセスごとに分離**して、別インスタンス
+    /// の掃除が稼働中インスタンスの展開物を壊さないようにする（共有 dir を全削除しない）。
     fn archive_temp_dir() -> PathBuf {
-        data_dir().join("cache").join("archive")
+        data_dir()
+            .join("cache")
+            .join("archive")
+            .join(std::process::id().to_string())
     }
 
-    /// 一時展開先を丸ごと削除する（起動時の残骸掃除＋終了時の後始末）。
+    /// 自プロセスの一時展開先のみを削除する（起動時の残骸掃除＋終了時の後始末）。
+    /// 他プロセスの dir には触れない。クラッシュで残った他 pid の残骸は手動掃除（cache 配下）。
     fn clear_archive_temp() {
         let _ = std::fs::remove_dir_all(Self::archive_temp_dir());
     }

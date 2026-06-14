@@ -119,7 +119,7 @@ impl Location {
     pub fn parse(display: &str) -> Location {
         let p = Path::new(display);
         if p.is_dir() {
-            return Location::Real(p.to_path_buf());
+            return Location::Real(absolutize(p));
         }
         let mut inner_parts: Vec<String> = Vec::new();
         let mut cur = p.to_path_buf();
@@ -127,7 +127,7 @@ impl Location {
             if is_archive_path(&cur) {
                 inner_parts.reverse();
                 return Location::Archive {
-                    archive: cur,
+                    archive: absolutize(&cur),
                     inner: inner_parts.join("/"),
                 };
             }
@@ -143,7 +143,7 @@ impl Location {
             inner_parts.push(name);
             cur = parent;
         }
-        Location::Real(p.to_path_buf())
+        Location::Real(absolutize(p))
     }
 
     /// 親へ。`Some((親 Location, 出てきた名前))`。書庫ルートから出ると実FS の親へ。
@@ -176,6 +176,12 @@ impl Location {
             }
         }
     }
+}
+
+/// 相対パスを絶対パス化する（失敗時は元のまま）。`Pane::open` と同じ正規化を
+/// `Location::parse` でも保ち、`.` のような相対表記で親移動できなくなるのを防ぐ。
+fn absolutize(p: &Path) -> PathBuf {
+    std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 /// inner に子名を連結（"" のときは name そのもの）。
@@ -223,6 +229,15 @@ mod tests {
         // inner 付きの完全形は OS セパレータで連結される
         let sep = std::path::MAIN_SEPARATOR;
         assert_eq!(c.loc_display(), format!("C:\\x\\foo.zip{sep}sub{sep}deep"));
+    }
+
+    #[test]
+    fn parse_relative_is_absolutized() {
+        // "." を相対のまま Real にすると file_name 無しで to_parent が詰まる回帰を防ぐ。
+        let loc = Location::parse(".");
+        let p = loc.as_real_path().expect("real");
+        assert!(p.is_absolute());
+        assert!(loc.to_parent().is_some());
     }
 
     #[test]
