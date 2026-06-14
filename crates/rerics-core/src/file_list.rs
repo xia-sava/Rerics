@@ -30,7 +30,7 @@ pub struct FileItem {
 
 impl FileItem {
     /// `name` と `is_dir` から base/ext を分解した item を作る（属性・日時は既定値）。
-    fn bare(name: String, is_dir: bool) -> Self {
+    pub(crate) fn bare(name: String, is_dir: bool) -> Self {
         let (base_name, extension) = split_base_ext(&name, is_dir);
         Self {
             name,

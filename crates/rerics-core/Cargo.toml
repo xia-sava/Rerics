@@ -10,3 +10,4 @@ image = "0.25"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 unicode-width = "0.2.2"
+zip = { version = "8", default-features = false, features = ["deflate"] }

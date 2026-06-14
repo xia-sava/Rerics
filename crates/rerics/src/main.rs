@@ -1577,7 +1577,7 @@ impl MainWindow {
             return self.to_parent(is_left);
         }
         if is_dir {
-            if self.pane(is_left).borrow_mut().enter(&name) {
+            if self.pane(is_left).borrow_mut().enter(&name, is_dir) {
                 self.reload_side(is_left)?;
             }
         } else {
