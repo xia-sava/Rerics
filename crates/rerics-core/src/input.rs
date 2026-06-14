@@ -27,6 +27,7 @@ pub mod vk {
     pub const M: u16 = 0x4D;
     pub const O: u16 = 0x4F;
     pub const R: u16 = 0x52;
+    pub const V: u16 = 0x56;
     pub const D: u16 = 0x44;
     pub const L: u16 = 0x4C;
     pub const T: u16 = 0x54;
@@ -76,6 +77,7 @@ pub enum Command {
     Rename,
     Delete,
     CreateFile,
+    ViewFile,
     NextDrive,
     PreviousDrive,
     PathMask,
@@ -132,6 +134,7 @@ impl Command {
             (Rename, "Rename"),
             (Delete, "Delete"),
             (CreateFile, "CreateFile"),
+            (ViewFile, "ViewFile"),
             (NextDrive, "NextDrive"),
             (PreviousDrive, "PreviousDrive"),
             (PathMask, "PathMask"),
@@ -319,6 +322,7 @@ impl Default for KeyMap {
         m.bind(KeyChord::key(vk::R), Rename);
         m.bind(KeyChord::key(vk::D), Delete);
         m.bind(KeyChord::new(vk::F7, false, true, false), CreateFile);
+        m.bind(KeyChord::key(vk::V), ViewFile);
         m.bind(KeyChord::new(vk::RIGHT, false, true, false), NextDrive);
         m.bind(KeyChord::new(vk::LEFT, false, true, false), PreviousDrive);
         m.bind(KeyChord::new(vk::RIGHT, true, false, false), MaximizeLeft);

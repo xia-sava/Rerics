@@ -11,6 +11,7 @@ mod status_bar;
 mod tab_bar;
 mod task;
 mod task_manager;
+mod viewer;
 mod window_state;
 
 use std::cell::{Cell, RefCell};
@@ -28,6 +29,7 @@ use path_bar::PathBarView;
 use status_bar::StatusBarView;
 use tab_bar::TabBar;
 use task::{ChannelHost, OpKind, TaskControl, TaskEntry, WorkerEvent};
+use viewer::ViewerView;
 use rerics_core::{
     Column, Command, Config, FileListState, KeyChord, KeyMap, LogLevel, Pane, SortType,
     WindowState, messages,
@@ -94,6 +96,9 @@ struct MainWindow {
     splitter: splitter::SplitterView,
     tab_bar: TabBar,
     log: LogView,
+    viewer: ViewerView,
+    /// ビューア表示中か。true の間はキー入力をビューア操作へ振り向ける。
+    viewing: Rc<Cell<bool>>,
     key_sink: gui::WindowControl,
     menu_bar: Rc<w::HMENU>,
     menu_cmds: Rc<std::collections::HashMap<u16, Command>>,
@@ -162,6 +167,8 @@ impl MainWindow {
 
         let tab_bar = TabBar::new(&wnd, gui::dpi(0, 0), gui::dpi(800, config.layout.tab_height), &config);
         let log = LogView::new(&wnd, gui::dpi(m, m), gui::dpi(800, config.layout.log_height), &config);
+        // メイン領域に重ねるビューア（初期は非表示。layout で位置決め）。
+        let viewer = ViewerView::new(&wnd, gui::dpi(0, 0), gui::dpi(400, 400), &config);
 
         // 全キー入力を集約する 1x1 の不可視コントロール（Win32 フォーカスはここに固定し、
         // 左右ペインはフォーカスを持たない）。
@@ -228,6 +235,8 @@ impl MainWindow {
             splitter,
             tab_bar,
             log,
+            viewer,
+            viewing: Rc::new(Cell::new(false)),
             key_sink,
             menu_bar: Rc::new(menu_bar),
             menu_cmds: Rc::new(menu_cmds),
@@ -387,6 +396,9 @@ impl MainWindow {
 
     /// 画面座標 `coords` の下にあるペインをホイール回転分だけスクロールする。
     fn scroll_under_cursor(&self, distance: i16, coords: w::POINT) -> w::AnyResult<()> {
+        if self.viewing.get() {
+            return self.viewer.scroll_by_wheel(distance);
+        }
         if let Some(hw) = w::HWND::WindowFromPoint(coords) {
             let p = hw.ptr();
             if p == self.view(true).hwnd().ptr() {
@@ -507,6 +519,10 @@ impl MainWindow {
             }
             Command::CreateFile => {
                 self.create_file(is_left)?;
+                return Ok(());
+            }
+            Command::ViewFile => {
+                self.view_file(is_left)?;
                 return Ok(());
             }
             Command::Copy => {
@@ -829,6 +845,13 @@ impl MainWindow {
         });
         let this = self.clone();
         self.key_sink.on().wm_key_down(move |p| {
+            // ビューア表示中はキーをビューア操作へ振り向ける（ファイラのキーマップは無効）。
+            if this.viewing.get() {
+                let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
+                let shift = w::GetAsyncKeyState(co::VK::SHIFT);
+                let _ = this.viewer_key(p.vkey_code.raw(), ctrl, shift);
+                return Ok(());
+            }
             let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
             let shift = w::GetAsyncKeyState(co::VK::SHIFT);
             let chord = KeyChord::new(p.vkey_code.raw(), ctrl, shift, p.has_alt_key);
@@ -839,6 +862,88 @@ impl MainWindow {
             }
             Ok(())
         });
+    }
+
+    /// ビューア表示中のキー操作。固定キー（設定対象外）。
+    fn viewer_key(&self, vk: u16, ctrl: bool, shift: bool) -> w::AnyResult<()> {
+        use rerics_core::vk;
+        const VK_F: u16 = 0x46;
+        const VK_F3: u16 = 0x72;
+        const VK_Q: u16 = 0x51;
+        const VK_B: u16 = 0x42;
+        // Ctrl+C は選択コピー（C 単独はエンコーディング切替）。
+        if ctrl && vk == vk::C {
+            self.viewer.copy_selection()?;
+            return Ok(());
+        }
+        match vk {
+            vk::ESCAPE | VK_Q | vk::RETURN => self.close_viewer()?,
+            vk::UP => self.viewer.scroll_by(-1)?,
+            vk::DOWN => self.viewer.scroll_by(1)?,
+            vk::PRIOR => self.viewer.scroll_page(false)?,
+            vk::NEXT => self.viewer.scroll_page(true)?,
+            vk::HOME => self.viewer.scroll_home()?,
+            vk::END => self.viewer.scroll_end()?,
+            vk::C => self.viewer.cycle_encoding(true)?,
+            VK_B => self.viewer.toggle_mode()?,
+            VK_F => self.viewer_search()?,
+            // F3=次, Shift+F3=前。
+            VK_F3 => self.viewer.find_next(!shift)?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// 検索語を入力ダイアログで尋ね、ビューア内を検索する。
+    fn viewer_search(&self) -> w::AnyResult<()> {
+        let cur = self.viewer.search_term();
+        let input = dialog::input_box(
+            &self.wnd,
+            "検索",
+            "検索する文字列（空で解除・F3で次・Shift+F3で前）:",
+            &cur,
+            dialog::InputMode::Plain,
+        );
+        if let Some(term) = input {
+            self.viewer.set_search(term.trim())?;
+        }
+        self.key_sink.hwnd().SetFocus();
+        Ok(())
+    }
+
+    /// カーソル下のファイルを内蔵ビューアで開く（ディレクトリ/親は無視）。
+    fn view_file(&self, is_left: bool) -> w::AnyResult<()> {
+        let name = {
+            let state = self.view(is_left).state();
+            let s = state.borrow();
+            match s.items.get(s.cursor) {
+                Some(it) if !it.is_parent && !it.is_dir => it.name.clone(),
+                _ => return Ok(()),
+            }
+        };
+        let path = self.pane(is_left).borrow().path().join(&name);
+        let (bytes, truncated) = match read_capped(&path, viewer::MAX_VIEW_BYTES) {
+            Ok(v) => v,
+            Err(e) => {
+                self.log.error(&format!("ビューアで開けません: {}: {}", name, e));
+                return Ok(());
+            }
+        };
+        self.viewer.open(&name, bytes, truncated);
+        self.viewing.set(true);
+        self.viewer.hwnd().ShowWindow(co::SW::SHOW);
+        self.viewer.hwnd().BringWindowToTop()?;
+        self.viewer.refresh()?;
+        self.key_sink.hwnd().SetFocus();
+        Ok(())
+    }
+
+    /// ビューアを閉じてファイラ表示へ戻す。
+    fn close_viewer(&self) -> w::AnyResult<()> {
+        self.viewing.set(false);
+        self.viewer.hwnd().ShowWindow(co::SW::HIDE);
+        self.key_sink.hwnd().SetFocus();
+        Ok(())
     }
 
     fn view(&self, is_left: bool) -> &FileListView {
@@ -1441,8 +1546,14 @@ impl MainWindow {
         self.view(true).autofit_columns()?;
         self.view(false).autofit_columns()?;
         place(self.log.hwnd(), left_x, log_y, log_w, log_h)?;
+        // ビューアはタブバー下のメイン領域（ペイン＋ログ）全体を覆う。表示状態は維持。
+        place(self.viewer.hwnd(), 0, bars_y, total_w, (total_h - bars_y).max(0))?;
+        if self.viewing.get() {
+            self.viewer.hwnd().BringWindowToTop()?;
+        }
         self.tab_bar.refresh()?;
         self.log.refresh()?;
+        self.viewer.refresh()?;
         Ok(())
     }
 
@@ -1539,6 +1650,18 @@ fn drive_label(path: &Path) -> String {
         .last()
         .map(|r| r.to_string_lossy().trim_end_matches(['\\', '/']).to_uppercase())
         .unwrap_or_default()
+}
+
+/// ファイルを最大 `cap` バイトまで読む。`cap` を超える場合は先頭 `cap` バイトと
+/// 切り詰めフラグ `true` を返す。
+fn read_capped(path: &Path, cap: usize) -> std::io::Result<(Vec<u8>, bool)> {
+    use std::io::Read;
+    let f = std::fs::File::open(path)?;
+    let mut buf = Vec::new();
+    f.take(cap as u64 + 1).read_to_end(&mut buf)?;
+    let truncated = buf.len() > cap;
+    buf.truncate(cap);
+    Ok((buf, truncated))
 }
 
 /// パスを正規化する。存在しない（ディレクトリでない）場合は `fallback` を返す。
