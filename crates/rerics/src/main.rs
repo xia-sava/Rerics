@@ -839,7 +839,8 @@ impl MainWindow {
         self.key_sink.on().wm_key_down(move |p| {
             // ビューア表示中はキーをビューア操作へ振り向ける（ファイラのキーマップは無効）。
             if this.viewing.get() {
-                let _ = this.viewer_key(p.vkey_code.raw());
+                let shift = w::GetAsyncKeyState(co::VK::SHIFT);
+                let _ = this.viewer_key(p.vkey_code.raw(), shift);
                 return Ok(());
             }
             let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
@@ -854,10 +855,14 @@ impl MainWindow {
     }
 
     /// ビューア表示中のキー操作。固定キー（設定対象外）。
-    fn viewer_key(&self, vk: u16) -> w::AnyResult<()> {
+    fn viewer_key(&self, vk: u16, shift: bool) -> w::AnyResult<()> {
         use rerics_core::vk;
+        const VK_F: u16 = 0x46;
+        const VK_F3: u16 = 0x72;
+        const VK_Q: u16 = 0x51;
+        const VK_B: u16 = 0x42;
         match vk {
-            vk::ESCAPE | 0x51 /* Q */ | vk::RETURN => self.close_viewer()?,
+            vk::ESCAPE | VK_Q | vk::RETURN => self.close_viewer()?,
             vk::UP => self.viewer.scroll_by(-1)?,
             vk::DOWN => self.viewer.scroll_by(1)?,
             vk::PRIOR => self.viewer.scroll_page(false)?,
@@ -865,9 +870,29 @@ impl MainWindow {
             vk::HOME => self.viewer.scroll_home()?,
             vk::END => self.viewer.scroll_end()?,
             vk::C => self.viewer.cycle_encoding(true)?,
-            0x42 /* B */ => self.viewer.toggle_mode()?,
+            VK_B => self.viewer.toggle_mode()?,
+            VK_F => self.viewer_search()?,
+            // F3=次, Shift+F3=前。
+            VK_F3 => self.viewer.find_next(!shift)?,
             _ => {}
         }
+        Ok(())
+    }
+
+    /// 検索語を入力ダイアログで尋ね、ビューア内を検索する。
+    fn viewer_search(&self) -> w::AnyResult<()> {
+        let cur = self.viewer.search_term();
+        let input = dialog::input_box(
+            &self.wnd,
+            "検索",
+            "検索する文字列（空で解除・F3で次・Shift+F3で前）:",
+            &cur,
+            dialog::InputMode::Plain,
+        );
+        if let Some(term) = input {
+            self.viewer.set_search(term.trim())?;
+        }
+        self.key_sink.hwnd().SetFocus();
         Ok(())
     }
 

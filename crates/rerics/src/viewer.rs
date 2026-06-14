@@ -36,6 +36,10 @@ struct Inner {
     gutter_chars: Cell<usize>,
     /// 再生成が必要か（open/エンコーディング/モード変更で立てる）。
     dirty: Cell<bool>,
+    /// 検索語（小文字化はしない。一致は大小無視で判定）。
+    search_term: RefCell<String>,
+    /// 現在ヒットしている表示行（ハイライト対象）。
+    match_line: Cell<Option<usize>>,
 }
 
 /// ビューア表示パネル。
@@ -76,6 +80,8 @@ impl ViewerView {
             cached_wrap: Cell::new(0),
             gutter_chars: Cell::new(1),
             dirty: Cell::new(true),
+            search_term: RefCell::new(String::new()),
+            match_line: Cell::new(None),
         });
         let me = Self { wnd, inner };
         me.setup_events();
@@ -94,6 +100,8 @@ impl ViewerView {
         self.inner.truncated.set(truncated);
         self.inner.scroll_top.set(0);
         self.inner.dirty.set(true);
+        *self.inner.search_term.borrow_mut() = String::new();
+        self.inner.match_line.set(None);
         let _ = self.refresh();
     }
 
@@ -106,6 +114,7 @@ impl ViewerView {
     pub fn cycle_encoding(&self, forward: bool) -> w::AnyResult<()> {
         self.inner.model.borrow_mut().cycle_encoding(forward);
         self.inner.dirty.set(true);
+        self.inner.match_line.set(None);
         self.refresh()
     }
 
@@ -114,7 +123,89 @@ impl ViewerView {
         self.inner.model.borrow_mut().toggle_mode();
         self.inner.scroll_top.set(0);
         self.inner.dirty.set(true);
+        self.inner.match_line.set(None);
         self.refresh()
+    }
+
+    /// 現在の検索語を返す（検索ダイアログの初期値用）。
+    pub fn search_term(&self) -> String {
+        self.inner.search_term.borrow().clone()
+    }
+
+    /// 検索語を設定し、現在位置から最初の一致へジャンプする。空なら検索解除。
+    pub fn set_search(&self, term: &str) -> w::AnyResult<()> {
+        *self.inner.search_term.borrow_mut() = term.to_owned();
+        if term.is_empty() {
+            self.inner.match_line.set(None);
+            return self.refresh();
+        }
+        let start = self.inner.match_line.get().unwrap_or_else(|| self.inner.scroll_top.get());
+        if let Some(hit) = self.find_from(start, true) {
+            self.jump_to(hit);
+        } else {
+            self.inner.match_line.set(None);
+        }
+        self.refresh()
+    }
+
+    /// 次（`forward=false` なら前）の一致へ移動する。
+    pub fn find_next(&self, forward: bool) -> w::AnyResult<()> {
+        if self.inner.search_term.borrow().is_empty() {
+            return Ok(());
+        }
+        let total = self.inner.lines.borrow().len();
+        if total == 0 {
+            return Ok(());
+        }
+        let cur = self.inner.match_line.get().unwrap_or_else(|| self.inner.scroll_top.get());
+        let start = if forward {
+            (cur + 1) % total
+        } else {
+            (cur + total - 1) % total
+        };
+        if let Some(hit) = self.find_from(start, forward) {
+            self.jump_to(hit);
+        }
+        self.refresh()
+    }
+
+    /// `start` から循環で一致行を探す（大小無視）。
+    fn find_from(&self, start: usize, forward: bool) -> Option<usize> {
+        let lines = self.inner.lines.borrow();
+        let n = lines.len();
+        if n == 0 {
+            return None;
+        }
+        let needle = self.inner.search_term.borrow().to_lowercase();
+        if needle.is_empty() {
+            return None;
+        }
+        for k in 0..n {
+            let i = if forward {
+                (start + k) % n
+            } else {
+                (start + n - k) % n
+            };
+            if lines[i].body.to_lowercase().contains(&needle) {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// 指定表示行を可視範囲（できれば上から1/4の位置）へスクロールして強調する。
+    fn jump_to(&self, line: usize) {
+        self.inner.match_line.set(Some(line));
+        let page = self.page_rows();
+        let total = self.inner.lines.borrow().len();
+        let max_top = total.saturating_sub(page);
+        // 一致行が見えていなければ、少し上に余白を取って表示する。
+        let top = self.inner.scroll_top.get();
+        if line < top || line >= top + page {
+            let margin = page / 4;
+            let new_top = line.saturating_sub(margin).min(max_top);
+            self.inner.scroll_top.set(new_top);
+        }
     }
 
     /// 相対行スクロール（正＝下）。
@@ -277,17 +368,24 @@ impl ViewerView {
         // 本文。
         let lines = self.inner.lines.borrow();
         let top = self.inner.scroll_top.get();
+        let match_line = self.inner.match_line.get();
         let mut y = 0i32;
         let mut i = top;
         while i < lines.len() && y < body_h {
             let line = &lines[i];
+            let is_match = match_line == Some(i);
+            if is_match {
+                let sel = w::HBRUSH::CreateSolidBrush(rgb(colors.selected_file_bg))?;
+                dc.FillRect(w::RECT { left: gutter_w, top: y, right: cw, bottom: y + lh }, &sel)?;
+            }
             if !line.gutter.is_empty() {
                 dc.SetTextColor(rgb(colors.log_info))?;
                 let rect = w::RECT { left: 0, top: y, right: gutter_w - cwd / 2, bottom: y + lh };
                 dc.DrawText(&line.gutter, rect, co::DT::SINGLELINE | co::DT::RIGHT | co::DT::NOPREFIX)?;
             }
             if !line.body.is_empty() {
-                dc.SetTextColor(rgb(colors.file_normal))?;
+                let col = if is_match { colors.selected_file } else { colors.file_normal };
+                dc.SetTextColor(rgb(col))?;
                 let rect = w::RECT { left: gutter_w, top: y, right: cw, bottom: y + lh };
                 dc.DrawText(&line.body, rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
             }
@@ -328,14 +426,24 @@ impl ViewerView {
         let total = self.inner.lines.borrow().len();
         let cur = self.inner.scroll_top.get() + 1;
         let trunc = if self.inner.truncated.get() { "  [先頭のみ]" } else { "" };
+        let find = {
+            let term = self.inner.search_term.borrow();
+            if term.is_empty() {
+                String::new()
+            } else {
+                let hit = if self.inner.match_line.get().is_some() { "" } else { " (該当なし)" };
+                format!("    検索:{}{}", term, hit)
+            }
+        };
         format!(
-            "{}    [{}]  {}    {}/{} 行    (C:エンコ B:ダンプ Esc:閉じる){}",
+            "{}    [{}]  {}    {}/{} 行    (C:エンコ B:ダンプ F:検索 Esc:閉じる){}{}",
             self.inner.title.borrow(),
             model.encoding.label(),
             mode,
             cur.min(total.max(1)),
             total,
             trunc,
+            find,
         )
     }
 
