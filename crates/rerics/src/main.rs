@@ -12,6 +12,7 @@ mod status_bar;
 mod tab_bar;
 mod task;
 mod task_manager;
+mod video;
 mod viewer;
 mod window_state;
 
@@ -965,37 +966,30 @@ impl MainWindow {
         self.show_viewer(ActiveView::Text)
     }
 
-    /// 画像/動画ビューアで開く。同ディレクトリの閲覧可能な画像を前後送りの対象にする。
-    fn view_media(&self, is_left: bool, kind: MediaKind, dir: &Path, path: &Path) -> w::AnyResult<()> {
-        if kind == MediaKind::Video {
-            self.media.open(vec![path.to_path_buf()], 0);
-        } else {
-            let mut files: Vec<PathBuf> = Vec::new();
-            let mut index = 0;
-            {
-                let state = self.view(is_left).state();
-                let s = state.borrow();
-                for it in &s.items {
-                    if it.is_dir || it.is_parent {
-                        continue;
+    /// 画像/動画ビューアで開く。同ディレクトリの閲覧可能なメディアを前後送りの対象にする。
+    fn view_media(&self, is_left: bool, _kind: MediaKind, dir: &Path, path: &Path) -> w::AnyResult<()> {
+        let mut files: Vec<PathBuf> = Vec::new();
+        let mut index = 0;
+        {
+            let state = self.view(is_left).state();
+            let s = state.borrow();
+            for it in &s.items {
+                if it.is_dir || it.is_parent {
+                    continue;
+                }
+                if MediaKind::from_extension(&it.extension).is_some() {
+                    let p = dir.join(&it.name);
+                    if p == path {
+                        index = files.len();
                     }
-                    if matches!(
-                        MediaKind::from_extension(&it.extension),
-                        Some(MediaKind::Image) | Some(MediaKind::Animation)
-                    ) {
-                        let p = dir.join(&it.name);
-                        if p == path {
-                            index = files.len();
-                        }
-                        files.push(p);
-                    }
+                    files.push(p);
                 }
             }
-            if files.is_empty() {
-                files.push(path.to_path_buf());
-            }
-            self.media.open(files, index);
         }
+        if files.is_empty() {
+            files.push(path.to_path_buf());
+        }
+        self.media.open(files, index);
         self.show_viewer(ActiveView::Media)
     }
 
@@ -1034,8 +1028,9 @@ impl MainWindow {
         const VK_SUBTRACT: u16 = 0x6D;
         match vk {
             vk::ESCAPE | VK_Q | vk::RETURN => self.close_viewer()?,
+            vk::SPACE => self.media.toggle_play()?,
             vk::LEFT | vk::UP | vk::PRIOR => self.media.navigate(-1)?,
-            vk::RIGHT | vk::DOWN | vk::NEXT | vk::SPACE => self.media.navigate(1)?,
+            vk::RIGHT | vk::DOWN | vk::NEXT => self.media.navigate(1)?,
             VK_OEM_PLUS | VK_ADD => self.media.zoom_by(1.25)?,
             VK_OEM_MINUS | VK_SUBTRACT => self.media.zoom_by(0.8)?,
             VK_0 => self.media.fit_to_window()?,
@@ -1048,6 +1043,7 @@ impl MainWindow {
 
     /// ビューアを閉じてファイラ表示へ戻す。
     fn close_viewer(&self) -> w::AnyResult<()> {
+        self.media.stop_playback();
         self.active_view.set(ActiveView::None);
         self.viewer.hwnd().ShowWindow(co::SW::HIDE);
         self.media.hwnd().ShowWindow(co::SW::HIDE);

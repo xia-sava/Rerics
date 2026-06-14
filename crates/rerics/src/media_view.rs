@@ -12,9 +12,12 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use rerics_core::{
-    Colors, Config, FrameSource, MediaKind, Rgb, StillImage, clamp_pan, fit_scale, placement,
-    rgba_to_bgra, rotate_rgba,
+    Colors, Config, FrameSource, MediaKind, Rgb, clamp_pan, composite_over_checker, fit_scale,
+    load_image, placement, rgba_to_bgra, rotate_rgba,
 };
+
+/// 透過表示の市松 1 マスの画素サイズ。
+const CHECKER_SQ: u32 = 8;
 use winsafe::{self as w, co, gui, prelude::*};
 
 use crate::chrome;
@@ -26,6 +29,9 @@ pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const MIN_SCALE: f64 = 0.02;
 const MAX_SCALE: f64 = 32.0;
 
+/// アニメ/動画の再生用タイマ ID。
+const MEDIA_TIMER_ID: usize = 0x6D31;
+
 struct Inner {
     /// 巡回対象（同ディレクトリの閲覧可能ファイル）と現在位置。
     nav_files: RefCell<Vec<PathBuf>>,
@@ -33,7 +39,19 @@ struct Inner {
     title: RefCell<String>,
     /// 画像が無いとき（未対応・読込失敗・動画）に中央へ出す文言。
     message: RefCell<Option<String>>,
-    /// 回転前の元画素（RGBA）と寸法。回転変更時に再回転する元にする。
+    /// フレーム供給元（静止画/アニメ/動画）。
+    source: RefCell<Option<Box<dyn FrameSource>>>,
+    /// アニメ/動画か（再生バーを出す）。
+    animated: Cell<bool>,
+    /// 再生中か。
+    playing: Cell<bool>,
+    /// 現在表示中フレームの表示時間 [ms]（次フレームまでの待ち）。
+    cur_delay: Cell<u32>,
+    /// シークバーをドラッグ中か。
+    seeking: Cell<bool>,
+    /// 現在のメディアが透過を含むか（市松背景＋アルファ合成に切り替える）。
+    has_alpha: Cell<bool>,
+    /// 現在フレームの元画素（RGBA・回転前）と寸法。回転変更時に再回転する元にする。
     base_rgba: RefCell<Vec<u8>>,
     base_w: Cell<u32>,
     base_h: Cell<u32>,
@@ -85,6 +103,12 @@ impl MediaView {
             nav_index: Cell::new(0),
             title: RefCell::new(String::new()),
             message: RefCell::new(None),
+            source: RefCell::new(None),
+            animated: Cell::new(false),
+            playing: Cell::new(false),
+            cur_delay: Cell::new(0),
+            seeking: Cell::new(false),
+            has_alpha: Cell::new(false),
             base_rgba: RefCell::new(Vec::new()),
             base_w: Cell::new(0),
             base_h: Cell::new(0),
@@ -154,7 +178,12 @@ impl MediaView {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         *self.inner.title.borrow_mut() = name;
-        // 表示状態を初期化する。
+        // 表示状態と再生状態を初期化する。
+        let _ = self.hwnd().KillTimer(MEDIA_TIMER_ID);
+        *self.inner.source.borrow_mut() = None;
+        self.inner.animated.set(false);
+        self.inner.playing.set(false);
+        self.inner.seeking.set(false);
         self.inner.rotation.set(0);
         self.inner.scale.set(1.0);
         self.inner.fit.set(true);
@@ -165,10 +194,13 @@ impl MediaView {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         match MediaKind::from_extension(&ext) {
-            Some(MediaKind::Video) => self.set_message("（動画は未対応です）"),
+            Some(MediaKind::Video) => match crate::video::VideoSource::open(path) {
+                Some(src) => self.set_source(Box::new(src)),
+                None => self.set_message("この動画は再生できません（コーデック未対応の可能性）"),
+            },
             Some(MediaKind::Image) | Some(MediaKind::Animation) => match read_capped(path, MAX_IMAGE_BYTES) {
-                Some(bytes) => match StillImage::load(&bytes) {
-                    Some(src) => self.set_image(src),
+                Some(bytes) => match load_image(&bytes) {
+                    Some(src) => self.set_source(src),
                     None => self.set_message("この画像は表示できません"),
                 },
                 None => self.set_message("ファイルを読み込めません"),
@@ -178,17 +210,68 @@ impl MediaView {
         let _ = self.refresh();
     }
 
-    fn set_image(&self, mut src: StillImage) {
-        let (w, h) = src.dimensions();
-        let frame = match src.next_frame() {
-            Some(f) => f,
-            None => return,
+    /// フレーム供給元をセットし、先頭フレームを表示する。アニメ/動画なら再生を開始する。
+    fn set_source(&self, src: Box<dyn FrameSource>) {
+        let animated = src.is_animated();
+        self.inner.has_alpha.set(src.has_alpha());
+        *self.inner.source.borrow_mut() = Some(src);
+        *self.inner.message.borrow_mut() = None;
+        self.inner.animated.set(animated);
+        self.inner.playing.set(animated);
+        self.show_next(true);
+        if animated {
+            self.schedule_timer();
+        }
+    }
+
+    /// 次フレーム（終端なら `loop_at_end` でループ）を取り出して表示用バッファへ反映する。
+    fn show_next(&self, loop_at_end: bool) -> Option<()> {
+        let (rgba, w, h, delay) = {
+            let mut guard = self.inner.source.borrow_mut();
+            let src = guard.as_mut()?;
+            let frame = match src.next_frame() {
+                Some(f) => Some(f),
+                None if loop_at_end => {
+                    src.reset();
+                    src.next_frame()
+                }
+                None => None,
+            }?;
+            let delay = frame.delay.map(|d| d.as_millis() as u32).unwrap_or(0);
+            (frame.rgba, frame.width, frame.height, delay)
         };
-        *self.inner.base_rgba.borrow_mut() = frame.rgba;
+        *self.inner.base_rgba.borrow_mut() = rgba;
         self.inner.base_w.set(w);
         self.inner.base_h.set(h);
-        *self.inner.message.borrow_mut() = None;
+        self.inner.cur_delay.set(delay);
         self.rebuild_rotated();
+        Some(())
+    }
+
+    fn schedule_timer(&self) {
+        let ms = self.inner.cur_delay.get().max(20);
+        let _ = self.hwnd().SetTimer(MEDIA_TIMER_ID, ms, None);
+    }
+
+    /// 再生を止める（タイマ停止）。閉じる/離れる時に呼ぶ。
+    pub fn stop_playback(&self) {
+        let _ = self.hwnd().KillTimer(MEDIA_TIMER_ID);
+        self.inner.playing.set(false);
+    }
+
+    /// 再生/一時停止をトグルする（アニメ/動画のみ）。
+    pub fn toggle_play(&self) -> w::AnyResult<()> {
+        if !self.inner.animated.get() {
+            return Ok(());
+        }
+        let playing = !self.inner.playing.get();
+        self.inner.playing.set(playing);
+        if playing {
+            self.schedule_timer();
+        } else {
+            let _ = self.hwnd().KillTimer(MEDIA_TIMER_ID);
+        }
+        self.refresh()
     }
 
     fn set_message(&self, msg: &str) {
@@ -207,7 +290,12 @@ impl MediaView {
         }
         let (bw, bh) = (self.inner.base_w.get(), self.inner.base_h.get());
         let (rgba, rw, rh) = rotate_rgba(&base, bw, bh, self.inner.rotation.get());
-        *self.inner.bgra.borrow_mut() = rgba_to_bgra(&rgba);
+        let mut bgra = rgba_to_bgra(&rgba);
+        // 透過画像は市松の上へ焼き込んで不透明化する（描画は通常の blit で済む）。
+        if self.inner.has_alpha.get() {
+            composite_over_checker(&mut bgra, rw, CHECKER_SQ);
+        }
+        *self.inner.bgra.borrow_mut() = bgra;
         self.inner.frame_w.set(rw);
         self.inner.frame_h.set(rh);
     }
@@ -267,10 +355,25 @@ impl MediaView {
         let this = self.clone();
         self.wnd.on().wm_paint(move || this.on_paint());
 
-        // ドラッグでパン（手動ズームで画像が領域からはみ出している時のみ意味を持つ）。
+        // 再生タイマ：表示中フレームの delay 経過で次フレームへ進める。
+        let this = self.clone();
+        self.wnd.on().wm_timer(MEDIA_TIMER_ID, move || {
+            if this.inner.playing.get() {
+                this.show_next(true);
+                this.schedule_timer();
+                this.refresh()?;
+            }
+            Ok(())
+        });
+
+        // 左ボタン：シークバー上ならシーク、画像上（手動ズーム時）ならパン開始。
         let this = self.clone();
         self.wnd.on().wm_l_button_down(move |p| {
-            if this.has_image() && !this.inner.fit.get() {
+            if this.inner.animated.get() && this.in_seek_area(p.coords.y) {
+                this.inner.seeking.set(true);
+                std::mem::forget(this.hwnd().SetCapture());
+                this.seek_to_x(p.coords.x);
+            } else if this.has_image() && !this.inner.fit.get() {
                 this.inner.panning.set(true);
                 this.inner.pan_start.set((p.coords.x, p.coords.y));
                 this.inner.pan_origin.set(this.inner.pan.get());
@@ -281,7 +384,9 @@ impl MediaView {
 
         let this = self.clone();
         self.wnd.on().wm_mouse_move(move |p| {
-            if this.inner.panning.get() {
+            if this.inner.seeking.get() {
+                this.seek_to_x(p.coords.x);
+            } else if this.inner.panning.get() {
                 let (sx, sy) = this.inner.pan_start.get();
                 let (ox, oy) = this.inner.pan_origin.get();
                 let dx = (p.coords.x - sx) as f64;
@@ -294,12 +399,66 @@ impl MediaView {
 
         let this = self.clone();
         self.wnd.on().wm_l_button_up(move |_p| {
-            if this.inner.panning.get() {
+            if this.inner.seeking.get() {
+                this.inner.seeking.set(false);
+                drop(this.hwnd().SetCapture());
+            } else if this.inner.panning.get() {
                 this.inner.panning.set(false);
                 drop(this.hwnd().SetCapture());
             }
             Ok(())
         });
+    }
+
+    /// シークバー領域の縦範囲に `y` が入るか。
+    fn in_seek_area(&self, y: i32) -> bool {
+        let ch = self.hwnd().GetClientRect().map(|r| r.bottom - r.top).unwrap_or(0);
+        let seek_h = self.seek_height();
+        if seek_h == 0 {
+            return false;
+        }
+        let top = ch - self.status_height() - seek_h;
+        y >= top && y < ch - self.status_height()
+    }
+
+    /// シークバーのトラック x 範囲（左端, 右端）。
+    fn track_range(&self, cw: i32) -> (i32, i32) {
+        let pad = gui::dpi_x(self.inner.font_size).max(1);
+        let label_w = gui::dpi_x(self.inner.font_size * 9);
+        ((pad + label_w).min(cw), (cw - pad).max(0))
+    }
+
+    /// シークバー上の x 座標へシークする。
+    fn seek_to_x(&self, x: i32) {
+        let cw = self.hwnd().GetClientRect().map(|r| r.right - r.left).unwrap_or(0);
+        let (x0, x1) = self.track_range(cw);
+        let dur = self.inner.source.borrow().as_ref().map(|s| s.duration_ms()).unwrap_or(0);
+        if dur == 0 || x1 <= x0 {
+            return;
+        }
+        let frac = ((x - x0) as f64 / (x1 - x0) as f64).clamp(0.0, 1.0);
+        let ms = (frac * dur as f64) as u64;
+        if let Some(s) = self.inner.source.borrow_mut().as_mut() {
+            s.seek(ms);
+        }
+        self.show_next(true);
+        let _ = self.refresh();
+    }
+
+    /// 現在の (位置, 総時間) [ms]。
+    fn progress(&self) -> (u64, u64) {
+        match self.inner.source.borrow().as_ref() {
+            Some(s) => (s.position_ms(), s.duration_ms()),
+            None => (0, 0),
+        }
+    }
+
+    fn seek_height(&self) -> i32 {
+        if self.inner.animated.get() {
+            gui::dpi_y(self.inner.font_size + 12)
+        } else {
+            0
+        }
     }
 
     fn status_height(&self) -> i32 {
@@ -355,7 +514,8 @@ impl MediaView {
         dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &bg)?;
 
         let status_h = self.status_height();
-        let body_h = (ch - status_h).max(0);
+        let seek_h = self.seek_height();
+        let body_h = (ch - status_h - seek_h).max(0);
 
         if self.has_image() {
             self.draw_image(hdc, dc, cw, body_h)?;
@@ -366,7 +526,41 @@ impl MediaView {
             }
         }
 
+        if seek_h > 0 {
+            self.draw_seek_bar(dc, cw, body_h, seek_h)?;
+        }
         self.draw_status(dc, cw, ch - status_h, status_h)?;
+        Ok(())
+    }
+
+    /// アニメ/動画の再生バー（再生状態・トラック・つまみ・時間）を描く。
+    fn draw_seek_bar(&self, dc: &w::HDC, cw: i32, top: i32, h: i32) -> w::AnyResult<()> {
+        let brush = w::HBRUSH::CreateSolidBrush(chrome::face())?;
+        dc.FillRect(w::RECT { left: 0, top, right: cw, bottom: top + h }, &brush)?;
+        chrome::hline(dc, 0, cw, top, chrome::highlight())?;
+
+        let (pos, dur) = self.progress();
+        let (x0, x1) = self.track_range(cw);
+        let cy = top + h / 2;
+        // トラック下地。
+        chrome::hline(dc, x0, x1, cy, chrome::shadow())?;
+        if dur > 0 && x1 > x0 {
+            let frac = (pos as f64 / dur as f64).clamp(0.0, 1.0);
+            let fx = x0 + ((x1 - x0) as f64 * frac).round() as i32;
+            let fill = w::HBRUSH::CreateSolidBrush(rgb(self.inner.colors.selected_file_bg))?;
+            dc.FillRect(w::RECT { left: x0, top: cy - 1, right: fx, bottom: cy + 2 }, &fill)?;
+            let thumb = w::HBRUSH::CreateSolidBrush(rgb(self.inner.colors.selected_file))?;
+            dc.FillRect(w::RECT { left: fx - 2, top: cy - 5, right: fx + 3, bottom: cy + 6 }, &thumb)?;
+        }
+        // 再生状態＋時間（トラック左の固定枠）。
+        let sfont = self.create_font((self.inner.font_size - 2).max(6))?;
+        let _sel = dc.SelectObject(&*sfont)?;
+        dc.SetTextColor(chrome::text())?;
+        let mark = if self.inner.playing.get() { "▶" } else { "‖" };
+        let label = format!("{}  {} / {}", mark, fmt_time(pos), fmt_time(dur));
+        let pad = gui::dpi_x(self.inner.font_size).max(1);
+        let rect = w::RECT { left: pad, top, right: x0, bottom: top + h };
+        dc.DrawText(&label, rect, co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX)?;
         Ok(())
     }
 
@@ -461,11 +655,18 @@ impl MediaView {
         let zoom = (self.inner.scale.get() * 100.0).round() as i32;
         let rot = self.inner.rotation.get();
         let rot_s = if rot != 0 { format!("  {}°", rot) } else { String::new() };
+        let play = if self.inner.animated.get() { " Space:再生/停止" } else { "" };
         format!(
-            "{}    {}x{}  {}%{}{}    (←→:送り +/-:拡縮 0:全体 1:原寸 R:回転 Esc:閉じる)",
-            title, bw, bh, zoom, rot_s, pos,
+            "{}    {}x{}  {}%{}{}    (←→:送り +/-:拡縮 0:全体 1:原寸 R:回転{} Esc:閉じる)",
+            title, bw, bh, zoom, rot_s, pos, play,
         )
     }
+}
+
+/// ミリ秒を `m:ss` 形式へ。
+fn fmt_time(ms: u64) -> String {
+    let s = ms / 1000;
+    format!("{}:{:02}", s / 60, s % 60)
 }
 
 /// ファイルを最大 `cap` バイトまで読む（超過分は読まない）。
