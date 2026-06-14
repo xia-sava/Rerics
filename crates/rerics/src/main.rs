@@ -231,8 +231,8 @@ impl MainWindow {
         let active = state.active_tab.min(tabs.len() - 1);
 
         let cur = &tabs[active];
-        let left_pane = Rc::new(RefCell::new(Pane::open(&cur.left_path)));
-        let right_pane = Rc::new(RefCell::new(Pane::open(&cur.right_path)));
+        let left_pane = Rc::new(RefCell::new(Pane::restore(&cur.left_path)));
+        let right_pane = Rc::new(RefCell::new(Pane::restore(&cur.right_path)));
         let active_right = cur.active_right;
 
         let keymap = config.keymap();
@@ -562,14 +562,14 @@ impl MainWindow {
                 return Ok(());
             }
             Command::OppositeToCurrent => {
-                let p = self.pane(is_left).borrow().path().to_path_buf();
-                *self.pane(!is_left).borrow_mut() = Pane::open(&p);
+                let loc = self.pane(is_left).borrow().loc().clone();
+                self.pane(!is_left).borrow_mut().set_loc(loc);
                 self.reload_side(!is_left)?;
                 return Ok(());
             }
             Command::CurrentToOpposite => {
-                let p = self.pane(!is_left).borrow().path().to_path_buf();
-                *self.pane(is_left).borrow_mut() = Pane::open(&p);
+                let loc = self.pane(!is_left).borrow().loc().clone();
+                self.pane(is_left).borrow_mut().set_loc(loc);
                 self.reload_side(is_left)?;
                 return Ok(());
             }
@@ -661,12 +661,12 @@ impl MainWindow {
         Ok(())
     }
 
-    /// 左右ペインのパスを入れ替える。
+    /// 左右ペインの現在地を入れ替える（書庫内同士でも成立する）。
     fn swap_paths(&self) -> w::AnyResult<()> {
-        let lp = self.left_pane.borrow().path().to_path_buf();
-        let rp = self.right_pane.borrow().path().to_path_buf();
-        *self.left_pane.borrow_mut() = Pane::open(&rp);
-        *self.right_pane.borrow_mut() = Pane::open(&lp);
+        let l = self.left_pane.borrow().loc().clone();
+        let r = self.right_pane.borrow().loc().clone();
+        self.left_pane.borrow_mut().set_loc(r);
+        self.right_pane.borrow_mut().set_loc(l);
         self.reload_side(true)?;
         self.reload_side(false)?;
         Ok(())
@@ -689,7 +689,7 @@ impl MainWindow {
 
     /// 指定パスの一覧を読み、既定ソートでカーソル先頭の `FileListState` を組む。
     fn build_state_for(path: &str, columns: &[Column]) -> FileListState {
-        let items = Pane::open(path).read();
+        let items = Pane::restore(path).read();
         let mut s = FileListState::new();
         s.columns = columns.to_vec();
         let sort = s.sort_type;
@@ -704,8 +704,8 @@ impl MainWindow {
     /// 現在のライブ状態を退避用スナップショットに固める。
     fn snapshot_live(&self) -> TabSnapshot {
         TabSnapshot {
-            left_path: self.left_pane.borrow().path().display().to_string(),
-            right_path: self.right_pane.borrow().path().display().to_string(),
+            left_path: self.left_pane.borrow().loc_display(),
+            right_path: self.right_pane.borrow().loc_display(),
             left_state: self.view(true).state().borrow().clone(),
             right_state: self.view(false).state().borrow().clone(),
             active_right: self.active_right.get(),
@@ -714,8 +714,8 @@ impl MainWindow {
 
     /// スナップショットをライブ側へ反映し、再描画とフォーカス設定を行う。
     fn load_snapshot(&self, snap: &TabSnapshot) -> w::AnyResult<()> {
-        *self.left_pane.borrow_mut() = Pane::open(&snap.left_path);
-        *self.right_pane.borrow_mut() = Pane::open(&snap.right_path);
+        *self.left_pane.borrow_mut() = Pane::restore(&snap.left_path);
+        *self.right_pane.borrow_mut() = Pane::restore(&snap.right_path);
         *self.view(true).state().borrow_mut() = snap.left_state.clone();
         *self.view(false).state().borrow_mut() = snap.right_state.clone();
         self.active_right.set(snap.active_right);
@@ -757,7 +757,7 @@ impl MainWindow {
         // ため、同一タブ内で移動するとラベルが古くなる）。非アクティブタブはスナップショット。
         let live = {
             let p = self.pane(!self.active_right.get()).borrow();
-            p.path().to_path_buf()
+            p.loc_display()
         };
         let labels: Vec<String> = self
             .tabs
@@ -766,7 +766,7 @@ impl MainWindow {
             .enumerate()
             .map(|(i, t)| {
                 if i == active {
-                    live.display().to_string()
+                    live.clone()
                 } else if t.active_right {
                     t.right_path.clone()
                 } else {
@@ -816,8 +816,8 @@ impl MainWindow {
     /// 現在のパスを複製した新タブをアクティブ直後に挿入して切替える。
     fn new_tab(&self) -> w::AnyResult<()> {
         self.save_active();
-        let left_path = self.left_pane.borrow().path().display().to_string();
-        let right_path = self.right_pane.borrow().path().display().to_string();
+        let left_path = self.left_pane.borrow().loc_display();
+        let right_path = self.right_pane.borrow().loc_display();
         let columns = self.config.borrow().columns.clone();
         let snap = TabSnapshot {
             left_state: Self::build_state_for(&left_path, &columns),
@@ -1072,12 +1072,27 @@ impl MainWindow {
 
     /// ペインのドライブ容量をステータスバー右へ反映する。
     fn update_drive_info(&self, is_left: bool) {
-        let path = self.pane(is_left).borrow().path().to_path_buf();
-        self.status(is_left).set_right(&drive_info_text(&path));
+        // 書庫内はドライブ容量の対象外（実パスが無い）＝空表示にする。
+        let real = self.pane(is_left).borrow().as_real_path().map(Path::to_path_buf);
+        match real {
+            Some(path) => self.status(is_left).set_right(&drive_info_text(&path)),
+            None => self.status(is_left).set_right(""),
+        }
     }
 
     fn pane(&self, is_left: bool) -> &Rc<RefCell<Pane>> {
         if is_left { &self.left_pane } else { &self.right_pane }
+    }
+
+    /// 書庫内では未対応の書込み操作をガードする。対象ペインが書庫内なら警告ログを
+    /// 出して `true` を返す（呼び側は早期 return する）。展開コピー等は後段で対応。
+    fn block_if_archive(&self, is_left: bool, op: &str) -> bool {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn(&format!("書庫内では{}は未対応です", op));
+            true
+        } else {
+            false
+        }
     }
 
     fn mask(&self, is_left: bool) -> &Rc<RefCell<Option<String>>> {
@@ -1095,7 +1110,7 @@ impl MainWindow {
                 .collect(),
             None => items,
         };
-        let path = self.pane(is_left).borrow().path().display().to_string();
+        let path = self.pane(is_left).borrow().loc_display();
         let pr = view.page_rows();
         {
             let state = view.state();
@@ -1118,6 +1133,9 @@ impl MainWindow {
     /// 入力ダイアログで名前を尋ね、アクティブペインの現在パス直下にディレクトリを作る。
     /// 作成後は一覧を更新し、新ディレクトリへカーソルを移す。
     fn make_directory(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.block_if_archive(is_left, "ディレクトリの作成") {
+            return Ok(());
+        }
         let name = dialog::input_box(
             &self.wnd,
             "ディレクトリの作成",
@@ -1150,6 +1168,9 @@ impl MainWindow {
 
     /// 入力ダイアログで新規の空ファイルを作る。既存ファイルは上書きしない。
     fn create_file(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.block_if_archive(is_left, "ファイルの作成") {
+            return Ok(());
+        }
         let name = dialog::input_box(
             &self.wnd,
             "新規ファイルの作成",
@@ -1188,6 +1209,17 @@ impl MainWindow {
 
     /// アクティブペインの選択（無ければカーソル）を反対側ペインへコピー/移動する。
     fn copy_or_move(&self, is_left: bool, move_it: bool) -> w::AnyResult<()> {
+        let verb = if move_it { "移動" } else { "コピー" };
+        // 書庫→実FS の取り出し（展開コピー）は段階5で対応・書庫への書込みは未対応。
+        if self.pane(is_left).borrow().is_archive() {
+            self.log
+                .warn(&format!("書庫からの{}（取り出し）は未対応です", verb));
+            return Ok(());
+        }
+        if self.pane(!is_left).borrow().is_archive() {
+            self.log.warn(&format!("書庫への{}は未対応です", verb));
+            return Ok(());
+        }
         let names: Vec<String> = {
             let state = self.view(is_left).state();
             let s = state.borrow();
@@ -1426,6 +1458,9 @@ impl MainWindow {
 
     /// カーソル位置の項目を入力ダイアログでリネームする。完了後は新名へカーソルを移す。
     fn rename(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.block_if_archive(is_left, "名前の変更") {
+            return Ok(());
+        }
         let view = self.view(is_left);
         let old = {
             let state = view.state();
@@ -1469,6 +1504,9 @@ impl MainWindow {
 
     /// アクティブペインの選択（無ければカーソル）を確認ダイアログ付きで削除する。
     fn delete(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.block_if_archive(is_left, "削除") {
+            return Ok(());
+        }
         let names: Vec<String> = {
             let state = self.view(is_left).state();
             let s = state.borrow();
@@ -1581,7 +1619,16 @@ impl MainWindow {
                 self.reload_side(is_left)?;
             }
         } else {
-            let path = self.pane(is_left).borrow().path().join(&name);
+            // 書庫ファイルなら潜る（zip 等）。
+            if self.pane(is_left).borrow_mut().enter(&name, is_dir) {
+                self.reload_side(is_left)?;
+                return Ok(());
+            }
+            // 実FS のファイルは関連付けで起動（書庫内ファイルは段階3でビューアへ）。
+            let Some(dir) = self.pane(is_left).borrow().as_real_path().map(Path::to_path_buf) else {
+                return Ok(());
+            };
+            let path = dir.join(&name);
             if let Err(e) =
                 self.wnd
                     .hwnd()
@@ -1774,11 +1821,17 @@ fn read_capped(path: &Path, cap: usize) -> std::io::Result<(Vec<u8>, bool)> {
     Ok((buf, truncated))
 }
 
-/// パスを正規化する。存在しない（ディレクトリでない）場合は `fallback` を返す。
+/// パスを正規化する。実在ディレクトリ、または途中に実在する書庫ファイルを含む
+/// 書庫内パスならそのまま。どちらでもなければ `fallback` を返す。
 fn normalize_path(path: &str, fallback: &str) -> String {
-    if !path.is_empty() && std::path::Path::new(path).is_dir() {
-        path.to_owned()
-    } else {
-        fallback.to_owned()
+    if path.is_empty() {
+        return fallback.to_owned();
     }
+    if std::path::Path::new(path).is_dir() {
+        return path.to_owned();
+    }
+    if rerics_core::Location::parse(path).is_archive() {
+        return path.to_owned();
+    }
+    fallback.to_owned()
 }

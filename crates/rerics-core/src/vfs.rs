@@ -111,6 +111,41 @@ impl Location {
         }
     }
 
+    /// 表示文字列（実FS パス or "C:\foo.zip\inner"）から Location を復元する。
+    ///
+    /// 実在するディレクトリならそのまま `Real`。そうでなければパスを末尾から縮め、
+    /// 途中に「実在する書庫ファイル」が現れたらそこを境界に `Archive` へ分割する。
+    /// どちらにも当たらなければ `Real`（存在検証/フォールバックは呼び側に委ねる）。
+    pub fn parse(display: &str) -> Location {
+        let p = Path::new(display);
+        if p.is_dir() {
+            return Location::Real(p.to_path_buf());
+        }
+        let mut inner_parts: Vec<String> = Vec::new();
+        let mut cur = p.to_path_buf();
+        loop {
+            if is_archive_path(&cur) {
+                inner_parts.reverse();
+                return Location::Archive {
+                    archive: cur,
+                    inner: inner_parts.join("/"),
+                };
+            }
+            let Some(name) = cur.file_name().map(|s| s.to_string_lossy().into_owned()) else {
+                break;
+            };
+            let Some(parent) = cur.parent().map(|x| x.to_path_buf()) else {
+                break;
+            };
+            if parent == cur {
+                break;
+            }
+            inner_parts.push(name);
+            cur = parent;
+        }
+        Location::Real(p.to_path_buf())
+    }
+
     /// 親へ。`Some((親 Location, 出てきた名前))`。書庫ルートから出ると実FS の親へ。
     pub fn to_parent(&self) -> Option<(Location, String)> {
         match self {

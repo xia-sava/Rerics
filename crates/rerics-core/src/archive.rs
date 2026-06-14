@@ -465,6 +465,29 @@ mod tests {
     }
 
     #[test]
+    fn location_parse_detects_archive_boundary() {
+        let dir = std::env::temp_dir().join(format!("rerics_parse_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let zip = dir.join("p.zip");
+        build_zip(&zip, &[("a.txt", b"A"), ("b/c.txt", b"C")]);
+
+        // 実在ディレクトリ → Real
+        assert!(!Location::parse(&dir.to_string_lossy()).is_archive());
+        // 書庫ルート → Archive{inner=""}
+        let a = Location::parse(&zip.to_string_lossy());
+        assert!(matches!(&a, Location::Archive { inner, .. } if inner.is_empty()));
+        // 書庫内 inner（OS セパレータ）→ Archive{inner="b"}
+        let sub = zip.join("b");
+        let s = Location::parse(&sub.to_string_lossy());
+        assert!(matches!(&s, Location::Archive { inner, .. } if inner == "b"));
+        // 存在しないパス → Real フォールバック
+        assert!(!Location::parse("C:\\no\\such\\dir_xyz_zzz").is_archive());
+
+        let _ = std::fs::remove_file(&zip);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn location_enter_and_parent() {
         let dir = std::env::temp_dir().join(format!("rerics_nav_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

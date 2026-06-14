@@ -60,6 +60,14 @@ impl Pane {
         }
     }
 
+    /// 表示文字列（実FS or "C:\foo.zip\inner"）から書庫境界を検出して復元する。
+    /// セッション復元（state.toml）に使う。書庫が消えていれば実FS パスとして開く。
+    pub fn restore(display: &str) -> Self {
+        Self {
+            loc: Location::parse(display),
+        }
+    }
+
     /// 現在地（実FS or 書庫内）。
     pub fn loc(&self) -> &Location {
         &self.loc
