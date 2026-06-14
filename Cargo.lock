@@ -214,6 +214,7 @@ name = "rerics"
 version = "0.1.0"
 dependencies = [
  "rerics-core",
+ "unicode-width",
  "winsafe",
 ]
 

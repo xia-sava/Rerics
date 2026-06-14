@@ -839,8 +839,9 @@ impl MainWindow {
         self.key_sink.on().wm_key_down(move |p| {
             // ビューア表示中はキーをビューア操作へ振り向ける（ファイラのキーマップは無効）。
             if this.viewing.get() {
+                let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
                 let shift = w::GetAsyncKeyState(co::VK::SHIFT);
-                let _ = this.viewer_key(p.vkey_code.raw(), shift);
+                let _ = this.viewer_key(p.vkey_code.raw(), ctrl, shift);
                 return Ok(());
             }
             let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
@@ -855,12 +856,17 @@ impl MainWindow {
     }
 
     /// ビューア表示中のキー操作。固定キー（設定対象外）。
-    fn viewer_key(&self, vk: u16, shift: bool) -> w::AnyResult<()> {
+    fn viewer_key(&self, vk: u16, ctrl: bool, shift: bool) -> w::AnyResult<()> {
         use rerics_core::vk;
         const VK_F: u16 = 0x46;
         const VK_F3: u16 = 0x72;
         const VK_Q: u16 = 0x51;
         const VK_B: u16 = 0x42;
+        // Ctrl+C は選択コピー（C 単独はエンコーディング切替）。
+        if ctrl && vk == vk::C {
+            self.viewer.copy_selection()?;
+            return Ok(());
+        }
         match vk {
             vk::ESCAPE | VK_Q | vk::RETURN => self.close_viewer()?,
             vk::UP => self.viewer.scroll_by(-1)?,

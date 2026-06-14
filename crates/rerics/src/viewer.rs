@@ -9,9 +9,13 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rerics_core::{Colors, Config, DisplayLine, Rgb, ViewMode, ViewerModel};
+use unicode_width::UnicodeWidthChar;
 use winsafe::{self as w, co, gui, prelude::*};
 
 use crate::chrome;
+
+/// 表示行内の位置（表示行 index, 行内の char 数オフセット）。
+type Pos = (usize, usize);
 
 /// テキストの折返し時のタブ幅。
 const TAB_WIDTH: usize = 4;
@@ -40,6 +44,11 @@ struct Inner {
     search_term: RefCell<String>,
     /// 現在ヒットしている表示行（ハイライト対象）。
     match_line: Cell<Option<usize>>,
+    /// マウス選択の始点・終点（None なら選択なし）。
+    sel_anchor: Cell<Option<Pos>>,
+    sel_cursor: Cell<Option<Pos>>,
+    /// ドラッグ中か。
+    selecting: Cell<bool>,
 }
 
 /// ビューア表示パネル。
@@ -82,6 +91,9 @@ impl ViewerView {
             dirty: Cell::new(true),
             search_term: RefCell::new(String::new()),
             match_line: Cell::new(None),
+            sel_anchor: Cell::new(None),
+            sel_cursor: Cell::new(None),
+            selecting: Cell::new(false),
         });
         let me = Self { wnd, inner };
         me.setup_events();
@@ -102,7 +114,14 @@ impl ViewerView {
         self.inner.dirty.set(true);
         *self.inner.search_term.borrow_mut() = String::new();
         self.inner.match_line.set(None);
+        self.clear_selection();
         let _ = self.refresh();
+    }
+
+    fn clear_selection(&self) {
+        self.inner.sel_anchor.set(None);
+        self.inner.sel_cursor.set(None);
+        self.inner.selecting.set(false);
     }
 
     pub fn refresh(&self) -> w::AnyResult<()> {
@@ -115,6 +134,7 @@ impl ViewerView {
         self.inner.model.borrow_mut().cycle_encoding(forward);
         self.inner.dirty.set(true);
         self.inner.match_line.set(None);
+        self.clear_selection();
         self.refresh()
     }
 
@@ -124,6 +144,7 @@ impl ViewerView {
         self.inner.scroll_top.set(0);
         self.inner.dirty.set(true);
         self.inner.match_line.set(None);
+        self.clear_selection();
         self.refresh()
     }
 
@@ -259,8 +280,12 @@ impl ViewerView {
     }
 
     fn create_font(&self) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
+        self.create_font_sized(self.inner.font_size)
+    }
+
+    fn create_font_sized(&self, size: i32) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
         w::HFONT::CreateFont(
-            w::SIZE { cx: 0, cy: -gui::dpi_y(self.inner.font_size) },
+            w::SIZE { cx: 0, cy: -gui::dpi_y(size) },
             0,
             0,
             co::FW::NORMAL,
@@ -276,6 +301,16 @@ impl ViewerView {
         )
     }
 
+    /// 行番号欄の (右端 x, 縦線 x, 本文左 x) を返す（物理 px）。
+    fn gutter_geometry(&self) -> (i32, i32, i32) {
+        let cwd = self.inner.char_width.get().max(1);
+        let g = self.inner.gutter_chars.get().max(4) as i32;
+        let num_right = cwd / 2 + g * cwd;
+        let sep_x = num_right + cwd / 2;
+        let content_left = sep_x + cwd / 2;
+        (num_right, sep_x, content_left)
+    }
+
     fn setup_events(&self) {
         self.wnd.on().wm(co::WM::MOUSEACTIVATE, |_| Ok(3));
 
@@ -288,14 +323,132 @@ impl ViewerView {
             this.scroll_by_wheel(dist)?;
             Ok(())
         });
+
+        // マウスで範囲選択（キャレットが無いのでマウス選択が唯一の手段）。
+        let this = self.clone();
+        self.wnd.on().wm_l_button_down(move |p| {
+            let pos = this.point_to_pos(p.coords);
+            this.inner.sel_anchor.set(Some(pos));
+            this.inner.sel_cursor.set(Some(pos));
+            this.inner.selecting.set(true);
+            std::mem::forget(this.hwnd().SetCapture());
+            this.refresh()?;
+            Ok(())
+        });
+
+        let this = self.clone();
+        self.wnd.on().wm_mouse_move(move |p| {
+            if this.inner.selecting.get() {
+                let pos = this.point_to_pos(p.coords);
+                this.inner.sel_cursor.set(Some(pos));
+                this.refresh()?;
+            }
+            Ok(())
+        });
+
+        let this = self.clone();
+        self.wnd.on().wm_l_button_up(move |_p| {
+            if this.inner.selecting.get() {
+                this.inner.selecting.set(false);
+                drop(this.hwnd().SetCapture());
+            }
+            Ok(())
+        });
+
+        // 右クリックで選択範囲をコピー（キーボードに触れず手早く）。
+        let this = self.clone();
+        self.wnd.on().wm_r_button_down(move |_p| {
+            let _ = this.copy_selection();
+            Ok(())
+        });
+    }
+
+    /// マウス座標を表示行内の位置 (行, char オフセット) へ変換する。
+    fn point_to_pos(&self, pt: w::POINT) -> Pos {
+        let lines = self.inner.lines.borrow();
+        if lines.is_empty() {
+            return (0, 0);
+        }
+        let lh = self.inner.line_height.get().max(1);
+        let top = self.inner.scroll_top.get();
+        let row = (pt.y.max(0) / lh) as usize;
+        let line = (top + row).min(lines.len() - 1);
+        let (_, _, content_left) = self.gutter_geometry();
+        let cwd = self.inner.char_width.get().max(1);
+        let target = ((pt.x - content_left).max(0) + cwd / 2) / cwd; // 最寄り境界（表示セル数）
+        let mut acc = 0i32;
+        let mut col = 0usize;
+        for ch in lines[line].body.chars() {
+            let wch = UnicodeWidthChar::width(ch).unwrap_or(0) as i32;
+            if target < acc + (wch + 1) / 2 {
+                break;
+            }
+            acc += wch.max(1);
+            col += 1;
+        }
+        (line, col)
+    }
+
+    /// content 左端からの char オフセット col の x 座標（物理 px）。
+    fn col_x(&self, body: &str, col: usize, content_left: i32, cwd: i32) -> i32 {
+        let cells: i32 = body
+            .chars()
+            .take(col)
+            .map(|c| UnicodeWidthChar::width(c).unwrap_or(0) as i32)
+            .sum();
+        content_left + cells * cwd
+    }
+
+    /// 正規化した選択範囲（始点 <= 終点）。長さ 0 や未選択なら None。
+    fn normalized_selection(&self) -> Option<(Pos, Pos)> {
+        let a = self.inner.sel_anchor.get()?;
+        let c = self.inner.sel_cursor.get()?;
+        if a == c {
+            return None;
+        }
+        Some(if a <= c { (a, c) } else { (c, a) })
+    }
+
+    /// 選択範囲のテキストを組み立てる（折返し継続行は改行を入れず論理行を復元）。
+    fn selected_text(&self) -> String {
+        let Some((s, e)) = self.normalized_selection() else {
+            return String::new();
+        };
+        let lines = self.inner.lines.borrow();
+        let mut out = String::new();
+        for li in s.0..=e.0 {
+            let chars: Vec<char> = lines[li].body.chars().collect();
+            let from = if li == s.0 { s.1.min(chars.len()) } else { 0 };
+            let to = if li == e.0 { e.1.min(chars.len()) } else { chars.len() };
+            if li > s.0 && !lines[li].gutter.is_empty() {
+                out.push('\n');
+            }
+            out.extend(&chars[from.min(to)..to]);
+        }
+        out
+    }
+
+    /// 選択範囲をクリップボードへコピーする（CF_UNICODETEXT）。
+    pub fn copy_selection(&self) -> w::AnyResult<()> {
+        let text = self.selected_text();
+        if text.is_empty() {
+            return Ok(());
+        }
+        let mut u16s: Vec<u16> = text.encode_utf16().collect();
+        u16s.push(0);
+        let bytes: Vec<u8> = u16s.iter().flat_map(|u| u.to_le_bytes()).collect();
+        let clip = self.hwnd().OpenClipboard()?;
+        clip.EmptyClipboard()?;
+        clip.SetClipboardData(co::CF::UNICODETEXT, &bytes)?;
+        Ok(())
     }
 
     /// 折返し桁を現在のクライアント幅から算出する。
     fn wrap_cols(&self) -> usize {
         let cw = self.hwnd().GetClientRect().map(|r| r.right - r.left).unwrap_or(0);
         let cwd = self.inner.char_width.get().max(1);
-        let gutter_w = (self.inner.gutter_chars.get() as i32 + 2) * cwd;
-        let avail = cw - gutter_w - cwd; // 右に1文字分の余白
+        let (_, _, content_left) = self.gutter_geometry();
+        let avail = cw - content_left - cwd; // 右に1文字分の余白
         ((avail / cwd).max(1)) as usize
     }
 
@@ -305,7 +458,8 @@ impl ViewerView {
             return;
         }
         let lines = self.inner.model.borrow().lines(wrap_cols, TAB_WIDTH);
-        let gutter_chars = lines.iter().map(|l| l.gutter.chars().count()).max().unwrap_or(1).max(1);
+        // 行番号/オフセットの桁数。テキストは最低4桁（5桁以上は収まる分に拡張）。
+        let gutter_chars = lines.iter().map(|l| l.gutter.chars().count()).max().unwrap_or(1).max(4);
         self.inner.gutter_chars.set(gutter_chars);
         *self.inner.lines.borrow_mut() = lines;
         self.inner.cached_wrap.set(wrap_cols);
@@ -359,34 +513,50 @@ impl ViewerView {
         let body_h = self.body_height();
         let lh = self.inner.line_height.get().max(1);
         let cwd = self.inner.char_width.get().max(1);
-        let gutter_w = (self.inner.gutter_chars.get() as i32 + 1) * cwd;
+        let (num_right, sep_x, content_left) = self.gutter_geometry();
+        let sel = self.normalized_selection();
 
         // 背景。
         let bg = w::HBRUSH::CreateSolidBrush(rgb(colors.background))?;
         dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &bg)?;
 
+        // 行番号欄とコンテンツを仕切る縦線（原作の Separator 相当・本文領域の高さ分）。
+        chrome::vline(dc, sep_x, 0, body_h, rgb(colors.log_info))?;
+
         // 本文。
         let lines = self.inner.lines.borrow();
         let top = self.inner.scroll_top.get();
         let match_line = self.inner.match_line.get();
+        let sel_brush = w::HBRUSH::CreateSolidBrush(rgb(colors.selected_file_bg))?;
         let mut y = 0i32;
         let mut i = top;
         while i < lines.len() && y < body_h {
             let line = &lines[i];
-            let is_match = match_line == Some(i);
+            // マウス選択のハイライト（行内の桁範囲）。選択は検索ハイライトより優先。
+            let mut highlighted = false;
+            if let Some((s, e)) = sel {
+                if i >= s.0 && i <= e.0 {
+                    let left = if i == s.0 { self.col_x(&line.body, s.1, content_left, cwd) } else { content_left };
+                    let right = if i == e.0 { self.col_x(&line.body, e.1, content_left, cwd) } else { cw };
+                    if right > left {
+                        dc.FillRect(w::RECT { left, top: y, right, bottom: y + lh }, &sel_brush)?;
+                    }
+                    highlighted = true;
+                }
+            }
+            let is_match = !highlighted && match_line == Some(i);
             if is_match {
-                let sel = w::HBRUSH::CreateSolidBrush(rgb(colors.selected_file_bg))?;
-                dc.FillRect(w::RECT { left: gutter_w, top: y, right: cw, bottom: y + lh }, &sel)?;
+                dc.FillRect(w::RECT { left: content_left, top: y, right: cw, bottom: y + lh }, &sel_brush)?;
             }
             if !line.gutter.is_empty() {
                 dc.SetTextColor(rgb(colors.log_info))?;
-                let rect = w::RECT { left: 0, top: y, right: gutter_w - cwd / 2, bottom: y + lh };
+                let rect = w::RECT { left: 0, top: y, right: num_right, bottom: y + lh };
                 dc.DrawText(&line.gutter, rect, co::DT::SINGLELINE | co::DT::RIGHT | co::DT::NOPREFIX)?;
             }
             if !line.body.is_empty() {
                 let col = if is_match { colors.selected_file } else { colors.file_normal };
                 dc.SetTextColor(rgb(col))?;
-                let rect = w::RECT { left: gutter_w, top: y, right: cw, bottom: y + lh };
+                let rect = w::RECT { left: content_left, top: y, right: cw, bottom: y + lh };
                 dc.DrawText(&line.body, rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
             }
             y += lh;
@@ -405,6 +575,9 @@ impl ViewerView {
         let brush = w::HBRUSH::CreateSolidBrush(face)?;
         dc.FillRect(w::RECT { left: 0, top: sy, right: cw, bottom: sy + sh }, &brush)?;
         chrome::hline(dc, 0, cw, sy, chrome::highlight())?;
+        // 状態行は本文より少し小さいフォントで（パスバー等と同じ流儀）。
+        let sfont = self.create_font_sized((self.inner.font_size - 2).max(6))?;
+        let _sfont_sel = dc.SelectObject(&*sfont)?;
         dc.SetTextColor(chrome::text())?;
         let text = self.status_text();
         let pad = self.inner.char_width.get().max(1);
@@ -436,7 +609,7 @@ impl ViewerView {
             }
         };
         format!(
-            "{}    [{}]  {}    {}/{} 行    (C:エンコ B:ダンプ F:検索 Esc:閉じる){}{}",
+            "{}    [{}]  {}    {}/{} 行    (C:エンコ B:ダンプ F:検索 Ctrl+C/右ク:コピー Esc:閉じる){}{}",
             self.inner.title.borrow(),
             model.encoding.label(),
             mode,
