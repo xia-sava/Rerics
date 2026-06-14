@@ -6,6 +6,7 @@ mod config;
 mod file_list;
 mod input;
 mod log;
+mod media;
 pub mod messages;
 mod operation;
 mod status;
@@ -22,6 +23,11 @@ pub use file_list::{
 };
 pub use input::{Command, KeyChord, KeyMap, vk};
 pub use log::{LogLevel, LogLine, LogState};
+pub use media::{
+    AnimatedImage, Frame, FrameSource, MediaKind, Placement, StillImage, clamp_pan,
+    composite_over_checker, fit_scale, load_image, placement, rgba_to_bgra, rotate_rgba,
+    rotated_dims,
+};
 pub use operation::{
     ConflictResolution, DeleteWarnChoice, OpSummary, OperationHost, ProgressHandle, run_copy,
     run_delete,
