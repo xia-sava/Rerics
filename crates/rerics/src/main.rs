@@ -5,6 +5,7 @@ mod log_view;
 mod menu;
 mod pane_view;
 mod path_bar;
+mod settings_dialog;
 mod splitter;
 mod status_bar;
 mod tab_bar;
@@ -96,10 +97,10 @@ struct MainWindow {
     key_sink: gui::WindowControl,
     menu_bar: Rc<w::HMENU>,
     menu_cmds: Rc<std::collections::HashMap<u16, Command>>,
-    config: Rc<Config>,
+    config: Rc<RefCell<Config>>,
     left_pane: Rc<RefCell<Pane>>,
     right_pane: Rc<RefCell<Pane>>,
-    keymap: Rc<KeyMap>,
+    keymap: Rc<RefCell<KeyMap>>,
     initial_window: Option<WindowState>,
     active_right: Rc<Cell<bool>>,
     /// 左ペインの幅比（0.0〜1.0）。スプリッタのドラッグ／最大化／境界移動で変わる。
@@ -230,10 +231,10 @@ impl MainWindow {
             key_sink,
             menu_bar: Rc::new(menu_bar),
             menu_cmds: Rc::new(menu_cmds),
-            config: Rc::new(config),
+            config: Rc::new(RefCell::new(config)),
             left_pane,
             right_pane,
-            keymap: Rc::new(keymap),
+            keymap: Rc::new(RefCell::new(keymap)),
             initial_window,
             active_right: Rc::new(Cell::new(active_right)),
             split_ratio: Rc::new(Cell::new(initial_split)),
@@ -560,6 +561,10 @@ impl MainWindow {
                 self.open_task_manager()?;
                 return Ok(());
             }
+            Command::OpenSettings => {
+                self.open_settings()?;
+                return Ok(());
+            }
             Command::MaximizeLeft => {
                 self.maximize_left(false)?;
                 return Ok(());
@@ -577,11 +582,13 @@ impl MainWindow {
                 return Ok(());
             }
             Command::BorderRight => {
-                self.border_move(gui::dpi_x(self.config.layout.border_unit))?;
+                let unit = self.config.borrow().layout.border_unit;
+                self.border_move(gui::dpi_x(unit))?;
                 return Ok(());
             }
             Command::BorderLeft => {
-                self.border_move(-gui::dpi_x(self.config.layout.border_unit))?;
+                let unit = self.config.borrow().layout.border_unit;
+                self.border_move(-gui::dpi_x(unit))?;
                 return Ok(());
             }
             Command::BorderReset => {
@@ -779,9 +786,10 @@ impl MainWindow {
         self.save_active();
         let left_path = self.left_pane.borrow().path().display().to_string();
         let right_path = self.right_pane.borrow().path().display().to_string();
+        let columns = self.config.borrow().columns.clone();
         let snap = TabSnapshot {
-            left_state: Self::build_state_for(&left_path, &self.config.columns),
-            right_state: Self::build_state_for(&right_path, &self.config.columns),
+            left_state: Self::build_state_for(&left_path, &columns),
+            right_state: Self::build_state_for(&right_path, &columns),
             left_path,
             right_path,
             active_right: self.active_right.get(),
@@ -824,7 +832,8 @@ impl MainWindow {
             let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
             let shift = w::GetAsyncKeyState(co::VK::SHIFT);
             let chord = KeyChord::new(p.vkey_code.raw(), ctrl, shift, p.has_alt_key);
-            if let Some(cmd) = this.keymap.resolve(&chord) {
+            let resolved = this.keymap.borrow().resolve(&chord);
+            if let Some(cmd) = resolved {
                 let is_left = !this.active_right.get();
                 let _ = this.exec(is_left, cmd);
             }
@@ -1080,6 +1089,46 @@ impl MainWindow {
     /// タスクマネージャ・モーダルを開く。
     fn open_task_manager(&self) -> w::AnyResult<()> {
         task_manager::show(&self.wnd, &self.tasks);
+        Ok(())
+    }
+
+    /// 設定ダイアログを開く。開いた時点で OS テーマを再判定し、OK なら設定をライブ反映して
+    /// 差分を `config.toml` へ保存する。
+    fn open_settings(&self) -> w::AnyResult<()> {
+        if self.in_dialog.get() {
+            return Ok(());
+        }
+        let mut current = self.config.borrow().clone();
+        current.resolve_theme(system_is_light());
+        self.in_dialog.set(true);
+        let edited = settings_dialog::show(&self.wnd, &current);
+        self.in_dialog.set(false);
+        if let Some(mut new) = edited {
+            new.resolve_theme(system_is_light());
+            self.apply_config(new)?;
+            if let Err(e) = self.config.borrow().save() {
+                self.log.error(&format!("設定の保存に失敗: {}", e));
+            }
+        }
+        self.key_sink.hwnd().SetFocus();
+        Ok(())
+    }
+
+    /// 新しい設定をライブ反映する（配色・フォント・レイアウト寸法・キーバインド）。
+    /// 列構成の変更は再起動後に反映される。
+    fn apply_config(&self, new: Config) -> w::AnyResult<()> {
+        *self.config.borrow_mut() = new;
+        let km = self.config.borrow().keymap();
+        *self.keymap.borrow_mut() = km;
+        {
+            let cfg = self.config.borrow();
+            self.left.apply_config(&cfg);
+            self.right.apply_config(&cfg);
+            self.tab_bar.apply_config(&cfg);
+            self.log.apply_config(&cfg);
+        }
+        self.layout()?;
+        self.refresh_tab_bar()?;
         Ok(())
     }
 
@@ -1359,7 +1408,8 @@ impl MainWindow {
         let rc = self.wnd.hwnd().GetClientRect()?;
         let total_w = rc.right - rc.left;
         let total_h = rc.bottom - rc.top;
-        let lay = &self.config.layout;
+        let cfg = self.config.borrow();
+        let lay = &cfg.layout;
         let m = gui::dpi_x(lay.margin);
         let my = gui::dpi_y(lay.margin);
         let splitter_w = gui::dpi_x(lay.splitter_width);
@@ -1400,7 +1450,8 @@ impl MainWindow {
     fn panes_total(&self) -> w::AnyResult<i32> {
         let rc = self.wnd.hwnd().GetClientRect()?;
         let total_w = rc.right - rc.left;
-        let lay = &self.config.layout;
+        let cfg = self.config.borrow();
+        let lay = &cfg.layout;
         let m = gui::dpi_x(lay.margin);
         let splitter_w = gui::dpi_x(lay.splitter_width);
         Ok((total_w - m * 2 - splitter_w).max(1))
@@ -1416,7 +1467,7 @@ impl MainWindow {
 
     /// スプリッタのドラッグ（親座標の希望左端）を分割比へ反映する。
     fn drag_splitter(&self, splitter_left: i32) -> w::AnyResult<()> {
-        let m = gui::dpi_x(self.config.layout.margin);
+        let m = gui::dpi_x(self.config.borrow().layout.margin);
         self.maximized.set(false);
         self.set_left_width(splitter_left - m)
     }
@@ -1427,7 +1478,7 @@ impl MainWindow {
             return self.border_reset();
         }
         let pt = self.panes_total()?;
-        let margin = gui::dpi_x(self.config.layout.maximize_margin);
+        let margin = gui::dpi_x(self.config.borrow().layout.maximize_margin);
         self.maximized.set(true);
         self.set_left_width(pt - margin)
     }
@@ -1437,7 +1488,7 @@ impl MainWindow {
         if !force && self.maximized.get() {
             return self.border_reset();
         }
-        let margin = gui::dpi_x(self.config.layout.maximize_margin);
+        let margin = gui::dpi_x(self.config.borrow().layout.maximize_margin);
         self.maximized.set(true);
         self.set_left_width(margin)
     }

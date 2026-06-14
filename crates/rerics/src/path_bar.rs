@@ -3,7 +3,7 @@
 //! ステータスバーと同じ GDI ダブルバッファ描画＋共通ベベル（`chrome`）で、上下のバーが
 //! 揃った帯の外見になる。キーフォーカスは持たない（表示専用）。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rerics_core::Config;
@@ -13,8 +13,8 @@ use crate::chrome;
 
 struct Inner {
     text: RefCell<String>,
-    font_family: String,
-    font_size: i32,
+    font_family: RefCell<String>,
+    font_size: Cell<i32>,
 }
 
 /// ペイン上部のパスバーコントロール。
@@ -44,8 +44,8 @@ impl PathBarView {
         );
         let inner = Rc::new(Inner {
             text: RefCell::new(String::new()),
-            font_family: cfg.font.family.clone(),
-            font_size: cfg.font.size,
+            font_family: RefCell::new(cfg.font.family.clone()),
+            font_size: Cell::new(cfg.font.size),
         });
         let me = Self { wnd, inner };
         me.setup_events();
@@ -70,9 +70,16 @@ impl PathBarView {
         Ok(())
     }
 
+    /// 設定のフォントを反映して再描画する（chrome の色はシステム固定なので対象外）。
+    pub fn apply_config(&self, cfg: &Config) {
+        *self.inner.font_family.borrow_mut() = cfg.font.family.clone();
+        self.inner.font_size.set(cfg.font.size);
+        let _ = self.refresh();
+    }
+
     fn create_font(&self) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
         w::HFONT::CreateFont(
-            w::SIZE { cx: 0, cy: -gui::dpi_y(self.inner.font_size - 2) },
+            w::SIZE { cx: 0, cy: -gui::dpi_y(self.inner.font_size.get() - 2) },
             0,
             0,
             co::FW::NORMAL,
@@ -84,7 +91,7 @@ impl PathBarView {
             co::CLIP::DEFAULT_PRECIS,
             co::QUALITY::CLEARTYPE,
             co::PITCH::FIXED,
-            &self.inner.font_family,
+            &self.inner.font_family.borrow(),
         )
     }
 
