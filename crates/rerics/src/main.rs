@@ -7,6 +7,7 @@ mod pane_view;
 mod path_bar;
 mod settings_dialog;
 mod splitter;
+mod media_view;
 mod status_bar;
 mod tab_bar;
 mod task;
@@ -24,6 +25,7 @@ use std::time::Instant;
 
 use file_list::FileListView;
 use log_view::LogView;
+use media_view::MediaView;
 use pane_view::PaneView;
 use path_bar::PathBarView;
 use status_bar::StatusBarView;
@@ -31,10 +33,18 @@ use tab_bar::TabBar;
 use task::{ChannelHost, OpKind, TaskControl, TaskEntry, WorkerEvent};
 use viewer::ViewerView;
 use rerics_core::{
-    Column, Command, Config, FileListState, KeyChord, KeyMap, LogLevel, Pane, SortType,
+    Column, Command, Config, FileListState, KeyChord, KeyMap, LogLevel, MediaKind, Pane, SortType,
     WindowState, messages,
 };
 use winsafe::{self as w, co, gui, prelude::*};
+
+/// 現在メイン領域に重ねているビューア。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActiveView {
+    None,
+    Text,
+    Media,
+}
 
 /// 表示完了後に最大化を実行させるための自前メッセージ（`WM_APP`）。
 fn wm_restore_maximize() -> co::WM {
@@ -97,8 +107,9 @@ struct MainWindow {
     tab_bar: TabBar,
     log: LogView,
     viewer: ViewerView,
-    /// ビューア表示中か。true の間はキー入力をビューア操作へ振り向ける。
-    viewing: Rc<Cell<bool>>,
+    media: MediaView,
+    /// 現在重ねているビューア。None 以外の間はキー入力をビューア操作へ振り向ける。
+    active_view: Rc<Cell<ActiveView>>,
     key_sink: gui::WindowControl,
     menu_bar: Rc<w::HMENU>,
     menu_cmds: Rc<std::collections::HashMap<u16, Command>>,
@@ -169,6 +180,7 @@ impl MainWindow {
         let log = LogView::new(&wnd, gui::dpi(m, m), gui::dpi(800, config.layout.log_height), &config);
         // メイン領域に重ねるビューア（初期は非表示。layout で位置決め）。
         let viewer = ViewerView::new(&wnd, gui::dpi(0, 0), gui::dpi(400, 400), &config);
+        let media = MediaView::new(&wnd, gui::dpi(0, 0), gui::dpi(400, 400), &config);
 
         // 全キー入力を集約する 1x1 の不可視コントロール（Win32 フォーカスはここに固定し、
         // 左右ペインはフォーカスを持たない）。
@@ -236,7 +248,8 @@ impl MainWindow {
             tab_bar,
             log,
             viewer,
-            viewing: Rc::new(Cell::new(false)),
+            media,
+            active_view: Rc::new(Cell::new(ActiveView::None)),
             key_sink,
             menu_bar: Rc::new(menu_bar),
             menu_cmds: Rc::new(menu_cmds),
@@ -396,8 +409,10 @@ impl MainWindow {
 
     /// 画面座標 `coords` の下にあるペインをホイール回転分だけスクロールする。
     fn scroll_under_cursor(&self, distance: i16, coords: w::POINT) -> w::AnyResult<()> {
-        if self.viewing.get() {
-            return self.viewer.scroll_by_wheel(distance);
+        match self.active_view.get() {
+            ActiveView::Text => return self.viewer.scroll_by_wheel(distance),
+            ActiveView::Media => return self.media.on_wheel(distance),
+            ActiveView::None => {}
         }
         if let Some(hw) = w::HWND::WindowFromPoint(coords) {
             let p = hw.ptr();
@@ -846,11 +861,19 @@ impl MainWindow {
         let this = self.clone();
         self.key_sink.on().wm_key_down(move |p| {
             // ビューア表示中はキーをビューア操作へ振り向ける（ファイラのキーマップは無効）。
-            if this.viewing.get() {
-                let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
-                let shift = w::GetAsyncKeyState(co::VK::SHIFT);
-                let _ = this.viewer_key(p.vkey_code.raw(), ctrl, shift);
-                return Ok(());
+            match this.active_view.get() {
+                ActiveView::Text => {
+                    let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
+                    let shift = w::GetAsyncKeyState(co::VK::SHIFT);
+                    let _ = this.viewer_key(p.vkey_code.raw(), ctrl, shift);
+                    return Ok(());
+                }
+                ActiveView::Media => {
+                    let shift = w::GetAsyncKeyState(co::VK::SHIFT);
+                    let _ = this.media_key(p.vkey_code.raw(), shift);
+                    return Ok(());
+                }
+                ActiveView::None => {}
             }
             let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
             let shift = w::GetAsyncKeyState(co::VK::SHIFT);
@@ -911,37 +934,123 @@ impl MainWindow {
         Ok(())
     }
 
-    /// カーソル下のファイルを内蔵ビューアで開く（ディレクトリ/親は無視）。
+    /// カーソル下のファイルを種別に応じたビューアで開く（ディレクトリ/親は無視）。
     fn view_file(&self, is_left: bool) -> w::AnyResult<()> {
-        let name = {
+        let (name, ext) = {
             let state = self.view(is_left).state();
             let s = state.borrow();
             match s.items.get(s.cursor) {
-                Some(it) if !it.is_parent && !it.is_dir => it.name.clone(),
+                Some(it) if !it.is_parent && !it.is_dir => (it.name.clone(), it.extension.clone()),
                 _ => return Ok(()),
             }
         };
-        let path = self.pane(is_left).borrow().path().join(&name);
-        let (bytes, truncated) = match read_capped(&path, viewer::MAX_VIEW_BYTES) {
+        let dir = self.pane(is_left).borrow().path().to_path_buf();
+        let path = dir.join(&name);
+        match MediaKind::from_extension(&ext) {
+            Some(kind) => self.view_media(is_left, kind, &dir, &path),
+            None => self.view_text(&name, &path),
+        }
+    }
+
+    /// テキスト/バイナリビューアで開く。
+    fn view_text(&self, name: &str, path: &Path) -> w::AnyResult<()> {
+        let (bytes, truncated) = match read_capped(path, viewer::MAX_VIEW_BYTES) {
             Ok(v) => v,
             Err(e) => {
                 self.log.error(&format!("ビューアで開けません: {}: {}", name, e));
                 return Ok(());
             }
         };
-        self.viewer.open(&name, bytes, truncated);
-        self.viewing.set(true);
-        self.viewer.hwnd().ShowWindow(co::SW::SHOW);
-        self.viewer.hwnd().BringWindowToTop()?;
-        self.viewer.refresh()?;
+        self.viewer.open(name, bytes, truncated);
+        self.show_viewer(ActiveView::Text)
+    }
+
+    /// 画像/動画ビューアで開く。同ディレクトリの閲覧可能な画像を前後送りの対象にする。
+    fn view_media(&self, is_left: bool, kind: MediaKind, dir: &Path, path: &Path) -> w::AnyResult<()> {
+        if kind == MediaKind::Video {
+            self.media.open(vec![path.to_path_buf()], 0);
+        } else {
+            let mut files: Vec<PathBuf> = Vec::new();
+            let mut index = 0;
+            {
+                let state = self.view(is_left).state();
+                let s = state.borrow();
+                for it in &s.items {
+                    if it.is_dir || it.is_parent {
+                        continue;
+                    }
+                    if matches!(
+                        MediaKind::from_extension(&it.extension),
+                        Some(MediaKind::Image) | Some(MediaKind::Animation)
+                    ) {
+                        let p = dir.join(&it.name);
+                        if p == path {
+                            index = files.len();
+                        }
+                        files.push(p);
+                    }
+                }
+            }
+            if files.is_empty() {
+                files.push(path.to_path_buf());
+            }
+            self.media.open(files, index);
+        }
+        self.show_viewer(ActiveView::Media)
+    }
+
+    /// 指定ビューアを最前面に出し、もう一方を隠してキー入力を奪う。
+    fn show_viewer(&self, which: ActiveView) -> w::AnyResult<()> {
+        self.active_view.set(which);
+        match which {
+            ActiveView::Text => {
+                self.media.hwnd().ShowWindow(co::SW::HIDE);
+                self.viewer.hwnd().ShowWindow(co::SW::SHOW);
+                self.viewer.hwnd().BringWindowToTop()?;
+                self.viewer.refresh()?;
+            }
+            ActiveView::Media => {
+                self.viewer.hwnd().ShowWindow(co::SW::HIDE);
+                self.media.hwnd().ShowWindow(co::SW::SHOW);
+                self.media.hwnd().BringWindowToTop()?;
+                self.media.refresh()?;
+            }
+            ActiveView::None => {}
+        }
         self.key_sink.hwnd().SetFocus();
+        Ok(())
+    }
+
+    /// ビューア表示中の画像/動画キー操作（固定キー・設定対象外）。
+    fn media_key(&self, vk: u16, _shift: bool) -> w::AnyResult<()> {
+        use rerics_core::vk;
+        const VK_Q: u16 = 0x51;
+        const VK_R: u16 = 0x52;
+        const VK_0: u16 = 0x30;
+        const VK_1: u16 = 0x31;
+        const VK_OEM_PLUS: u16 = 0xBB;
+        const VK_OEM_MINUS: u16 = 0xBD;
+        const VK_ADD: u16 = 0x6B;
+        const VK_SUBTRACT: u16 = 0x6D;
+        match vk {
+            vk::ESCAPE | VK_Q | vk::RETURN => self.close_viewer()?,
+            vk::LEFT | vk::UP | vk::PRIOR => self.media.navigate(-1)?,
+            vk::RIGHT | vk::DOWN | vk::NEXT | vk::SPACE => self.media.navigate(1)?,
+            VK_OEM_PLUS | VK_ADD => self.media.zoom_by(1.25)?,
+            VK_OEM_MINUS | VK_SUBTRACT => self.media.zoom_by(0.8)?,
+            VK_0 => self.media.fit_to_window()?,
+            VK_1 => self.media.actual_size()?,
+            VK_R => self.media.rotate()?,
+            _ => {}
+        }
         Ok(())
     }
 
     /// ビューアを閉じてファイラ表示へ戻す。
     fn close_viewer(&self) -> w::AnyResult<()> {
-        self.viewing.set(false);
+        self.active_view.set(ActiveView::None);
         self.viewer.hwnd().ShowWindow(co::SW::HIDE);
+        self.media.hwnd().ShowWindow(co::SW::HIDE);
         self.key_sink.hwnd().SetFocus();
         Ok(())
     }
@@ -1547,13 +1656,18 @@ impl MainWindow {
         self.view(false).autofit_columns()?;
         place(self.log.hwnd(), left_x, log_y, log_w, log_h)?;
         // ビューアはタブバー下のメイン領域（ペイン＋ログ）全体を覆う。表示状態は維持。
-        place(self.viewer.hwnd(), 0, bars_y, total_w, (total_h - bars_y).max(0))?;
-        if self.viewing.get() {
-            self.viewer.hwnd().BringWindowToTop()?;
+        let view_h = (total_h - bars_y).max(0);
+        place(self.viewer.hwnd(), 0, bars_y, total_w, view_h)?;
+        place(self.media.hwnd(), 0, bars_y, total_w, view_h)?;
+        match self.active_view.get() {
+            ActiveView::Text => self.viewer.hwnd().BringWindowToTop()?,
+            ActiveView::Media => self.media.hwnd().BringWindowToTop()?,
+            ActiveView::None => {}
         }
         self.tab_bar.refresh()?;
         self.log.refresh()?;
         self.viewer.refresh()?;
+        self.media.refresh()?;
         Ok(())
     }
 
