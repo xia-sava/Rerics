@@ -9,6 +9,7 @@ mod log;
 pub mod messages;
 mod operation;
 mod status;
+mod viewer;
 
 pub use config::{
     Config, DEFAULT_CONFIG_TOML, FontSpec, Layout, ResolvedTheme, State, TabState, Theme,
@@ -26,6 +27,7 @@ pub use operation::{
     run_delete,
 };
 pub use status::{format_drive, format_selected, format_size};
+pub use viewer::{DisplayLine, Encoding, ViewMode, ViewerModel};
 
 use std::path::{Path, PathBuf};
 
