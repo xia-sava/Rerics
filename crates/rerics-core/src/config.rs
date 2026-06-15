@@ -16,6 +16,12 @@ use crate::input::KeyMap;
 /// 使う（ポータブルモード）。無ければ `%APPDATA%\Rerics`。いずれも解決できない
 /// 場合はカレントディレクトリ。この関数はディレクトリを作らない。
 pub fn data_dir() -> PathBuf {
+    // テスト/ツール用の明示オーバーライド（最優先・本番は未設定）。
+    if let Ok(dir) = std::env::var("RERICS_DATA_DIR") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             if dir.join("Rerics.portable").exists() {

@@ -214,6 +214,43 @@ impl FileListView {
     }
 
     /// クライアント高から1ページ行数を算出する。
+    /// 解決済みの外見情報（色・フォント・行高など、`paint_to` が読むのと同じ保持値）を JSON で返す。
+    /// 設定が描画に反映されているかをピクセルなしでテストするための観測用（デバッグ制御サーバ）。
+    /// `to_value` で全フィールドを自動展開するので、色項目が増えても出し忘れない。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn presentation(&self) -> serde_json::Value {
+        serde_json::json!({
+            "colors": serde_json::to_value(self.inner.colors.get()).unwrap_or_default(),
+            "font": {
+                "family": self.inner.font_family.borrow().clone(),
+                "size": self.inner.font_size.get(),
+            },
+            "header_height": self.header_height(),
+            "item_height": self.item_height(),
+            "scrollbar_width": self.inner.scrollbar_width.get(),
+        })
+    }
+
+    /// カーソル行の矩形（自コントロールのクライアント座標 `(x,y,w,h)`）。
+    /// カーソルがスクロール範囲外（不可視）なら `None`。デバッグ制御サーバのスナップショット用。
+    #[cfg(feature = "debug-server")]
+    pub fn cursor_row_rect(&self) -> Option<(i32, i32, i32, i32)> {
+        let (cursor, scroll_top) = {
+            let s = self.inner.state.borrow();
+            (s.cursor, s.scroll_top)
+        };
+        if cursor < scroll_top {
+            return None;
+        }
+        let ih = self.item_height();
+        if ih <= 0 {
+            return None;
+        }
+        let y = self.header_height() + (cursor - scroll_top) as i32 * ih;
+        let rc = self.hwnd().GetClientRect().ok()?;
+        Some((0, y, rc.right - rc.left, ih))
+    }
+
     pub fn page_rows(&self) -> usize {
         let Ok(rc) = self.hwnd().GetClientRect() else {
             return 1;
@@ -625,15 +662,8 @@ impl FileListView {
         let mem_dc = hdc.CreateCompatibleDC()?;
         let bmp = hdc.CreateCompatibleBitmap(cw, ch)?;
         let _bmp_sel = mem_dc.SelectObject(&*bmp)?;
-        let font = self.create_font()?;
-        let _font_sel = mem_dc.SelectObject(&*font)?;
-        // フォント高さ実測。
-        if let Ok(tm) = mem_dc.GetTextMetrics() {
-            self.inner.font_height.set(tm.tmHeight);
-        }
-        mem_dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
 
-        self.paint_to(&mem_dc, cw, ch)?;
+        self.render_to(&mem_dc, cw, ch)?;
 
         hdc.BitBlt(
             w::POINT { x: 0, y: 0 },
@@ -643,6 +673,19 @@ impl FileListView {
             co::ROP::SRCCOPY,
         )?;
         Ok(())
+    }
+
+    /// ターゲットビットマップ選択済みの任意 DC へ全面描画する（フォント準備＋`paint_to`）。
+    /// `on_paint` のダブルバッファと、デバッグ制御サーバの窓非依存スナップショットの両方から呼ぶ。
+    pub(crate) fn render_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
+        let font = self.create_font()?;
+        let _font_sel = dc.SelectObject(&*font)?;
+        // フォント高さ実測。
+        if let Ok(tm) = dc.GetTextMetrics() {
+            self.inner.font_height.set(tm.tmHeight);
+        }
+        dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
+        self.paint_to(dc, cw, ch)
     }
 
     fn paint_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {

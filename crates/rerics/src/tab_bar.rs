@@ -62,6 +62,12 @@ impl TabBar {
         self.wnd.hwnd()
     }
 
+    /// 現在のタブラベル一覧（デバッグ制御サーバの状態取得用）。
+    #[cfg(feature = "debug-server")]
+    pub fn labels(&self) -> Vec<String> {
+        self.inner.labels.borrow().clone()
+    }
+
     /// タブのラベルとアクティブ index を更新する。
     pub fn set_tabs(&self, labels: Vec<String>, active: usize) {
         *self.inner.labels.borrow_mut() = labels;
@@ -147,14 +153,8 @@ impl TabBar {
         let mem_dc = hdc.CreateCompatibleDC()?;
         let bmp = hdc.CreateCompatibleBitmap(cw, ch)?;
         let _bmp_sel = mem_dc.SelectObject(&*bmp)?;
-        let font = self.create_font()?;
-        let _font_sel = mem_dc.SelectObject(&*font)?;
-        if let Ok(tm) = mem_dc.GetTextMetrics() {
-            self.inner.font_height.set(tm.tmHeight);
-        }
-        mem_dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
 
-        self.paint_to(&mem_dc, cw, ch)?;
+        self.render_to(&mem_dc, cw, ch)?;
 
         hdc.BitBlt(
             w::POINT { x: 0, y: 0 },
@@ -164,6 +164,17 @@ impl TabBar {
             co::ROP::SRCCOPY,
         )?;
         Ok(())
+    }
+
+    /// ターゲットビットマップ選択済みの任意 DC へ全面描画する（フォント準備＋`paint_to`）。
+    pub(crate) fn render_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
+        let font = self.create_font()?;
+        let _font_sel = dc.SelectObject(&*font)?;
+        if let Ok(tm) = dc.GetTextMetrics() {
+            self.inner.font_height.set(tm.tmHeight);
+        }
+        dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
+        self.paint_to(dc, cw, ch)
     }
 
     fn paint_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {

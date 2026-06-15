@@ -114,8 +114,11 @@ impl SplitterView {
     fn on_paint(&self) -> w::AnyResult<()> {
         let hdc = self.hwnd().BeginPaint()?;
         let rc = self.hwnd().GetClientRect()?;
-        let cw = rc.right - rc.left;
-        let ch = rc.bottom - rc.top;
+        self.render_to(&hdc, rc.right - rc.left, rc.bottom - rc.top)
+    }
+
+    /// 任意の DC へ境界線を描く（`on_paint` とデバッグ制御サーバのスナップショットから呼ぶ）。
+    pub(crate) fn render_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
         if cw > 0 && ch > 0 {
             // ヘッダと同じシステム 3D グレー。BTNFACE で塗り、左端ハイライト・右端シャドウで
             // 縦のベベル（隆起した境界線）にする。
@@ -123,18 +126,18 @@ impl SplitterView {
             let hl = w::GetSysColor(co::COLOR::BTNHIGHLIGHT);
             let sh = w::GetSysColor(co::COLOR::BTNSHADOW);
             let face_brush = w::HBRUSH::CreateSolidBrush(face)?;
-            hdc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &face_brush)?;
+            dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &face_brush)?;
             let pen_hl = w::HPEN::CreatePen(co::PS::SOLID, 1, hl)?;
             {
-                let _sel = hdc.SelectObject(&*pen_hl)?;
-                hdc.MoveToEx(0, 0, None)?;
-                hdc.LineTo(0, ch)?;
+                let _sel = dc.SelectObject(&*pen_hl)?;
+                dc.MoveToEx(0, 0, None)?;
+                dc.LineTo(0, ch)?;
             }
             let pen_sh = w::HPEN::CreatePen(co::PS::SOLID, 1, sh)?;
             {
-                let _sel = hdc.SelectObject(&*pen_sh)?;
-                hdc.MoveToEx(cw - 1, 0, None)?;
-                hdc.LineTo(cw - 1, ch)?;
+                let _sel = dc.SelectObject(&*pen_sh)?;
+                dc.MoveToEx(cw - 1, 0, None)?;
+                dc.LineTo(cw - 1, ch)?;
             }
         }
         Ok(())

@@ -64,6 +64,25 @@ impl LogView {
         self.wnd.hwnd()
     }
 
+    /// 末尾 `n` 行を `(レベル, 本文)` で返す（デバッグ制御サーバの状態取得用）。
+    #[cfg(feature = "debug-server")]
+    pub fn tail(&self, n: usize) -> Vec<(String, String)> {
+        let s = self.inner.state.borrow();
+        let start = s.lines.len().saturating_sub(n);
+        s.lines[start..]
+            .iter()
+            .map(|l| {
+                let level = match l.level {
+                    LogLevel::Normal => "normal",
+                    LogLevel::Info => "info",
+                    LogLevel::Warning => "warning",
+                    LogLevel::Error => "error",
+                };
+                (level.to_owned(), l.text.clone())
+            })
+            .collect()
+    }
+
     /// 通常レベルで追記する（操作の逐次ログ。白・非太字）。
     pub fn normal(&self, text: &str) {
         self.push(LogLevel::Normal, text);
@@ -282,15 +301,8 @@ impl LogView {
         let mem_dc = hdc.CreateCompatibleDC()?;
         let bmp = hdc.CreateCompatibleBitmap(cw, ch)?;
         let _bmp_sel = mem_dc.SelectObject(&*bmp)?;
-        let font = self.create_font(false)?;
-        let font_bold = self.create_font(true)?;
-        let _font_sel = mem_dc.SelectObject(&*font)?;
-        if let Ok(tm) = mem_dc.GetTextMetrics() {
-            self.inner.line_height.set(tm.tmHeight + gui::dpi_y(1));
-        }
-        mem_dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
 
-        self.paint_to(&mem_dc, cw, ch, &font, &font_bold)?;
+        self.render_to(&mem_dc, cw, ch)?;
 
         hdc.BitBlt(
             w::POINT { x: 0, y: 0 },
@@ -300,6 +312,18 @@ impl LogView {
             co::ROP::SRCCOPY,
         )?;
         Ok(())
+    }
+
+    /// ターゲットビットマップ選択済みの任意 DC へ全面描画する（フォント2種準備＋`paint_to`）。
+    pub(crate) fn render_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
+        let font = self.create_font(false)?;
+        let font_bold = self.create_font(true)?;
+        let _font_sel = dc.SelectObject(&*font)?;
+        if let Ok(tm) = dc.GetTextMetrics() {
+            self.inner.line_height.set(tm.tmHeight + gui::dpi_y(1));
+        }
+        dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
+        self.paint_to(dc, cw, ch, &font, &font_bold)
     }
 
     fn paint_to(
