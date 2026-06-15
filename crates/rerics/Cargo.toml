@@ -7,6 +7,8 @@ edition.workspace = true
 # 開発専用のローカル制御サーバ（既定 off・リリースには載せない）。
 # serde_json は常時依存（応答 JSON を組む純粋関数を feature 無しで常時ビルド＆テストするため）。
 debug-server = ["dep:tiny_http", "dep:image"]
+# rar 読取（unrar crate・既定 off）。core の rar feature を引き継ぐ。
+rar = ["rerics-core/rar"]
 
 [dependencies]
 rerics-core.workspace = true
