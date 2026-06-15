@@ -200,6 +200,8 @@ struct MainWindow {
     /// 一括展開済みの非ランダムアクセス書庫（ソリッド7z 等）→ 展開先 temp_root。
     /// ここに在る書庫は一覧/閲覧/取り出しを temp_root 配下の実FSから提供する（§7.4・O(n²)回避）。
     archive_extracted: Rc<RefCell<std::collections::HashMap<PathBuf, PathBuf>>>,
+    /// 現在ワーカが一括展開中の書庫（二重起動＝同一 temp への並行展開を防ぐ）。
+    archive_extracting: Rc<RefCell<std::collections::HashSet<PathBuf>>>,
     #[cfg(feature = "debug-server")]
     debug: debug_server::Bridge,
 }
@@ -352,6 +354,7 @@ impl MainWindow {
             media_prefetch: Rc::new(RefCell::new(None)),
             archive_passwords: Rc::new(RefCell::new(std::collections::HashMap::new())),
             archive_extracted: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            archive_extracting: Rc::new(RefCell::new(std::collections::HashSet::new())),
             #[cfg(feature = "debug-server")]
             debug: debug_server::Bridge::new(debug_port, debug_allow_write, debug_headless),
         }
@@ -864,6 +867,11 @@ impl MainWindow {
         self.update_selected_info(false);
         self.update_drive_info(true);
         self.update_drive_info(false);
+        // 復元/タブ切替先がソリッド書庫等（非RA）なら一括展開＋スピナーを起こす。これらの
+        // 経路は reload_side を通らないので、ここで明示的にトリガする（startup/タブ切替の edge）。
+        for is_left in [true, false] {
+            let _ = self.maybe_start_archive_extract(is_left);
+        }
         self.key_sink.hwnd().SetFocus();
         Ok(())
     }
@@ -2294,6 +2302,12 @@ impl MainWindow {
         if self.archive_extracted.borrow().contains_key(&archive) {
             return Ok(false);
         }
+        // 同じ書庫を別ペインが既に展開中なら、このペインもスピナーを出して完了を待つ
+        // （二重ワーカ＝同一 temp への並行展開を避ける。完了時に両ペインまとめて反映する）。
+        if self.archive_extracting.borrow().contains(&archive) {
+            self.view(is_left).set_loading("");
+            return Ok(true);
+        }
         let random_access = match open_archive(&archive) {
             Ok(be) => be.caps().random_access,
             Err(_) => return Ok(false),
@@ -2326,6 +2340,7 @@ impl MainWindow {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         self.register_task(id, "展開", format!("{} を展開中", name), control.clone())?;
+        self.archive_extracting.borrow_mut().insert(archive.clone());
         self.view(is_left).set_loading("");
         let tx = self.task_tx.clone();
         let shutdown = self.shutdown.clone();
@@ -2363,7 +2378,6 @@ impl MainWindow {
             };
             let _ = tx.send(WorkerEvent::ArchiveDone {
                 id,
-                is_left,
                 archive,
                 temp_root: root,
                 outcome,
@@ -2393,6 +2407,14 @@ impl MainWindow {
             }
         }
         self.reload_side(is_left)
+    }
+
+    /// 指定ペインの現在地が書庫 `archive` の中か（一括展開完了時の対象ペイン判定に使う）。
+    fn pane_in_archive(&self, is_left: bool, archive: &Path) -> bool {
+        matches!(
+            self.pane(is_left).borrow().loc(),
+            Location::Archive { archive: a, .. } if a == archive
+        )
     }
 
     /// タスクが空で、かつどちらのペインも読込中でなければ取り込みタイマを止める。
@@ -2874,23 +2896,39 @@ impl MainWindow {
                 WorkerEvent::ArchiveProgress { is_left, done, total } => {
                     self.view(is_left).set_loading_text(&format!("{}/{}", done, total));
                 }
-                WorkerEvent::ArchiveDone { id, is_left, archive, temp_root, outcome } => {
+                WorkerEvent::ArchiveDone { id, archive, temp_root, outcome } => {
                     self.tasks.borrow_mut().retain(|e| e.id != id);
-                    self.view(is_left).clear_loading();
+                    self.archive_extracting.borrow_mut().remove(&archive);
+                    // この書庫を指して読込中のペイン（両側あり得る）をまとめて反映する。
+                    let sides: Vec<bool> = [true, false]
+                        .into_iter()
+                        .filter(|&s| {
+                            self.view(s).is_loading() && self.pane_in_archive(s, &archive)
+                        })
+                        .collect();
                     match outcome {
                         ArchiveOutcome::Ok => {
                             self.archive_extracted
                                 .borrow_mut()
                                 .insert(archive, temp_root);
-                            self.reload_side(is_left)?;
+                            for s in sides {
+                                self.view(s).clear_loading();
+                                self.reload_side(s)?;
+                            }
                         }
                         ArchiveOutcome::Cancelled => {
                             self.log.warn("書庫の読込を中止しました");
-                            self.exit_archive_to_parent(is_left)?;
+                            for s in sides {
+                                self.view(s).clear_loading();
+                                self.exit_archive_to_parent(s)?;
+                            }
                         }
                         ArchiveOutcome::Failed(e) => {
                             self.log.error(&format!("書庫を展開できません: {}", e));
-                            self.exit_archive_to_parent(is_left)?;
+                            for s in sides {
+                                self.view(s).clear_loading();
+                                self.exit_archive_to_parent(s)?;
+                            }
                         }
                     }
                     self.maybe_kill_task_timer();
