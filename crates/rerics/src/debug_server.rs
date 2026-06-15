@@ -118,14 +118,17 @@ pub struct Bridge {
     pub port: Option<u16>,
     /// `--debug-allow-write` 指定時 true。破壊的（ファイル操作）コマンドの実行可否。
     pub allow_write: bool,
+    /// `--headless` 指定時 true。窓を完全非表示で起動する（最小化でなく hidden）。
+    pub headless: bool,
 }
 
 impl Bridge {
-    pub fn new(port: Option<u16>, allow_write: bool) -> Self {
+    pub fn new(port: Option<u16>, allow_write: bool, headless: bool) -> Self {
         Self {
             queue: Arc::new(Mutex::new(VecDeque::new())),
             port,
             allow_write,
+            headless,
         }
     }
 }
@@ -146,6 +149,11 @@ pub fn parse_port() -> Option<u16> {
 /// `--debug-allow-write` が指定されているか。
 pub fn parse_allow_write() -> bool {
     std::env::args().skip(1).any(|a| a == "--debug-allow-write")
+}
+
+/// `--headless` が指定されているか（窓を非表示で起動）。
+pub fn parse_headless() -> bool {
+    std::env::args().skip(1).any(|a| a == "--headless")
 }
 
 /// HTTP サーバスレッドを起動する。`hwnd_ptr` は main 窓の生ハンドル（`PostMessageW` 用）。

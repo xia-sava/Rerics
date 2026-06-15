@@ -535,9 +535,8 @@ impl MediaView {
         let mem_dc = hdc.CreateCompatibleDC()?;
         let bmp = hdc.CreateCompatibleBitmap(cw, ch)?;
         let _bmp_sel = mem_dc.SelectObject(&*bmp)?;
-        mem_dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
 
-        self.paint_to(&hdc, &mem_dc, cw, ch)?;
+        self.render_to(&mem_dc, cw, ch)?;
 
         hdc.BitBlt(
             w::POINT { x: 0, y: 0 },
@@ -547,6 +546,13 @@ impl MediaView {
             co::ROP::SRCCOPY,
         )?;
         Ok(())
+    }
+
+    /// ターゲットビットマップ選択済みの任意 DC へ全面描画する。色互換ビットマップ生成にも
+    /// ターゲット DC を使う（32bpp ビットマップ選択済みなのでカラーで作られる）。
+    pub(crate) fn render_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
+        dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
+        self.paint_to(dc, dc, cw, ch)
     }
 
     fn paint_to(&self, hdc: &w::HDC, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {

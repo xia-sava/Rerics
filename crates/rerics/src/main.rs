@@ -137,11 +137,15 @@ fn debug_attrs(it: &rerics_core::FileItem) -> String {
 
 fn main() {
     #[cfg(feature = "debug-server")]
-    let (debug_port, debug_allow_write) =
-        (debug_server::parse_port(), debug_server::parse_allow_write());
+    let (debug_port, debug_allow_write, debug_headless) = (
+        debug_server::parse_port(),
+        debug_server::parse_allow_write(),
+        debug_server::parse_headless(),
+    );
     #[cfg(not(feature = "debug-server"))]
-    let (debug_port, debug_allow_write): (Option<u16>, bool) = (None, false);
-    if let Err(e) = MainWindow::new(debug_port, debug_allow_write).run() {
+    let (debug_port, debug_allow_write, debug_headless): (Option<u16>, bool, bool) =
+        (None, false, false);
+    if let Err(e) = MainWindow::new(debug_port, debug_allow_write, debug_headless).run() {
         eprintln!("エラー: {}", e);
     }
 }
@@ -240,7 +244,7 @@ struct TabSnapshot {
 
 impl MainWindow {
     #[cfg_attr(not(feature = "debug-server"), allow(unused_variables))]
-    fn new(debug_port: Option<u16>, debug_allow_write: bool) -> Self {
+    fn new(debug_port: Option<u16>, debug_allow_write: bool, debug_headless: bool) -> Self {
         // デバッグ制御サーバ起動時は最初から最小化で出すため、生成時に VISIBLE を付けない
         // （付けると CreateWindowEx が一瞬フル表示してしまう）。表示は run_main の cmd_show に任せる。
         let mut style = co::WS::CAPTION
@@ -373,7 +377,7 @@ impl MainWindow {
             shutdown: Arc::new(AtomicBool::new(false)),
             in_dialog: Rc::new(Cell::new(false)),
             #[cfg(feature = "debug-server")]
-            debug: debug_server::Bridge::new(debug_port, debug_allow_write),
+            debug: debug_server::Bridge::new(debug_port, debug_allow_write, debug_headless),
         }
     }
 
@@ -383,7 +387,12 @@ impl MainWindow {
         // フル表示のフラッシュを避ける（VISIBLE も外してあるので真の最小化起動になる）。
         #[cfg(feature = "debug-server")]
         let cmd_show = if self.debug.port.is_some() {
-            Some(co::SW::SHOWMINNOACTIVE)
+            // headless は完全非表示、通常 debug は非アクティブ最小化。
+            if self.debug.headless {
+                Some(co::SW::HIDE)
+            } else {
+                Some(co::SW::SHOWMINNOACTIVE)
+            }
         } else {
             None
         };
@@ -1582,9 +1591,8 @@ impl MainWindow {
             let Some(modal) = self.debug_modal_hwnd() else {
                 return debug_server::Response::BadRequest("no modal open".into());
             };
-            // 注意：最小化 owner 配下のモーダルは DWM サーフェスが未合成で、現状ピクセル取得は
-            // 不完全（背景のみ等）。モーダルの観測は /state/modal を使うのが確実。段階4 の render_to で根治予定。
-            match self.capture_window_bgra(&modal) {
+            // モーダルは標準コントロール製なので PrintWindow（WM_PRINTCLIENT 応答）で撮る。
+            match self.capture_modal_print(&modal) {
                 Ok((b, w, h)) => (b, w, h, (0, 0, w, h)),
                 Err(e) => return debug_server::Response::Error(format!("snapshot error: {e}")),
             }
@@ -1603,7 +1611,7 @@ impl MainWindow {
                     None => return debug_server::Response::Error("no client rect".into()),
                 },
             };
-            match self.capture_window_bgra(self.wnd.hwnd()) {
+            match self.capture_render_bgra() {
                 Ok((b, w, h)) => (b, w, h, base),
                 Err(e) => return debug_server::Response::Error(format!("snapshot error: {e}")),
             }
@@ -1686,61 +1694,130 @@ impl MainWindow {
         Some((lr.0 + cx, lr.1 + cy, cw, ch))
     }
 
-    /// 指定窓のクライアント全体を「窓自身の DC（親＋各子コントロール）」から合成し BGRA(top-down) で得る。
-    /// 画面スクレイプでなく窓の DC を読むため、他窓に隠れていても・最前面化なしで正しく撮れる。
+
+    /// 子コントロールを自前 bitmap へ `render_to` し、合成 DC の位置へ BitBlt する。
     #[cfg(feature = "debug-server")]
-    fn capture_window_bgra(&self, hwnd: &w::HWND) -> w::AnyResult<(Vec<u8>, i32, i32)> {
+    fn render_view_into(
+        &self,
+        target: &w::HDC,
+        win_dc: &w::HDC,
+        child: &w::HWND,
+        draw: impl FnOnce(&w::HDC, i32, i32) -> w::AnyResult<()>,
+    ) -> w::AnyResult<()> {
+        let Some((x, y, w, h)) = self.rect_in_client(child) else {
+            return Ok(());
+        };
+        if w <= 0 || h <= 0 {
+            return Ok(());
+        }
+        let vdc = win_dc.CreateCompatibleDC()?;
+        let vbmp = win_dc.CreateCompatibleBitmap(w, h)?;
+        let _s = vdc.SelectObject(&*vbmp)?;
+        draw(&vdc, w, h)?;
+        target.BitBlt(
+            w::POINT { x, y },
+            w::SIZE { cx: w, cy: h },
+            &vdc,
+            w::POINT { x: 0, y: 0 },
+            co::ROP::SRCCOPY,
+        )?;
+        Ok(())
+    }
+
+    /// モーダル（標準コントロール製）を `PrintWindow` でクライアント領域を BGRA(top-down) に撮る。
+    /// 標準コントロールは `WM_PRINTCLIENT` に応答するので、自前描画と違い PrintWindow が機能する。
+    #[cfg(feature = "debug-server")]
+    fn capture_modal_print(&self, modal: &w::HWND) -> w::AnyResult<(Vec<u8>, i32, i32)> {
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn PrintWindow(
+                hwnd: *mut std::ffi::c_void,
+                hdc: *mut std::ffi::c_void,
+                flags: u32,
+            ) -> i32;
+        }
+        const PW_CLIENTONLY: u32 = 1;
+        const PW_RENDERFULLCONTENT: u32 = 2;
+        let crc = modal.GetClientRect()?;
+        let (cw, ch) = (crc.right - crc.left, crc.bottom - crc.top);
+        if cw <= 0 || ch <= 0 {
+            return Err("empty modal client".into());
+        }
+        let win_dc = modal.GetDC()?;
+        let memdc = win_dc.CreateCompatibleDC()?;
+        let bmp = win_dc.CreateCompatibleBitmap(cw, ch)?;
+        {
+            let _sel = memdc.SelectObject(&*bmp)?;
+            unsafe {
+                PrintWindow(modal.ptr(), memdc.ptr(), PW_CLIENTONLY | PW_RENDERFULLCONTENT);
+            }
+        }
+        let mut bmi = w::BITMAPINFO::default();
+        bmi.bmiHeader.biWidth = cw;
+        bmi.bmiHeader.biHeight = -ch;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = co::BI::RGB;
+        let mut buf = vec![0u8; (cw as usize) * (ch as usize) * 4];
+        unsafe {
+            memdc.GetDIBits(&*bmp, 0, ch as u32, Some(&mut buf), &mut bmi, co::DIB::RGB_COLORS)?;
+        }
+        Ok((buf, cw, ch))
+    }
+
+    /// メインクライアント全体を各 view の `render_to` から合成し BGRA(top-down) で得る。
+    /// 窓のピクセルを読まず状態から描き起こすため、**非表示（headless）でも決定論的に撮れる**。
+    #[cfg(feature = "debug-server")]
+    fn capture_render_bgra(&self) -> w::AnyResult<(Vec<u8>, i32, i32)> {
+        let hwnd = self.wnd.hwnd();
         let crc = hwnd.GetClientRect()?;
         let (cw, ch) = (crc.right - crc.left, crc.bottom - crc.top);
         if cw <= 0 || ch <= 0 {
             return Err("empty client".into());
         }
-        // ループ停止中でも内容を確定させるため、対象窓を同期再描画する。
-        let _ = hwnd.RedrawWindow(
-            crc,
-            &w::HRGN::NULL,
-            co::RDW::INVALIDATE | co::RDW::ERASE | co::RDW::UPDATENOW | co::RDW::ALLCHILDREN,
-        );
         let win_dc = hwnd.GetDC()?;
         let target = win_dc.CreateCompatibleDC()?;
         let bmp = win_dc.CreateCompatibleBitmap(cw, ch)?;
-        let origin = hwnd.ClientToScreen(w::POINT { x: 0, y: 0 })?;
-        {
-            let _sel = target.SelectObject(&*bmp)?;
-            // 親の chrome/背景（WS_CLIPCHILDREN ゆえ子の領域は除く）。
-            target.BitBlt(
-                w::POINT { x: 0, y: 0 },
-                w::SIZE { cx: cw, cy: ch },
-                &win_dc,
-                w::POINT { x: 0, y: 0 },
-                co::ROP::SRCCOPY,
-            )?;
-            // 可視な子を z-order 逆順（下→上）で重ねる。
-            let mut kids: Vec<w::HWND> = Vec::new();
-            hwnd.EnumChildWindows(|c| {
-                kids.push(c);
-                true
-            });
-            for c in kids.iter().rev() {
-                if !c.IsWindowVisible() {
-                    continue;
-                }
-                let Ok(wr) = c.GetWindowRect() else { continue };
-                let (x, y) = (wr.left - origin.x, wr.top - origin.y);
-                let (w2, h2) = (wr.right - wr.left, wr.bottom - wr.top);
-                if w2 <= 0 || h2 <= 0 {
-                    continue;
-                }
-                let Ok(cdc) = c.GetDC() else { continue };
-                let _ = target.BitBlt(
-                    w::POINT { x, y },
-                    w::SIZE { cx: w2, cy: h2 },
-                    &cdc,
-                    w::POINT { x: 0, y: 0 },
-                    co::ROP::SRCCOPY,
-                );
-            }
+        let _sel = target.SelectObject(&*bmp)?;
+        // 隙間（chrome）の下地をシステム 3D グレーで塗る。
+        let base = w::HBRUSH::CreateSolidBrush(w::GetSysColor(co::COLOR::BTNFACE))?;
+        target.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &base)?;
+
+        self.render_view_into(&target, &win_dc, self.tab_bar.hwnd(), |d, w, h| {
+            self.tab_bar.render_to(d, w, h)
+        })?;
+        for is_left in [true, false] {
+            self.render_view_into(&target, &win_dc, self.bar(is_left).hwnd(), |d, w, h| {
+                self.bar(is_left).render_to(d, w, h)
+            })?;
+            self.render_view_into(&target, &win_dc, self.view(is_left).hwnd(), |d, w, h| {
+                self.view(is_left).render_to(d, w, h)
+            })?;
+            self.render_view_into(&target, &win_dc, self.status(is_left).hwnd(), |d, w, h| {
+                self.status(is_left).render_to(d, w, h)
+            })?;
         }
+        self.render_view_into(&target, &win_dc, self.splitter.hwnd(), |d, w, h| {
+            self.splitter.render_to(d, w, h)
+        })?;
+        self.render_view_into(&target, &win_dc, self.log.hwnd(), |d, w, h| {
+            self.log.render_to(d, w, h)
+        })?;
+        // 重ね表示中のビューア/メディアを最前面として上書きする。
+        match self.active_view.get() {
+            ActiveView::Text => {
+                self.render_view_into(&target, &win_dc, self.viewer.hwnd(), |d, w, h| {
+                    self.viewer.render_to(d, w, h)
+                })?;
+            }
+            ActiveView::Media => {
+                self.render_view_into(&target, &win_dc, self.media.hwnd(), |d, w, h| {
+                    self.media.render_to(d, w, h)
+                })?;
+            }
+            ActiveView::None => {}
+        }
+
         let mut bmi = w::BITMAPINFO::default();
         bmi.bmiHeader.biWidth = cw;
         bmi.bmiHeader.biHeight = -ch;
