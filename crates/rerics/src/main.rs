@@ -553,9 +553,10 @@ impl MainWindow {
 
     fn exec(&self, is_left: bool, cmd: Command) -> w::AnyResult<()> {
         let view = self.view(is_left);
-        // 書庫の読込中はキー入力を抑止し、Esc だけ展開中止に割り当てる。
+        // 書庫の読込中はキー入力を抑止し、Esc（ClearAll）と「親へ戻る」（ToParent・既定 BS）を
+        // 展開中止に割り当てる。デカい書庫にうっかり潜った時、咄嗟の「出る」操作で抜けられる。
         if view.is_loading() {
-            if matches!(cmd, Command::ClearAll) {
+            if matches!(cmd, Command::ClearAll | Command::ToParent) {
                 self.cancel_archive_load();
             }
             return Ok(());
@@ -2305,7 +2306,7 @@ impl MainWindow {
         // 同じ書庫を別ペインが既に展開中なら、このペインもスピナーを出して完了を待つ
         // （二重ワーカ＝同一 temp への並行展開を避ける。完了時に両ペインまとめて反映する）。
         if self.archive_extracting.borrow().contains(&archive) {
-            self.view(is_left).set_loading("");
+            self.view(is_left).set_loading();
             return Ok(true);
         }
         let random_access = match open_archive(&archive) {
@@ -2341,7 +2342,7 @@ impl MainWindow {
             .unwrap_or_default();
         self.register_task(id, "展開", format!("{} を展開中", name), control.clone())?;
         self.archive_extracting.borrow_mut().insert(archive.clone());
-        self.view(is_left).set_loading("");
+        self.view(is_left).set_loading();
         let tx = self.task_tx.clone();
         let shutdown = self.shutdown.clone();
         let marker = Self::archive_extract_marker(&root);
@@ -2894,7 +2895,7 @@ impl MainWindow {
                     self.maybe_kill_task_timer();
                 }
                 WorkerEvent::ArchiveProgress { is_left, done, total } => {
-                    self.view(is_left).set_loading_text(&format!("{}/{}", done, total));
+                    self.view(is_left).set_loading_progress(done, total);
                 }
                 WorkerEvent::ArchiveDone { id, archive, temp_root, outcome } => {
                     self.tasks.borrow_mut().retain(|e| e.id != id);

@@ -51,12 +51,11 @@ struct Inner {
     on_activate: RefCell<Option<ActivateCb>>,
     on_got_focus: RefCell<Option<Box<dyn Fn()>>>,
     on_wheel: RefCell<Option<WheelCb>>,
-    /// 書庫の読込中はスピナーを重ね、一覧の代わりに「読込中」を表示する。
+    /// 書庫の読込中はプログレスバーを重ね、一覧の代わりに進捗を表示する。
     loading: Cell<bool>,
-    /// スピナーのコマ番号（タイマで進める）。
-    spin: Cell<u32>,
-    /// スピナーに併記する進捗テキスト（"12/409" 等）。
-    loading_text: RefCell<String>,
+    /// 展開済みファイル数／総数（プログレスバーの充填率に使う。total=0 は不定）。
+    loading_done: Cell<u64>,
+    loading_total: Cell<u64>,
 }
 
 /// ファイル一覧コントロール。
@@ -103,8 +102,8 @@ impl FileListView {
             on_got_focus: RefCell::new(None),
             on_wheel: RefCell::new(None),
             loading: Cell::new(false),
-            spin: Cell::new(0),
-            loading_text: RefCell::new(String::new()),
+            loading_done: Cell::new(0),
+            loading_total: Cell::new(0),
         });
         let me = Self { wnd, inner };
         me.setup_events();
@@ -148,19 +147,21 @@ impl FileListView {
         Ok(())
     }
 
-    /// 読込中スピナーを表示開始する（書庫の一括展開待ち等）。`text` は併記する進捗。
-    pub fn set_loading(&self, text: &str) {
+    /// 読込中プログレスバーを表示開始する（書庫の一括展開待ち等・進捗は 0/0 から）。
+    pub fn set_loading(&self) {
         self.inner.loading.set(true);
-        *self.inner.loading_text.borrow_mut() = text.to_owned();
+        self.inner.loading_done.set(0);
+        self.inner.loading_total.set(0);
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
-    /// スピナー併記テキストだけ差し替える（再描画はタイマの `tick_loading` に任せる）。
-    pub fn set_loading_text(&self, text: &str) {
-        *self.inner.loading_text.borrow_mut() = text.to_owned();
+    /// 進捗（done/total）を更新する（再描画はタイマの `tick_loading` に任せる）。
+    pub fn set_loading_progress(&self, done: u64, total: u64) {
+        self.inner.loading_done.set(done);
+        self.inner.loading_total.set(total);
     }
 
-    /// 読込中スピナーを終了する。
+    /// 読込中表示を終了する。
     pub fn clear_loading(&self) {
         if self.inner.loading.get() {
             self.inner.loading.set(false);
@@ -172,12 +173,11 @@ impl FileListView {
         self.inner.loading.get()
     }
 
-    /// スピナーのコマを進めて再描画する（取り込みタイマから毎回呼ぶ）。
+    /// 読込中なら再描画して進捗バーを最新にする（取り込みタイマから毎回呼ぶ）。
     pub fn tick_loading(&self) {
         if !self.inner.loading.get() {
             return;
         }
-        self.inner.spin.set(self.inner.spin.get().wrapping_add(1));
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
@@ -717,24 +717,54 @@ impl FileListView {
         Ok(())
     }
 
-    /// 読込中スピナーを中央に描く（一覧の代わり）。回るバー＋進捗テキスト。
+    /// 読込中プログレスバーを中央に描く（一覧の代わり）。進捗テキスト＋充填バー。
     fn paint_loading(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
         let colors = self.inner.colors.get();
         let bg = w::HBRUSH::CreateSolidBrush(rgb(colors.background))?;
         dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &bg)?;
-        const FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
-        let frame = FRAMES[self.inner.spin.get() as usize % FRAMES.len()];
-        let progress = self.inner.loading_text.borrow();
-        let text = if progress.is_empty() {
-            format!("{}  読込中", frame)
+
+        let done = self.inner.loading_done.get();
+        let total = self.inner.loading_total.get();
+        let text = if total > 0 {
+            format!("読込中  {}/{}", done, total)
         } else {
-            format!("{}  読込中  {}", frame, progress)
+            "読込中".to_owned()
         };
+
+        // バー寸法：クライアント幅の 60%（120〜600 でクランプ）×フォント1行高。中央配置。
+        let bar_w = (cw * 6 / 10).clamp(120, 600);
+        let bar_h = (self.inner.font_height.get()).max(12);
+        let bar_x = (cw - bar_w) / 2;
+        let bar_y = (ch - bar_h) / 2;
+
+        // 進捗テキストはバーの少し上に中央寄せ。
         dc.SetTextColor(rgb(colors.cursor))?;
         let sz = dc.GetTextExtentPoint32(&text).unwrap_or(w::SIZE { cx: 0, cy: 0 });
-        let x = ((cw - sz.cx) / 2).max(0);
-        let y = ((ch - sz.cy) / 2).max(0);
-        dc.TextOut(x, y, &text)?;
+        dc.TextOut(((cw - sz.cx) / 2).max(0), (bar_y - sz.cy - 6).max(0), &text)?;
+
+        // 枠（外周を file_normal で塗り）→ 溝（背景2）→ 充填（cursor）の三層。
+        let border = w::HBRUSH::CreateSolidBrush(rgb(colors.file_normal))?;
+        let track = w::HBRUSH::CreateSolidBrush(rgb(colors.background2))?;
+        let fill = w::HBRUSH::CreateSolidBrush(rgb(colors.cursor))?;
+        let outer = w::RECT { left: bar_x, top: bar_y, right: bar_x + bar_w, bottom: bar_y + bar_h };
+        dc.FillRect(outer, &border)?;
+        let inset = w::RECT {
+            left: outer.left + 1,
+            top: outer.top + 1,
+            right: outer.right - 1,
+            bottom: outer.bottom - 1,
+        };
+        dc.FillRect(inset, &track)?;
+        if total > 0 {
+            let inner_w = inset.right - inset.left;
+            let filled = (inner_w as i64 * done as i64 / total as i64) as i32;
+            if filled > 0 {
+                dc.FillRect(
+                    w::RECT { left: inset.left, top: inset.top, right: inset.left + filled, bottom: inset.bottom },
+                    &fill,
+                )?;
+            }
+        }
         Ok(())
     }
 
