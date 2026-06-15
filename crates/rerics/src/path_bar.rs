@@ -56,6 +56,12 @@ impl PathBarView {
         self.wnd.hwnd()
     }
 
+    /// 現在のパスバー表示文字列（デバッグ制御サーバの状態取得用）。
+    #[cfg(feature = "debug-server")]
+    pub fn text(&self) -> String {
+        self.inner.text.borrow().clone()
+    }
+
     /// 表示するパス文字列を設定して再描画する。
     pub fn set_path(&self, text: &str) {
         if *self.inner.text.borrow() != text {

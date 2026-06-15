@@ -1,4 +1,6 @@
 mod chrome;
+#[cfg(feature = "debug-server")]
+mod debug_server;
 mod dialog;
 mod file_list;
 mod log_view;
@@ -52,8 +54,69 @@ fn wm_restore_maximize() -> co::WM {
     unsafe { co::WM::from_raw(0x8000) }
 }
 
+/// 表示確定後に本体を最小化させるための自前メッセージ（デバッグ制御サーバ起動時）。
+#[cfg(feature = "debug-server")]
+fn wm_debug_minimize() -> co::WM {
+    unsafe { co::WM::from_raw(0x8002) }
+}
+
+/// FileItem 1 件をデバッグ `/state` 用の JSON 値へ。
+#[cfg(feature = "debug-server")]
+fn debug_item_json(it: &rerics_core::FileItem, is_cursor: bool) -> serde_json::Value {
+    use serde_json::json;
+    if it.is_parent {
+        return json!({ "name": it.name, "is_parent": true, "is_dir": true, "cursor": is_cursor });
+    }
+    let modified = it
+        .modified
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    json!({
+        "name": it.name,
+        "is_dir": it.is_dir,
+        "ext": it.extension,
+        "size": it.size,
+        "marked": it.selected,
+        "attrs": debug_attrs(it),
+        "cursor": is_cursor,
+        "modified": modified,
+    })
+}
+
+/// 属性フラグを R/H/S/A/D の文字列へ（表示の属性列と同趣旨）。
+#[cfg(feature = "debug-server")]
+fn debug_attrs(it: &rerics_core::FileItem) -> String {
+    let mut s = String::new();
+    if it.is_dir {
+        s.push('D');
+    }
+    if it.readonly {
+        s.push('R');
+    }
+    if it.hidden {
+        s.push('H');
+    }
+    if it.system {
+        s.push('S');
+    }
+    if it.archive {
+        s.push('A');
+    }
+    s
+}
+
 fn main() {
-    if let Err(e) = MainWindow::new().run() {
+    let debug_port: Option<u16> = {
+        #[cfg(feature = "debug-server")]
+        {
+            debug_server::parse_port()
+        }
+        #[cfg(not(feature = "debug-server"))]
+        {
+            None
+        }
+    };
+    if let Err(e) = MainWindow::new(debug_port).run() {
         eprintln!("エラー: {}", e);
     }
 }
@@ -135,6 +198,8 @@ struct MainWindow {
     progress_seq: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
     in_dialog: Rc<Cell<bool>>,
+    #[cfg(feature = "debug-server")]
+    debug: debug_server::Bridge,
 }
 
 /// 1タブの保存状態（非アクティブ時の退避先）。アクティブタブの実体はライブ側
@@ -149,7 +214,8 @@ struct TabSnapshot {
 }
 
 impl MainWindow {
-    fn new() -> Self {
+    #[cfg_attr(not(feature = "debug-server"), allow(unused_variables))]
+    fn new(debug_port: Option<u16>) -> Self {
         let wnd = gui::WindowMain::new(gui::WindowMainOpts {
             title: "Rerics",
             size: gui::dpi(960, 560),
@@ -276,6 +342,8 @@ impl MainWindow {
             progress_seq: Arc::new(AtomicU64::new(0)),
             shutdown: Arc::new(AtomicBool::new(false)),
             in_dialog: Rc::new(Cell::new(false)),
+            #[cfg(feature = "debug-server")]
+            debug: debug_server::Bridge::new(debug_port),
         }
     }
 
@@ -301,6 +369,24 @@ impl MainWindow {
             });
         }
 
+        // デバッグ制御サーバからの要求を UI スレッドで捌く（feature 有効時のみ）。
+        #[cfg(feature = "debug-server")]
+        {
+            let this = self.clone();
+            let wake = unsafe { co::WM::from_raw(debug_server::WM_DEBUG_WAKE) };
+            self.wnd.on().wm(wake, move |_| {
+                this.drain_debug_requests();
+                Ok(0)
+            });
+
+            // 表示確定後に本体を最小化（非アクティブ＝前面を奪わない）。
+            let this = self.clone();
+            self.wnd.on().wm(wm_debug_minimize(), move |_| {
+                this.wnd.hwnd().ShowWindow(co::SW::SHOWMINNOACTIVE);
+                Ok(0)
+            });
+        }
+
         // アクティブ化のたびにフォーカスをキーシンクへ集約する。
         let this = self.clone();
         self.wnd.on().wm(co::WM::ACTIVATE, move |_| {
@@ -321,9 +407,15 @@ impl MainWindow {
         let this = self.clone();
         self.wnd.on().wm_create(move |_| {
             this.wnd.hwnd().SetMenu(&this.menu_bar)?;
+            // デバッグ制御サーバ起動時は本体を最小化で立ち上げ、作業の邪魔をしない。
+            #[cfg(feature = "debug-server")]
+            let debug_minimized = this.debug.port.is_some();
+            #[cfg(not(feature = "debug-server"))]
+            let debug_minimized = false;
             if let Some(ws) = &this.initial_window {
                 let applied = window_state::apply(&this.wnd.hwnd(), ws);
-                if applied && ws.maximized {
+                // 最小化起動時は最大化復元を抑止する（最小化が打ち消されないように）。
+                if applied && ws.maximized && !debug_minimized {
                     unsafe {
                         let _ = this.wnd.hwnd().PostMessage(w::msg::WndMsg {
                             msg_id: wm_restore_maximize(),
@@ -338,6 +430,20 @@ impl MainWindow {
             this.load_snapshot(&snap)?;
             this.update_title()?;
             this.refresh_tab_bar()?;
+            // hwnd が有効になったここでデバッグ制御サーバを起動する（指定時のみ）。
+            #[cfg(feature = "debug-server")]
+            if let Some(port) = this.debug.port {
+                let hwnd_ptr = this.wnd.hwnd().ptr() as isize;
+                debug_server::start(port, this.debug.queue.clone(), hwnd_ptr);
+                // 表示確定後に最小化（最大化復元と同じく遅延実行・非アクティブで前面を奪わない）。
+                unsafe {
+                    let _ = this.wnd.hwnd().PostMessage(w::msg::WndMsg {
+                        msg_id: wm_debug_minimize(),
+                        wparam: 0,
+                        lparam: 0,
+                    });
+                }
+            }
             Ok(0)
         });
 
@@ -1204,6 +1310,128 @@ impl MainWindow {
         std::fs::write(&tmp, &bytes)?;
         std::fs::rename(&tmp, &path)?;
         Ok(path)
+    }
+
+    /// デバッグ制御サーバの要求キューを UI スレッドで処理する（feature 有効時のみ）。
+    #[cfg(feature = "debug-server")]
+    fn drain_debug_requests(&self) {
+        loop {
+            let item = self.debug.queue.lock().unwrap().pop_front();
+            let Some((req, tx)) = item else { break };
+            let resp = match req {
+                debug_server::Request::State { pointer } => {
+                    let v = self.debug_state_value();
+                    match v.pointer(&pointer) {
+                        Some(sub) => debug_server::Response::Json(sub.to_string()),
+                        None => debug_server::Response::NotFound,
+                    }
+                }
+            };
+            let _ = tx.send(resp);
+        }
+    }
+
+    /// 現在の UI 状態を JSON 値で組む（画面構成要素ほぼ全部・サブツリーは呼び側が JSON Pointer で抽出）。
+    #[cfg(feature = "debug-server")]
+    fn debug_state_value(&self) -> serde_json::Value {
+        use serde_json::json;
+        let active_view = match self.active_view.get() {
+            ActiveView::None => "none",
+            ActiveView::Text => "text",
+            ActiveView::Media => "media",
+        };
+        let media = if matches!(self.active_view.get(), ActiveView::Media) {
+            let (index, total) = self.media.nav_position();
+            json!({ "index": index, "total": total, "title": self.media.title() })
+        } else {
+            serde_json::Value::Null
+        };
+        let tabs: Vec<serde_json::Value> = self
+            .tabs
+            .borrow()
+            .iter()
+            .map(|t| {
+                json!({ "left": t.left_path, "right": t.right_path, "active_right": t.active_right })
+            })
+            .collect();
+        let log_lines: Vec<serde_json::Value> = self
+            .log
+            .tail(50)
+            .into_iter()
+            .map(|(level, text)| json!({ "level": level, "text": text }))
+            .collect();
+        json!({
+            "window": {
+                "title": self.wnd.hwnd().GetWindowText().unwrap_or_default(),
+                "maximized": self.maximized.get(),
+                "split_ratio": self.split_ratio.get(),
+            },
+            "active_pane": if self.active_right.get() { "right" } else { "left" },
+            "active_view": active_view,
+            "panes": {
+                "left": self.debug_pane_json(true),
+                "right": self.debug_pane_json(false),
+            },
+            "modal": serde_json::Value::Null,
+            "media": media,
+            "tab_bar": { "active": self.active.get(), "labels": self.tab_bar.labels() },
+            "tabs": { "active": self.active.get(), "count": tabs.len(), "items": tabs },
+            "log": { "lines": log_lines },
+        })
+    }
+
+    /// 片側ペインの状態を JSON 値で組む（表示対象 items・カーソル・マーク・属性・ソート等）。
+    #[cfg(feature = "debug-server")]
+    fn debug_pane_json(&self, is_left: bool) -> serde_json::Value {
+        use serde_json::json;
+        let (location, is_archive) = {
+            let pane = self.pane(is_left).borrow();
+            (pane.loc_display(), pane.is_archive())
+        };
+        let view = self.view(is_left);
+        let page_rows = view.page_rows();
+        let st = view.state();
+        let s = st.borrow();
+        let (sel_count, sel_size) = s.selected_count_size();
+        let visible_end = (s.scroll_top + page_rows).min(s.items.len());
+        let items: Vec<serde_json::Value> = s
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, it)| debug_item_json(it, i == s.cursor))
+            .collect();
+        let columns: Vec<serde_json::Value> = s
+            .columns
+            .iter()
+            .map(|c| {
+                json!({
+                    "kind": format!("{:?}", c.kind),
+                    "text": c.text,
+                    "width": c.width,
+                    "align": format!("{:?}", c.align),
+                })
+            })
+            .collect();
+        let mask = self.mask(is_left).borrow().clone();
+        json!({
+            "location": location,
+            "is_archive": is_archive,
+            "path_bar": self.bar(is_left).text(),
+            "status_bar": {
+                "left": self.status(is_left).left_text(),
+                "right": self.status(is_left).right_text(),
+            },
+            "cursor": s.cursor,
+            "scroll_top": s.scroll_top,
+            "page_rows": page_rows,
+            "visible": [s.scroll_top, visible_end],
+            "mask": mask,
+            "sort": { "type": format!("{:?}", s.sort_type), "reverse": s.sort_reverse },
+            "selected_count": sel_count,
+            "selected_size": sel_size,
+            "columns": columns,
+            "items": items,
+        })
     }
 
     fn mask(&self, is_left: bool) -> &Rc<RefCell<Option<String>>> {

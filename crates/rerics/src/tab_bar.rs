@@ -62,6 +62,12 @@ impl TabBar {
         self.wnd.hwnd()
     }
 
+    /// 現在のタブラベル一覧（デバッグ制御サーバの状態取得用）。
+    #[cfg(feature = "debug-server")]
+    pub fn labels(&self) -> Vec<String> {
+        self.inner.labels.borrow().clone()
+    }
+
     /// タブのラベルとアクティブ index を更新する。
     pub fn set_tabs(&self, labels: Vec<String>, active: usize) {
         *self.inner.labels.borrow_mut() = labels;

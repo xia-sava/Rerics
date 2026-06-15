@@ -58,6 +58,18 @@ impl StatusBarView {
         self.wnd.hwnd()
     }
 
+    /// 左右の表示文字列（デバッグ制御サーバの状態取得用）。
+    #[cfg(feature = "debug-server")]
+    pub fn left_text(&self) -> String {
+        self.inner.left.borrow().clone()
+    }
+
+    /// 右側の表示文字列（デバッグ制御サーバの状態取得用）。
+    #[cfg(feature = "debug-server")]
+    pub fn right_text(&self) -> String {
+        self.inner.right.borrow().clone()
+    }
+
     /// 左側（選択情報）の文字列を設定して再描画する。
     pub fn set_left(&self, text: &str) {
         if *self.inner.left.borrow() != text {

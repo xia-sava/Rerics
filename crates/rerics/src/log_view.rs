@@ -64,6 +64,25 @@ impl LogView {
         self.wnd.hwnd()
     }
 
+    /// 末尾 `n` 行を `(レベル, 本文)` で返す（デバッグ制御サーバの状態取得用）。
+    #[cfg(feature = "debug-server")]
+    pub fn tail(&self, n: usize) -> Vec<(String, String)> {
+        let s = self.inner.state.borrow();
+        let start = s.lines.len().saturating_sub(n);
+        s.lines[start..]
+            .iter()
+            .map(|l| {
+                let level = match l.level {
+                    LogLevel::Normal => "normal",
+                    LogLevel::Info => "info",
+                    LogLevel::Warning => "warning",
+                    LogLevel::Error => "error",
+                };
+                (level.to_owned(), l.text.clone())
+            })
+            .collect()
+    }
+
     /// 通常レベルで追記する（操作の逐次ログ。白・非太字）。
     pub fn normal(&self, text: &str) {
         self.push(LogLevel::Normal, text);

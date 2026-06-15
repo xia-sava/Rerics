@@ -3,8 +3,14 @@ name = "rerics"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# 開発専用のローカル制御サーバ（既定 off・リリースには載せない）。
+debug-server = ["dep:tiny_http", "dep:serde_json"]
+
 [dependencies]
 rerics-core.workspace = true
 unicode-width = "0.2.2"
 windows = { version = "0.62.2", features = ["Win32_Media_MediaFoundation", "Win32_Foundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_Media_KernelStreaming"] }
 winsafe.workspace = true
+tiny_http = { version = "0.12", optional = true }
+serde_json = { version = "1", optional = true }

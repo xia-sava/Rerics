@@ -143,6 +143,20 @@ impl MediaView {
         self.wnd.hwnd()
     }
 
+    /// 巡回の現在位置と総数（1始まり・空なら 0）。デバッグ制御サーバの状態取得用。
+    #[cfg(feature = "debug-server")]
+    pub fn nav_position(&self) -> (usize, usize) {
+        let total = self.inner.nav_len.get();
+        let index = if total == 0 { 0 } else { self.inner.nav_index.get() + 1 };
+        (index, total)
+    }
+
+    /// 現在表示中メディアのタイトル（ファイル名）。デバッグ制御サーバの状態取得用。
+    #[cfg(feature = "debug-server")]
+    pub fn title(&self) -> String {
+        self.inner.title.borrow().clone()
+    }
+
     pub fn refresh(&self) -> w::AnyResult<()> {
         self.hwnd().InvalidateRect(None, true)?;
         Ok(())
