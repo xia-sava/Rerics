@@ -2065,34 +2065,28 @@ impl MainWindow {
     /// アクティブペインの選択（無ければカーソル）を反対側ペインへコピー/移動する。
     fn copy_or_move(&self, is_left: bool, move_it: bool) -> w::AnyResult<()> {
         let verb = if move_it { "移動" } else { "コピー" };
-        // 書庫→実FS の取り出し（展開コピー）は段階5で対応・書庫への書込みは未対応。
-        if self.pane(is_left).borrow().is_archive() {
-            self.log
-                .warn(&format!("書庫からの{}（取り出し）は未対応です", verb));
-            return Ok(());
+        let src_is_archive = self.pane(is_left).borrow().is_archive();
+        let dst_is_archive = self.pane(!is_left).borrow().is_archive();
+
+        // src が書庫＝取り出し（展開コピー）。移動は元（書庫）を消せないので未対応でスルー。
+        if src_is_archive {
+            if move_it {
+                self.log.warn("書庫からの移動は未対応です");
+                return Ok(());
+            }
+            if dst_is_archive {
+                self.log.warn("書庫から書庫への取り出しは未対応です");
+                return Ok(());
+            }
+            return self.extract_from_archive(is_left);
         }
-        if self.pane(!is_left).borrow().is_archive() {
+        // dst が書庫＝書庫への書込み。圧縮追加は後段（v1 では未対応）。
+        if dst_is_archive {
             self.log.warn(&format!("書庫への{}は未対応です", verb));
             return Ok(());
         }
-        let names: Vec<String> = {
-            let state = self.view(is_left).state();
-            let s = state.borrow();
-            let selected: Vec<String> = s
-                .items
-                .iter()
-                .filter(|it| it.selected && !it.is_parent)
-                .map(|it| it.name.clone())
-                .collect();
-            if selected.is_empty() {
-                match s.items.get(s.cursor) {
-                    Some(it) if !it.is_parent => vec![it.name.clone()],
-                    _ => Vec::new(),
-                }
-            } else {
-                selected
-            }
-        };
+
+        let names = self.selected_or_cursor_names(is_left);
         if names.is_empty() {
             self.log.error(&messages::not_selected_error());
             return Ok(());
@@ -2100,6 +2094,101 @@ impl MainWindow {
         let src_dir = self.pane(is_left).borrow().path().to_path_buf();
         let dst_dir = self.pane(!is_left).borrow().path().to_path_buf();
         self.start_copy(src_dir, dst_dir, names, move_it)
+    }
+
+    /// 選択中（無ければカーソル位置）の項目名を集める。`..` は除外する。
+    fn selected_or_cursor_names(&self, is_left: bool) -> Vec<String> {
+        let state = self.view(is_left).state();
+        let s = state.borrow();
+        let selected: Vec<String> = s
+            .items
+            .iter()
+            .filter(|it| it.selected && !it.is_parent)
+            .map(|it| it.name.clone())
+            .collect();
+        if selected.is_empty() {
+            match s.items.get(s.cursor) {
+                Some(it) if !it.is_parent => vec![it.name.clone()],
+                _ => Vec::new(),
+            }
+        } else {
+            selected
+        }
+    }
+
+    /// 書庫内の選択項目を反対側ペイン（実FS）へ取り出す（展開コピー）。
+    fn extract_from_archive(&self, is_left: bool) -> w::AnyResult<()> {
+        let names = self.selected_or_cursor_names(is_left);
+        if names.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        let (archive, inner) = {
+            let p = self.pane(is_left).borrow();
+            match p.loc() {
+                Location::Archive { archive, inner } => (archive.clone(), inner.clone()),
+                _ => return Ok(()),
+            }
+        };
+        let dst_dir = match self.pane(!is_left).borrow().as_real_path() {
+            Some(p) => p.to_path_buf(),
+            None => {
+                self.log.warn("取り出し先が実フォルダではありません");
+                return Ok(());
+            }
+        };
+        self.start_extract(archive, inner, names, dst_dir)
+    }
+
+    /// 書庫からの取り出しをワーカースレッドで起動する。ワーカ内で書庫を開いて
+    /// `run_extract` を回し、完了で dst ペインを再読込させる。
+    fn start_extract(
+        &self,
+        archive: PathBuf,
+        inner: String,
+        names: Vec<String>,
+        dst_dir: PathBuf,
+    ) -> w::AnyResult<()> {
+        let control = Arc::new(TaskControl::new());
+        let host = ChannelHost::new(
+            self.task_tx.clone(),
+            self.shutdown.clone(),
+            control.clone(),
+            self.progress_seq.clone(),
+        );
+        let id = self.next_id();
+        let desc = format!("{} -> {}", short_desc(&names), dst_dir.display());
+        self.register_task(id, "取り出し", desc, control)?;
+        let dst_done = dst_dir.clone();
+        std::thread::spawn(move || {
+            match rerics_core::open_archive(&archive) {
+                Ok(backend) => match backend.list() {
+                    Ok(entries) => {
+                        rerics_core::run_extract(&host, backend.as_ref(), &entries, &inner, &names, &dst_dir);
+                    }
+                    Err(e) => {
+                        let _ = host.tx.send(WorkerEvent::Log {
+                            level: LogLevel::Error,
+                            text: format!("書庫の読取に失敗しました: {}", e),
+                        });
+                    }
+                },
+                Err(e) => {
+                    let _ = host.tx.send(WorkerEvent::Log {
+                        level: LogLevel::Error,
+                        text: format!("書庫を開けません: {}", e),
+                    });
+                }
+            }
+            // src は書庫（実パス無し＝空）として渡す。dst（実FS）が再読込される。
+            let _ = host.tx.send(WorkerEvent::Done {
+                id,
+                kind: OpKind::Copy,
+                src_dir: PathBuf::new(),
+                dst_dir: dst_done,
+            });
+        });
+        Ok(())
     }
 
     /// コピー/移動をワーカースレッドで起動する。完了は `wm_timer` 経由で取り込む。
