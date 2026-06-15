@@ -32,10 +32,17 @@ const MAX_SCALE: f64 = 32.0;
 /// アニメ/動画の再生用タイマ ID。
 const MEDIA_TIMER_ID: usize = 0x6D31;
 
+/// 巡回 index から表示すべき実パスを解決する。実FS はパスを直に返し、書庫内エントリは
+/// ここで遅延展開（既展開なら再利用）する。`None` は「読み込めない」（展開失敗等）を表す。
+/// これにより `MediaView` 自身は書庫を一切知らずに前後送りできる。
+pub type NavResolver = Rc<dyn Fn(usize) -> Option<PathBuf>>;
+
 struct Inner {
-    /// 巡回対象（同ディレクトリの閲覧可能ファイル）と現在位置。
-    nav_files: RefCell<Vec<PathBuf>>,
+    /// 巡回件数と現在位置（実パスは `resolver` が index から解決する）。
+    nav_len: Cell<usize>,
     nav_index: Cell<usize>,
+    /// 現在 index の実パスを解決する（書庫内は遅延展開）。
+    resolver: RefCell<Option<NavResolver>>,
     title: RefCell<String>,
     /// 画像が無いとき（未対応・読込失敗・動画）に中央へ出す文言。
     message: RefCell<Option<String>>,
@@ -99,8 +106,9 @@ impl MediaView {
             },
         );
         let inner = Rc::new(Inner {
-            nav_files: RefCell::new(Vec::new()),
+            nav_len: Cell::new(0),
             nav_index: Cell::new(0),
+            resolver: RefCell::new(None),
             title: RefCell::new(String::new()),
             message: RefCell::new(None),
             source: RefCell::new(None),
@@ -140,17 +148,26 @@ impl MediaView {
         Ok(())
     }
 
-    /// 巡回ファイル群と表示位置を設定して読み込む。
+    /// 実FS のパス列をそのまま巡回対象にして開く（実FS 用の簡易版）。
     pub fn open(&self, files: Vec<PathBuf>, index: usize) {
         let n = files.len();
-        *self.inner.nav_files.borrow_mut() = files;
-        self.inner.nav_index.set(if n == 0 { 0 } else { index.min(n - 1) });
+        let files = Rc::new(files);
+        let resolver: NavResolver = Rc::new(move |i| files.get(i).cloned());
+        self.open_nav(n, index, resolver);
+    }
+
+    /// 巡回件数・初期位置・index→実パス解決器を与えて開く。書庫内メディアの遅延展開は
+    /// `resolver` が担い、`MediaView` は解決済み実パスの読込/表示だけを受け持つ。
+    pub fn open_nav(&self, len: usize, index: usize, resolver: NavResolver) {
+        self.inner.nav_len.set(len);
+        self.inner.nav_index.set(if len == 0 { 0 } else { index.min(len - 1) });
+        *self.inner.resolver.borrow_mut() = Some(resolver);
         self.load_current();
     }
 
-    /// 前後のファイルへ移動する（巡回）。
+    /// 前後のファイルへ移動する（巡回）。書庫内は移動先のその1枚だけを resolver が展開する。
     pub fn navigate(&self, delta: isize) -> w::AnyResult<()> {
-        let n = self.inner.nav_files.borrow().len();
+        let n = self.inner.nav_len.get();
         if n == 0 {
             return Ok(());
         }
@@ -162,14 +179,24 @@ impl MediaView {
     }
 
     fn load_current(&self) {
-        let path = {
-            let files = self.inner.nav_files.borrow();
-            match files.get(self.inner.nav_index.get()) {
-                Some(p) => p.clone(),
-                None => return,
-            }
+        let idx = self.inner.nav_index.get();
+        let resolved = {
+            let r = self.inner.resolver.borrow();
+            r.as_ref().and_then(|f| f(idx))
         };
-        self.load_path(&path);
+        match resolved {
+            Some(path) => self.load_path(&path),
+            None => {
+                // 解決できない（書庫内エントリの展開失敗等）＝表示状態を畳んで文言表示。
+                let _ = self.hwnd().KillTimer(MEDIA_TIMER_ID);
+                *self.inner.source.borrow_mut() = None;
+                self.inner.animated.set(false);
+                self.inner.playing.set(false);
+                *self.inner.title.borrow_mut() = String::new();
+                self.set_message("このメディアを開けません");
+                let _ = self.refresh();
+            }
+        }
     }
 
     fn load_path(&self, path: &Path) {
@@ -644,7 +671,7 @@ impl MediaView {
 
     fn status_text(&self) -> String {
         let title = self.inner.title.borrow();
-        let total = self.inner.nav_files.borrow().len();
+        let total = self.inner.nav_len.get();
         let idx = self.inner.nav_index.get() + 1;
         let pos = if total > 1 { format!("    [{}/{}]", idx, total) } else { String::new() };
         if !self.has_image() {

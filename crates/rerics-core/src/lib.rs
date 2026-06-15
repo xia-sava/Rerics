@@ -2,6 +2,7 @@
 //!
 //! 仮想FS・FileItem・設定・キーバインド・コマンド等を実装フェーズごとに足していく。
 
+mod archive;
 mod config;
 mod file_list;
 mod input;
@@ -10,8 +11,10 @@ mod media;
 pub mod messages;
 mod operation;
 mod status;
+mod vfs;
 mod viewer;
 
+pub use archive::{ArchiveBackend, ArchiveEntry, ArchiveWriter, Caps, open_archive};
 pub use config::{
     Config, DEFAULT_CONFIG_TOML, FontSpec, Layout, ResolvedTheme, State, TabState, Theme,
     ThemeColors, WindowState, clamp_to_work, config_path, data_dir, load_toml, save_toml,
@@ -33,57 +36,92 @@ pub use operation::{
     run_delete,
 };
 pub use status::{format_drive, format_selected, format_size};
+pub use vfs::{Location, is_archive_path};
 pub use viewer::{DisplayLine, Encoding, ViewMode, ViewerModel};
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// 1ペイン（片側ウィンドウ）の現在パス管理。
+/// 1ペイン（片側ウィンドウ）の現在地管理。
 ///
-/// 一覧の所有・ソート・カーソルは `FileListState` 側の責務とし、Pane はパス管理と
-/// その直下エントリの読み出し（`read`）に徹する。ナビゲーションは「移動できたか」を
-/// 返し、失敗時は「移動しない」で吸収する。
+/// 一覧の所有・ソート・カーソルは `FileListState` 側の責務とし、Pane は現在地
+/// （実FS or 書庫内＝`Location`）の管理と直下エントリの読み出し（`read`）に徹する。
+/// ナビゲーションは「移動できたか」を返し、失敗時は「移動しない」で吸収する。
 pub struct Pane {
-    path: PathBuf,
+    loc: Location,
 }
 
 impl Pane {
-    /// 指定パスを絶対パス化して開く。
+    /// 指定パス（実FS）を絶対パス化して開く。
     pub fn open(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref();
         let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-        Self { path: abs }
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// 現在パス直下の `FileItem` 一覧を読み出す（読めなければ空）。
-    pub fn read(&self) -> Vec<FileItem> {
-        read_items(&self.path).unwrap_or_default()
-    }
-
-    /// `name` のディレクトリへ侵入する。移動できたら `true`。
-    pub fn enter(&mut self, name: &str) -> bool {
-        let target = self.path.join(name);
-        if read_items(&target).is_ok() && target.is_dir() {
-            self.path = target;
-            true
-        } else {
-            false
+        Self {
+            loc: Location::Real(abs),
         }
     }
 
-    /// 親ディレクトリへ移動する。移動できたら、元いたディレクトリ名を返す。
+    /// 表示文字列（実FS or "C:\foo.zip\inner"）から書庫境界を検出して復元する。
+    /// セッション復元（state.toml）に使う。書庫が消えていれば実FS パスとして開く。
+    pub fn restore(display: &str) -> Self {
+        Self {
+            loc: Location::parse(display),
+        }
+    }
+
+    /// 現在地（実FS or 書庫内）。
+    pub fn loc(&self) -> &Location {
+        &self.loc
+    }
+
+    /// 現在地をそのまま差し替える（セッション復元などで使う）。
+    pub fn set_loc(&mut self, loc: Location) {
+        self.loc = loc;
+    }
+
+    /// パスバー/タブ用の表示文字列。
+    pub fn loc_display(&self) -> String {
+        self.loc.loc_display()
+    }
+
+    /// 実FS のときのみ実パスを返す（書庫内は None）。
+    pub fn as_real_path(&self) -> Option<&Path> {
+        self.loc.as_real_path()
+    }
+
+    /// 書庫内かどうか。
+    pub fn is_archive(&self) -> bool {
+        self.loc.is_archive()
+    }
+
+    /// 後方互換: 実FS の実パスを返す（書庫内は空パス）。呼び出し側は順次
+    /// `loc()`/`loc_display()`/`as_real_path()` へ移行する想定の橋渡し。
+    pub fn path(&self) -> &Path {
+        self.loc.as_real_path().unwrap_or_else(|| Path::new(""))
+    }
+
+    /// 現在地直下の `FileItem` 一覧を読み出す（読めなければ空）。
+    pub fn read(&self) -> Vec<FileItem> {
+        self.loc.read().unwrap_or_default()
+    }
+
+    /// `name` へ侵入する（dir なら降りる・書庫ファイルなら潜る）。移動できたら `true`。
+    /// 侵入先が読めることを確認してから確定する（壊れた書庫/権限不足で弾く）。
+    pub fn enter(&mut self, name: &str, is_dir: bool) -> bool {
+        match self.loc.enter(name, is_dir) {
+            Some(next) if next.read().is_ok() => {
+                self.loc = next;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// 親へ移動する。移動できたら、元いた場所の名前（書庫ルートからは書庫ファイル名）を返す。
     pub fn to_parent(&mut self) -> Option<String> {
-        let parent = self.path.parent().map(Path::to_path_buf)?;
-        let prev = self
-            .path
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned());
-        if read_items(&parent).is_ok() {
-            self.path = parent;
-            prev
+        let (parent, prev) = self.loc.to_parent()?;
+        if parent.read().is_ok() {
+            self.loc = parent;
+            Some(prev)
         } else {
             None
         }
@@ -114,7 +152,7 @@ mod tests {
         let prev = p.to_parent().unwrap();
         assert_eq!(prev, "rerics-core");
         assert_eq!(p.path(), start.parent().unwrap());
-        assert!(p.enter("rerics-core"));
+        assert!(p.enter("rerics-core", true));
         assert_eq!(p.path(), start.as_path());
     }
 }

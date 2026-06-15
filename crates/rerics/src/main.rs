@@ -26,7 +26,7 @@ use std::time::Instant;
 
 use file_list::FileListView;
 use log_view::LogView;
-use media_view::MediaView;
+use media_view::{MediaView, NavResolver};
 use pane_view::PaneView;
 use path_bar::PathBarView;
 use status_bar::StatusBarView;
@@ -34,8 +34,8 @@ use tab_bar::TabBar;
 use task::{ChannelHost, OpKind, TaskControl, TaskEntry, WorkerEvent};
 use viewer::ViewerView;
 use rerics_core::{
-    Column, Command, Config, FileListState, KeyChord, KeyMap, LogLevel, MediaKind, Pane, SortType,
-    WindowState, messages,
+    Column, Command, Config, FileListState, KeyChord, KeyMap, Location, LogLevel, MediaKind, Pane,
+    SortType, WindowState, data_dir, messages, open_archive,
 };
 use winsafe::{self as w, co, gui, prelude::*};
 
@@ -197,6 +197,9 @@ impl MainWindow {
 
         let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "..".to_owned());
 
+        // 前回の異常終了で残った一時展開を起動時に掃除する。
+        Self::clear_archive_temp();
+
         let state = rerics_core::State::load();
         let initial_window = state.window.clone();
         let initial_split = state.split_ratio.clamp(0.05, 0.95);
@@ -231,8 +234,8 @@ impl MainWindow {
         let active = state.active_tab.min(tabs.len() - 1);
 
         let cur = &tabs[active];
-        let left_pane = Rc::new(RefCell::new(Pane::open(&cur.left_path)));
-        let right_pane = Rc::new(RefCell::new(Pane::open(&cur.right_path)));
+        let left_pane = Rc::new(RefCell::new(Pane::restore(&cur.left_path)));
+        let right_pane = Rc::new(RefCell::new(Pane::restore(&cur.right_path)));
         let active_right = cur.active_right;
 
         let keymap = config.keymap();
@@ -360,6 +363,7 @@ impl MainWindow {
         let this = self.clone();
         self.wnd.on().wm_destroy(move || {
             this.shutdown.store(true, Ordering::Relaxed);
+            Self::clear_archive_temp();
             this.save_active();
             let window = window_state::capture(&this.wnd.hwnd());
             let tabs: Vec<rerics_core::TabState> = this
@@ -562,14 +566,14 @@ impl MainWindow {
                 return Ok(());
             }
             Command::OppositeToCurrent => {
-                let p = self.pane(is_left).borrow().path().to_path_buf();
-                *self.pane(!is_left).borrow_mut() = Pane::open(&p);
+                let loc = self.pane(is_left).borrow().loc().clone();
+                self.pane(!is_left).borrow_mut().set_loc(loc);
                 self.reload_side(!is_left)?;
                 return Ok(());
             }
             Command::CurrentToOpposite => {
-                let p = self.pane(!is_left).borrow().path().to_path_buf();
-                *self.pane(is_left).borrow_mut() = Pane::open(&p);
+                let loc = self.pane(!is_left).borrow().loc().clone();
+                self.pane(is_left).borrow_mut().set_loc(loc);
                 self.reload_side(is_left)?;
                 return Ok(());
             }
@@ -661,12 +665,12 @@ impl MainWindow {
         Ok(())
     }
 
-    /// 左右ペインのパスを入れ替える。
+    /// 左右ペインの現在地を入れ替える（書庫内同士でも成立する）。
     fn swap_paths(&self) -> w::AnyResult<()> {
-        let lp = self.left_pane.borrow().path().to_path_buf();
-        let rp = self.right_pane.borrow().path().to_path_buf();
-        *self.left_pane.borrow_mut() = Pane::open(&rp);
-        *self.right_pane.borrow_mut() = Pane::open(&lp);
+        let l = self.left_pane.borrow().loc().clone();
+        let r = self.right_pane.borrow().loc().clone();
+        self.left_pane.borrow_mut().set_loc(r);
+        self.right_pane.borrow_mut().set_loc(l);
         self.reload_side(true)?;
         self.reload_side(false)?;
         Ok(())
@@ -689,7 +693,7 @@ impl MainWindow {
 
     /// 指定パスの一覧を読み、既定ソートでカーソル先頭の `FileListState` を組む。
     fn build_state_for(path: &str, columns: &[Column]) -> FileListState {
-        let items = Pane::open(path).read();
+        let items = Pane::restore(path).read();
         let mut s = FileListState::new();
         s.columns = columns.to_vec();
         let sort = s.sort_type;
@@ -704,8 +708,8 @@ impl MainWindow {
     /// 現在のライブ状態を退避用スナップショットに固める。
     fn snapshot_live(&self) -> TabSnapshot {
         TabSnapshot {
-            left_path: self.left_pane.borrow().path().display().to_string(),
-            right_path: self.right_pane.borrow().path().display().to_string(),
+            left_path: self.left_pane.borrow().loc_display(),
+            right_path: self.right_pane.borrow().loc_display(),
             left_state: self.view(true).state().borrow().clone(),
             right_state: self.view(false).state().borrow().clone(),
             active_right: self.active_right.get(),
@@ -714,8 +718,8 @@ impl MainWindow {
 
     /// スナップショットをライブ側へ反映し、再描画とフォーカス設定を行う。
     fn load_snapshot(&self, snap: &TabSnapshot) -> w::AnyResult<()> {
-        *self.left_pane.borrow_mut() = Pane::open(&snap.left_path);
-        *self.right_pane.borrow_mut() = Pane::open(&snap.right_path);
+        *self.left_pane.borrow_mut() = Pane::restore(&snap.left_path);
+        *self.right_pane.borrow_mut() = Pane::restore(&snap.right_path);
         *self.view(true).state().borrow_mut() = snap.left_state.clone();
         *self.view(false).state().borrow_mut() = snap.right_state.clone();
         self.active_right.set(snap.active_right);
@@ -757,7 +761,7 @@ impl MainWindow {
         // ため、同一タブ内で移動するとラベルが古くなる）。非アクティブタブはスナップショット。
         let live = {
             let p = self.pane(!self.active_right.get()).borrow();
-            p.path().to_path_buf()
+            p.loc_display()
         };
         let labels: Vec<String> = self
             .tabs
@@ -766,7 +770,7 @@ impl MainWindow {
             .enumerate()
             .map(|(i, t)| {
                 if i == active {
-                    live.display().to_string()
+                    live.clone()
                 } else if t.active_right {
                     t.right_path.clone()
                 } else {
@@ -816,8 +820,8 @@ impl MainWindow {
     /// 現在のパスを複製した新タブをアクティブ直後に挿入して切替える。
     fn new_tab(&self) -> w::AnyResult<()> {
         self.save_active();
-        let left_path = self.left_pane.borrow().path().display().to_string();
-        let right_path = self.right_pane.borrow().path().display().to_string();
+        let left_path = self.left_pane.borrow().loc_display();
+        let right_path = self.right_pane.borrow().loc_display();
         let columns = self.config.borrow().columns.clone();
         let snap = TabSnapshot {
             left_state: Self::build_state_for(&left_path, &columns),
@@ -945,17 +949,15 @@ impl MainWindow {
                 _ => return Ok(()),
             }
         };
-        let dir = self.pane(is_left).borrow().path().to_path_buf();
-        let path = dir.join(&name);
         match MediaKind::from_extension(&ext) {
-            Some(kind) => self.view_media(is_left, kind, &dir, &path),
-            None => self.view_text(&name, &path),
+            Some(kind) => self.view_media(is_left, kind, &name),
+            None => self.view_text(is_left, &name),
         }
     }
 
-    /// テキスト/バイナリビューアで開く。
-    fn view_text(&self, name: &str, path: &Path) -> w::AnyResult<()> {
-        let (bytes, truncated) = match read_capped(path, viewer::MAX_VIEW_BYTES) {
+    /// テキスト/バイナリビューアで開く（実FS/書庫内とも bytes 直送）。
+    fn view_text(&self, is_left: bool, name: &str) -> w::AnyResult<()> {
+        let (bytes, truncated) = match self.read_pane_file(is_left, name, viewer::MAX_VIEW_BYTES) {
             Ok(v) => v,
             Err(e) => {
                 self.log.error(&format!("ビューアで開けません: {}: {}", name, e));
@@ -966,30 +968,76 @@ impl MainWindow {
         self.show_viewer(ActiveView::Text)
     }
 
-    /// 画像/動画ビューアで開く。同ディレクトリの閲覧可能なメディアを前後送りの対象にする。
-    fn view_media(&self, is_left: bool, _kind: MediaKind, dir: &Path, path: &Path) -> w::AnyResult<()> {
-        let mut files: Vec<PathBuf> = Vec::new();
-        let mut index = 0;
-        {
-            let state = self.view(is_left).state();
-            let s = state.borrow();
-            for it in &s.items {
-                if it.is_dir || it.is_parent {
-                    continue;
-                }
-                if MediaKind::from_extension(&it.extension).is_some() {
-                    let p = dir.join(&it.name);
-                    if p == path {
-                        index = files.len();
+    /// 画像/動画ビューアで開く。実FS は同ディレクトリの閲覧可能メディアを前後送りに、
+    /// 書庫内はカーソル下の1ファイルを一時展開して開く（書庫内の前後送りは後段で対応）。
+    fn view_media(&self, is_left: bool, _kind: MediaKind, name: &str) -> w::AnyResult<()> {
+        let loc = self.pane(is_left).borrow().loc().clone();
+        match loc {
+            Location::Real(dir) => {
+                let target = dir.join(name);
+                let mut files: Vec<PathBuf> = Vec::new();
+                let mut index = 0;
+                {
+                    let state = self.view(is_left).state();
+                    let s = state.borrow();
+                    for it in &s.items {
+                        if it.is_dir || it.is_parent {
+                            continue;
+                        }
+                        if MediaKind::from_extension(&it.extension).is_some() {
+                            let p = dir.join(&it.name);
+                            if p == target {
+                                index = files.len();
+                            }
+                            files.push(p);
+                        }
                     }
-                    files.push(p);
                 }
+                if files.is_empty() {
+                    files.push(target);
+                }
+                self.media.open(files, index);
+            }
+            Location::Archive { archive, inner } => {
+                // 同階層の閲覧可能メディアを巡回対象にし（実FS と同じ体験）、表示中の位置を求める。
+                // 実パスへの展開は resolver が移動時に1枚ずつ遅延実行する（一括展開しない）。
+                let mut entries: Vec<(String, String)> = Vec::new();
+                let mut index = 0;
+                {
+                    let state = self.view(is_left).state();
+                    let s = state.borrow();
+                    for it in &s.items {
+                        if it.is_dir || it.is_parent {
+                            continue;
+                        }
+                        if MediaKind::from_extension(&it.extension).is_some() {
+                            if it.name == name {
+                                index = entries.len();
+                            }
+                            entries.push((join_inner_path(&inner, &it.name), it.name.clone()));
+                        }
+                    }
+                }
+                if entries.is_empty() {
+                    entries.push((join_inner_path(&inner, name), name.to_string()));
+                }
+                let n = entries.len();
+                let entries = Rc::new(entries);
+                let archive = archive.clone();
+                let log = self.log.clone();
+                let resolver: NavResolver = Rc::new(move |i: usize| {
+                    let (inner_file, nm) = entries.get(i)?;
+                    match Self::extract_entry_to_temp(&archive, inner_file, nm) {
+                        Ok(p) => Some(p),
+                        Err(e) => {
+                            log.error(&format!("書庫内メディアを展開できません: {}: {}", nm, e));
+                            None
+                        }
+                    }
+                });
+                self.media.open_nav(n, index, resolver);
             }
         }
-        if files.is_empty() {
-            files.push(path.to_path_buf());
-        }
-        self.media.open(files, index);
         self.show_viewer(ActiveView::Media)
     }
 
@@ -1072,12 +1120,90 @@ impl MainWindow {
 
     /// ペインのドライブ容量をステータスバー右へ反映する。
     fn update_drive_info(&self, is_left: bool) {
-        let path = self.pane(is_left).borrow().path().to_path_buf();
-        self.status(is_left).set_right(&drive_info_text(&path));
+        // 書庫内はドライブ容量の対象外（実パスが無い）＝空表示にする。
+        let real = self.pane(is_left).borrow().as_real_path().map(Path::to_path_buf);
+        match real {
+            Some(path) => self.status(is_left).set_right(&drive_info_text(&path)),
+            None => self.status(is_left).set_right(""),
+        }
     }
 
     fn pane(&self, is_left: bool) -> &Rc<RefCell<Pane>> {
         if is_left { &self.left_pane } else { &self.right_pane }
+    }
+
+    /// 書庫内では未対応の書込み操作をガードする。対象ペインが書庫内なら警告ログを
+    /// 出して `true` を返す（呼び側は早期 return する）。展開コピー等は後段で対応。
+    fn block_if_archive(&self, is_left: bool, op: &str) -> bool {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn(&format!("書庫内では{}は未対応です", op));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 現在ペインのカーソル下ファイル `name` の bytes を取得する（実FS/書庫内 両対応）。
+    /// `cap` を超える分は切り詰め、超過していたら `truncated=true` を返す。
+    fn read_pane_file(&self, is_left: bool, name: &str, cap: usize) -> std::io::Result<(Vec<u8>, bool)> {
+        let loc = self.pane(is_left).borrow().loc().clone();
+        match loc {
+            Location::Real(dir) => read_capped(&dir.join(name), cap),
+            Location::Archive { archive, inner } => {
+                let backend = open_archive(&archive)?;
+                let mut bytes = backend.read(&join_inner_path(&inner, name))?;
+                let truncated = bytes.len() > cap;
+                bytes.truncate(cap);
+                Ok((bytes, truncated))
+            }
+        }
+    }
+
+    /// 書庫から取り出したファイルの一時展開先。**プロセスごとに分離**して、別インスタンス
+    /// の掃除が稼働中インスタンスの展開物を壊さないようにする（共有 dir を全削除しない）。
+    fn archive_temp_dir() -> PathBuf {
+        data_dir()
+            .join("cache")
+            .join("archive")
+            .join(std::process::id().to_string())
+    }
+
+    /// 自プロセスの一時展開先のみを削除する（起動時の残骸掃除＋終了時の後始末）。
+    /// 他プロセスの dir には触れない。クラッシュで残った他 pid の残骸は手動掃除（cache 配下）。
+    fn clear_archive_temp() {
+        let _ = std::fs::remove_dir_all(Self::archive_temp_dir());
+    }
+
+    /// 書庫内エントリを一時ディレクトリへ展開し実パスを返す。元の名前を保つ。
+    /// キーに**書庫の mtime を含め**、同一キーの temp が既に在れば**再展開せず再利用**する
+    /// （外部から書庫が更新されれば mtime が変わり別 temp に展開＝古い展開物を二度と参照しない）。
+    /// 書込みは「一時名→rename」のアトミック方式で、将来 BG 並行展開を足しても書きかけを
+    /// 読む競合が起きないようにしておく（計画 §7.6）。
+    fn extract_entry_to_temp(archive: &Path, inner_file: &str, name: &str) -> std::io::Result<PathBuf> {
+        // 末尾コンポーネントだけを採り、区切りや ".." での書き出し先逸脱を防ぐ（拡張子は保つ）。
+        let safe = Path::new(name)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("entry");
+        let stamp = std::fs::metadata(archive)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let key = format!("{}\u{0}{}\u{0}{}", archive.display(), stamp, inner_file);
+        let sub = Self::archive_temp_dir().join(format!("{:016x}", hash64(&key)));
+        let path = sub.join(safe);
+        if path.is_file() {
+            return Ok(path);
+        }
+        std::fs::create_dir_all(&sub)?;
+        let backend = open_archive(archive)?;
+        let bytes = backend.read(inner_file)?;
+        let tmp = sub.join(format!("{}.tmp.{}", safe, std::process::id()));
+        std::fs::write(&tmp, &bytes)?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(path)
     }
 
     fn mask(&self, is_left: bool) -> &Rc<RefCell<Option<String>>> {
@@ -1095,7 +1221,7 @@ impl MainWindow {
                 .collect(),
             None => items,
         };
-        let path = self.pane(is_left).borrow().path().display().to_string();
+        let path = self.pane(is_left).borrow().loc_display();
         let pr = view.page_rows();
         {
             let state = view.state();
@@ -1118,6 +1244,9 @@ impl MainWindow {
     /// 入力ダイアログで名前を尋ね、アクティブペインの現在パス直下にディレクトリを作る。
     /// 作成後は一覧を更新し、新ディレクトリへカーソルを移す。
     fn make_directory(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.block_if_archive(is_left, "ディレクトリの作成") {
+            return Ok(());
+        }
         let name = dialog::input_box(
             &self.wnd,
             "ディレクトリの作成",
@@ -1150,6 +1279,9 @@ impl MainWindow {
 
     /// 入力ダイアログで新規の空ファイルを作る。既存ファイルは上書きしない。
     fn create_file(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.block_if_archive(is_left, "ファイルの作成") {
+            return Ok(());
+        }
         let name = dialog::input_box(
             &self.wnd,
             "新規ファイルの作成",
@@ -1188,6 +1320,17 @@ impl MainWindow {
 
     /// アクティブペインの選択（無ければカーソル）を反対側ペインへコピー/移動する。
     fn copy_or_move(&self, is_left: bool, move_it: bool) -> w::AnyResult<()> {
+        let verb = if move_it { "移動" } else { "コピー" };
+        // 書庫→実FS の取り出し（展開コピー）は段階5で対応・書庫への書込みは未対応。
+        if self.pane(is_left).borrow().is_archive() {
+            self.log
+                .warn(&format!("書庫からの{}（取り出し）は未対応です", verb));
+            return Ok(());
+        }
+        if self.pane(!is_left).borrow().is_archive() {
+            self.log.warn(&format!("書庫への{}は未対応です", verb));
+            return Ok(());
+        }
         let names: Vec<String> = {
             let state = self.view(is_left).state();
             let s = state.borrow();
@@ -1426,6 +1569,9 @@ impl MainWindow {
 
     /// カーソル位置の項目を入力ダイアログでリネームする。完了後は新名へカーソルを移す。
     fn rename(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.block_if_archive(is_left, "名前の変更") {
+            return Ok(());
+        }
         let view = self.view(is_left);
         let old = {
             let state = view.state();
@@ -1469,6 +1615,9 @@ impl MainWindow {
 
     /// アクティブペインの選択（無ければカーソル）を確認ダイアログ付きで削除する。
     fn delete(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.block_if_archive(is_left, "削除") {
+            return Ok(());
+        }
         let names: Vec<String> = {
             let state = self.view(is_left).state();
             let s = state.borrow();
@@ -1577,11 +1726,31 @@ impl MainWindow {
             return self.to_parent(is_left);
         }
         if is_dir {
-            if self.pane(is_left).borrow_mut().enter(&name) {
+            if self.pane(is_left).borrow_mut().enter(&name, is_dir) {
                 self.reload_side(is_left)?;
             }
         } else {
-            let path = self.pane(is_left).borrow().path().join(&name);
+            // 書庫ファイルなら潜る（zip 等）。
+            if self.pane(is_left).borrow_mut().enter(&name, is_dir) {
+                self.reload_side(is_left)?;
+                return Ok(());
+            }
+            // 開く対象の実パスを得る（書庫内は一時展開してから関連付け起動）。
+            let loc = self.pane(is_left).borrow().loc().clone();
+            let path = match loc {
+                Location::Real(dir) => dir.join(&name),
+                Location::Archive { archive, inner } => {
+                    let inner_file = join_inner_path(&inner, &name);
+                    match Self::extract_entry_to_temp(&archive, &inner_file, &name) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            self.log
+                                .error(&format!("書庫内ファイルを展開できません: {}: {}", name, e));
+                            return Ok(());
+                        }
+                    }
+                }
+            };
             if let Err(e) =
                 self.wnd
                     .hwnd()
@@ -1774,11 +1943,34 @@ fn read_capped(path: &Path, cap: usize) -> std::io::Result<(Vec<u8>, bool)> {
     Ok((buf, truncated))
 }
 
-/// パスを正規化する。存在しない（ディレクトリでない）場合は `fallback` を返す。
-fn normalize_path(path: &str, fallback: &str) -> String {
-    if !path.is_empty() && std::path::Path::new(path).is_dir() {
-        path.to_owned()
+/// 書庫内 dir パス `inner` と子名 `name` を '/' で連結する（inner 空ならそのまま name）。
+fn join_inner_path(inner: &str, name: &str) -> String {
+    if inner.is_empty() {
+        name.to_string()
     } else {
-        fallback.to_owned()
+        format!("{inner}/{name}")
     }
+}
+
+/// 文字列の 64bit ハッシュ（一時展開のサブディレクトリ名用・1 起動内で一意なら十分）。
+fn hash64(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
+}
+
+/// パスを正規化する。実在ディレクトリ、または途中に実在する書庫ファイルを含む
+/// 書庫内パスならそのまま。どちらでもなければ `fallback` を返す。
+fn normalize_path(path: &str, fallback: &str) -> String {
+    if path.is_empty() {
+        return fallback.to_owned();
+    }
+    if std::path::Path::new(path).is_dir() {
+        return path.to_owned();
+    }
+    if rerics_core::Location::parse(path).is_archive() {
+        return path.to_owned();
+    }
+    fallback.to_owned()
 }
