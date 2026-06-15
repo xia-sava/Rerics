@@ -36,7 +36,7 @@ use pane_view::PaneView;
 use path_bar::PathBarView;
 use status_bar::StatusBarView;
 use tab_bar::TabBar;
-use task::{ChannelHost, OpKind, TaskControl, TaskEntry, WorkerEvent};
+use task::{ArchiveOutcome, ChannelHost, OpKind, TaskControl, TaskEntry, WorkerEvent};
 use viewer::ViewerView;
 use rerics_core::{
     Column, Command, Config, FileListState, KeyChord, KeyMap, Location, LogLevel, MediaKind, Pane,
@@ -197,6 +197,9 @@ struct MainWindow {
     media_prefetch: Rc<RefCell<Option<Arc<AtomicBool>>>>,
     /// 書庫ごとに一度入力したパスワードを保持する（同一書庫の他エントリで再入力させない）。
     archive_passwords: Rc<RefCell<std::collections::HashMap<PathBuf, Vec<u8>>>>,
+    /// 一括展開済みの非ランダムアクセス書庫（ソリッド7z 等）→ 展開先 temp_root。
+    /// ここに在る書庫は一覧/閲覧/取り出しを temp_root 配下の実FSから提供する（§7.4・O(n²)回避）。
+    archive_extracted: Rc<RefCell<std::collections::HashMap<PathBuf, PathBuf>>>,
     #[cfg(feature = "debug-server")]
     debug: debug_server::Bridge,
 }
@@ -348,6 +351,7 @@ impl MainWindow {
             in_dialog: Rc::new(Cell::new(false)),
             media_prefetch: Rc::new(RefCell::new(None)),
             archive_passwords: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            archive_extracted: Rc::new(RefCell::new(std::collections::HashMap::new())),
             #[cfg(feature = "debug-server")]
             debug: debug_server::Bridge::new(debug_port, debug_allow_write, debug_headless),
         }
@@ -546,6 +550,13 @@ impl MainWindow {
 
     fn exec(&self, is_left: bool, cmd: Command) -> w::AnyResult<()> {
         let view = self.view(is_left);
+        // 書庫の読込中はキー入力を抑止し、Esc だけ展開中止に割り当てる。
+        if view.is_loading() {
+            if matches!(cmd, Command::ClearAll) {
+                self.cancel_archive_load();
+            }
+            return Ok(());
+        }
         let state = view.state();
         let pr = view.page_rows();
         match cmd {
@@ -1146,6 +1157,19 @@ impl MainWindow {
                 let n = entries.len();
                 let entries = Rc::new(entries);
 
+                // 一括展開済みの書庫（ソリッド 7z 等）は temp の実FS を指すだけ＝再展開も
+                // プリフェッチも不要。resolver は temp_root 配下の実パスを返す。
+                if let Some(root) = self.archive_extracted.borrow().get(&archive).cloned() {
+                    let entries2 = entries.clone();
+                    let resolver: NavResolver = Rc::new(move |i: usize| {
+                        let (inner_file, _nm) = entries2.get(i)?;
+                        let p = root.join(Self::inner_to_pathbuf(inner_file));
+                        p.is_file().then_some(p)
+                    });
+                    self.media.open_nav(n, index, resolver);
+                    return self.show_viewer(ActiveView::Media);
+                }
+
                 // 暗号化メディアなら開く前にパスワードを確保して resolver で使い回す（平文は None）。
                 let password = self.ensure_media_password(&archive, entries.get(index).map(|(i, _)| i.as_str()));
 
@@ -1367,6 +1391,13 @@ impl MainWindow {
     /// 復号する）。パスワードが合えば書庫単位でキャッシュし、同一書庫の他エントリで再入力
     /// させない。誤入力は数回まで再入力を促す。
     fn read_archive_entry(&self, archive: &Path, inner: &str) -> std::io::Result<Vec<u8>> {
+        // 一括展開済み書庫は temp の実FS から直接読む（再展開しない）。
+        if let Some(root) = self.archive_extracted.borrow().get(archive).cloned() {
+            let p = root.join(Self::inner_to_pathbuf(inner));
+            if p.is_file() {
+                return std::fs::read(&p);
+            }
+        }
         let backend = open_archive(archive)?;
         let encrypted = backend
             .list()
@@ -1468,6 +1499,54 @@ impl MainWindow {
     /// 他プロセスの dir には触れない。クラッシュで残った他 pid の残骸は手動掃除（cache 配下）。
     fn clear_archive_temp() {
         let _ = std::fs::remove_dir_all(Self::archive_temp_dir());
+    }
+
+    /// 非ランダムアクセス書庫（ソリッド 7z 等）の一括展開先 temp_root（書庫パス＋mtime キー）。
+    /// 個別展開（`extract_entry_to_temp`）の hash dir と衝突しないよう "all_" を前置する。
+    fn archive_extract_root(archive: &Path) -> PathBuf {
+        let stamp = std::fs::metadata(archive)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let key = format!("{}\u{0}{}", archive.display(), stamp);
+        Self::archive_temp_dir().join(format!("all_{:016x}", hash64(&key)))
+    }
+
+    /// 一括展開の完了マーカ（temp_root の兄弟ファイル `all_<hash>.done`）。中断/クラッシュで
+    /// 残った不完全な temp_root を「完了済み」と誤認しないため、展開成功後にだけ作る。
+    fn archive_extract_marker(root: &Path) -> PathBuf {
+        root.with_extension("done")
+    }
+
+    /// 書庫内パス（'/' 区切り）を実FS の相対パスへ。空セグメントは捨てる。
+    fn inner_to_pathbuf(inner: &str) -> PathBuf {
+        let mut p = PathBuf::new();
+        for seg in inner.split('/') {
+            if !seg.is_empty() {
+                p.push(seg);
+            }
+        }
+        p
+    }
+
+    /// 書庫内ファイルの実パスを得る。一括展開済み書庫なら temp_root 配下の実FS を返し、
+    /// そうでなければ個別に一時展開する（従来経路）。
+    fn resolve_archive_file(
+        &self,
+        archive: &Path,
+        inner_file: &str,
+        name: &str,
+        password: Option<&[u8]>,
+    ) -> std::io::Result<PathBuf> {
+        if let Some(root) = self.archive_extracted.borrow().get(archive).cloned() {
+            let p = root.join(Self::inner_to_pathbuf(inner_file));
+            if p.is_file() {
+                return Ok(p);
+            }
+        }
+        Self::extract_entry_to_temp(archive, inner_file, name, password)
     }
 
     /// 書庫内エントリを一時ディレクトリへ展開し実パスを返す。元の名前を保つ。
@@ -2167,8 +2246,15 @@ impl MainWindow {
     }
 
     /// ペインの現在パスを読み直して State へ反映し、パスバーを更新する。
+    ///
+    /// 対象が「未展開の非ランダムアクセス書庫」なら、ここで一括展開を非同期に開始し
+    /// （スピナー表示）、一覧反映は展開完了イベントに委ねて早期 return する。
     fn reload_side(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.maybe_start_archive_extract(is_left)? {
+            return Ok(());
+        }
         let view = self.view(is_left);
+        view.clear_loading();
         let items = self.pane(is_left).borrow().read();
         let items = match self.mask(is_left).borrow().as_ref() {
             Some(m) => items
@@ -2195,6 +2281,126 @@ impl MainWindow {
         self.update_drive_info(is_left);
         self.refresh_tab_bar()?;
         Ok(())
+    }
+
+    /// 対象ペインが「未展開の非ランダムアクセス書庫」なら一括展開を非同期で開始する。
+    /// 開始したら `true`（呼び側は一覧反映を完了イベントに委ねる）。実FS/RA 書庫/展開済みは
+    /// `false`（呼び側は従来どおり同期 populate する）。`caps` は安価にプローブする。
+    fn maybe_start_archive_extract(&self, is_left: bool) -> w::AnyResult<bool> {
+        let loc = self.pane(is_left).borrow().loc().clone();
+        let Location::Archive { archive, .. } = loc else {
+            return Ok(false);
+        };
+        if self.archive_extracted.borrow().contains_key(&archive) {
+            return Ok(false);
+        }
+        let random_access = match open_archive(&archive) {
+            Ok(be) => be.caps().random_access,
+            Err(_) => return Ok(false),
+        };
+        if random_access {
+            return Ok(false);
+        }
+        let root = Self::archive_extract_root(&archive);
+        if Self::archive_extract_marker(&root).is_file() && root.is_dir() {
+            self.archive_extracted.borrow_mut().insert(archive, root);
+            return Ok(false);
+        }
+        self.start_archive_extract(is_left, archive, root)?;
+        Ok(true)
+    }
+
+    /// 非RA 書庫の一括展開をワーカースレッドで起動する（読込ぐるぐる）。進捗は
+    /// `ArchiveProgress`、完了は `ArchiveDone` で `wm_timer` 経由に取り込む。中断は
+    /// `TaskControl`（Esc／タスクマネージャ）で伝える。
+    fn start_archive_extract(
+        &self,
+        is_left: bool,
+        archive: PathBuf,
+        root: PathBuf,
+    ) -> w::AnyResult<()> {
+        let control = Arc::new(TaskControl::new());
+        let id = self.next_id();
+        let name = archive
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.register_task(id, "展開", format!("{} を展開中", name), control.clone())?;
+        self.view(is_left).set_loading("");
+        let tx = self.task_tx.clone();
+        let shutdown = self.shutdown.clone();
+        let marker = Self::archive_extract_marker(&root);
+        std::thread::spawn(move || {
+            let result: Result<ArchiveOutcome, String> = (|| {
+                let backend = open_archive(&archive).map_err(|e| e.to_string())?;
+                // 前回の中断残骸を捨ててクリーンに展開する。
+                let _ = std::fs::remove_dir_all(&root);
+                std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+                let mut cancelled = false;
+                backend
+                    .extract_all(&root, &mut |_inner, done, total| {
+                        let _ = tx.send(WorkerEvent::ArchiveProgress { is_left, done, total });
+                        if control.is_stopped() || shutdown.load(Ordering::Relaxed) {
+                            cancelled = true;
+                            return false;
+                        }
+                        true
+                    })
+                    .map_err(|e| e.to_string())?;
+                if cancelled {
+                    let _ = std::fs::remove_dir_all(&root);
+                    return Ok(ArchiveOutcome::Cancelled);
+                }
+                let _ = std::fs::write(&marker, b"");
+                Ok(ArchiveOutcome::Ok)
+            })();
+            let outcome = match result {
+                Ok(o) => o,
+                Err(e) => {
+                    let _ = std::fs::remove_dir_all(&root);
+                    ArchiveOutcome::Failed(e)
+                }
+            };
+            let _ = tx.send(WorkerEvent::ArchiveDone {
+                id,
+                is_left,
+                archive,
+                temp_root: root,
+                outcome,
+            });
+        });
+        Ok(())
+    }
+
+    /// 走行中の書庫一括展開を中止要求する（Esc／読込中ペイン）。ワーカは次のコールバックで
+    /// 気付き、`ArchiveDone{Cancelled}` を返す。
+    fn cancel_archive_load(&self) {
+        for t in self.tasks.borrow().iter() {
+            if t.text == "展開" {
+                t.control.stop();
+            }
+        }
+    }
+
+    /// 展開できなかった書庫から実親へ抜ける（中断/失敗時の復帰）。
+    fn exit_archive_to_parent(&self, is_left: bool) -> w::AnyResult<()> {
+        loop {
+            if !self.pane(is_left).borrow().is_archive() {
+                break;
+            }
+            if self.pane(is_left).borrow_mut().to_parent().is_none() {
+                break;
+            }
+        }
+        self.reload_side(is_left)
+    }
+
+    /// タスクが空で、かつどちらのペインも読込中でなければ取り込みタイマを止める。
+    fn maybe_kill_task_timer(&self) {
+        let loading = self.view(true).is_loading() || self.view(false).is_loading();
+        if self.tasks.borrow().is_empty() && !loading {
+            let _ = self.wnd.hwnd().KillTimer(task::TASK_TIMER_ID);
+        }
     }
 
     /// 入力ダイアログで名前を尋ね、アクティブペインの現在パス直下にディレクトリを作る。
@@ -2663,11 +2869,37 @@ impl MainWindow {
                 WorkerEvent::Done { id, kind, src_dir, dst_dir } => {
                     self.on_op_done(kind, &src_dir, &dst_dir)?;
                     self.tasks.borrow_mut().retain(|e| e.id != id);
-                    if self.tasks.borrow().is_empty() {
-                        let _ = self.wnd.hwnd().KillTimer(task::TASK_TIMER_ID);
+                    self.maybe_kill_task_timer();
+                }
+                WorkerEvent::ArchiveProgress { is_left, done, total } => {
+                    self.view(is_left).set_loading_text(&format!("{}/{}", done, total));
+                }
+                WorkerEvent::ArchiveDone { id, is_left, archive, temp_root, outcome } => {
+                    self.tasks.borrow_mut().retain(|e| e.id != id);
+                    self.view(is_left).clear_loading();
+                    match outcome {
+                        ArchiveOutcome::Ok => {
+                            self.archive_extracted
+                                .borrow_mut()
+                                .insert(archive, temp_root);
+                            self.reload_side(is_left)?;
+                        }
+                        ArchiveOutcome::Cancelled => {
+                            self.log.warn("書庫の読込を中止しました");
+                            self.exit_archive_to_parent(is_left)?;
+                        }
+                        ArchiveOutcome::Failed(e) => {
+                            self.log.error(&format!("書庫を展開できません: {}", e));
+                            self.exit_archive_to_parent(is_left)?;
+                        }
                     }
+                    self.maybe_kill_task_timer();
                 }
             }
+        }
+        // 読込中ペインのスピナーを進める（タイマ間隔ごとに1コマ）。
+        for is_left in [true, false] {
+            self.view(is_left).tick_loading();
         }
         Ok(())
     }
@@ -2877,7 +3109,7 @@ impl MainWindow {
                 Location::Archive { archive, inner } => {
                     let inner_file = join_inner_path(&inner, &name);
                     let pw = self.ensure_media_password(&archive, Some(&inner_file));
-                    match Self::extract_entry_to_temp(&archive, &inner_file, &name, pw.as_deref()) {
+                    match self.resolve_archive_file(&archive, &inner_file, &name, pw.as_deref()) {
                         Ok(p) => p,
                         Err(e) => {
                             self.log

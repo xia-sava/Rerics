@@ -51,6 +51,12 @@ struct Inner {
     on_activate: RefCell<Option<ActivateCb>>,
     on_got_focus: RefCell<Option<Box<dyn Fn()>>>,
     on_wheel: RefCell<Option<WheelCb>>,
+    /// 書庫の読込中はスピナーを重ね、一覧の代わりに「読込中」を表示する。
+    loading: Cell<bool>,
+    /// スピナーのコマ番号（タイマで進める）。
+    spin: Cell<u32>,
+    /// スピナーに併記する進捗テキスト（"12/409" 等）。
+    loading_text: RefCell<String>,
 }
 
 /// ファイル一覧コントロール。
@@ -96,6 +102,9 @@ impl FileListView {
             on_activate: RefCell::new(None),
             on_got_focus: RefCell::new(None),
             on_wheel: RefCell::new(None),
+            loading: Cell::new(false),
+            spin: Cell::new(0),
+            loading_text: RefCell::new(String::new()),
         });
         let me = Self { wnd, inner };
         me.setup_events();
@@ -137,6 +146,39 @@ impl FileListView {
     pub fn refresh(&self) -> w::AnyResult<()> {
         self.hwnd().InvalidateRect(None, false)?;
         Ok(())
+    }
+
+    /// 読込中スピナーを表示開始する（書庫の一括展開待ち等）。`text` は併記する進捗。
+    pub fn set_loading(&self, text: &str) {
+        self.inner.loading.set(true);
+        *self.inner.loading_text.borrow_mut() = text.to_owned();
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    /// スピナー併記テキストだけ差し替える（再描画はタイマの `tick_loading` に任せる）。
+    pub fn set_loading_text(&self, text: &str) {
+        *self.inner.loading_text.borrow_mut() = text.to_owned();
+    }
+
+    /// 読込中スピナーを終了する。
+    pub fn clear_loading(&self) {
+        if self.inner.loading.get() {
+            self.inner.loading.set(false);
+            let _ = self.hwnd().InvalidateRect(None, false);
+        }
+    }
+
+    pub fn is_loading(&self) -> bool {
+        self.inner.loading.get()
+    }
+
+    /// スピナーのコマを進めて再描画する（取り込みタイマから毎回呼ぶ）。
+    pub fn tick_loading(&self) {
+        if !self.inner.loading.get() {
+            return;
+        }
+        self.inner.spin.set(self.inner.spin.get().wrapping_add(1));
+        let _ = self.hwnd().InvalidateRect(None, false);
     }
 
     /// 設定の配色・フォント・スクロールバー幅を反映して再描画する。
@@ -675,6 +717,27 @@ impl FileListView {
         Ok(())
     }
 
+    /// 読込中スピナーを中央に描く（一覧の代わり）。回るバー＋進捗テキスト。
+    fn paint_loading(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
+        let colors = self.inner.colors.get();
+        let bg = w::HBRUSH::CreateSolidBrush(rgb(colors.background))?;
+        dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &bg)?;
+        const FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
+        let frame = FRAMES[self.inner.spin.get() as usize % FRAMES.len()];
+        let progress = self.inner.loading_text.borrow();
+        let text = if progress.is_empty() {
+            format!("{}  読込中", frame)
+        } else {
+            format!("{}  読込中  {}", frame, progress)
+        };
+        dc.SetTextColor(rgb(colors.cursor))?;
+        let sz = dc.GetTextExtentPoint32(&text).unwrap_or(w::SIZE { cx: 0, cy: 0 });
+        let x = ((cw - sz.cx) / 2).max(0);
+        let y = ((ch - sz.cy) / 2).max(0);
+        dc.TextOut(x, y, &text)?;
+        Ok(())
+    }
+
     /// ターゲットビットマップ選択済みの任意 DC へ全面描画する（フォント準備＋`paint_to`）。
     /// `on_paint` のダブルバッファと、デバッグ制御サーバの窓非依存スナップショットの両方から呼ぶ。
     pub(crate) fn render_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
@@ -689,6 +752,9 @@ impl FileListView {
     }
 
     fn paint_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
+        if self.inner.loading.get() {
+            return self.paint_loading(dc, cw, ch);
+        }
         let colors = self.inner.colors.get();
         let cursor_visible = self.inner.cursor_visible.get();
         let header_h = self.header_height();
