@@ -23,6 +23,10 @@ pub enum Request {
     /// `GET /state[/<pointer>]`：UI 状態（全体 or JSON Pointer で指すサブツリー）。
     /// `pointer` は RFC6901 形式（例 `/panes/left`・空文字＝全体）。
     State { pointer: String },
+    /// `POST /command/<Name>`：`Command` をアクティブ側ペインに実行（非モーダルのみ）。
+    Command { name: String },
+    /// `POST /view/key/<action>`：重ね表示中ビューアの操作（next/prev/close）。
+    ViewKey { action: String },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -30,6 +34,10 @@ pub enum Response {
     Json(String),
     /// JSON Pointer がツリーに存在しなかった（404 で返す）。
     NotFound,
+    /// 不正な要求（未知コマンド・モーダル禁止等。400）。
+    BadRequest(String),
+    /// 実行時エラー（500）。
+    Error(String),
 }
 
 /// UI スレッドと HTTP スレッドが共有する要求キュー。
@@ -87,17 +95,27 @@ pub fn start(port: u16, queue: SharedQueue, hwnd_ptr: isize) {
 fn handle(req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
     // クエリ文字列を落とした生パス。
     let path = req.url().split('?').next().unwrap_or("");
-    let route = if req.method() == &tiny_http::Method::Get {
-        // `/state` 以降を JSON Pointer として扱う（`/state`→""・`/state/panes/left`→"/panes/left"）。
-        if path == "/state" {
-            Some(Request::State { pointer: String::new() })
-        } else if let Some(rest) = path.strip_prefix("/state/") {
-            Some(Request::State { pointer: format!("/{}", rest.trim_end_matches('/')) })
-        } else {
-            None
+    let route = match req.method() {
+        tiny_http::Method::Get => {
+            // `/state` 以降を JSON Pointer として扱う（`/state`→""・`/state/panes/left`→"/panes/left"）。
+            if path == "/state" {
+                Some(Request::State { pointer: String::new() })
+            } else if let Some(rest) = path.strip_prefix("/state/") {
+                Some(Request::State { pointer: format!("/{}", rest.trim_end_matches('/')) })
+            } else {
+                None
+            }
         }
-    } else {
-        None
+        tiny_http::Method::Post => {
+            if let Some(name) = path.strip_prefix("/command/") {
+                Some(Request::Command { name: name.trim_end_matches('/').to_string() })
+            } else if let Some(action) = path.strip_prefix("/view/key/") {
+                Some(Request::ViewKey { action: action.trim_end_matches('/').to_string() })
+            } else {
+                None
+            }
+        }
+        _ => None,
     };
     let Some(kind) = route else {
         let _ = req.respond(tiny_http::Response::from_string("not found").with_status_code(404));
@@ -114,6 +132,12 @@ fn handle(req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
             let _ = req.respond(
                 tiny_http::Response::from_string("no such path in state").with_status_code(404),
             );
+        }
+        Ok(Response::BadRequest(m)) => {
+            let _ = req.respond(tiny_http::Response::from_string(m).with_status_code(400));
+        }
+        Ok(Response::Error(m)) => {
+            let _ = req.respond(tiny_http::Response::from_string(m).with_status_code(500));
         }
         Err(_) => {
             // UI スレッドが応答前に消えた（終了等）。

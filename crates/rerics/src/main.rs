@@ -83,6 +83,17 @@ fn debug_item_json(it: &rerics_core::FileItem, is_cursor: bool) -> serde_json::V
     })
 }
 
+/// デバッグ制御サーバ経由で実行を許可するコマンドか（モーダルを開く/破壊的なものは除外）。
+/// モーダル系（作成/リネーム/削除/コピー/移動/設定/タスク管理）は段階3 で対応するまで弾く。
+#[cfg(feature = "debug-server")]
+fn debug_command_allowed(cmd: Command) -> bool {
+    use Command::*;
+    !matches!(
+        cmd,
+        MakeDirectory | CreateFile | Rename | Delete | Copy | Move | OpenSettings | OpenTaskManager
+    )
+}
+
 /// 属性フラグを R/H/S/A/D の文字列へ（表示の属性列と同趣旨）。
 #[cfg(feature = "debug-server")]
 fn debug_attrs(it: &rerics_core::FileItem) -> String {
@@ -1326,8 +1337,45 @@ impl MainWindow {
                         None => debug_server::Response::NotFound,
                     }
                 }
+                debug_server::Request::Command { name } => self.debug_run_command(&name),
+                debug_server::Request::ViewKey { action } => self.debug_view_key(&action),
             };
             let _ = tx.send(resp);
+        }
+    }
+
+    /// `POST /command/<Name>`：非モーダルコマンドをアクティブ側ペインに実行し、実行後の状態を返す。
+    #[cfg(feature = "debug-server")]
+    fn debug_run_command(&self, name: &str) -> debug_server::Response {
+        let Some(cmd) = Command::from_token(name) else {
+            return debug_server::Response::BadRequest(format!("unknown command: {name}"));
+        };
+        if !debug_command_allowed(cmd) {
+            return debug_server::Response::BadRequest(format!(
+                "modal/destructive command not allowed over debug server until 段階3: {name}"
+            ));
+        }
+        let is_left = !self.active_right.get();
+        match self.exec(is_left, cmd) {
+            Ok(()) => debug_server::Response::Json(self.debug_state_value().to_string()),
+            Err(e) => debug_server::Response::Error(format!("exec error: {e}")),
+        }
+    }
+
+    /// `POST /view/key/<action>`：重ね表示中ビューアの操作（next/prev/close）。
+    #[cfg(feature = "debug-server")]
+    fn debug_view_key(&self, action: &str) -> debug_server::Response {
+        let r = match action {
+            "next" => self.media.navigate(1),
+            "prev" => self.media.navigate(-1),
+            "close" => self.close_viewer(),
+            _ => {
+                return debug_server::Response::BadRequest(format!("unknown view action: {action}"));
+            }
+        };
+        match r {
+            Ok(()) => debug_server::Response::Json(self.debug_state_value().to_string()),
+            Err(e) => debug_server::Response::Error(format!("view key error: {e}")),
         }
     }
 
