@@ -168,8 +168,14 @@ pub fn start(port: u16, queue: SharedQueue, hwnd_ptr: isize) {
                 return;
             }
         };
-        // 発見用：実際にバインドしたアドレスを stdout に1行出す。
-        println!("[debug-server] listening on http://127.0.0.1:{port}");
+        // 発見用：実際にバインドしたアドレスを stdout に1行出す（`--debug-server=0` で
+        // OS にポートを任せたときも、ここで割り当て済みの実ポートを報告する）。
+        let bound = server
+            .server_addr()
+            .to_ip()
+            .map(|a| a.port())
+            .unwrap_or(port);
+        println!("[debug-server] listening on http://127.0.0.1:{bound}");
         for req in server.incoming_requests() {
             handle(req, &queue, hwnd_ptr);
         }
