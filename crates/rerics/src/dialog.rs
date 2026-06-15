@@ -188,6 +188,8 @@ pub fn message_box(
         None
     };
 
+    #[cfg(feature = "debug-server")]
+    let mut reg_buttons: Vec<(String, u16)> = Vec::new();
     let mut buttons = Vec::new();
     for (i, (label, base)) in specs.iter().enumerate() {
         let is_default = i == 0;
@@ -200,6 +202,8 @@ pub fn message_box(
         } else {
             (100 + i) as u16
         };
+        #[cfg(feature = "debug-server")]
+        reg_buttons.push((label.to_string(), ctrl_id));
         let mut bs = co::BS::PUSHBUTTON;
         if is_default {
             bs = co::BS::DEFPUSHBUTTON;
@@ -231,9 +235,20 @@ pub fn message_box(
         buttons.push(btn);
     }
 
+    #[cfg(feature = "debug-server")]
+    let (reg_title, reg_prompt, reg_wnd) = (title.to_string(), message.to_string(), wnd.clone());
     if let Some(first) = buttons.first().cloned() {
         wnd.on().wm_create(move |_| {
             first.hwnd().SetFocus();
+            #[cfg(feature = "debug-server")]
+            crate::debug_server::modal_registry::push(
+                "message",
+                &reg_title,
+                &reg_prompt,
+                reg_wnd.hwnd().ptr() as isize,
+                false,
+                reg_buttons.clone(),
+            );
             Ok(0)
         });
     }
@@ -263,6 +278,8 @@ pub fn message_box(
     }
 
     let _ = wnd.show_modal(parent);
+    #[cfg(feature = "debug-server")]
+    crate::debug_server::modal_registry::pop();
     let _ = buttons;
     let r = *result.borrow();
     r
@@ -348,10 +365,21 @@ pub fn input_box(
 
     let result: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
+    #[cfg(feature = "debug-server")]
+    let (reg_title, reg_prompt, reg_wnd) = (title.to_string(), message.to_string(), wnd.clone());
     {
         let edit = edit.clone();
         wnd.on().wm_create(move |_| {
             edit.hwnd().SetFocus();
+            #[cfg(feature = "debug-server")]
+            crate::debug_server::modal_registry::push(
+                "input",
+                &reg_title,
+                &reg_prompt,
+                reg_wnd.hwnd().ptr() as isize,
+                true,
+                vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
+            );
             Ok(0)
         });
     }
@@ -376,6 +404,8 @@ pub fn input_box(
     }
 
     let _ = wnd.show_modal(parent);
+    #[cfg(feature = "debug-server")]
+    crate::debug_server::modal_registry::pop();
     let _ = cancel;
     let r = result.borrow().clone();
     r
@@ -489,10 +519,21 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
 
     let result = Rc::new(RefCell::new((ConflictResolution::Cancel, false)));
 
+    #[cfg(feature = "debug-server")]
+    let (reg_prompt, reg_wnd) = (name.to_string(), wnd.clone());
     {
         let ok = ok.clone();
         wnd.on().wm_create(move |_| {
             ok.hwnd().SetFocus();
+            #[cfg(feature = "debug-server")]
+            crate::debug_server::modal_registry::push(
+                "conflict",
+                "同名ファイルの処理",
+                &reg_prompt,
+                reg_wnd.hwnd().ptr() as isize,
+                true,
+                vec![("OK".to_string(), 1u16), ("中止(&S)".to_string(), 2u16)],
+            );
             Ok(0)
         });
     }
@@ -526,6 +567,8 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
     }
 
     let _ = wnd.show_modal(parent);
+    #[cfg(feature = "debug-server")]
+    crate::debug_server::modal_registry::pop();
     let _ = (ok, cancel);
     let r = result.borrow().clone();
     r

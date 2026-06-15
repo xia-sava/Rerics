@@ -18,6 +18,62 @@ pub const WM_DEBUG_WAKE: u32 = 0x8001;
 /// `--debug-server` の既定ポート。
 pub const DEFAULT_PORT: u16 = 8731;
 
+/// 開いているモーダルダイアログのレジストリ（UI スレッド専用＝thread_local）。
+/// `dialog` モジュールが開閉時に push/pop し、デバッグ制御サーバが観測・操作に使う。
+/// モーダルはネスト得るのでスタックで持つ（最後＝最前面）。
+pub mod modal_registry {
+    use std::cell::RefCell;
+
+    /// 1 つの開いているモーダル。`*_ptr` は HWND の生ポインタ（UI スレッド内でのみ有効）。
+    pub struct ModalEntry {
+        pub kind: &'static str,
+        pub title: String,
+        pub prompt: String,
+        pub modal_ptr: isize,
+        pub has_input: bool,
+        /// (ラベル, ctrl_id)。OK=1・Cancel=2、その他は 100+。
+        pub buttons: Vec<(String, u16)>,
+    }
+
+    thread_local! {
+        static STACK: RefCell<Vec<ModalEntry>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// モーダルを登録する（`dialog` が wm_create で呼ぶ）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn push(
+        kind: &'static str,
+        title: &str,
+        prompt: &str,
+        modal_ptr: isize,
+        has_input: bool,
+        buttons: Vec<(String, u16)>,
+    ) {
+        STACK.with(|s| {
+            s.borrow_mut().push(ModalEntry {
+                kind,
+                title: title.to_string(),
+                prompt: prompt.to_string(),
+                modal_ptr,
+                has_input,
+                buttons,
+            })
+        });
+    }
+
+    /// 最前面のモーダルを取り除く（`dialog` が show_modal 後に呼ぶ）。
+    pub fn pop() {
+        STACK.with(|s| {
+            s.borrow_mut().pop();
+        });
+    }
+
+    /// 最前面モーダルに対して処理する（無ければ `None` を渡す）。
+    pub fn with_top<R>(f: impl FnOnce(Option<&ModalEntry>) -> R) -> R {
+        STACK.with(|s| f(s.borrow().last()))
+    }
+}
+
 /// HTTP スレッド → UI スレッドへ渡す要求。応答は同梱の `Sender` で返す。
 pub enum Request {
     /// `GET /state[/<pointer>]`：UI 状態（全体 or JSON Pointer で指すサブツリー）。
@@ -30,6 +86,12 @@ pub enum Request {
     /// `GET /snapshot[/<spec>]`：画面 PNG。`spec` は ""（全体）・名前付き要素・
     /// `x,y-WxH`（数値範囲）・`<name>/<x,y-WxH>`（要素相対のサブ範囲）。
     Snapshot { spec: String },
+    /// `POST /modal/key/<key>`：開いているモーダルへキー送出（enter/esc/y/n…）。
+    ModalKey { key: String },
+    /// `POST /modal/text`：開いているモーダルの入力欄へ文字列を設定（値は body）。
+    ModalText { value: String },
+    /// `POST /modal/command/<role>`：開いているモーダルのボタンを役割名/ラベルで押す。
+    ModalCommand { role: String },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -48,19 +110,22 @@ pub enum Response {
 /// UI スレッドと HTTP スレッドが共有する要求キュー。
 pub type SharedQueue = Arc<Mutex<VecDeque<(Request, Sender<Response>)>>>;
 
-/// MainWindow が 1 フィールドとして保持するブリッジ（キュー＋起動ポート）。
+/// MainWindow が 1 フィールドとして保持するブリッジ（キュー＋起動ポート＋書込み許可）。
 #[derive(Clone)]
 pub struct Bridge {
     pub queue: SharedQueue,
     /// `Some` のとき `wm_create` でサーバを起動する。
     pub port: Option<u16>,
+    /// `--debug-allow-write` 指定時 true。破壊的（ファイル操作）コマンドの実行可否。
+    pub allow_write: bool,
 }
 
 impl Bridge {
-    pub fn new(port: Option<u16>) -> Self {
+    pub fn new(port: Option<u16>, allow_write: bool) -> Self {
         Self {
             queue: Arc::new(Mutex::new(VecDeque::new())),
             port,
+            allow_write,
         }
     }
 }
@@ -76,6 +141,11 @@ pub fn parse_port() -> Option<u16> {
         }
     }
     None
+}
+
+/// `--debug-allow-write` が指定されているか。
+pub fn parse_allow_write() -> bool {
+    std::env::args().skip(1).any(|a| a == "--debug-allow-write")
 }
 
 /// HTTP サーバスレッドを起動する。`hwnd_ptr` は main 窓の生ハンドル（`PostMessageW` 用）。
@@ -97,10 +167,12 @@ pub fn start(port: u16, queue: SharedQueue, hwnd_ptr: isize) {
 }
 
 /// 1 リクエストを処理する：ルート判定 → UI スレッドへ往復 → レスポンス書き出し。
-fn handle(req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
+fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
     // クエリ文字列を落とした生パス。
-    let path = req.url().split('?').next().unwrap_or("");
-    let route = match req.method() {
+    let path = req.url().split('?').next().unwrap_or("").to_string();
+    let path = path.as_str();
+    let method = req.method().clone();
+    let route = match method {
         tiny_http::Method::Get => {
             // `/state` 以降を JSON Pointer として扱う（`/state`→""・`/state/panes/left`→"/panes/left"）。
             if path == "/state" {
@@ -121,6 +193,14 @@ fn handle(req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::Command { name: name.trim_end_matches('/').to_string() })
             } else if let Some(action) = path.strip_prefix("/view/key/") {
                 Some(Request::ViewKey { action: action.trim_end_matches('/').to_string() })
+            } else if let Some(key) = path.strip_prefix("/modal/key/") {
+                Some(Request::ModalKey { key: key.trim_end_matches('/').to_string() })
+            } else if let Some(role) = path.strip_prefix("/modal/command/") {
+                Some(Request::ModalCommand { role: role.trim_end_matches('/').to_string() })
+            } else if path == "/modal/text" {
+                let mut value = String::new();
+                let _ = std::io::Read::read_to_string(req.as_reader(), &mut value);
+                Some(Request::ModalText { value })
             } else {
                 None
             }

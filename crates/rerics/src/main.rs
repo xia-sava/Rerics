@@ -54,12 +54,6 @@ fn wm_restore_maximize() -> co::WM {
     unsafe { co::WM::from_raw(0x8000) }
 }
 
-/// 表示確定後に本体を最小化させるための自前メッセージ（デバッグ制御サーバ起動時）。
-#[cfg(feature = "debug-server")]
-fn wm_debug_minimize() -> co::WM {
-    unsafe { co::WM::from_raw(0x8002) }
-}
-
 /// FileItem 1 件をデバッグ `/state` 用の JSON 値へ。
 #[cfg(feature = "debug-server")]
 fn debug_item_json(it: &rerics_core::FileItem, is_cursor: bool) -> serde_json::Value {
@@ -97,15 +91,26 @@ fn parse_region(s: &str) -> Option<(i32, i32, i32, i32)> {
     ))
 }
 
-/// デバッグ制御サーバ経由で実行を許可するコマンドか（モーダルを開く/破壊的なものは除外）。
-/// モーダル系（作成/リネーム/削除/コピー/移動/設定/タスク管理）は段階3 で対応するまで弾く。
+/// デバッグ制御サーバから見たコマンドの種別。
 #[cfg(feature = "debug-server")]
-fn debug_command_allowed(cmd: Command) -> bool {
+enum DebugCmdClass {
+    /// 即実行して状態を返せる（ナビ/マーク/ソート/タブ/ビューア等）。
+    NonModal,
+    /// モーダルを開く＋ファイルを操作し得る（要 `--debug-allow-write`・`/modal/*` で操作）。
+    ModalWrite,
+    /// デバッグ制御サーバでは未対応（複雑モーダル等）。
+    Unsupported,
+}
+
+/// コマンドの種別を分類する。ファイル操作系のモーダルは ModalWrite、設定/タスク管理は Unsupported。
+#[cfg(feature = "debug-server")]
+fn debug_command_class(cmd: Command) -> DebugCmdClass {
     use Command::*;
-    !matches!(
-        cmd,
-        MakeDirectory | CreateFile | Rename | Delete | Copy | Move | OpenSettings | OpenTaskManager
-    )
+    match cmd {
+        MakeDirectory | CreateFile | Rename | Delete | Copy | Move => DebugCmdClass::ModalWrite,
+        OpenSettings | OpenTaskManager => DebugCmdClass::Unsupported,
+        _ => DebugCmdClass::NonModal,
+    }
 }
 
 /// 属性フラグを R/H/S/A/D の文字列へ（表示の属性列と同趣旨）。
@@ -131,17 +136,12 @@ fn debug_attrs(it: &rerics_core::FileItem) -> String {
 }
 
 fn main() {
-    let debug_port: Option<u16> = {
-        #[cfg(feature = "debug-server")]
-        {
-            debug_server::parse_port()
-        }
-        #[cfg(not(feature = "debug-server"))]
-        {
-            None
-        }
-    };
-    if let Err(e) = MainWindow::new(debug_port).run() {
+    #[cfg(feature = "debug-server")]
+    let (debug_port, debug_allow_write) =
+        (debug_server::parse_port(), debug_server::parse_allow_write());
+    #[cfg(not(feature = "debug-server"))]
+    let (debug_port, debug_allow_write): (Option<u16>, bool) = (None, false);
+    if let Err(e) = MainWindow::new(debug_port, debug_allow_write).run() {
         eprintln!("エラー: {}", e);
     }
 }
@@ -240,18 +240,23 @@ struct TabSnapshot {
 
 impl MainWindow {
     #[cfg_attr(not(feature = "debug-server"), allow(unused_variables))]
-    fn new(debug_port: Option<u16>) -> Self {
+    fn new(debug_port: Option<u16>, debug_allow_write: bool) -> Self {
+        // デバッグ制御サーバ起動時は最初から最小化で出すため、生成時に VISIBLE を付けない
+        // （付けると CreateWindowEx が一瞬フル表示してしまう）。表示は run_main の cmd_show に任せる。
+        let mut style = co::WS::CAPTION
+            | co::WS::SYSMENU
+            | co::WS::CLIPCHILDREN
+            | co::WS::BORDER
+            | co::WS::SIZEBOX
+            | co::WS::MINIMIZEBOX
+            | co::WS::MAXIMIZEBOX;
+        if debug_port.is_none() {
+            style |= co::WS::VISIBLE;
+        }
         let wnd = gui::WindowMain::new(gui::WindowMainOpts {
             title: "Rerics",
             size: gui::dpi(960, 560),
-            style: co::WS::CAPTION
-                | co::WS::SYSMENU
-                | co::WS::CLIPCHILDREN
-                | co::WS::BORDER
-                | co::WS::VISIBLE
-                | co::WS::SIZEBOX
-                | co::WS::MINIMIZEBOX
-                | co::WS::MAXIMIZEBOX,
+            style,
             process_dlg_msgs: false,
             ..Default::default()
         });
@@ -368,13 +373,23 @@ impl MainWindow {
             shutdown: Arc::new(AtomicBool::new(false)),
             in_dialog: Rc::new(Cell::new(false)),
             #[cfg(feature = "debug-server")]
-            debug: debug_server::Bridge::new(debug_port),
+            debug: debug_server::Bridge::new(debug_port, debug_allow_write),
         }
     }
 
     fn run(&self) -> w::AnyResult<i32> {
         self.setup_events();
-        self.wnd.run_main(None)
+        // デバッグ制御サーバ起動時は最初の表示自体を「非アクティブ最小化」にして、
+        // フル表示のフラッシュを避ける（VISIBLE も外してあるので真の最小化起動になる）。
+        #[cfg(feature = "debug-server")]
+        let cmd_show = if self.debug.port.is_some() {
+            Some(co::SW::SHOWMINNOACTIVE)
+        } else {
+            None
+        };
+        #[cfg(not(feature = "debug-server"))]
+        let cmd_show: Option<co::SW> = None;
+        self.wnd.run_main(cmd_show)
     }
 
     fn setup_events(&self) {
@@ -401,13 +416,6 @@ impl MainWindow {
             let wake = unsafe { co::WM::from_raw(debug_server::WM_DEBUG_WAKE) };
             self.wnd.on().wm(wake, move |_| {
                 this.drain_debug_requests();
-                Ok(0)
-            });
-
-            // 表示確定後に本体を最小化（非アクティブ＝前面を奪わない）。
-            let this = self.clone();
-            self.wnd.on().wm(wm_debug_minimize(), move |_| {
-                this.wnd.hwnd().ShowWindow(co::SW::SHOWMINNOACTIVE);
                 Ok(0)
             });
         }
@@ -460,14 +468,6 @@ impl MainWindow {
             if let Some(port) = this.debug.port {
                 let hwnd_ptr = this.wnd.hwnd().ptr() as isize;
                 debug_server::start(port, this.debug.queue.clone(), hwnd_ptr);
-                // 表示確定後に最小化（最大化復元と同じく遅延実行・非アクティブで前面を奪わない）。
-                unsafe {
-                    let _ = this.wnd.hwnd().PostMessage(w::msg::WndMsg {
-                        msg_id: wm_debug_minimize(),
-                        wparam: 0,
-                        lparam: 0,
-                    });
-                }
             }
             Ok(0)
         });
@@ -1338,43 +1338,187 @@ impl MainWindow {
     }
 
     /// デバッグ制御サーバの要求キューを UI スレッドで処理する（feature 有効時のみ）。
+    /// モーダルを開くコマンドは exec がネストループでブロックするため、応答を先に返してから実行する。
+    /// その間に届く `/modal/*`・`/state` 等はネストループ経由で本関数が再入して捌く。
     #[cfg(feature = "debug-server")]
     fn drain_debug_requests(&self) {
         loop {
             let item = self.debug.queue.lock().unwrap().pop_front();
             let Some((req, tx)) = item else { break };
-            let resp = match req {
+            match req {
                 debug_server::Request::State { pointer } => {
                     let v = self.debug_state_value();
-                    match v.pointer(&pointer) {
+                    let r = match v.pointer(&pointer) {
                         Some(sub) => debug_server::Response::Json(sub.to_string()),
                         None => debug_server::Response::NotFound,
-                    }
+                    };
+                    let _ = tx.send(r);
                 }
-                debug_server::Request::Command { name } => self.debug_run_command(&name),
-                debug_server::Request::ViewKey { action } => self.debug_view_key(&action),
-                debug_server::Request::Snapshot { spec } => self.debug_snapshot(&spec),
-            };
-            let _ = tx.send(resp);
+                debug_server::Request::Command { name } => self.debug_dispatch_command(&name, tx),
+                debug_server::Request::ViewKey { action } => {
+                    let _ = tx.send(self.debug_view_key(&action));
+                }
+                debug_server::Request::Snapshot { spec } => {
+                    let _ = tx.send(self.debug_snapshot(&spec));
+                }
+                debug_server::Request::ModalKey { key } => {
+                    let _ = tx.send(self.debug_modal_key(&key));
+                }
+                debug_server::Request::ModalText { value } => {
+                    let _ = tx.send(self.debug_modal_text(&value));
+                }
+                debug_server::Request::ModalCommand { role } => {
+                    let _ = tx.send(self.debug_modal_command(&role));
+                }
+            }
         }
     }
 
-    /// `POST /command/<Name>`：非モーダルコマンドをアクティブ側ペインに実行し、実行後の状態を返す。
+    /// `POST /command/<Name>` の振り分け。非モーダルは実行後 state を返す。モーダルを開くコマンドは
+    /// 先に応答を返してから exec（ネストループでブロック）。未対応コマンドは弾く。
     #[cfg(feature = "debug-server")]
-    fn debug_run_command(&self, name: &str) -> debug_server::Response {
+    fn debug_dispatch_command(&self, name: &str, tx: Sender<debug_server::Response>) {
         let Some(cmd) = Command::from_token(name) else {
-            return debug_server::Response::BadRequest(format!("unknown command: {name}"));
+            let _ = tx.send(debug_server::Response::BadRequest(format!(
+                "unknown command: {name}"
+            )));
+            return;
         };
-        if !debug_command_allowed(cmd) {
-            return debug_server::Response::BadRequest(format!(
-                "modal/destructive command not allowed over debug server until 段階3: {name}"
-            ));
-        }
         let is_left = !self.active_right.get();
-        match self.exec(is_left, cmd) {
-            Ok(()) => debug_server::Response::Json(self.debug_state_value().to_string()),
-            Err(e) => debug_server::Response::Error(format!("exec error: {e}")),
+        match debug_command_class(cmd) {
+            DebugCmdClass::NonModal => {
+                let r = match self.exec(is_left, cmd) {
+                    Ok(()) => debug_server::Response::Json(self.debug_state_value().to_string()),
+                    Err(e) => debug_server::Response::Error(format!("exec error: {e}")),
+                };
+                let _ = tx.send(r);
+            }
+            DebugCmdClass::ModalWrite => {
+                if !self.debug.allow_write {
+                    let _ = tx.send(debug_server::Response::BadRequest(format!(
+                        "write disabled; restart with --debug-allow-write to run: {name}"
+                    )));
+                    return;
+                }
+                // モーダルを開く前に応答（exec はモーダルが閉じるまでブロックするため）。
+                let _ = tx.send(debug_server::Response::Json(
+                    "{\"modal_opening\":true}".to_string(),
+                ));
+                let _ = self.exec(is_left, cmd);
+            }
+            DebugCmdClass::Unsupported => {
+                let _ = tx.send(debug_server::Response::BadRequest(format!(
+                    "command not supported over debug server: {name}"
+                )));
+            }
         }
+    }
+
+    /// 最前面モーダルの HWND を得る（無ければ None）。
+    #[cfg(feature = "debug-server")]
+    fn debug_modal_hwnd(&self) -> Option<w::HWND> {
+        let ptr = debug_server::modal_registry::with_top(|t| t.map(|e| e.modal_ptr))?;
+        Some(unsafe { w::HWND::from_ptr(ptr as *mut std::ffi::c_void) })
+    }
+
+    /// モーダル内の最初の Edit 子コントロールを探す。
+    #[cfg(feature = "debug-server")]
+    fn debug_modal_edit(modal: &w::HWND) -> Option<w::HWND> {
+        let mut found: Option<w::HWND> = None;
+        modal.EnumChildWindows(|c| {
+            if c.GetClassName().map(|s| s.eq_ignore_ascii_case("Edit")).unwrap_or(false) {
+                found = Some(c);
+                false
+            } else {
+                true
+            }
+        });
+        found
+    }
+
+    /// `POST /modal/key/<key>`：開いているモーダルへキー送出（enter/esc/y/n/tab）。
+    #[cfg(feature = "debug-server")]
+    fn debug_modal_key(&self, key: &str) -> debug_server::Response {
+        let Some(modal) = self.debug_modal_hwnd() else {
+            return debug_server::Response::BadRequest("no modal open".into());
+        };
+        let vk: u16 = match key.to_ascii_lowercase().as_str() {
+            "enter" | "return" => 0x0D,
+            "esc" | "escape" => 0x1B,
+            "tab" => 0x09,
+            "y" => 0x59,
+            "n" => 0x4E,
+            _ => return debug_server::Response::BadRequest(format!("unknown modal key: {key}")),
+        };
+        unsafe {
+            let _ = modal.PostMessage(w::msg::WndMsg {
+                msg_id: co::WM::KEYDOWN,
+                wparam: vk as usize,
+                lparam: 0,
+            });
+            let _ = modal.PostMessage(w::msg::WndMsg {
+                msg_id: co::WM::from_raw(0x0101), // WM_KEYUP
+                wparam: vk as usize,
+                lparam: 0,
+            });
+        }
+        debug_server::Response::Json(self.debug_state_value().to_string())
+    }
+
+    /// `POST /modal/text`：開いているモーダルの入力欄へ文字列を設定する。
+    #[cfg(feature = "debug-server")]
+    fn debug_modal_text(&self, value: &str) -> debug_server::Response {
+        let Some(modal) = self.debug_modal_hwnd() else {
+            return debug_server::Response::BadRequest("no modal open".into());
+        };
+        match Self::debug_modal_edit(&modal) {
+            Some(edit) => {
+                let _ = edit.SetWindowText(value);
+                debug_server::Response::Json(self.debug_state_value().to_string())
+            }
+            None => debug_server::Response::BadRequest("modal has no text field".into()),
+        }
+    }
+
+    /// `POST /modal/command/<role>`：開いているモーダルのボタンを役割名/ラベル/ctrl_id で押す。
+    #[cfg(feature = "debug-server")]
+    fn debug_modal_command(&self, role: &str) -> debug_server::Response {
+        let Some(modal) = self.debug_modal_hwnd() else {
+            return debug_server::Response::BadRequest("no modal open".into());
+        };
+        // 役割名・数値 ctrl_id・ラベル部分一致から ctrl_id を解決する。
+        let id = debug_server::modal_registry::with_top(|t| {
+            let e = t?;
+            let r = role.to_ascii_lowercase();
+            if r == "ok" || r == "yes" {
+                return Some(1u16);
+            }
+            if r == "cancel" {
+                return Some(2u16);
+            }
+            if let Ok(n) = role.parse::<u16>() {
+                return Some(n);
+            }
+            e.buttons
+                .iter()
+                .find(|(label, _)| label.replace('&', "").to_lowercase().contains(&r))
+                .map(|(_, id)| *id)
+        });
+        let Some(id) = id else {
+            return debug_server::Response::BadRequest(format!("unknown modal button: {role}"));
+        };
+        let Ok(btn) = modal.GetDlgItem(id) else {
+            return debug_server::Response::BadRequest(format!("button id {id} not found"));
+        };
+        // 親へ WM_COMMAND(BN_CLICKED) を送る（winsafe の bn_clicked が ctrl_id で振り分ける）。
+        unsafe {
+            let _ = modal.PostMessage(w::msg::WndMsg {
+                msg_id: co::WM::COMMAND,
+                wparam: id as usize,
+                lparam: btn.ptr() as isize,
+            });
+        }
+        debug_server::Response::Json(self.debug_state_value().to_string())
     }
 
     /// `POST /view/key/<action>`：重ね表示中ビューアの操作（next/prev/close）。
@@ -1417,14 +1561,6 @@ impl MainWindow {
             // WM_SIZE はループ停止中で届かないので、復帰後サイズで明示的に再レイアウトする。
             let _ = self.layout();
         }
-        if let Ok(crc) = hwnd.GetClientRect() {
-            // UPDATENOW で WM_PAINT を同期実行し、窓/子の DC に最新内容を確定させる。
-            let _ = hwnd.RedrawWindow(
-                crc,
-                &w::HRGN::NULL,
-                co::RDW::INVALIDATE | co::RDW::ERASE | co::RDW::UPDATENOW | co::RDW::ALLCHILDREN,
-            );
-        }
         was_min
     }
 
@@ -1438,19 +1574,39 @@ impl MainWindow {
             [a, b] => (Some(*a), Some(*b)),
             _ => return debug_server::Response::BadRequest(format!("bad snapshot spec: {spec}")),
         };
-        let base = match base_name {
-            Some(name) => match self.debug_rect(name) {
-                Some(r) => r,
-                None => {
-                    return debug_server::Response::BadRequest(format!(
-                        "unknown snapshot target: {name}"
-                    ));
-                }
-            },
-            None => match self.debug_rect("client") {
-                Some(r) => r,
-                None => return debug_server::Response::Error("no client rect".into()),
-            },
+        // 対象窓と基準矩形を決める：`modal`/`modal_*` はモーダル窓、それ以外は main クライアント。
+        let is_modal = base_name
+            .map(|n| n == "modal" || n.starts_with("modal_"))
+            .unwrap_or(false);
+        let (buf, cw, ch, base) = if is_modal {
+            let Some(modal) = self.debug_modal_hwnd() else {
+                return debug_server::Response::BadRequest("no modal open".into());
+            };
+            // 注意：最小化 owner 配下のモーダルは DWM サーフェスが未合成で、現状ピクセル取得は
+            // 不完全（背景のみ等）。モーダルの観測は /state/modal を使うのが確実。段階4 の render_to で根治予定。
+            match self.capture_window_bgra(&modal) {
+                Ok((b, w, h)) => (b, w, h, (0, 0, w, h)),
+                Err(e) => return debug_server::Response::Error(format!("snapshot error: {e}")),
+            }
+        } else {
+            let base = match base_name {
+                Some(name) => match self.debug_rect(name) {
+                    Some(r) => r,
+                    None => {
+                        return debug_server::Response::BadRequest(format!(
+                            "unknown snapshot target: {name}"
+                        ));
+                    }
+                },
+                None => match self.debug_rect("client") {
+                    Some(r) => r,
+                    None => return debug_server::Response::Error("no client rect".into()),
+                },
+            };
+            match self.capture_window_bgra(self.wnd.hwnd()) {
+                Ok((b, w, h)) => (b, w, h, base),
+                Err(e) => return debug_server::Response::Error(format!("snapshot error: {e}")),
+            }
         };
         let rect = match region {
             Some(rs) => match parse_region(rs) {
@@ -1459,7 +1615,7 @@ impl MainWindow {
             },
             None => base,
         };
-        match self.capture_client_png(rect) {
+        match Self::crop_bgra_to_png(&buf, cw, ch, rect) {
             Ok(png) => debug_server::Response::Png(png),
             Err(e) => debug_server::Response::Error(format!("snapshot error: {e}")),
         }
@@ -1491,6 +1647,7 @@ impl MainWindow {
             "cursor" => self.cursor_rect(a),
             "cursor_left" => self.cursor_rect(true),
             "cursor_right" => self.cursor_rect(false),
+            // モーダルはクライアント座標に収まらない別窓なので、ここでは扱わず capture 側で別処理。
             _ => None,
         }
     }
@@ -1529,16 +1686,21 @@ impl MainWindow {
         Some((lr.0 + cx, lr.1 + cy, cw, ch))
     }
 
-    /// クライアント全体を「窓自身の DC（親＋各子コントロール）」から合成し BGRA(top-down) で得る。
+    /// 指定窓のクライアント全体を「窓自身の DC（親＋各子コントロール）」から合成し BGRA(top-down) で得る。
     /// 画面スクレイプでなく窓の DC を読むため、他窓に隠れていても・最前面化なしで正しく撮れる。
     #[cfg(feature = "debug-server")]
-    fn capture_full_bgra(&self) -> w::AnyResult<(Vec<u8>, i32, i32)> {
-        let hwnd = self.wnd.hwnd();
+    fn capture_window_bgra(&self, hwnd: &w::HWND) -> w::AnyResult<(Vec<u8>, i32, i32)> {
         let crc = hwnd.GetClientRect()?;
         let (cw, ch) = (crc.right - crc.left, crc.bottom - crc.top);
         if cw <= 0 || ch <= 0 {
             return Err("empty client".into());
         }
+        // ループ停止中でも内容を確定させるため、対象窓を同期再描画する。
+        let _ = hwnd.RedrawWindow(
+            crc,
+            &w::HRGN::NULL,
+            co::RDW::INVALIDATE | co::RDW::ERASE | co::RDW::UPDATENOW | co::RDW::ALLCHILDREN,
+        );
         let win_dc = hwnd.GetDC()?;
         let target = win_dc.CreateCompatibleDC()?;
         let bmp = win_dc.CreateCompatibleBitmap(cw, ch)?;
@@ -1592,14 +1754,18 @@ impl MainWindow {
         Ok((buf, cw, ch))
     }
 
-    /// 指定クライアント矩形を切り出して PNG にする（全体を合成してから CPU でクロップ）。
+    /// 合成済み BGRA(top-down) バッファから矩形を切り出して PNG にする。
     #[cfg(feature = "debug-server")]
-    fn capture_client_png(&self, rect: (i32, i32, i32, i32)) -> w::AnyResult<Vec<u8>> {
+    fn crop_bgra_to_png(
+        full: &[u8],
+        cw: i32,
+        ch: i32,
+        rect: (i32, i32, i32, i32),
+    ) -> w::AnyResult<Vec<u8>> {
         let (rx, ry, rw, rh) = rect;
         if rw <= 0 || rh <= 0 {
             return Err("empty snapshot region".into());
         }
-        let (full, cw, ch) = self.capture_full_bgra()?;
         let mut out = vec![0u8; (rw as usize) * (rh as usize) * 4];
         for row in 0..rh {
             let sy = ry + row;
@@ -1656,6 +1822,28 @@ impl MainWindow {
             .into_iter()
             .map(|(level, text)| json!({ "level": level, "text": text }))
             .collect();
+        let modal = debug_server::modal_registry::with_top(|t| match t {
+            None => serde_json::Value::Null,
+            Some(e) => {
+                let input = if e.has_input {
+                    let m = unsafe { w::HWND::from_ptr(e.modal_ptr as *mut std::ffi::c_void) };
+                    Self::debug_modal_edit(&m)
+                        .and_then(|ed| ed.GetWindowText().ok())
+                        .map(serde_json::Value::String)
+                        .unwrap_or(serde_json::Value::Null)
+                } else {
+                    serde_json::Value::Null
+                };
+                json!({
+                    "kind": e.kind,
+                    "title": e.title,
+                    "prompt": e.prompt,
+                    "has_input": e.has_input,
+                    "input": input,
+                    "buttons": e.buttons.iter().map(|(l, id)| json!({ "label": l, "id": id })).collect::<Vec<_>>(),
+                })
+            }
+        });
         json!({
             "window": {
                 "title": self.wnd.hwnd().GetWindowText().unwrap_or_default(),
@@ -1668,7 +1856,7 @@ impl MainWindow {
                 "left": self.debug_pane_json(true),
                 "right": self.debug_pane_json(false),
             },
-            "modal": serde_json::Value::Null,
+            "modal": modal,
             "media": media,
             "tab_bar": { "active": self.active.get(), "labels": self.tab_bar.labels() },
             "tabs": { "active": self.active.get(), "count": tabs.len(), "items": tabs },
