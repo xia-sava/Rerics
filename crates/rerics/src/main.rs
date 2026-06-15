@@ -25,9 +25,9 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use file_list::FileListView;
 use log_view::LogView;
@@ -187,6 +187,9 @@ struct MainWindow {
     progress_seq: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
     in_dialog: Rc<Cell<bool>>,
+    /// 書庫内メディア閲覧中の先読み（BG プリフェッチ）スレッドへの停止フラグ。
+    /// 別の書庫を開く/ビューアを閉じる際に立てて旧スレッドを止める（§7.6）。
+    media_prefetch: Rc<RefCell<Option<Arc<AtomicBool>>>>,
     #[cfg(feature = "debug-server")]
     debug: debug_server::Bridge,
 }
@@ -336,6 +339,7 @@ impl MainWindow {
             progress_seq: Arc::new(AtomicU64::new(0)),
             shutdown: Arc::new(AtomicBool::new(false)),
             in_dialog: Rc::new(Cell::new(false)),
+            media_prefetch: Rc::new(RefCell::new(None)),
             #[cfg(feature = "debug-server")]
             debug: debug_server::Bridge::new(debug_port, debug_allow_write, debug_headless),
         }
@@ -1079,6 +1083,8 @@ impl MainWindow {
     /// 画像/動画ビューアで開く。実FS は同ディレクトリの閲覧可能メディアを前後送りに、
     /// 書庫内はカーソル下の1ファイルを一時展開して開く（書庫内の前後送りは後段で対応）。
     fn view_media(&self, is_left: bool, _kind: MediaKind, name: &str) -> w::AnyResult<()> {
+        // 別メディアを開くので、前回の書庫プリフェッチがあれば止める。
+        self.cancel_media_prefetch();
         let loc = self.pane(is_left).borrow().loc().clone();
         match loc {
             Location::Real(dir) => {
@@ -1131,9 +1137,35 @@ impl MainWindow {
                 }
                 let n = entries.len();
                 let entries = Rc::new(entries);
+
+                // BG プリフェッチ（§7.6）：現在位置を共有 atomic で伝え、別スレッドが近傍を
+                // 先読み展開して共有 mtime キャッシュを温める。FG（resolver）は同期展開で
+                // 割り込み、BG は存在チェックでスキップ＝共有キャッシュ越しに協調する。
+                let cur = Arc::new(AtomicUsize::new(index));
+                let cancel = Arc::new(AtomicBool::new(false));
+                *self.media_prefetch.borrow_mut() = Some(cancel.clone());
+                {
+                    let bg_entries: Vec<(String, String)> = (*entries).clone();
+                    let bg_archive = archive.clone();
+                    let bg_cur = cur.clone();
+                    let bg_cancel = cancel.clone();
+                    let bg_shutdown = self.shutdown.clone();
+                    std::thread::spawn(move || {
+                        Self::media_prefetch_loop(
+                            &bg_archive,
+                            &bg_entries,
+                            &bg_cur,
+                            &bg_cancel,
+                            &bg_shutdown,
+                        );
+                    });
+                }
+
                 let archive = archive.clone();
                 let log = self.log.clone();
                 let resolver: NavResolver = Rc::new(move |i: usize| {
+                    // BG にカレント位置を伝える（先読みの中心を移動先へ寄せる）。
+                    cur.store(i, Ordering::Relaxed);
                     let (inner_file, nm) = entries.get(i)?;
                     match Self::extract_entry_to_temp(&archive, inner_file, nm) {
                         Ok(p) => Some(p),
@@ -1199,12 +1231,65 @@ impl MainWindow {
 
     /// ビューアを閉じてファイラ表示へ戻す。
     fn close_viewer(&self) -> w::AnyResult<()> {
+        self.cancel_media_prefetch();
         self.media.stop_playback();
         self.active_view.set(ActiveView::None);
         self.viewer.hwnd().ShowWindow(co::SW::HIDE);
         self.media.hwnd().ShowWindow(co::SW::HIDE);
         self.key_sink.hwnd().SetFocus();
         Ok(())
+    }
+
+    /// 走行中の書庫プリフェッチスレッドがあれば停止フラグを立てる（次の窓パスで終了する）。
+    fn cancel_media_prefetch(&self) {
+        if let Some(c) = self.media_prefetch.borrow_mut().take() {
+            c.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// 書庫内メディアの先読み展開ループ（BG スレッド・§7.6）。`cur` の前後の近傍を
+    /// 共有キャッシュへ温める。`extract_entry_to_temp` は既展開なら存在チェックで安価に
+    /// 返る（再展開しない）ので、毎パスで近傍を舐め直しても重くならない。`cancel`/
+    /// `shutdown` が立つか、カレントが動いたら速やかに切り上げて再センタリングする。
+    fn media_prefetch_loop(
+        archive: &Path,
+        entries: &[(String, String)],
+        cur: &AtomicUsize,
+        cancel: &AtomicBool,
+        shutdown: &AtomicBool,
+    ) {
+        // 前方優先で温める窓（漫画の順送りを想定）。総量はこの窓に限られる＝暴走しない。
+        const AHEAD: usize = 6;
+        const BEHIND: usize = 2;
+        let n = entries.len();
+        loop {
+            if cancel.load(Ordering::Relaxed) || shutdown.load(Ordering::Relaxed) {
+                return;
+            }
+            let center = cur.load(Ordering::Relaxed);
+            let mut targets: Vec<usize> = (1..=AHEAD).map(|k| center + k).collect();
+            for k in 1..=BEHIND {
+                if center >= k {
+                    targets.push(center - k);
+                }
+            }
+            for idx in targets {
+                if cancel.load(Ordering::Relaxed) || shutdown.load(Ordering::Relaxed) {
+                    return;
+                }
+                // カレントが動いたら今の窓は捨てて再センタリングする。
+                if cur.load(Ordering::Relaxed) != center {
+                    break;
+                }
+                if idx >= n {
+                    continue;
+                }
+                let (inner, name) = &entries[idx];
+                let _ = Self::extract_entry_to_temp(archive, inner, name);
+            }
+            // カレント変化を待つ短い休止（FG は同期展開で割り込むので latency は問題にならない）。
+            std::thread::sleep(Duration::from_millis(120));
+        }
     }
 
     fn view(&self, is_left: bool) -> &FileListView {
