@@ -57,6 +57,48 @@ pub trait ArchiveBackend {
         let _ = password;
         self.read(inner)
     }
+    /// 全エントリを `dest` 配下へ展開する（非ランダムアクセス＝ソリッド書庫の一括展開用）。
+    /// 各ファイルを展開する直前に `each(inner, done, total)` を呼び、`false` が返ったら
+    /// その時点で中断する（done は中断前まで展開できた件数）。`dest` は呼び側が用意した
+    /// 空ディレクトリを想定し、エントリ名は `safe_join` で zip-slip を弾く。
+    ///
+    /// 既定実装は `list`＋`read` のループ（任意 backend で動くが、ソリッドでは
+    /// ブロックを毎回頭から復号し直すため O(n²)）。ストリーム展開できる backend
+    /// （7z 等）は単一パスで `override` する。
+    fn extract_all(
+        &self,
+        dest: &Path,
+        each: &mut dyn FnMut(&str, u64, u64) -> bool,
+    ) -> io::Result<()> {
+        let entries = self.list()?;
+        let total = entries.iter().filter(|e| !e.is_dir).count() as u64;
+        for e in &entries {
+            if e.is_dir {
+                if let Some(p) = safe_join(dest, &e.path) {
+                    std::fs::create_dir_all(p)?;
+                }
+            }
+        }
+        let mut done = 0u64;
+        for e in &entries {
+            if e.is_dir {
+                continue;
+            }
+            if !each(&e.path, done, total) {
+                return Ok(());
+            }
+            let Some(p) = safe_join(dest, &e.path) else {
+                continue;
+            };
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let bytes = self.read(&e.path)?;
+            std::fs::write(&p, &bytes)?;
+            done += 1;
+        }
+        Ok(())
+    }
 }
 
 /// 書込みバックエンド（後付け用の seam・現状は実装しない）。
@@ -79,6 +121,7 @@ pub fn open_archive(path: &Path) -> io::Result<Box<dyn ArchiveBackend>> {
         .map(|s| s.to_ascii_lowercase());
     match ext.as_deref() {
         Some("zip") => Ok(Box::new(ZipBackend::open(path)?)),
+        Some("7z") => Ok(Box::new(SevenZBackend::open(path)?)),
         #[cfg(feature = "rar")]
         Some("rar") => Ok(Box::new(RarBackend::open(path)?)),
         _ => Err(io::Error::new(io::ErrorKind::Unsupported, "未対応の書庫形式")),
@@ -307,6 +350,159 @@ impl ArchiveBackend for ZipBackend {
 
 fn zip_err(e: zip::result::ZipError) -> io::Error {
     io::Error::other(e.to_string())
+}
+
+/// 7z 書庫の読取バックエンド（sevenz-rust2＝純Rust）。`is_solid` を開封時に控え、
+/// ソリッドは `random_access: false`（単一ブロックを毎回頭から復号する＝個別取り出しが
+/// 高コスト）として GUI 側の「一括展開」経路へ倒す。非ソリッドはブロック＝ファイルなので
+/// `random_access: true`（per-file 取り出しが軽い）。書込みは不可。
+pub struct SevenZBackend {
+    path: PathBuf,
+    solid: bool,
+}
+
+impl SevenZBackend {
+    /// 開けることを確認し、ソリッドか否かを控えて構築する（壊れた書庫はここで弾く）。
+    pub fn open(path: &Path) -> io::Result<Self> {
+        let reader = sevenz_rust2::ArchiveReader::open(path, sevenz_rust2::Password::empty())
+            .map_err(sevenz_err)?;
+        let solid = reader.archive().is_solid;
+        Ok(Self {
+            path: path.to_path_buf(),
+            solid,
+        })
+    }
+
+    fn reader(&self) -> io::Result<sevenz_rust2::ArchiveReader<std::fs::File>> {
+        sevenz_rust2::ArchiveReader::open(&self.path, sevenz_rust2::Password::empty())
+            .map_err(sevenz_err)
+    }
+}
+
+impl ArchiveBackend for SevenZBackend {
+    fn caps(&self) -> Caps {
+        Caps {
+            random_access: !self.solid,
+            writable: false,
+        }
+    }
+
+    fn list(&self) -> io::Result<Vec<ArchiveEntry>> {
+        let reader = self.reader()?;
+        let mut out = Vec::new();
+        for f in &reader.archive().files {
+            let path = normalize_inner(&f.name);
+            if path.is_empty() {
+                continue;
+            }
+            out.push(ArchiveEntry {
+                path,
+                is_dir: f.is_directory,
+                size: Some(f.size),
+                packed_size: None,
+                mtime: None,
+                is_encrypted: false,
+            });
+        }
+        Ok(out)
+    }
+
+    fn read(&self, inner: &str) -> io::Result<Vec<u8>> {
+        let want = normalize_inner(inner);
+        let mut reader = self.reader()?;
+        // 正規化名で突き合わせ、書庫が持つ生の格納名を得てから read_file する
+        // （格納名は '\\' 区切りや末尾差異があり得るため）。
+        let stored = reader
+            .archive()
+            .files
+            .iter()
+            .find(|f| !f.is_directory && normalize_inner(&f.name) == want)
+            .map(|f| f.name.clone());
+        let Some(stored) = stored else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "書庫内ファイルが見つかりません",
+            ));
+        };
+        reader.read_file(&stored).map_err(sevenz_err)
+    }
+
+    fn extract_all(
+        &self,
+        dest: &Path,
+        each: &mut dyn FnMut(&str, u64, u64) -> bool,
+    ) -> io::Result<()> {
+        use std::io::Read;
+        let mut reader = self.reader()?;
+        let total = reader
+            .archive()
+            .files
+            .iter()
+            .filter(|f| !f.is_directory)
+            .count() as u64;
+        let mut done = 0u64;
+        let mut io_err: Option<io::Error> = None;
+        // for_each_entries は単一パスでブロックを順次復号する（ソリッドでも一度で全展開）。
+        reader
+            .for_each_entries(&mut |entry: &sevenz_rust2::ArchiveEntry, rd: &mut dyn Read| {
+                let path = normalize_inner(&entry.name);
+                if path.is_empty() {
+                    return Ok(true);
+                }
+                let Some(p) = safe_join(dest, &path) else {
+                    return Ok(true);
+                };
+                if entry.is_directory {
+                    if let Err(e) = std::fs::create_dir_all(&p) {
+                        io_err = Some(e);
+                        return Ok(false);
+                    }
+                    return Ok(true);
+                }
+                if !each(&path, done, total) {
+                    return Ok(false);
+                }
+                if let Some(parent) = p.parent() {
+                    if let Err(e) = std::fs::create_dir_all(parent) {
+                        io_err = Some(e);
+                        return Ok(false);
+                    }
+                }
+                let mut buf = Vec::with_capacity(entry.size as usize);
+                if let Err(e) = rd.read_to_end(&mut buf) {
+                    io_err = Some(e);
+                    return Ok(false);
+                }
+                if let Err(e) = std::fs::write(&p, &buf) {
+                    io_err = Some(e);
+                    return Ok(false);
+                }
+                done += 1;
+                Ok(true)
+            })
+            .map_err(sevenz_err)?;
+        if let Some(e) = io_err {
+            return Err(e);
+        }
+        Ok(())
+    }
+}
+
+fn sevenz_err(e: sevenz_rust2::Error) -> io::Error {
+    io::Error::other(e.to_string())
+}
+
+/// `inner`（'/' 区切り・正規化済み）を `dest` 配下の実パスへ安全に合成する。各セグメントを
+/// 検証し、空/"."/".."や '\\' 混入を弾く（zip-slip 対策）。`None` は不正で展開対象外。
+fn safe_join(dest: &Path, inner: &str) -> Option<PathBuf> {
+    let mut p = dest.to_path_buf();
+    for seg in inner.split('/') {
+        if seg.is_empty() || seg == "." || seg == ".." || seg.contains('\\') {
+            return None;
+        }
+        p.push(seg);
+    }
+    Some(p)
 }
 
 /// 書庫内パスを正規化：'\\' を '/' に、空セグメントと "." を除去して '/' 区切りへ。
@@ -729,5 +925,79 @@ mod tests {
         assert!(list.iter().any(|e| e.path == "VERSION" && !e.is_dir));
         assert_eq!(be.read("VERSION").unwrap(), b"unrar-0.4.0");
         assert!(be.read("nope").is_err());
+    }
+
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
+    }
+
+    /// ソリッド／非ソリッドで `caps().random_access` が反転すること。
+    #[test]
+    fn sevenz_solid_flips_random_access() {
+        assert!(!SevenZBackend::open(&fixture("solid.7z"))
+            .unwrap()
+            .caps()
+            .random_access);
+        assert!(SevenZBackend::open(&fixture("nonsolid.7z"))
+            .unwrap()
+            .caps()
+            .random_access);
+    }
+
+    /// 7z の一覧・個別読取（'\\' 区切りの格納名を '/' へ正規化して扱う）。
+    #[test]
+    fn sevenz_list_and_read() {
+        for name in ["solid.7z", "nonsolid.7z"] {
+            let be = SevenZBackend::open(&fixture(name)).unwrap();
+            let list = be.list().unwrap();
+            assert!(
+                list.iter().any(|e| e.path == "a.txt" && !e.is_dir && e.size == Some(3)),
+                "{name}: a.txt"
+            );
+            assert!(list.iter().any(|e| e.path == "sub" && e.is_dir), "{name}: sub dir");
+            assert!(list.iter().any(|e| e.path == "sub/c.txt"), "{name}: sub/c.txt");
+            assert_eq!(be.read("a.txt").unwrap(), b"AAA", "{name}");
+            assert_eq!(be.read("sub/c.txt").unwrap(), b"CCC", "{name}");
+            assert_eq!(be.read("sub/d.txt").unwrap(), b"DDD", "{name}");
+            assert!(be.read("missing").is_err(), "{name}");
+        }
+    }
+
+    /// `extract_all` がツリーを実FSへ展開し、各ファイルでコールバックが進捗を刻むこと。
+    #[test]
+    fn sevenz_extract_all_writes_tree() {
+        let be = SevenZBackend::open(&fixture("solid.7z")).unwrap();
+        let dest = std::env::temp_dir()
+            .join(format!("rerics_7z_extract_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dest);
+        std::fs::create_dir_all(&dest).unwrap();
+        let mut seen = 0u64;
+        be.extract_all(&dest, &mut |_name, done, total| {
+            assert_eq!(total, 3);
+            seen = done + 1;
+            true
+        })
+        .unwrap();
+        assert_eq!(seen, 3);
+        assert_eq!(std::fs::read(dest.join("a.txt")).unwrap(), b"AAA");
+        assert_eq!(std::fs::read(dest.join("sub").join("c.txt")).unwrap(), b"CCC");
+        assert_eq!(std::fs::read(dest.join("sub").join("d.txt")).unwrap(), b"DDD");
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    /// `extract_all` のコールバックが `false` を返すと途中で止まること。
+    #[test]
+    fn sevenz_extract_all_cancels() {
+        let be = SevenZBackend::open(&fixture("nonsolid.7z")).unwrap();
+        let dest = std::env::temp_dir()
+            .join(format!("rerics_7z_cancel_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dest);
+        std::fs::create_dir_all(&dest).unwrap();
+        be.extract_all(&dest, &mut |_name, _done, _total| false).unwrap();
+        // 1件も展開していない（最初の each で false）。
+        assert!(!dest.join("a.txt").exists());
+        let _ = std::fs::remove_dir_all(&dest);
     }
 }
