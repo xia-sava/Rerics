@@ -56,6 +56,16 @@ pub fn copy_result(ok: usize, skip: usize, err: usize) -> String {
     format!("{ok} Success, {skip} Skip, {err} Error")
 }
 
+/// `Compress {0}`（圧縮への追加の逐次ログ）。
+pub fn compress(name: &str) -> String {
+    format!("Compress {name}")
+}
+
+/// `圧縮に失敗しました。- {0}`（理由も併記する）。
+pub fn compress_failure(name: &str, reason: &str) -> String {
+    format!("圧縮に失敗しました。- {name} ({reason})")
+}
+
 /// `{0} Success, {1} Error`（削除の結果サマリ）。
 pub fn delete_result(ok: usize, err: usize) -> String {
     format!("{ok} Success, {err} Error")
