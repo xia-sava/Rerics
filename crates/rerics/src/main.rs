@@ -87,7 +87,9 @@ enum DebugCmdClass {
 fn debug_command_class(cmd: Command) -> DebugCmdClass {
     use Command::*;
     match cmd {
-        MakeDirectory | CreateFile | Rename | Delete | Copy | Move => DebugCmdClass::ModalWrite,
+        MakeDirectory | CreateFile | Rename | Delete | Copy | Move | Compress | Extract => {
+            DebugCmdClass::ModalWrite
+        }
         OpenSettings | OpenTaskManager => DebugCmdClass::Unsupported,
         _ => DebugCmdClass::NonModal,
     }
@@ -637,6 +639,14 @@ impl MainWindow {
             }
             Command::CreateFile => {
                 self.create_file(is_left)?;
+                return Ok(());
+            }
+            Command::Compress => {
+                self.compress(is_left)?;
+                return Ok(());
+            }
+            Command::Extract => {
+                self.extract_menu(is_left)?;
                 return Ok(());
             }
             Command::ViewFile => {
@@ -2059,6 +2069,96 @@ impl MainWindow {
         let pr = view.page_rows();
         view.state().borrow_mut().set_cursor_position(name, pr);
         view.refresh()?;
+        Ok(())
+    }
+
+    /// アクティブペインの選択項目を新しい zip に圧縮する（実FS のみ）。出力名を尋ね、
+    /// アクティブペインの直下に作る。既存名は上書き確認する。
+    fn compress(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.block_if_archive(is_left, "圧縮") {
+            return Ok(());
+        }
+        let names = self.selected_or_cursor_names(is_left);
+        if names.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        // 既定名：単一選択ならその名 + .zip、複数なら親ディレクトリ名 + .zip。
+        let dir = self.pane(is_left).borrow().path().to_path_buf();
+        let default_name = if names.len() == 1 {
+            format!("{}.zip", names[0])
+        } else {
+            let base = dir
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "archive".to_owned());
+            format!("{base}.zip")
+        };
+        let name = dialog::input_box(
+            &self.wnd,
+            "圧縮",
+            "圧縮ファイル名を入力して下さい。",
+            &default_name,
+            dialog::InputMode::Plain,
+        );
+        let Some(name) = name else {
+            return Ok(());
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(());
+        }
+        let dst_zip = dir.join(name);
+        if dst_zip.exists() {
+            let r = dialog::message_box(
+                &self.wnd,
+                "圧縮",
+                &messages::all_ready_exists(name),
+                dialog::MessageStyle::YesNo,
+            );
+            if r != dialog::MessageResult::Yes {
+                return Ok(());
+            }
+        }
+        self.start_compress(dir, names, dst_zip)
+    }
+
+    /// メニュー「解凍」からの取り出し。アクティブが書庫なら反対の実ペインへ展開する。
+    fn extract_menu(&self, is_left: bool) -> w::AnyResult<()> {
+        if !self.pane(is_left).borrow().is_archive() {
+            self.log.warn("カレントが書庫ではありません");
+            return Ok(());
+        }
+        self.extract_from_archive(is_left)
+    }
+
+    /// 圧縮作成をワーカースレッドで起動する。完了で出力先（＝src と同じ dir）を再読込する。
+    fn start_compress(
+        &self,
+        dir: PathBuf,
+        names: Vec<String>,
+        dst_zip: PathBuf,
+    ) -> w::AnyResult<()> {
+        let control = Arc::new(TaskControl::new());
+        let host = ChannelHost::new(
+            self.task_tx.clone(),
+            self.shutdown.clone(),
+            control.clone(),
+            self.progress_seq.clone(),
+        );
+        let id = self.next_id();
+        let desc = format!("{} -> {}", short_desc(&names), dst_zip.display());
+        self.register_task(id, "圧縮", desc, control)?;
+        let src_dir = dir.clone();
+        std::thread::spawn(move || {
+            rerics_core::run_compress(&host, &src_dir, &names, &dst_zip);
+            let _ = host.tx.send(WorkerEvent::Done {
+                id,
+                kind: OpKind::Copy,
+                src_dir: src_dir.clone(),
+                dst_dir: src_dir,
+            });
+        });
         Ok(())
     }
 
