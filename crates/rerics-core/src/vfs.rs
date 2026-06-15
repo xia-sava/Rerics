@@ -204,6 +204,7 @@ pub fn is_archive_path(p: &Path) -> bool {
         .map(|s| s.to_ascii_lowercase());
     match ext.as_deref() {
         Some("zip") => true,
+        Some("7z") => true,
         #[cfg(feature = "rar")]
         Some("rar") => true,
         _ => false,

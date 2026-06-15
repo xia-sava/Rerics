@@ -51,6 +51,11 @@ struct Inner {
     on_activate: RefCell<Option<ActivateCb>>,
     on_got_focus: RefCell<Option<Box<dyn Fn()>>>,
     on_wheel: RefCell<Option<WheelCb>>,
+    /// 書庫の読込中はプログレスバーを重ね、一覧の代わりに進捗を表示する。
+    loading: Cell<bool>,
+    /// 展開済みファイル数／総数（プログレスバーの充填率に使う。total=0 は不定）。
+    loading_done: Cell<u64>,
+    loading_total: Cell<u64>,
 }
 
 /// ファイル一覧コントロール。
@@ -96,6 +101,9 @@ impl FileListView {
             on_activate: RefCell::new(None),
             on_got_focus: RefCell::new(None),
             on_wheel: RefCell::new(None),
+            loading: Cell::new(false),
+            loading_done: Cell::new(0),
+            loading_total: Cell::new(0),
         });
         let me = Self { wnd, inner };
         me.setup_events();
@@ -137,6 +145,40 @@ impl FileListView {
     pub fn refresh(&self) -> w::AnyResult<()> {
         self.hwnd().InvalidateRect(None, false)?;
         Ok(())
+    }
+
+    /// 読込中プログレスバーを表示開始する（書庫の一括展開待ち等・進捗は 0/0 から）。
+    pub fn set_loading(&self) {
+        self.inner.loading.set(true);
+        self.inner.loading_done.set(0);
+        self.inner.loading_total.set(0);
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    /// 進捗（done/total）を更新する（再描画はタイマの `tick_loading` に任せる）。
+    pub fn set_loading_progress(&self, done: u64, total: u64) {
+        self.inner.loading_done.set(done);
+        self.inner.loading_total.set(total);
+    }
+
+    /// 読込中表示を終了する。
+    pub fn clear_loading(&self) {
+        if self.inner.loading.get() {
+            self.inner.loading.set(false);
+            let _ = self.hwnd().InvalidateRect(None, false);
+        }
+    }
+
+    pub fn is_loading(&self) -> bool {
+        self.inner.loading.get()
+    }
+
+    /// 読込中なら再描画して進捗バーを最新にする（取り込みタイマから毎回呼ぶ）。
+    pub fn tick_loading(&self) {
+        if !self.inner.loading.get() {
+            return;
+        }
+        let _ = self.hwnd().InvalidateRect(None, false);
     }
 
     /// 設定の配色・フォント・スクロールバー幅を反映して再描画する。
@@ -675,6 +717,57 @@ impl FileListView {
         Ok(())
     }
 
+    /// 読込中プログレスバーを中央に描く（一覧の代わり）。進捗テキスト＋充填バー。
+    fn paint_loading(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
+        let colors = self.inner.colors.get();
+        let bg = w::HBRUSH::CreateSolidBrush(rgb(colors.background))?;
+        dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &bg)?;
+
+        let done = self.inner.loading_done.get();
+        let total = self.inner.loading_total.get();
+        let text = if total > 0 {
+            format!("読込中  {}/{}", done, total)
+        } else {
+            "読込中".to_owned()
+        };
+
+        // バー寸法：クライアント幅の 60%（120〜600 でクランプ）×フォント1行高。中央配置。
+        let bar_w = (cw * 6 / 10).clamp(120, 600);
+        let bar_h = (self.inner.font_height.get()).max(12);
+        let bar_x = (cw - bar_w) / 2;
+        let bar_y = (ch - bar_h) / 2;
+
+        // 進捗テキストはバーの少し上に中央寄せ。
+        dc.SetTextColor(rgb(colors.cursor))?;
+        let sz = dc.GetTextExtentPoint32(&text).unwrap_or(w::SIZE { cx: 0, cy: 0 });
+        dc.TextOut(((cw - sz.cx) / 2).max(0), (bar_y - sz.cy - 6).max(0), &text)?;
+
+        // 枠（外周を file_normal で塗り）→ 溝（背景2）→ 充填（cursor）の三層。
+        let border = w::HBRUSH::CreateSolidBrush(rgb(colors.file_normal))?;
+        let track = w::HBRUSH::CreateSolidBrush(rgb(colors.background2))?;
+        let fill = w::HBRUSH::CreateSolidBrush(rgb(colors.cursor))?;
+        let outer = w::RECT { left: bar_x, top: bar_y, right: bar_x + bar_w, bottom: bar_y + bar_h };
+        dc.FillRect(outer, &border)?;
+        let inset = w::RECT {
+            left: outer.left + 1,
+            top: outer.top + 1,
+            right: outer.right - 1,
+            bottom: outer.bottom - 1,
+        };
+        dc.FillRect(inset, &track)?;
+        if total > 0 {
+            let inner_w = inset.right - inset.left;
+            let filled = (inner_w as i64 * done as i64 / total as i64) as i32;
+            if filled > 0 {
+                dc.FillRect(
+                    w::RECT { left: inset.left, top: inset.top, right: inset.left + filled, bottom: inset.bottom },
+                    &fill,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// ターゲットビットマップ選択済みの任意 DC へ全面描画する（フォント準備＋`paint_to`）。
     /// `on_paint` のダブルバッファと、デバッグ制御サーバの窓非依存スナップショットの両方から呼ぶ。
     pub(crate) fn render_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
@@ -689,6 +782,9 @@ impl FileListView {
     }
 
     fn paint_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
+        if self.inner.loading.get() {
+            return self.paint_loading(dc, cw, ch);
+        }
         let colors = self.inner.colors.get();
         let cursor_visible = self.inner.cursor_visible.get();
         let header_h = self.header_height();

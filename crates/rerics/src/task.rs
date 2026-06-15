@@ -107,6 +107,16 @@ pub struct ConflictReply {
     pub all: bool,
 }
 
+/// 書庫一括展開（非ランダムアクセス書庫の読込）の結末。
+pub enum ArchiveOutcome {
+    /// 展開成功（temp_root に全エントリ展開済み）。
+    Ok,
+    /// 利用者が中断した（Esc／タスクマネージャ）。
+    Cancelled,
+    /// 展開に失敗した（理由文字列）。
+    Failed(String),
+}
+
 /// ワーカースレッドから UI スレッドへ送るイベント。
 pub enum WorkerEvent {
     /// ログ1行を追記する。
@@ -125,6 +135,16 @@ pub enum WorkerEvent {
         kind: OpKind,
         src_dir: PathBuf,
         dst_dir: PathBuf,
+    },
+    /// 書庫一括展開の進捗（`is_left` 側ペインに `done/total` を表示）。
+    ArchiveProgress { is_left: bool, done: u64, total: u64 },
+    /// 書庫一括展開の完了。成功なら `temp_root` を提供先として登録する。完了反映は
+    /// 「この書庫を指して読込中のペイン」を UI 側で走査して行うため side は持たない。
+    ArchiveDone {
+        id: u64,
+        archive: PathBuf,
+        temp_root: PathBuf,
+        outcome: ArchiveOutcome,
     },
 }
 
