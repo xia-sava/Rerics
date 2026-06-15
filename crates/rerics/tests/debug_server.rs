@@ -50,6 +50,8 @@ fn debug_server_smoke() {
         ),
     )
     .unwrap();
+    // config.toml は差分上書き。フォントサイズを既定と変えて /presentation への反映を検証する。
+    std::fs::write(data.join("config.toml"), "[font]\nsize = 18\n").unwrap();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_rerics"))
         .arg(format!("--debug-server={PORT}"))
@@ -76,6 +78,10 @@ fn debug_server_smoke() {
     let cur1 = req("GET", "/state/panes/left/cursor", "");
     let badcmd = req("POST", "/command/Nope", "");
     let modal_cmd = req("POST", "/command/MakeDirectory", "");
+    // 外見：config.toml の font size=18 が /presentation に反映されているか。
+    let pres_font = req("GET", "/presentation/font/size", "");
+    let pane_font = req("GET", "/presentation/panes/left/font/size", "");
+    let pres_colors = req("GET", "/presentation/resolved_colors", "");
 
     let _ = child.kill();
     let _ = std::fs::remove_dir_all(&base);
@@ -101,4 +107,12 @@ fn debug_server_smoke() {
     // 書込み許可なしなのでモーダル系コマンドは 400（破壊防止のゲート）。
     let (mst, _) = modal_cmd.expect("modal command");
     assert_eq!(mst, 400, "MakeDirectory without --debug-allow-write should be 400");
+
+    // 外見の設定反映：config.toml の font size=18 が解決値・ペイン保持値の双方に出る。
+    let (_, pf) = pres_font.expect("presentation font size");
+    assert_eq!(pf.trim(), "18", "config font size should reflect in /presentation");
+    let (_, pnf) = pane_font.expect("pane font size");
+    assert_eq!(pnf.trim(), "18", "config font size should reach the pane view");
+    let (_, pc) = pres_colors.expect("resolved colors");
+    assert!(pc.contains("\"cursor\""), "resolved_colors should list palette: {pc}");
 }

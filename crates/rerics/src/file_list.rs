@@ -214,6 +214,23 @@ impl FileListView {
     }
 
     /// クライアント高から1ページ行数を算出する。
+    /// 解決済みの外見情報（色・フォント・行高など、`paint_to` が読むのと同じ保持値）を JSON で返す。
+    /// 設定が描画に反映されているかをピクセルなしでテストするための観測用（デバッグ制御サーバ）。
+    /// `to_value` で全フィールドを自動展開するので、色項目が増えても出し忘れない。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn presentation(&self) -> serde_json::Value {
+        serde_json::json!({
+            "colors": serde_json::to_value(self.inner.colors.get()).unwrap_or_default(),
+            "font": {
+                "family": self.inner.font_family.borrow().clone(),
+                "size": self.inner.font_size.get(),
+            },
+            "header_height": self.header_height(),
+            "item_height": self.item_height(),
+            "scrollbar_width": self.inner.scrollbar_width.get(),
+        })
+    }
+
     /// カーソル行の矩形（自コントロールのクライアント座標 `(x,y,w,h)`）。
     /// カーソルがスクロール範囲外（不可視）なら `None`。デバッグ制御サーバのスナップショット用。
     #[cfg(feature = "debug-server")]

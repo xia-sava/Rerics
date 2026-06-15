@@ -1363,6 +1363,14 @@ impl MainWindow {
                     };
                     let _ = tx.send(r);
                 }
+                debug_server::Request::Presentation { pointer } => {
+                    let v = self.debug_presentation_value();
+                    let r = match v.pointer(&pointer) {
+                        Some(sub) => debug_server::Response::Json(sub.to_string()),
+                        None => debug_server::Response::NotFound,
+                    };
+                    let _ = tx.send(r);
+                }
                 debug_server::Request::Command { name } => self.debug_dispatch_command(&name, tx),
                 debug_server::Request::ViewKey { action } => {
                     let _ = tx.send(self.debug_view_key(&action));
@@ -1938,6 +1946,25 @@ impl MainWindow {
             "tab_bar": { "active": self.active.get(), "labels": self.tab_bar.labels() },
             "tabs": { "active": self.active.get(), "count": tabs.len(), "items": tabs },
             "log": { "lines": log_lines },
+        })
+    }
+
+    /// 解決済みの外見情報を JSON 値で組む（設定が描画に反映されているかのテスト用）。
+    /// 上位＝解決後の設定値（テーマ/配色/フォント/レイアウト寸法）、panes＝各ペインが
+    /// 実際に保持している値（apply_config の配線確認）。いずれも `paint_to` が読むのと同じ出どころ。
+    #[cfg(feature = "debug-server")]
+    fn debug_presentation_value(&self) -> serde_json::Value {
+        use serde_json::json;
+        let cfg = self.config.borrow();
+        json!({
+            "theme": serde_json::to_value(&cfg.theme).unwrap_or_default(),
+            "resolved_colors": serde_json::to_value(cfg.active_colors()).unwrap_or_default(),
+            "font": serde_json::to_value(&cfg.font).unwrap_or_default(),
+            "layout": serde_json::to_value(&cfg.layout).unwrap_or_default(),
+            "panes": {
+                "left": self.view(true).presentation(),
+                "right": self.view(false).presentation(),
+            },
         })
     }
 

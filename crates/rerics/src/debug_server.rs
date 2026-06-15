@@ -79,6 +79,8 @@ pub enum Request {
     /// `GET /state[/<pointer>]`：UI 状態（全体 or JSON Pointer で指すサブツリー）。
     /// `pointer` は RFC6901 形式（例 `/panes/left`・空文字＝全体）。
     State { pointer: String },
+    /// `GET /presentation[/<pointer>]`：解決済みの外見情報（色/フォント/レイアウト寸法）。
+    Presentation { pointer: String },
     /// `POST /command/<Name>`：`Command` をアクティブ側ペインに実行（非モーダルのみ）。
     Command { name: String },
     /// `POST /view/key/<action>`：重ね表示中ビューアの操作（next/prev/close）。
@@ -187,6 +189,10 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::State { pointer: String::new() })
             } else if let Some(rest) = path.strip_prefix("/state/") {
                 Some(Request::State { pointer: format!("/{}", rest.trim_end_matches('/')) })
+            } else if path == "/presentation" {
+                Some(Request::Presentation { pointer: String::new() })
+            } else if let Some(rest) = path.strip_prefix("/presentation/") {
+                Some(Request::Presentation { pointer: format!("/{}", rest.trim_end_matches('/')) })
             } else if path == "/snapshot" || path == "/snapshot.png" {
                 Some(Request::Snapshot { spec: String::new() })
             } else if let Some(rest) = path.strip_prefix("/snapshot/") {
