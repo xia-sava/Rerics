@@ -83,6 +83,20 @@ fn debug_item_json(it: &rerics_core::FileItem, is_cursor: bool) -> serde_json::V
     })
 }
 
+/// スナップショットの範囲指定 `"x,y-WxH"` を解析する。
+#[cfg(feature = "debug-server")]
+fn parse_region(s: &str) -> Option<(i32, i32, i32, i32)> {
+    let (xy, wh) = s.split_once('-')?;
+    let (x, y) = xy.split_once(',')?;
+    let (w, h) = wh.split_once('x')?;
+    Some((
+        x.parse().ok()?,
+        y.parse().ok()?,
+        w.parse().ok()?,
+        h.parse().ok()?,
+    ))
+}
+
 /// デバッグ制御サーバ経由で実行を許可するコマンドか（モーダルを開く/破壊的なものは除外）。
 /// モーダル系（作成/リネーム/削除/コピー/移動/設定/タスク管理）は段階3 で対応するまで弾く。
 #[cfg(feature = "debug-server")]
@@ -1339,6 +1353,7 @@ impl MainWindow {
                 }
                 debug_server::Request::Command { name } => self.debug_run_command(&name),
                 debug_server::Request::ViewKey { action } => self.debug_view_key(&action),
+                debug_server::Request::Snapshot { spec } => self.debug_snapshot(&spec),
             };
             let _ = tx.send(resp);
         }
@@ -1377,6 +1392,239 @@ impl MainWindow {
             Ok(()) => debug_server::Response::Json(self.debug_state_value().to_string()),
             Err(e) => debug_server::Response::Error(format!("view key error: {e}")),
         }
+    }
+
+    /// `GET /snapshot[/<spec>]`：画面 PNG を返す。spec は全体／名前付き要素／数値範囲／要素相対範囲。
+    /// 名前付き要素の矩形は復帰後レイアウトで確定するため、撮影準備（復帰＋再レイアウト）を先に行う。
+    #[cfg(feature = "debug-server")]
+    fn debug_snapshot(&self, spec: &str) -> debug_server::Response {
+        let was_min = self.debug_prepare_capture();
+        let result = self.debug_snapshot_inner(spec);
+        if was_min {
+            self.wnd.hwnd().ShowWindow(co::SW::SHOWMINNOACTIVE);
+        }
+        result
+    }
+
+    /// 撮影準備：最小化中なら復帰し、ループ停止中でも子が正しい位置・内容になるよう手動再レイアウト＋同期再描画。
+    /// 撮影は窓自身の DC から行う（オクルージョン非依存）ので最前面化は不要。戻り値は「元が最小化だったか」。
+    #[cfg(feature = "debug-server")]
+    fn debug_prepare_capture(&self) -> bool {
+        let hwnd = self.wnd.hwnd();
+        let was_min = hwnd.IsIconic();
+        if was_min {
+            hwnd.ShowWindow(co::SW::SHOWNOACTIVATE);
+            // WM_SIZE はループ停止中で届かないので、復帰後サイズで明示的に再レイアウトする。
+            let _ = self.layout();
+        }
+        if let Ok(crc) = hwnd.GetClientRect() {
+            // UPDATENOW で WM_PAINT を同期実行し、窓/子の DC に最新内容を確定させる。
+            let _ = hwnd.RedrawWindow(
+                crc,
+                &w::HRGN::NULL,
+                co::RDW::INVALIDATE | co::RDW::ERASE | co::RDW::UPDATENOW | co::RDW::ALLCHILDREN,
+            );
+        }
+        was_min
+    }
+
+    #[cfg(feature = "debug-server")]
+    fn debug_snapshot_inner(&self, spec: &str) -> debug_server::Response {
+        let segs: Vec<&str> = spec.split('/').filter(|s| !s.is_empty()).collect();
+        let (base_name, region): (Option<&str>, Option<&str>) = match segs.as_slice() {
+            [] => (None, None),
+            [a] if parse_region(a).is_some() => (None, Some(*a)),
+            [a] => (Some(*a), None),
+            [a, b] => (Some(*a), Some(*b)),
+            _ => return debug_server::Response::BadRequest(format!("bad snapshot spec: {spec}")),
+        };
+        let base = match base_name {
+            Some(name) => match self.debug_rect(name) {
+                Some(r) => r,
+                None => {
+                    return debug_server::Response::BadRequest(format!(
+                        "unknown snapshot target: {name}"
+                    ));
+                }
+            },
+            None => match self.debug_rect("client") {
+                Some(r) => r,
+                None => return debug_server::Response::Error("no client rect".into()),
+            },
+        };
+        let rect = match region {
+            Some(rs) => match parse_region(rs) {
+                Some((rx, ry, rw, rh)) => (base.0 + rx, base.1 + ry, rw, rh),
+                None => return debug_server::Response::BadRequest(format!("bad region: {rs}")),
+            },
+            None => base,
+        };
+        match self.capture_client_png(rect) {
+            Ok(png) => debug_server::Response::Png(png),
+            Err(e) => debug_server::Response::Error(format!("snapshot error: {e}")),
+        }
+    }
+
+    /// 名前付き要素のクライアント座標矩形 `(x,y,w,h)`。`_left`/`_right` 省略時はアクティブ側。
+    #[cfg(feature = "debug-server")]
+    fn debug_rect(&self, name: &str) -> Option<(i32, i32, i32, i32)> {
+        let a = !self.active_right.get();
+        match name {
+            "full" | "client" | "window" => {
+                let rc = self.wnd.hwnd().GetClientRect().ok()?;
+                Some((0, 0, rc.right - rc.left, rc.bottom - rc.top))
+            }
+            "tab_bar" => self.rect_in_client(self.tab_bar.hwnd()),
+            "log" => self.rect_in_client(self.log.hwnd()),
+            "path_bar" => self.rect_in_client(self.bar(a).hwnd()),
+            "path_bar_left" => self.rect_in_client(self.bar(true).hwnd()),
+            "path_bar_right" => self.rect_in_client(self.bar(false).hwnd()),
+            "list" => self.rect_in_client(self.view(a).hwnd()),
+            "list_left" => self.rect_in_client(self.view(true).hwnd()),
+            "list_right" => self.rect_in_client(self.view(false).hwnd()),
+            "status_bar" => self.rect_in_client(self.status(a).hwnd()),
+            "status_bar_left" => self.rect_in_client(self.status(true).hwnd()),
+            "status_bar_right" => self.rect_in_client(self.status(false).hwnd()),
+            "pane" => self.pane_bbox(a),
+            "pane_left" => self.pane_bbox(true),
+            "pane_right" => self.pane_bbox(false),
+            "cursor" => self.cursor_rect(a),
+            "cursor_left" => self.cursor_rect(true),
+            "cursor_right" => self.cursor_rect(false),
+            _ => None,
+        }
+    }
+
+    /// 子コントロールの矩形を main 窓のクライアント座標へ変換する。
+    #[cfg(feature = "debug-server")]
+    fn rect_in_client(&self, child: &w::HWND) -> Option<(i32, i32, i32, i32)> {
+        let wr = child.GetWindowRect().ok()?;
+        let origin = self.wnd.hwnd().ClientToScreen(w::POINT { x: 0, y: 0 }).ok()?;
+        Some((
+            wr.left - origin.x,
+            wr.top - origin.y,
+            wr.right - wr.left,
+            wr.bottom - wr.top,
+        ))
+    }
+
+    /// ペイン全体（パスバー＋一覧＋ステータス）の外接矩形。
+    #[cfg(feature = "debug-server")]
+    fn pane_bbox(&self, is_left: bool) -> Option<(i32, i32, i32, i32)> {
+        let a = self.rect_in_client(self.bar(is_left).hwnd())?;
+        let b = self.rect_in_client(self.view(is_left).hwnd())?;
+        let c = self.rect_in_client(self.status(is_left).hwnd())?;
+        let x0 = a.0.min(b.0).min(c.0);
+        let y0 = a.1.min(b.1).min(c.1);
+        let x1 = (a.0 + a.2).max(b.0 + b.2).max(c.0 + c.2);
+        let y1 = (a.1 + a.3).max(b.1 + b.3).max(c.1 + c.3);
+        Some((x0, y0, x1 - x0, y1 - y0))
+    }
+
+    /// アクティブ/指定ペインのカーソル行の矩形（一覧内の行位置を main クライアント座標へ）。
+    #[cfg(feature = "debug-server")]
+    fn cursor_rect(&self, is_left: bool) -> Option<(i32, i32, i32, i32)> {
+        let lr = self.rect_in_client(self.view(is_left).hwnd())?;
+        let (cx, cy, cw, ch) = self.view(is_left).cursor_row_rect()?;
+        Some((lr.0 + cx, lr.1 + cy, cw, ch))
+    }
+
+    /// クライアント全体を「窓自身の DC（親＋各子コントロール）」から合成し BGRA(top-down) で得る。
+    /// 画面スクレイプでなく窓の DC を読むため、他窓に隠れていても・最前面化なしで正しく撮れる。
+    #[cfg(feature = "debug-server")]
+    fn capture_full_bgra(&self) -> w::AnyResult<(Vec<u8>, i32, i32)> {
+        let hwnd = self.wnd.hwnd();
+        let crc = hwnd.GetClientRect()?;
+        let (cw, ch) = (crc.right - crc.left, crc.bottom - crc.top);
+        if cw <= 0 || ch <= 0 {
+            return Err("empty client".into());
+        }
+        let win_dc = hwnd.GetDC()?;
+        let target = win_dc.CreateCompatibleDC()?;
+        let bmp = win_dc.CreateCompatibleBitmap(cw, ch)?;
+        let origin = hwnd.ClientToScreen(w::POINT { x: 0, y: 0 })?;
+        {
+            let _sel = target.SelectObject(&*bmp)?;
+            // 親の chrome/背景（WS_CLIPCHILDREN ゆえ子の領域は除く）。
+            target.BitBlt(
+                w::POINT { x: 0, y: 0 },
+                w::SIZE { cx: cw, cy: ch },
+                &win_dc,
+                w::POINT { x: 0, y: 0 },
+                co::ROP::SRCCOPY,
+            )?;
+            // 可視な子を z-order 逆順（下→上）で重ねる。
+            let mut kids: Vec<w::HWND> = Vec::new();
+            hwnd.EnumChildWindows(|c| {
+                kids.push(c);
+                true
+            });
+            for c in kids.iter().rev() {
+                if !c.IsWindowVisible() {
+                    continue;
+                }
+                let Ok(wr) = c.GetWindowRect() else { continue };
+                let (x, y) = (wr.left - origin.x, wr.top - origin.y);
+                let (w2, h2) = (wr.right - wr.left, wr.bottom - wr.top);
+                if w2 <= 0 || h2 <= 0 {
+                    continue;
+                }
+                let Ok(cdc) = c.GetDC() else { continue };
+                let _ = target.BitBlt(
+                    w::POINT { x, y },
+                    w::SIZE { cx: w2, cy: h2 },
+                    &cdc,
+                    w::POINT { x: 0, y: 0 },
+                    co::ROP::SRCCOPY,
+                );
+            }
+        }
+        let mut bmi = w::BITMAPINFO::default();
+        bmi.bmiHeader.biWidth = cw;
+        bmi.bmiHeader.biHeight = -ch;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = co::BI::RGB;
+        let mut buf = vec![0u8; (cw as usize) * (ch as usize) * 4];
+        unsafe {
+            target.GetDIBits(&*bmp, 0, ch as u32, Some(&mut buf), &mut bmi, co::DIB::RGB_COLORS)?;
+        }
+        Ok((buf, cw, ch))
+    }
+
+    /// 指定クライアント矩形を切り出して PNG にする（全体を合成してから CPU でクロップ）。
+    #[cfg(feature = "debug-server")]
+    fn capture_client_png(&self, rect: (i32, i32, i32, i32)) -> w::AnyResult<Vec<u8>> {
+        let (rx, ry, rw, rh) = rect;
+        if rw <= 0 || rh <= 0 {
+            return Err("empty snapshot region".into());
+        }
+        let (full, cw, ch) = self.capture_full_bgra()?;
+        let mut out = vec![0u8; (rw as usize) * (rh as usize) * 4];
+        for row in 0..rh {
+            let sy = ry + row;
+            if sy < 0 || sy >= ch {
+                continue;
+            }
+            for col in 0..rw {
+                let sx = rx + col;
+                if sx < 0 || sx >= cw {
+                    continue;
+                }
+                let si = ((sy * cw + sx) * 4) as usize;
+                let di = ((row * rw + col) * 4) as usize;
+                // BGRA → RGBA、アルファは不透明に。
+                out[di] = full[si + 2];
+                out[di + 1] = full[si + 1];
+                out[di + 2] = full[si];
+                out[di + 3] = 255;
+            }
+        }
+        let img = image::RgbaImage::from_raw(rw as u32, rh as u32, out)
+            .ok_or("rgba buffer size mismatch")?;
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Png)?;
+        Ok(buf.into_inner())
     }
 
     /// 現在の UI 状態を JSON 値で組む（画面構成要素ほぼ全部・サブツリーは呼び側が JSON Pointer で抽出）。

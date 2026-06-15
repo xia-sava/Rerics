@@ -214,6 +214,26 @@ impl FileListView {
     }
 
     /// クライアント高から1ページ行数を算出する。
+    /// カーソル行の矩形（自コントロールのクライアント座標 `(x,y,w,h)`）。
+    /// カーソルがスクロール範囲外（不可視）なら `None`。デバッグ制御サーバのスナップショット用。
+    #[cfg(feature = "debug-server")]
+    pub fn cursor_row_rect(&self) -> Option<(i32, i32, i32, i32)> {
+        let (cursor, scroll_top) = {
+            let s = self.inner.state.borrow();
+            (s.cursor, s.scroll_top)
+        };
+        if cursor < scroll_top {
+            return None;
+        }
+        let ih = self.item_height();
+        if ih <= 0 {
+            return None;
+        }
+        let y = self.header_height() + (cursor - scroll_top) as i32 * ih;
+        let rc = self.hwnd().GetClientRect().ok()?;
+        Some((0, y, rc.right - rc.left, ih))
+    }
+
     pub fn page_rows(&self) -> usize {
         let Ok(rc) = self.hwnd().GetClientRect() else {
             return 1;

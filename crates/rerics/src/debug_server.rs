@@ -27,11 +27,16 @@ pub enum Request {
     Command { name: String },
     /// `POST /view/key/<action>`：重ね表示中ビューアの操作（next/prev/close）。
     ViewKey { action: String },
+    /// `GET /snapshot[/<spec>]`：画面 PNG。`spec` は ""（全体）・名前付き要素・
+    /// `x,y-WxH`（数値範囲）・`<name>/<x,y-WxH>`（要素相対のサブ範囲）。
+    Snapshot { spec: String },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
 pub enum Response {
     Json(String),
+    /// PNG バイト列（スナップショット）。
+    Png(Vec<u8>),
     /// JSON Pointer がツリーに存在しなかった（404 で返す）。
     NotFound,
     /// 不正な要求（未知コマンド・モーダル禁止等。400）。
@@ -102,6 +107,11 @@ fn handle(req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::State { pointer: String::new() })
             } else if let Some(rest) = path.strip_prefix("/state/") {
                 Some(Request::State { pointer: format!("/{}", rest.trim_end_matches('/')) })
+            } else if path == "/snapshot" || path == "/snapshot.png" {
+                Some(Request::Snapshot { spec: String::new() })
+            } else if let Some(rest) = path.strip_prefix("/snapshot/") {
+                let spec = rest.trim_end_matches('/').trim_end_matches(".png");
+                Some(Request::Snapshot { spec: spec.to_string() })
             } else {
                 None
             }
@@ -127,6 +137,12 @@ fn handle(req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
     match rx.recv() {
         Ok(Response::Json(s)) => {
             let _ = req.respond(json_response(s));
+        }
+        Ok(Response::Png(bytes)) => {
+            let header =
+                tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"image/png"[..])
+                    .expect("valid header");
+            let _ = req.respond(tiny_http::Response::from_data(bytes).with_header(header));
         }
         Ok(Response::NotFound) => {
             let _ = req.respond(

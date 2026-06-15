@@ -5,7 +5,7 @@ edition.workspace = true
 
 [features]
 # 開発専用のローカル制御サーバ（既定 off・リリースには載せない）。
-debug-server = ["dep:tiny_http", "dep:serde_json"]
+debug-server = ["dep:tiny_http", "dep:serde_json", "dep:image"]
 
 [dependencies]
 rerics-core.workspace = true
@@ -14,3 +14,4 @@ windows = { version = "0.62.2", features = ["Win32_Media_MediaFoundation", "Win3
 winsafe.workspace = true
 tiny_http = { version = "0.12", optional = true }
 serde_json = { version = "1", optional = true }
+image = { version = "0.25", optional = true }
