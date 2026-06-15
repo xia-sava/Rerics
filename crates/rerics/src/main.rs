@@ -74,8 +74,11 @@ fn parse_region(s: &str) -> Option<(i32, i32, i32, i32)> {
 /// デバッグ制御サーバから見たコマンドの種別。
 #[cfg(feature = "debug-server")]
 enum DebugCmdClass {
-    /// 即実行して状態を返せる（ナビ/マーク/ソート/タブ/ビューア等）。
+    /// 即実行して状態を返せる（ナビ/マーク/ソート/タブ等）。
     NonModal,
+    /// モーダルを開く可能性がある読取系（ビューア等。書込みではないので allow_write 不要）。
+    /// 単一スレッドの HTTP がモーダル待ちで詰まらないよう、exec の前に応答を返す。
+    MaybeModal,
     /// モーダルを開く＋ファイルを操作し得る（要 `--debug-allow-write`・`/modal/*` で操作）。
     ModalWrite,
     /// デバッグ制御サーバでは未対応（複雑モーダル等）。
@@ -90,6 +93,8 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         MakeDirectory | CreateFile | Rename | Delete | Copy | Move | Compress | Extract => {
             DebugCmdClass::ModalWrite
         }
+        // ViewFile は暗号化書庫でパスワード入力モーダルを開き得る（書込みではない）。
+        ViewFile => DebugCmdClass::MaybeModal,
         OpenSettings | OpenTaskManager => DebugCmdClass::Unsupported,
         _ => DebugCmdClass::NonModal,
     }
@@ -190,6 +195,8 @@ struct MainWindow {
     /// 書庫内メディア閲覧中の先読み（BG プリフェッチ）スレッドへの停止フラグ。
     /// 別の書庫を開く/ビューアを閉じる際に立てて旧スレッドを止める（§7.6）。
     media_prefetch: Rc<RefCell<Option<Arc<AtomicBool>>>>,
+    /// 書庫ごとに一度入力したパスワードを保持する（同一書庫の他エントリで再入力させない）。
+    archive_passwords: Rc<RefCell<std::collections::HashMap<PathBuf, Vec<u8>>>>,
     #[cfg(feature = "debug-server")]
     debug: debug_server::Bridge,
 }
@@ -340,6 +347,7 @@ impl MainWindow {
             shutdown: Arc::new(AtomicBool::new(false)),
             in_dialog: Rc::new(Cell::new(false)),
             media_prefetch: Rc::new(RefCell::new(None)),
+            archive_passwords: Rc::new(RefCell::new(std::collections::HashMap::new())),
             #[cfg(feature = "debug-server")]
             debug: debug_server::Bridge::new(debug_port, debug_allow_write, debug_headless),
         }
@@ -1138,6 +1146,9 @@ impl MainWindow {
                 let n = entries.len();
                 let entries = Rc::new(entries);
 
+                // 暗号化メディアなら開く前にパスワードを確保して resolver で使い回す（平文は None）。
+                let password = self.ensure_media_password(&archive, entries.get(index).map(|(i, _)| i.as_str()));
+
                 // BG プリフェッチ（§7.6）：現在位置を共有 atomic で伝え、別スレッドが近傍を
                 // 先読み展開して共有 mtime キャッシュを温める。FG（resolver）は同期展開で
                 // 割り込み、BG は存在チェックでスキップ＝共有キャッシュ越しに協調する。
@@ -1167,7 +1178,7 @@ impl MainWindow {
                     // BG にカレント位置を伝える（先読みの中心を移動先へ寄せる）。
                     cur.store(i, Ordering::Relaxed);
                     let (inner_file, nm) = entries.get(i)?;
-                    match Self::extract_entry_to_temp(&archive, inner_file, nm) {
+                    match Self::extract_entry_to_temp(&archive, inner_file, nm, password.as_deref()) {
                         Ok(p) => Some(p),
                         Err(e) => {
                             log.error(&format!("書庫内メディアを展開できません: {}: {}", nm, e));
@@ -1285,7 +1296,8 @@ impl MainWindow {
                     continue;
                 }
                 let (inner, name) = &entries[idx];
-                let _ = Self::extract_entry_to_temp(archive, inner, name);
+                // BG は静的呼び＝プロンプト不可。暗号化エントリは展開せず（FG が同期展開で扱う）。
+                let _ = Self::extract_entry_to_temp(archive, inner, name, None);
             }
             // カレント変化を待つ短い休止（FG は同期展開で割り込むので latency は問題にならない）。
             std::thread::sleep(Duration::from_millis(120));
@@ -1343,13 +1355,104 @@ impl MainWindow {
         match loc {
             Location::Real(dir) => read_capped(&dir.join(name), cap),
             Location::Archive { archive, inner } => {
-                let backend = open_archive(&archive)?;
-                let mut bytes = backend.read(&join_inner_path(&inner, name))?;
+                let mut bytes = self.read_archive_entry(&archive, &join_inner_path(&inner, name))?;
                 let truncated = bytes.len() > cap;
                 bytes.truncate(cap);
                 Ok((bytes, truncated))
             }
         }
+    }
+
+    /// 書庫内エントリを読む（暗号化エントリはキャッシュ済み or 入力プロンプトのパスワードで
+    /// 復号する）。パスワードが合えば書庫単位でキャッシュし、同一書庫の他エントリで再入力
+    /// させない。誤入力は数回まで再入力を促す。
+    fn read_archive_entry(&self, archive: &Path, inner: &str) -> std::io::Result<Vec<u8>> {
+        let backend = open_archive(archive)?;
+        let encrypted = backend
+            .list()
+            .ok()
+            .and_then(|es| es.into_iter().find(|e| e.path == inner))
+            .map(|e| e.is_encrypted)
+            .unwrap_or(false);
+        if !encrypted {
+            return backend.read(inner);
+        }
+        // キャッシュ済みパスワードを先に試す。
+        if let Some(pw) = self.archive_passwords.borrow().get(archive).cloned() {
+            if let Ok(b) = backend.read_with_password(inner, Some(&pw)) {
+                return Ok(b);
+            }
+        }
+        for _ in 0..3 {
+            let Some(pw) = self.prompt_password(archive) else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "パスワードが必要です",
+                ));
+            };
+            match backend.read_with_password(inner, Some(pw.as_bytes())) {
+                Ok(b) => {
+                    self.archive_passwords
+                        .borrow_mut()
+                        .insert(archive.to_path_buf(), pw.into_bytes());
+                    return Ok(b);
+                }
+                Err(_) => self.log.warn("パスワードが違うようです"),
+            }
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "パスワードが一致しません",
+        ))
+    }
+
+    /// 書庫のパスワードを入力ダイアログで尋ねる（伏せ字）。
+    fn prompt_password(&self, archive: &Path) -> Option<String> {
+        let name = archive
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        dialog::input_box(
+            &self.wnd,
+            "パスワード",
+            &format!("{} のパスワードを入力して下さい。", name),
+            "",
+            dialog::InputMode::Password,
+        )
+    }
+
+    /// 書庫にキャッシュ済みのパスワードがあれば返す（メディア展開で再利用する）。
+    fn cached_password(&self, archive: &Path) -> Option<Vec<u8>> {
+        self.archive_passwords.borrow().get(archive).cloned()
+    }
+
+    /// 書庫内エントリ `inner` が暗号化されているか（list の is_encrypted を見る）。
+    fn entry_is_encrypted(&self, archive: &Path, inner: &str) -> bool {
+        open_archive(archive)
+            .ok()
+            .and_then(|b| b.list().ok())
+            .and_then(|es| es.into_iter().find(|e| e.path == inner))
+            .map(|e| e.is_encrypted)
+            .unwrap_or(false)
+    }
+
+    /// 暗号化メディアを開く前にパスワードを確保する（キャッシュ→無ければプロンプト→保存）。
+    /// 平文なら `None`。書庫メディアの resolver が展開時に用いる。
+    fn ensure_media_password(&self, archive: &Path, target_inner: Option<&str>) -> Option<Vec<u8>> {
+        let enc = target_inner
+            .map(|t| self.entry_is_encrypted(archive, t))
+            .unwrap_or(false);
+        if !enc {
+            return None;
+        }
+        if let Some(pw) = self.cached_password(archive) {
+            return Some(pw);
+        }
+        let pw = self.prompt_password(archive)?.into_bytes();
+        self.archive_passwords
+            .borrow_mut()
+            .insert(archive.to_path_buf(), pw.clone());
+        Some(pw)
     }
 
     /// 書庫から取り出したファイルの一時展開先。**プロセスごとに分離**して、別インスタンス
@@ -1372,7 +1475,12 @@ impl MainWindow {
     /// （外部から書庫が更新されれば mtime が変わり別 temp に展開＝古い展開物を二度と参照しない）。
     /// 書込みは「一時名→rename」のアトミック方式で、将来 BG 並行展開を足しても書きかけを
     /// 読む競合が起きないようにしておく（計画 §7.6）。
-    fn extract_entry_to_temp(archive: &Path, inner_file: &str, name: &str) -> std::io::Result<PathBuf> {
+    fn extract_entry_to_temp(
+        archive: &Path,
+        inner_file: &str,
+        name: &str,
+        password: Option<&[u8]>,
+    ) -> std::io::Result<PathBuf> {
         // 末尾コンポーネントだけを採り、区切りや ".." での書き出し先逸脱を防ぐ（拡張子は保つ）。
         let safe = Path::new(name)
             .file_name()
@@ -1392,7 +1500,7 @@ impl MainWindow {
         }
         std::fs::create_dir_all(&sub)?;
         let backend = open_archive(archive)?;
-        let bytes = backend.read(inner_file)?;
+        let bytes = backend.read_with_password(inner_file, password)?;
         let tmp = sub.join(format!("{}.tmp.{}", safe, std::process::id()));
         std::fs::write(&tmp, &bytes)?;
         std::fs::rename(&tmp, &path)?;
@@ -1462,6 +1570,15 @@ impl MainWindow {
                     Err(e) => debug_server::Response::Error(format!("exec error: {e}")),
                 };
                 let _ = tx.send(r);
+            }
+            DebugCmdClass::MaybeModal => {
+                // 読取系だが暗号化書庫等でモーダルを開き得る。単一スレッドの HTTP が
+                // モーダル待ちで詰まり `/modal/*` を捌けなくなる（デッドロック）のを避け、
+                // exec の前に応答を返す。モーダルが出なければそのまま実行が終わる。
+                let _ = tx.send(debug_server::Response::Json(
+                    "{\"maybe_modal\":true}".to_string(),
+                ));
+                let _ = self.exec(is_left, cmd);
             }
             DebugCmdClass::ModalWrite => {
                 if !self.debug.allow_write {
@@ -2759,7 +2876,8 @@ impl MainWindow {
                 Location::Real(dir) => dir.join(&name),
                 Location::Archive { archive, inner } => {
                     let inner_file = join_inner_path(&inner, &name);
-                    match Self::extract_entry_to_temp(&archive, &inner_file, &name) {
+                    let pw = self.ensure_media_password(&archive, Some(&inner_file));
+                    match Self::extract_entry_to_temp(&archive, &inner_file, &name, pw.as_deref()) {
                         Ok(p) => p,
                         Err(e) => {
                             self.log
