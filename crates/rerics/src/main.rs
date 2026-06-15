@@ -2264,7 +2264,7 @@ impl MainWindow {
         }
         let view = self.view(is_left);
         view.clear_loading();
-        let items = self.pane(is_left).borrow().read();
+        let items = self.read_side_items(is_left);
         let items = match self.mask(is_left).borrow().as_ref() {
             Some(m) => items
                 .into_iter()
@@ -2295,6 +2295,21 @@ impl MainWindow {
     /// 対象ペインが「未展開の非ランダムアクセス書庫」なら一括展開を非同期で開始する。
     /// 開始したら `true`（呼び側は一覧反映を完了イベントに委ねる）。実FS/RA 書庫/展開済みは
     /// `false`（呼び側は従来どおり同期 populate する）。`caps` は安価にプローブする。
+    /// ペインの一覧を読む。一括展開済み書庫は **temp の実FS から**列挙する（tar.gz 等を毎回
+    /// 再解凍しないため）。それ以外（実FS・RA書庫・未展開）は従来どおり `Pane::read`。
+    fn read_side_items(&self, is_left: bool) -> Vec<rerics_core::FileItem> {
+        let loc = self.pane(is_left).borrow().loc().clone();
+        if let Location::Archive { archive, inner } = &loc {
+            if let Some(root) = self.archive_extracted.borrow().get(archive).cloned() {
+                let dir = root.join(Self::inner_to_pathbuf(inner));
+                if let Ok(items) = rerics_core::read_items(&dir) {
+                    return items;
+                }
+            }
+        }
+        self.pane(is_left).borrow().read()
+    }
+
     fn maybe_start_archive_extract(&self, is_left: bool) -> w::AnyResult<bool> {
         let loc = self.pane(is_left).borrow().loc().clone();
         let Location::Archive { archive, .. } = loc else {

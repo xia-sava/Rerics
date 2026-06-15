@@ -725,8 +725,9 @@ impl FileListView {
 
         let done = self.inner.loading_done.get();
         let total = self.inner.loading_total.get();
+        // done/total はバックエンド毎に意味が違う（7z=件数・tar=消費バイト）が、割合は共通。
         let text = if total > 0 {
-            format!("読込中  {}/{}", done, total)
+            format!("読込中  {}%", (done.min(total) * 100 / total))
         } else {
             "読込中".to_owned()
         };
