@@ -50,6 +50,13 @@ pub trait ArchiveBackend {
         bytes.truncate(cap);
         Ok((bytes, truncated))
     }
+    /// パスワード付きで1エントリを読む。`password=None` は [`read`](Self::read) と同じ。
+    /// 暗号化に対応しない backend は password を無視する（既定実装）。暗号化エントリを
+    /// パスワード無し/誤りで読もうとすると backend 依存のエラーになる。
+    fn read_with_password(&self, inner: &str, password: Option<&[u8]>) -> io::Result<Vec<u8>> {
+        let _ = password;
+        self.read(inner)
+    }
 }
 
 /// 書込みバックエンド（後付け用の seam・現状は実装しない）。
@@ -195,46 +202,61 @@ impl ZipBackend {
     }
 
     /// 名前一致するエントリを最大 `limit` バイト読む（`None` で全部）。戻りは `(bytes, truncated)`。
-    /// `by_name` は zip 内部の UTF-8 化名を使い CP932 名と一致しないため、index 走査で
-    /// 生バイト名を自前デコードして突き合わせる。`limit` 指定時は解凍自体を `take` で打ち切る。
-    fn read_entry(&self, inner: &str, limit: Option<usize>) -> io::Result<(Vec<u8>, bool)> {
+    /// `by_name` は zip 内部の UTF-8 化名を使い CP932 名と一致しないため、生バイト名（raw）で
+    /// index を突き合わせてから読む。`password` 指定時は復号読み（AES/ZipCrypto）。`limit`
+    /// 指定時は解凍自体を `take` で打ち切る。
+    fn read_entry(
+        &self,
+        inner: &str,
+        limit: Option<usize>,
+        password: Option<&[u8]>,
+    ) -> io::Result<(Vec<u8>, bool)> {
         use std::io::Read;
         let want = normalize_inner(inner);
         let mut zip = self.archive()?;
+        // まず生バイト名で対象 index を特定する（暗号化エントリは by_index_raw なら復号不要）。
+        let mut found: Option<usize> = None;
         for i in 0..zip.len() {
-            let mut f = zip.by_index(i).map_err(zip_err)?;
+            let f = zip.by_index_raw(i).map_err(zip_err)?;
             let name = normalize_inner(&decode_name(f.name_raw()));
-            if name != want {
-                continue;
-            }
-            if f.is_dir() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "ディレクトリは読めません",
-                ));
-            }
-            return match limit {
-                Some(cap) => {
-                    let mut buf = Vec::new();
-                    f.take(cap as u64 + 1).read_to_end(&mut buf)?;
-                    let truncated = buf.len() > cap;
-                    buf.truncate(cap);
-                    Ok((buf, truncated))
+            if name == want {
+                if f.is_dir() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "ディレクトリは読めません",
+                    ));
                 }
-                None => {
-                    // 申告サイズは未検証（壊れた/細工書庫は巨大値を書けて、事前確保だけで
-                    // OOM abort し得る）。上限でクランプし、不足分は read_to_end の拡張に任せる。
-                    const PREALLOC_CAP: usize = 16 * 1024 * 1024;
-                    let mut buf = Vec::with_capacity((f.size() as usize).min(PREALLOC_CAP));
-                    f.read_to_end(&mut buf)?;
-                    Ok((buf, false))
-                }
-            };
+                found = Some(i);
+                break;
+            }
         }
-        Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "書庫内ファイルが見つかりません",
-        ))
+        let Some(i) = found else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "書庫内ファイルが見つかりません",
+            ));
+        };
+        let mut f = match password {
+            Some(pw) => zip.by_index_decrypt(i, pw).map_err(zip_err)?,
+            None => zip.by_index(i).map_err(zip_err)?,
+        };
+        match limit {
+            Some(cap) => {
+                let mut buf = Vec::new();
+                f.take(cap as u64 + 1).read_to_end(&mut buf)?;
+                let truncated = buf.len() > cap;
+                buf.truncate(cap);
+                Ok((buf, truncated))
+            }
+            None => {
+                // 申告サイズは未検証（壊れた/細工書庫は巨大値を書けて、事前確保だけで
+                // OOM abort し得る）。上限でクランプし、不足分は read_to_end の拡張に任せる。
+                const PREALLOC_CAP: usize = 16 * 1024 * 1024;
+                let mut buf = Vec::with_capacity((f.size() as usize).min(PREALLOC_CAP));
+                f.read_to_end(&mut buf)?;
+                Ok((buf, false))
+            }
+        }
     }
 }
 
@@ -250,7 +272,8 @@ impl ArchiveBackend for ZipBackend {
         let mut zip = self.archive()?;
         let mut out = Vec::with_capacity(zip.len());
         for i in 0..zip.len() {
-            let f = zip.by_index(i).map_err(zip_err)?;
+            // by_index_raw はメタデータのみ（復号不要）＝暗号化エントリも一覧できる。
+            let f = zip.by_index_raw(i).map_err(zip_err)?;
             let raw = f.name_raw();
             let is_dir = f.is_dir() || raw.last() == Some(&b'/');
             let path = normalize_inner(&decode_name(raw));
@@ -270,11 +293,15 @@ impl ArchiveBackend for ZipBackend {
     }
 
     fn read(&self, inner: &str) -> io::Result<Vec<u8>> {
-        Ok(self.read_entry(inner, None)?.0)
+        Ok(self.read_entry(inner, None, None)?.0)
     }
 
     fn read_capped(&self, inner: &str, cap: usize) -> io::Result<(Vec<u8>, bool)> {
-        self.read_entry(inner, Some(cap))
+        self.read_entry(inner, Some(cap), None)
+    }
+
+    fn read_with_password(&self, inner: &str, password: Option<&[u8]>) -> io::Result<Vec<u8>> {
+        Ok(self.read_entry(inner, None, password)?.0)
     }
 }
 
@@ -488,6 +515,33 @@ mod tests {
         assert_eq!(be.read("a.txt").unwrap(), b"AAA");
         assert_eq!(be.read("b/c.txt").unwrap(), b"CCC");
         assert!(be.read("missing").is_err());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn encrypted_entry_reads_with_password() {
+        use std::io::Write;
+        let path = temp_path("aes");
+        {
+            let f = std::fs::File::create(&path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated)
+                .with_aes_encryption(zip::AesMode::Aes256, "secret");
+            zw.start_file("secret.txt", opts).unwrap();
+            zw.write_all(b"classified").unwrap();
+            zw.finish().unwrap();
+        }
+        let be = ZipBackend::open(&path).unwrap();
+        // 暗号化フラグが立つ。
+        assert!(be.list().unwrap().iter().any(|e| e.path == "secret.txt" && e.is_encrypted));
+        // パスワード無しでは読めない。
+        assert!(be.read("secret.txt").is_err());
+        // 正しいパスワードで復号できる。
+        assert_eq!(
+            be.read_with_password("secret.txt", Some(b"secret")).unwrap(),
+            b"classified"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
