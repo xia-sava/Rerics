@@ -26,7 +26,7 @@ use std::time::Instant;
 
 use file_list::FileListView;
 use log_view::LogView;
-use media_view::MediaView;
+use media_view::{MediaView, NavResolver};
 use pane_view::PaneView;
 use path_bar::PathBarView;
 use status_bar::StatusBarView;
@@ -999,15 +999,43 @@ impl MainWindow {
                 self.media.open(files, index);
             }
             Location::Archive { archive, inner } => {
-                let inner_file = join_inner_path(&inner, name);
-                match Self::extract_entry_to_temp(&archive, &inner_file, name) {
-                    Ok(p) => self.media.open(vec![p], 0),
-                    Err(e) => {
-                        self.log
-                            .error(&format!("書庫内メディアを展開できません: {}: {}", name, e));
-                        return Ok(());
+                // 同階層の閲覧可能メディアを巡回対象にし（実FS と同じ体験）、表示中の位置を求める。
+                // 実パスへの展開は resolver が移動時に1枚ずつ遅延実行する（一括展開しない）。
+                let mut entries: Vec<(String, String)> = Vec::new();
+                let mut index = 0;
+                {
+                    let state = self.view(is_left).state();
+                    let s = state.borrow();
+                    for it in &s.items {
+                        if it.is_dir || it.is_parent {
+                            continue;
+                        }
+                        if MediaKind::from_extension(&it.extension).is_some() {
+                            if it.name == name {
+                                index = entries.len();
+                            }
+                            entries.push((join_inner_path(&inner, &it.name), it.name.clone()));
+                        }
                     }
                 }
+                if entries.is_empty() {
+                    entries.push((join_inner_path(&inner, name), name.to_string()));
+                }
+                let n = entries.len();
+                let entries = Rc::new(entries);
+                let archive = archive.clone();
+                let log = self.log.clone();
+                let resolver: NavResolver = Rc::new(move |i: usize| {
+                    let (inner_file, nm) = entries.get(i)?;
+                    match Self::extract_entry_to_temp(&archive, inner_file, nm) {
+                        Ok(p) => Some(p),
+                        Err(e) => {
+                            log.error(&format!("書庫内メディアを展開できません: {}: {}", nm, e));
+                            None
+                        }
+                    }
+                });
+                self.media.open_nav(n, index, resolver);
             }
         }
         self.show_viewer(ActiveView::Media)
@@ -1147,20 +1175,34 @@ impl MainWindow {
     }
 
     /// 書庫内エントリを一時ディレクトリへ展開し実パスを返す。元の名前を保つ。
-    /// 書庫パス＋内部パスのハッシュでサブディレクトリを分け、同名衝突を避ける。
+    /// キーに**書庫の mtime を含め**、同一キーの temp が既に在れば**再展開せず再利用**する
+    /// （外部から書庫が更新されれば mtime が変わり別 temp に展開＝古い展開物を二度と参照しない）。
+    /// 書込みは「一時名→rename」のアトミック方式で、将来 BG 並行展開を足しても書きかけを
+    /// 読む競合が起きないようにしておく（計画 §7.6）。
     fn extract_entry_to_temp(archive: &Path, inner_file: &str, name: &str) -> std::io::Result<PathBuf> {
-        let backend = open_archive(archive)?;
-        let bytes = backend.read(inner_file)?;
-        let key = format!("{}\u{0}{}", archive.display(), inner_file);
-        let sub = Self::archive_temp_dir().join(format!("{:016x}", hash64(&key)));
-        std::fs::create_dir_all(&sub)?;
         // 末尾コンポーネントだけを採り、区切りや ".." での書き出し先逸脱を防ぐ（拡張子は保つ）。
         let safe = Path::new(name)
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("entry");
+        let stamp = std::fs::metadata(archive)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let key = format!("{}\u{0}{}\u{0}{}", archive.display(), stamp, inner_file);
+        let sub = Self::archive_temp_dir().join(format!("{:016x}", hash64(&key)));
         let path = sub.join(safe);
-        std::fs::write(&path, &bytes)?;
+        if path.is_file() {
+            return Ok(path);
+        }
+        std::fs::create_dir_all(&sub)?;
+        let backend = open_archive(archive)?;
+        let bytes = backend.read(inner_file)?;
+        let tmp = sub.join(format!("{}.tmp.{}", safe, std::process::id()));
+        std::fs::write(&tmp, &bytes)?;
+        std::fs::rename(&tmp, &path)?;
         Ok(path)
     }
 
