@@ -1,4 +1,7 @@
 mod chrome;
+// 常時ビルド（純粋関数＋ユニットテスト）。呼び出し元は debug-server feature 下なので OFF 時は未使用。
+#[allow(dead_code)]
+mod debug_json;
 #[cfg(feature = "debug-server")]
 mod debug_server;
 mod dialog;
@@ -54,29 +57,6 @@ fn wm_restore_maximize() -> co::WM {
     unsafe { co::WM::from_raw(0x8000) }
 }
 
-/// FileItem 1 件をデバッグ `/state` 用の JSON 値へ。
-#[cfg(feature = "debug-server")]
-fn debug_item_json(it: &rerics_core::FileItem, is_cursor: bool) -> serde_json::Value {
-    use serde_json::json;
-    if it.is_parent {
-        return json!({ "name": it.name, "is_parent": true, "is_dir": true, "cursor": is_cursor });
-    }
-    let modified = it
-        .modified
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs());
-    json!({
-        "name": it.name,
-        "is_dir": it.is_dir,
-        "ext": it.extension,
-        "size": it.size,
-        "marked": it.selected,
-        "attrs": debug_attrs(it),
-        "cursor": is_cursor,
-        "modified": modified,
-    })
-}
-
 /// スナップショットの範囲指定 `"x,y-WxH"` を解析する。
 #[cfg(feature = "debug-server")]
 fn parse_region(s: &str) -> Option<(i32, i32, i32, i32)> {
@@ -111,28 +91,6 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         OpenSettings | OpenTaskManager => DebugCmdClass::Unsupported,
         _ => DebugCmdClass::NonModal,
     }
-}
-
-/// 属性フラグを R/H/S/A/D の文字列へ（表示の属性列と同趣旨）。
-#[cfg(feature = "debug-server")]
-fn debug_attrs(it: &rerics_core::FileItem) -> String {
-    let mut s = String::new();
-    if it.is_dir {
-        s.push('D');
-    }
-    if it.readonly {
-        s.push('R');
-    }
-    if it.hidden {
-        s.push('H');
-    }
-    if it.system {
-        s.push('S');
-    }
-    if it.archive {
-        s.push('A');
-    }
-    s
 }
 
 fn main() {
@@ -1954,72 +1912,42 @@ impl MainWindow {
     /// 実際に保持している値（apply_config の配線確認）。いずれも `paint_to` が読むのと同じ出どころ。
     #[cfg(feature = "debug-server")]
     fn debug_presentation_value(&self) -> serde_json::Value {
-        use serde_json::json;
         let cfg = self.config.borrow();
-        json!({
-            "theme": serde_json::to_value(&cfg.theme).unwrap_or_default(),
-            "resolved_colors": serde_json::to_value(cfg.active_colors()).unwrap_or_default(),
-            "font": serde_json::to_value(&cfg.font).unwrap_or_default(),
-            "layout": serde_json::to_value(&cfg.layout).unwrap_or_default(),
-            "panes": {
-                "left": self.view(true).presentation(),
-                "right": self.view(false).presentation(),
-            },
-        })
+        let mut v =
+            debug_json::presentation_top_json(&cfg.theme, &cfg.active_colors(), &cfg.font, &cfg.layout);
+        v["panes"] = serde_json::json!({
+            "left": self.view(true).presentation(),
+            "right": self.view(false).presentation(),
+        });
+        v
     }
 
-    /// 片側ペインの状態を JSON 値で組む（表示対象 items・カーソル・マーク・属性・ソート等）。
+    /// 片側ペインの状態を JSON 値で組む。GUI から値を集め、純粋関数 `debug_json::pane_state_json`
+    /// に渡すだけの薄い層（シリアライズ本体はそちらでユニットテスト済み）。
     #[cfg(feature = "debug-server")]
     fn debug_pane_json(&self, is_left: bool) -> serde_json::Value {
-        use serde_json::json;
         let (location, is_archive) = {
             let pane = self.pane(is_left).borrow();
             (pane.loc_display(), pane.is_archive())
         };
         let view = self.view(is_left);
         let page_rows = view.page_rows();
+        let mask = self.mask(is_left).borrow().clone();
+        let path_bar = self.bar(is_left).text();
+        let status_left = self.status(is_left).left_text();
+        let status_right = self.status(is_left).right_text();
+        let chrome = debug_json::PaneChrome {
+            location: &location,
+            is_archive,
+            page_rows,
+            mask: mask.as_deref(),
+            path_bar: &path_bar,
+            status_left: &status_left,
+            status_right: &status_right,
+        };
         let st = view.state();
         let s = st.borrow();
-        let (sel_count, sel_size) = s.selected_count_size();
-        let visible_end = (s.scroll_top + page_rows).min(s.items.len());
-        let items: Vec<serde_json::Value> = s
-            .items
-            .iter()
-            .enumerate()
-            .map(|(i, it)| debug_item_json(it, i == s.cursor))
-            .collect();
-        let columns: Vec<serde_json::Value> = s
-            .columns
-            .iter()
-            .map(|c| {
-                json!({
-                    "kind": format!("{:?}", c.kind),
-                    "text": c.text,
-                    "width": c.width,
-                    "align": format!("{:?}", c.align),
-                })
-            })
-            .collect();
-        let mask = self.mask(is_left).borrow().clone();
-        json!({
-            "location": location,
-            "is_archive": is_archive,
-            "path_bar": self.bar(is_left).text(),
-            "status_bar": {
-                "left": self.status(is_left).left_text(),
-                "right": self.status(is_left).right_text(),
-            },
-            "cursor": s.cursor,
-            "scroll_top": s.scroll_top,
-            "page_rows": page_rows,
-            "visible": [s.scroll_top, visible_end],
-            "mask": mask,
-            "sort": { "type": format!("{:?}", s.sort_type), "reverse": s.sort_reverse },
-            "selected_count": sel_count,
-            "selected_size": sel_size,
-            "columns": columns,
-            "items": items,
-        })
+        debug_json::pane_state_json(&s, &chrome)
     }
 
     fn mask(&self, is_left: bool) -> &Rc<RefCell<Option<String>>> {

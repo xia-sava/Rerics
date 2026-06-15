@@ -30,7 +30,12 @@ fn req(method: &str, path: &str, body: &str) -> Option<(u16, String)> {
     Some((status, body))
 }
 
+/// 実 exe を起動する e2e 煙テスト。本体起動・HTTP・exec 往復を確認するが、ポートや
+/// デスクトップ等の環境に依存するため `#[ignore]`（普段の `cargo test` からは外す）。
+/// シリアライズの正しさは `debug_json` の純粋ユニットテストが spawn 無しでカバーする。
+/// 実行：`./tools/dev.sh test --features debug-server -- --ignored`
 #[test]
+#[ignore]
 fn debug_server_smoke() {
     // 隔離した data-dir とサンドボックスを用意する。
     let base = std::env::temp_dir().join(format!("rerics_it_{}", std::process::id()));
