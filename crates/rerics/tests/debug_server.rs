@@ -91,6 +91,30 @@ impl Server {
         Server { child, port, base }
     }
 
+    /// `start` と同じだが書込み許可つき（`--debug-allow-write`）で起動する。
+    /// 実FS を破壊的に変更するコマンド（連番リネーム等）の e2e 用。
+    fn start_writable(sandbox_files: &[&str]) -> Server {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("rerics_it_{}_{}", std::process::id(), n));
+        let data = base.join("data");
+        let sbx = base.join("sbx");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&sbx).unwrap();
+        for f in sandbox_files {
+            std::fs::write(sbx.join(f), b"x").unwrap();
+        }
+        std::fs::write(
+            data.join("state.toml"),
+            format!(
+                "active_tab = 0\nsplit_ratio = 0.5\n[[tabs]]\nleft = '{p}'\nright = '{p}'\nactive_right = false\n",
+                p = sbx.display()
+            ),
+        )
+        .unwrap();
+        let (child, port) = spawn_and_wait(&data, true);
+        Server { child, port, base }
+    }
+
     /// HTTP リクエストを投げる。`(status, body)` を返す。
     fn req(&self, method: &str, path: &str, body: &str) -> Option<(u16, String)> {
         req(self.port, method, path, body)
@@ -649,4 +673,90 @@ fn nav_change_drive_dialog() {
     server.req("POST", "/modal/command/ok", "").unwrap();
     let after = poll(&server, "/state/panes/left/location", |b| b.trim() == expected);
     assert_eq!(after.trim(), expected, "selecting the current drive should go to its root");
+}
+
+/// IncrementalSearchDialog＝打鍵ごとにカーソルが一致項目へ追従し、OK で確定する。
+#[test]
+fn find_incremental_search_follows_typing() {
+    let server = Server::start(&["alpha.txt", "banana.txt", "cherry.txt"], "");
+    // items は [.., alpha(1), banana(2), cherry(3)]。
+    server.req("POST", "/command/IncrementalSearchDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"incremental\""), "should open incremental modal: {modal}");
+    assert!(modal.contains("\"has_input\":true"), "should have a text field: {modal}");
+
+    // "ban" と打つとカーソルが banana.txt（index 2）へ追従する。
+    server.req("POST", "/modal/text", "ban").unwrap();
+    let c = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
+    assert_eq!(c.trim(), "2", "cursor should follow typing to banana.txt: {c}");
+
+    // OK で確定。モーダルが閉じてもカーソルは 2 のまま。
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    let c2 = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(c2.trim(), "2", "cursor should stay put after confirm: {c2}");
+}
+
+/// 中止すると開始時のカーソルへ戻す。
+#[test]
+fn find_incremental_search_cancel_restores() {
+    let server = Server::start(&["alpha.txt", "banana.txt", "cherry.txt"], "");
+    // 開始カーソルを 1（alpha）にしておく。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    let origin = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+    assert_eq!(origin.trim(), "1");
+
+    server.req("POST", "/command/IncrementalSearchDialog", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/text", "cher").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "3");
+
+    // 中止で origin(1) に戻る。
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    let c = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(c.trim(), "1", "cancel should restore the original cursor: {c}");
+}
+
+/// DirectoryInformation＝カーソル位置の使用量を計算し結果ダイアログを出す。
+#[test]
+fn info_directory_information() {
+    let server = Server::start(&["a.txt"], "");
+    // ".." から a.txt（1バイト・b"x"）へカーソルを移す。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+
+    // 計算はワーカで走り、完了後に結果モーダルが出る。
+    server.req("POST", "/command/DirectoryInformation", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("ファイル"), "should show a result dialog: {modal}");
+    assert!(modal.contains("1 \u{30d0}\u{30a4}\u{30c8}"), "should count 1 byte: {modal}");
+
+    // 結果ダイアログを閉じる。
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
+/// RenameSequenceDialog＝選択を連番にリネームする（プレフィックス＋0詰め＋拡張子保持）。
+#[test]
+fn rename_sequence_with_prefix() {
+    let server = Server::start_writable(&["a.txt", "b.txt"]);
+    // a.txt(1) と b.txt(2) をマークする（Space＝MarkToggle はマーク後に下へ）。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/MarkToggle", "").unwrap();
+    server.req("POST", "/command/MarkToggle", "").unwrap();
+
+    server.req("POST", "/command/RenameSequenceDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"rename_seq\""), "should open rename_seq modal: {modal}");
+
+    // プレフィックスを "img" に（先頭の Edit）。開始番号 1・桁 3・拡張子保持は既定。
+    server.req("POST", "/modal/text", "img").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+
+    let items = poll(&server, "/state/panes/left/items", |b| b.contains("img001.txt"));
+    assert!(items.contains("\"name\":\"img001.txt\""), "a.txt -> img001.txt: {items}");
+    assert!(items.contains("\"name\":\"img002.txt\""), "b.txt -> img002.txt: {items}");
+    assert!(!items.contains("\"name\":\"a.txt\""), "old a.txt should be gone: {items}");
+    assert!(!items.contains("\"name\":\"b.txt\""), "old b.txt should be gone: {items}");
 }

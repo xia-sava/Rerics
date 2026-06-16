@@ -175,3 +175,8 @@ pub fn move_question(name: &str) -> String {
 pub fn directory_name_question() -> String {
     "ディレクトリ名を入力して下さい。".to_owned()
 }
+
+/// ディレクトリ使用量の結果（{0}=対象・{1}=バイト・{2}=ファイル数・{3}=フォルダ数）。
+pub fn directory_information(target: &str, bytes: u64, files: u64, dirs: u64) -> String {
+    format!("{target} : {bytes} バイト（{files} ファイル / {dirs} フォルダ）")
+}

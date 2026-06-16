@@ -880,6 +880,76 @@ fn glob_one(name: &[char], pat: &[char]) -> bool {
     pi == pat.len()
 }
 
+/// `query`（大小無視・部分一致）に一致する項目の添字を探す。`from` から `forward`
+/// 方向に走査し、`wrap` なら端で折り返す。".."（親）は対象外。query 空・該当なし・
+/// 空リストは `None`。インクリメンタルサーチの心臓部（打鍵ごとに呼ぶ）。
+pub fn find_match(
+    items: &[FileItem],
+    from: usize,
+    query: &str,
+    forward: bool,
+    wrap: bool,
+) -> Option<usize> {
+    if query.is_empty() || items.is_empty() {
+        return None;
+    }
+    let q = query.to_lowercase();
+    let n = items.len();
+    let from = from.min(n - 1);
+    let matches = |i: usize| !items[i].is_parent && items[i].name.to_lowercase().contains(&q);
+    // 走査する件数：折り返し時は全件、片方向のみなら端まで。
+    let count = if wrap {
+        n
+    } else if forward {
+        n - from
+    } else {
+        from + 1
+    };
+    for k in 0..count {
+        // forward なら from→末尾（必要なら先頭へ折り返し）、backward なら from→先頭。
+        let i = if forward {
+            (from + k) % n
+        } else {
+            (from + n - (k % n)) % n
+        };
+        if matches(i) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// 連番リネームの新名を生成する。各 `names[i]` を `{prefix}{番号:0digits}{元拡張子?}`
+/// に変換する。`start` から連番、`digits` 桁で0詰め、`keep_ext` なら元の拡張子
+/// （先頭ドットつき）を残す。GUI から独立した純関数（プレビューと実行で共用）。
+pub fn sequence_names(
+    names: &[String],
+    prefix: &str,
+    start: u64,
+    digits: usize,
+    keep_ext: bool,
+) -> Vec<String> {
+    let width = digits.max(1);
+    names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let num = start + i as u64;
+            let ext = if keep_ext { ext_with_dot(name) } else { String::new() };
+            format!("{prefix}{num:0width$}{ext}")
+        })
+        .collect()
+}
+
+/// ファイル名から拡張子を先頭ドットつきで取り出す（"a.txt"→".txt"・".bashrc"や
+/// 拡張子なしは ""）。最後のドット以降を拡張子とみなす。
+fn ext_with_dot(name: &str) -> String {
+    match name.rsplit_once('.') {
+        Some((base, ext)) if !base.is_empty() => format!(".{ext}"),
+        _ => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -891,6 +961,42 @@ mod tests {
 
     fn dir(name: &str) -> FileItem {
         FileItem::bare(name.to_owned(), true)
+    }
+
+    #[test]
+    fn find_match_direction_wrap_and_parent() {
+        let items = vec![
+            FileItem::parent(),
+            file("Apple.txt"),
+            file("banana.txt"),
+            file("Cherry.txt"),
+            file("apricot.txt"),
+        ];
+        // 大小無視・部分一致・先頭から。
+        assert_eq!(find_match(&items, 0, "ap", true, false), Some(1)); // Apple
+        // index2 から前方＝apricot。
+        assert_eq!(find_match(&items, 2, "ap", true, false), Some(4));
+        // 折り返し無しで後ろに無ければ自身のみ評価。
+        assert_eq!(find_match(&items, 4, "ap", true, false), Some(4));
+        // 折り返しありで末尾から banana を拾う。
+        assert_eq!(find_match(&items, 4, "ban", true, true), Some(2));
+        // 後方検索。
+        assert_eq!(find_match(&items, 3, "ap", false, false), Some(1));
+        // 該当なし・空クエリ・".." は対象外。
+        assert_eq!(find_match(&items, 0, "zzz", true, true), None);
+        assert_eq!(find_match(&items, 0, "", true, true), None);
+        assert_eq!(find_match(&items, 0, "..", true, false), None);
+    }
+
+    #[test]
+    fn sequence_names_pads_keeps_or_drops_ext() {
+        let names = vec!["a.txt".to_owned(), "b.jpg".to_owned(), "noext".to_owned()];
+        // 拡張子を保持。
+        let out = sequence_names(&names, "img", 1, 3, true);
+        assert_eq!(out, vec!["img001.txt", "img002.jpg", "img003"]);
+        // 拡張子を残さず・桁上がりも 0 詰め幅で。
+        let out2 = sequence_names(&names, "p", 9, 2, false);
+        assert_eq!(out2, vec!["p09", "p10", "p11"]);
     }
 
     fn state_with(n: usize) -> FileListState {
