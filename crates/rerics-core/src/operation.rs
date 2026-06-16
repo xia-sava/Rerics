@@ -1156,7 +1156,7 @@ mod tests {
 
     impl crate::ArchiveBackend for MockArchive {
         fn caps(&self) -> crate::Caps {
-            crate::Caps { random_access: true, writable: false }
+            crate::Caps { random_access: true, ..Default::default() }
         }
         fn list(&self) -> std::io::Result<Vec<ArchiveEntry>> {
             Ok(self.entries.clone())

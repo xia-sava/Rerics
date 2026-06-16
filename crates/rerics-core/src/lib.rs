@@ -14,7 +14,9 @@ mod status;
 mod vfs;
 mod viewer;
 
-pub use archive::{ArchiveBackend, ArchiveEntry, ArchiveWriter, Caps, open_archive};
+pub use archive::{
+    ArchiveBackend, ArchiveEntry, ArchiveWriter, Caps, open_archive, open_archive_writer,
+};
 pub use config::{
     Config, DEFAULT_CONFIG_TOML, FontSpec, Layout, ResolvedTheme, State, TabState, Theme,
     ThemeColors, WindowState, clamp_to_work, config_path, data_dir, load_toml, save_toml,
