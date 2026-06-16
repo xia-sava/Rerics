@@ -180,6 +180,8 @@ struct MainWindow {
     log: LogView,
     viewer: ViewerView,
     media: MediaView,
+    /// ファイル一覧のシェルアイコンキャッシュ（左右ペイン共有・非同期ローダ保持）。
+    icon_cache: Rc<icons::IconCache>,
     /// 現在重ねているビューア。None 以外の間はキー入力をビューア操作へ振り向ける。
     active_view: Rc<Cell<ActiveView>>,
     key_sink: gui::WindowControl,
@@ -370,6 +372,7 @@ impl MainWindow {
             log,
             viewer,
             media,
+            icon_cache,
             active_view: Rc::new(Cell::new(ActiveView::None)),
             key_sink,
             menu_bar: Rc::new(menu_bar),
@@ -458,6 +461,17 @@ impl MainWindow {
             Ok(0)
         });
 
+        // 非同期アイコンローダの完了通知。結果を取り込み、両ペインを再描画する。
+        let this = self.clone();
+        let icons_ready = unsafe { co::WM::from_raw(icons::WM_ICONS_READY) };
+        self.wnd.on().wm(icons_ready, move |_| {
+            if this.icon_cache.drain_results() {
+                let _ = this.view(true).refresh();
+                let _ = this.view(false).refresh();
+            }
+            Ok(0)
+        });
+
         let this = self.clone();
         self.splitter.on_drag(move |splitter_left| {
             let _ = this.drag_splitter(splitter_left);
@@ -471,6 +485,8 @@ impl MainWindow {
         let this = self.clone();
         self.wnd.on().wm_create(move |_| {
             this.wnd.hwnd().SetMenu(&this.menu_bar)?;
+            // 非同期アイコンローダを起動（完了は WM_ICONS_READY で受ける）。
+            this.icon_cache.start(this.wnd.hwnd().ptr() as isize);
             // デバッグ制御サーバ起動時は本体を最小化で立ち上げ、作業の邪魔をしない。
             #[cfg(feature = "debug-server")]
             let debug_minimized = this.debug.port.is_some();
@@ -990,6 +1006,12 @@ impl MainWindow {
         self.view(!active_is_left).set_cursor_visible(false);
         self.bar(true).set_path(&snap.left_path);
         self.bar(false).set_path(&snap.right_path);
+        // per-file アイコンの基準ディレクトリを両ペインに設定（実FSのみ）。
+        for is_left in [true, false] {
+            let real_dir =
+                self.pane(is_left).borrow().loc().as_real_path().map(|p| p.to_path_buf());
+            self.view(is_left).set_dir(real_dir);
+        }
         self.view(true).autofit_columns()?;
         self.view(false).autofit_columns()?;
         self.view(true).refresh()?;
@@ -2524,6 +2546,9 @@ impl MainWindow {
             }
         }
         self.bar(is_left).set_path(&path);
+        // per-file アイコン取得の基準ディレクトリ（実FSのみ。書庫内は None＝汎用アイコン）。
+        let real_dir = self.pane(is_left).borrow().loc().as_real_path().map(|p| p.to_path_buf());
+        view.set_dir(real_dir);
         view.autofit_columns()?;
         view.refresh()?;
         self.update_selected_info(is_left);
