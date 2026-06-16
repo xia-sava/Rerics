@@ -1,5 +1,6 @@
 theme = "system"
 bookmarks = []
+editor = "notepad.exe"
 
 [font]
 family = "BIZ UDGothic"
@@ -85,6 +86,7 @@ align = "Left"
 
 [keybinds]
 A = "ReverseAllFile"
+"Alt+Enter" = "PropertyDialog"
 "Alt+Left" = "HistoryBack"
 "Alt+Right" = "HistoryForward"
 BackSpace = "ToParent"
@@ -104,6 +106,7 @@ C = "Copy"
 D = "Delete"
 Del = "SendToRecycled"
 Down = "CursorDown"
+E = "Edit"
 Enter = "EnterDir"
 Esc = "OpenTaskManager"
 F = "IncrementalSearchDialog"
