@@ -19,19 +19,30 @@ pub mod vk {
     pub const RIGHT: u16 = 0x27;
     pub const DOWN: u16 = 0x28;
     pub const ESCAPE: u16 = 0x1B;
+    pub const F1: u16 = 0x70;
+    pub const F2: u16 = 0x71;
+    pub const F4: u16 = 0x73;
     pub const F5: u16 = 0x74;
     pub const F7: u16 = 0x76;
     pub const TAB: u16 = 0x09;
     pub const A: u16 = 0x41;
     pub const C: u16 = 0x43;
+    pub const D: u16 = 0x44;
+    pub const F: u16 = 0x46;
+    pub const I: u16 = 0x49;
+    pub const J: u16 = 0x4A;
+    pub const K: u16 = 0x4B;
+    pub const L: u16 = 0x4C;
     pub const M: u16 = 0x4D;
     pub const O: u16 = 0x4F;
+    pub const P: u16 = 0x50;
+    pub const Q: u16 = 0x51;
     pub const R: u16 = 0x52;
-    pub const V: u16 = 0x56;
-    pub const D: u16 = 0x44;
-    pub const L: u16 = 0x4C;
     pub const T: u16 = 0x54;
+    pub const U: u16 = 0x55;
+    pub const V: u16 = 0x56;
     pub const W: u16 = 0x57;
+    pub const Y: u16 = 0x59;
     pub const D0: u16 = 0x30;
     pub const D1: u16 = 0x31;
     pub const D2: u16 = 0x32;
@@ -223,6 +234,9 @@ const KEY_NAMES: &[(u16, &str)] = &[
     (vk::RIGHT, "Right"),
     (vk::DOWN, "Down"),
     (vk::ESCAPE, "Esc"),
+    (vk::F1, "F1"),
+    (vk::F2, "F2"),
+    (vk::F4, "F4"),
     (vk::F5, "F5"),
     (vk::F7, "F7"),
     (vk::TAB, "Tab"),
@@ -327,51 +341,71 @@ pub struct KeyMap {
 }
 
 impl Default for KeyMap {
-    /// デフォルトのキーバインド（現状はカーソル/ナビ/マーク系のみ。順次拡充）。
+    /// デフォルトのキーバインド＝**原作 Records 標準**（実装済みコマンド分のみ）。
+    /// 未実装/引数付きの原作割当は載せず、コマンド実装時に活性化する。個人設定は
+    /// 実機の config.toml で上乗せする方針（`(キーバインド資料)` 参照）。
+    /// タブ操作のみ原作 Dock 相当（Ctrl+Tab 等）を補う。
     fn default() -> Self {
         use Command::*;
         let mut m = Self::new();
+        // カーソル移動（原作: End/Home Control / PageUp/Down）。
         m.bind(KeyChord::key(vk::UP), CursorUp);
         m.bind(KeyChord::key(vk::DOWN), CursorDown);
-        m.bind(KeyChord::key(vk::HOME), CursorTop);
-        m.bind(KeyChord::key(vk::END), CursorEnd);
         m.bind(KeyChord::key(vk::PRIOR), CursorPageUp);
         m.bind(KeyChord::key(vk::NEXT), CursorPageDown);
+        m.bind(KeyChord::new(vk::HOME, true, false, false), CursorTop);
+        m.bind(KeyChord::new(vk::END, true, false, false), CursorEnd);
+        // 侵入・親・ルート・履歴・フォーカス（原作: Enter=Open / BackSpace / Pipe / Alt+←→）。
         m.bind(KeyChord::key(vk::RETURN), EnterDir);
         m.bind(KeyChord::key(vk::BACK), ToParent);
+        m.bind(KeyChord::key(vk::OEM_5), ToRoot);
+        m.bind(KeyChord::new(vk::LEFT, false, false, true), HistoryBack);
+        m.bind(KeyChord::new(vk::RIGHT, false, false, true), HistoryForward);
         m.bind(KeyChord::key(vk::LEFT), FocusLeft);
         m.bind(KeyChord::key(vk::RIGHT), FocusRight);
+        m.bind(KeyChord::key(vk::F4), ChangeDirectoryDialog);
+        m.bind(KeyChord::key(vk::J), JumpDialog);
+        // 選択（原作: Space=ReverseFile / A=ReverseAllFile・Shift+A=ReverseAll・Ctrl+A=SelectAll / Home=ClearAll）。
         m.bind(KeyChord::key(vk::SPACE), MarkToggle);
-        m.bind(KeyChord::key(vk::F5), Reload);
-        m.bind(KeyChord::key(vk::ESCAPE), ClearAll);
+        m.bind(KeyChord::key(vk::A), ReverseAllFile);
+        m.bind(KeyChord::new(vk::A, false, true, false), ReverseAll);
         m.bind(KeyChord::new(vk::A, true, false, false), SelectAll);
-        m.bind(KeyChord::new(vk::D1, true, false, false), SortByName);
-        m.bind(KeyChord::new(vk::D2, true, false, false), SortByExtension);
-        m.bind(KeyChord::new(vk::D3, true, false, false), SortBySize);
-        m.bind(KeyChord::new(vk::D4, true, false, false), SortByDate);
-        m.bind(KeyChord::new(vk::D0, true, false, false), SortReverseToggle);
+        m.bind(KeyChord::key(vk::HOME), ClearAll);
+        // 検索（原作: F=IncrementalSearchDialog）。
+        m.bind(KeyChord::key(vk::F), IncrementalSearchDialog);
+        // ファイル操作（原作: C/M/D/R・Shift+R=連番・K=mkdir・P=圧縮・U=展開）。
+        m.bind(KeyChord::key(vk::C), Copy);
+        m.bind(KeyChord::key(vk::M), Move);
+        m.bind(KeyChord::key(vk::D), Delete);
+        m.bind(KeyChord::key(vk::R), Rename);
+        m.bind(KeyChord::key(vk::F2), Rename);
+        m.bind(KeyChord::new(vk::R, false, true, false), RenameSequenceDialog);
+        m.bind(KeyChord::key(vk::K), MakeDirectory);
+        m.bind(KeyChord::key(vk::P), Compress);
+        m.bind(KeyChord::key(vk::U), Extract);
+        // 表示・ペイン（原作: V=View / O・Shift+O / Ctrl+←→=最大化 / Y・Shift+P=マスク）。
+        m.bind(KeyChord::key(vk::V), ViewFile);
+        m.bind(KeyChord::key(vk::O), OppositeToCurrent);
+        m.bind(KeyChord::new(vk::O, false, true, false), CurrentToOpposite);
+        m.bind(KeyChord::new(vk::RIGHT, true, false, false), MaximizeLeft);
+        m.bind(KeyChord::new(vk::LEFT, true, false, false), MaximizeRight);
+        m.bind(KeyChord::key(vk::Y), PathMask);
+        m.bind(KeyChord::new(vk::P, false, true, false), PathMask);
+        // ドライブ（原作: Shift+←→）。
+        m.bind(KeyChord::new(vk::LEFT, false, true, false), PreviousDrive);
+        m.bind(KeyChord::new(vk::RIGHT, false, true, false), NextDrive);
+        // 情報・システム（原作: I=使用量 / Esc=タスク / Shift+Home=再読込・F5 / Shift+F1=設定 / Q=Quit）。
+        m.bind(KeyChord::key(vk::I), DirectoryInformation);
+        m.bind(KeyChord::key(vk::ESCAPE), OpenTaskManager);
+        m.bind(KeyChord::new(vk::HOME, false, true, false), Reload);
+        m.bind(KeyChord::key(vk::F5), Reload);
+        m.bind(KeyChord::new(vk::F1, false, true, false), OpenSettings);
+        m.bind(KeyChord::key(vk::Q), Quit);
+        // タブ（原作 Dock 相当・xia GlobalKeyBinds 準拠）。
         m.bind(KeyChord::new(vk::TAB, true, false, false), PageNext);
         m.bind(KeyChord::new(vk::TAB, true, true, false), PagePrevious);
         m.bind(KeyChord::new(vk::T, true, false, false), NewTab);
         m.bind(KeyChord::new(vk::W, true, false, false), CloseTab);
-        m.bind(KeyChord::key(vk::F7), MakeDirectory);
-        m.bind(KeyChord::key(vk::C), Copy);
-        m.bind(KeyChord::key(vk::M), Move);
-        m.bind(KeyChord::key(vk::O), OppositeToCurrent);
-        m.bind(KeyChord::new(vk::O, false, true, false), CurrentToOpposite);
-        m.bind(KeyChord::key(vk::R), Rename);
-        m.bind(KeyChord::key(vk::D), Delete);
-        m.bind(KeyChord::new(vk::F7, false, true, false), CreateFile);
-        m.bind(KeyChord::key(vk::V), ViewFile);
-        m.bind(KeyChord::new(vk::RIGHT, false, true, false), NextDrive);
-        m.bind(KeyChord::new(vk::LEFT, false, true, false), PreviousDrive);
-        m.bind(KeyChord::new(vk::RIGHT, true, false, false), MaximizeLeft);
-        m.bind(KeyChord::new(vk::LEFT, true, false, false), MaximizeRight);
-        m.bind(KeyChord::new(vk::RIGHT, true, true, false), BorderRight);
-        m.bind(KeyChord::new(vk::LEFT, true, true, false), BorderLeft);
-        m.bind(KeyChord::key(vk::W), PathMask);
-        m.bind(KeyChord::new(vk::W, false, true, false), SelectMask);
-        m.bind(KeyChord::new(vk::L, true, false, false), OpenTaskManager);
         m
     }
 }
@@ -435,28 +469,46 @@ mod tests {
 
     #[test]
     fn default_binds_select_and_reload() {
+        // 原作: A=ReverseAllFile・Shift+A=ReverseAll・Ctrl+A=SelectAll、Home=ClearAll、
+        // Esc=TaskManagerDialog、F5/Shift+Home=Reload。
         let m = KeyMap::default();
+        assert_eq!(m.resolve(&KeyChord::key(vk::A)), Some(Command::ReverseAllFile));
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::A, false, true, false)),
+            Some(Command::ReverseAll)
+        );
         assert_eq!(
             m.resolve(&KeyChord::new(vk::A, true, false, false)),
             Some(Command::SelectAll)
         );
-        assert_eq!(m.resolve(&KeyChord::key(vk::A)), None);
+        assert_eq!(m.resolve(&KeyChord::key(vk::HOME)), Some(Command::ClearAll));
         assert_eq!(m.resolve(&KeyChord::key(vk::F5)), Some(Command::Reload));
-        assert_eq!(m.resolve(&KeyChord::key(vk::ESCAPE)), Some(Command::ClearAll));
+        assert_eq!(m.resolve(&KeyChord::key(vk::ESCAPE)), Some(Command::OpenTaskManager));
     }
 
     #[test]
-    fn default_binds_sort() {
+    fn default_binds_nav_and_search() {
+        // 今セッションのコマンドが原作キーで活性化していること。
         let m = KeyMap::default();
+        assert_eq!(m.resolve(&KeyChord::key(vk::OEM_5)), Some(Command::ToRoot));
         assert_eq!(
-            m.resolve(&KeyChord::new(vk::D2, true, false, false)),
-            Some(Command::SortByExtension)
+            m.resolve(&KeyChord::new(vk::LEFT, false, false, true)),
+            Some(Command::HistoryBack)
         );
         assert_eq!(
-            m.resolve(&KeyChord::new(vk::D0, true, false, false)),
-            Some(Command::SortReverseToggle)
+            m.resolve(&KeyChord::new(vk::RIGHT, false, false, true)),
+            Some(Command::HistoryForward)
         );
-        assert_eq!(m.resolve(&KeyChord::key(vk::D2)), None);
+        assert_eq!(m.resolve(&KeyChord::key(vk::F4)), Some(Command::ChangeDirectoryDialog));
+        assert_eq!(m.resolve(&KeyChord::key(vk::J)), Some(Command::JumpDialog));
+        assert_eq!(m.resolve(&KeyChord::key(vk::F)), Some(Command::IncrementalSearchDialog));
+        assert_eq!(m.resolve(&KeyChord::key(vk::I)), Some(Command::DirectoryInformation));
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::R, false, true, false)),
+            Some(Command::RenameSequenceDialog)
+        );
+        // 原作標準にキーが無いコマンドは既定では未割当（個人 config で付ける）。
+        assert_eq!(m.resolve(&KeyChord::key(vk::OEM_6)), None); // ] = PathHistoryDialog は個人設定
     }
 
     #[test]
@@ -482,11 +534,9 @@ mod tests {
 
     #[test]
     fn default_binds_make_directory() {
+        // 原作: K=MakeDirectoryDialog。
         let m = KeyMap::default();
-        assert_eq!(
-            m.resolve(&KeyChord::key(vk::F7)),
-            Some(Command::MakeDirectory)
-        );
+        assert_eq!(m.resolve(&KeyChord::key(vk::K)), Some(Command::MakeDirectory));
     }
 
     #[test]
@@ -514,12 +564,11 @@ mod tests {
     }
 
     #[test]
-    fn default_binds_create_file() {
+    fn default_binds_compress_extract() {
+        // 原作: P=PackDialog（圧縮）・U=UnPack（展開）。
         let m = KeyMap::default();
-        assert_eq!(
-            m.resolve(&KeyChord::new(vk::F7, false, true, false)),
-            Some(Command::CreateFile)
-        );
+        assert_eq!(m.resolve(&KeyChord::key(vk::P)), Some(Command::Compress));
+        assert_eq!(m.resolve(&KeyChord::key(vk::U)), Some(Command::Extract));
     }
 
     #[test]
@@ -537,11 +586,12 @@ mod tests {
 
     #[test]
     fn default_binds_mask() {
+        // 原作: Y=PathMaskDialog・Shift+P=PathMaskDialog。SelectMask は標準キー無し。
         let m = KeyMap::default();
-        assert_eq!(m.resolve(&KeyChord::key(vk::W)), Some(Command::PathMask));
+        assert_eq!(m.resolve(&KeyChord::key(vk::Y)), Some(Command::PathMask));
         assert_eq!(
-            m.resolve(&KeyChord::new(vk::W, false, true, false)),
-            Some(Command::SelectMask)
+            m.resolve(&KeyChord::new(vk::P, false, true, false)),
+            Some(Command::PathMask)
         );
     }
 
