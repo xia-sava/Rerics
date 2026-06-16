@@ -753,8 +753,10 @@ impl FileListState {
                 if item.is_dir {
                     "<DIR>".to_owned()
                 } else {
-                    // サイズ不明（書庫内の単体圧縮で安く取れない形式等）は 0 と詐称せず空欄。
-                    item.size.map(format_size).unwrap_or_default()
+                    // サイズ不明（書庫内の単体圧縮で安く取れない形式等）は 0 と詐称せず "--"。
+                    item.size
+                        .map(format_size)
+                        .unwrap_or_else(|| "--".to_owned())
                 }
             }
             ColumnKind::CreateTime => format_time(item.created, "%Y/%m/%d %H:%M"),

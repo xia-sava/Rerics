@@ -813,6 +813,7 @@ fn uncompressed_size(path: &Path, comp: Comp) -> Option<u64> {
     match comp {
         Comp::Gz => gz_isize(path),
         Comp::Xz => xz_uncompressed_size(path),
+        Comp::Zstd => zstd_content_size(path),
         _ => None,
     }
 }
@@ -861,6 +862,50 @@ fn xz_uncompressed_size(path: &Path) -> Option<u64> {
         total = total.checked_add(uncompressed)?;
     }
     Some(total)
+}
+
+/// zstd フレームヘッダの Frame_Content_Size（展開後サイズ）を読む（解凍不要）。ヘッダに
+/// サイズが無い場合（FCS_flag=0 かつ非 single-segment）は `None`。
+fn zstd_content_size(path: &Path) -> Option<u64> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut buf = [0u8; 18];
+    let n = f.read(&mut buf).ok()?;
+    if n < 5 || buf[0..4] != [0x28, 0xB5, 0x2F, 0xFD] {
+        return None;
+    }
+    let desc = buf[4];
+    let fcs_flag = desc >> 6;
+    let single_segment = (desc >> 5) & 1;
+    let did_flag = desc & 0x3;
+    let mut pos = 5usize;
+    if single_segment == 0 {
+        pos += 1; // Window_Descriptor
+    }
+    pos += match did_flag {
+        1 => 1,
+        2 => 2,
+        3 => 4,
+        _ => 0,
+    };
+    let fcs_size = match fcs_flag {
+        0 if single_segment == 1 => 1,
+        0 => return None,
+        1 => 2,
+        2 => 4,
+        3 => 8,
+        _ => return None,
+    };
+    if pos + fcs_size > n {
+        return None;
+    }
+    let b = &buf[pos..pos + fcs_size];
+    Some(match fcs_size {
+        1 => b[0] as u64,
+        2 => u16::from_le_bytes([b[0], b[1]]) as u64 + 256,
+        4 => u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as u64,
+        _ => u64::from_le_bytes(b.try_into().ok()?),
+    })
 }
 
 /// xz の可変長整数（little-endian base-128・最上位ビット=継続）。
@@ -1436,14 +1481,14 @@ mod tests {
     /// 単体圧縮（gz/xz）＝1エントリ（圧縮拡張子を除いた名前）・ランダムアクセス可・読む時に解凍。
     #[test]
     fn single_file_compressed_one_entry() {
-        for name in ["note.txt.xz", "note.txt.gz"] {
+        for name in ["note.txt.xz", "note.txt.gz", "note.txt.zst"] {
             let be = open_archive(&fixture(name)).unwrap();
             assert!(be.caps().random_access, "{name}: 単体は RA");
             let list = be.list().unwrap();
             assert_eq!(list.len(), 1, "{name}");
             assert_eq!(list[0].path, "note.txt", "{name}");
             assert!(!list[0].is_dir);
-            // gz/xz は展開後サイズ（"hello world"=11）をメタから取れる。
+            // gz/xz/zstd は展開後サイズ（"hello world"=11）をメタ/ヘッダから取れる。
             assert_eq!(list[0].size, Some(11), "{name}: 展開後サイズ");
             assert_eq!(be.read("note.txt").unwrap(), b"hello world", "{name}");
             assert!(be.read("nope").is_err(), "{name}");
