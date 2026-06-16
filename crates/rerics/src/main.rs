@@ -97,6 +97,13 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         ViewFile => DebugCmdClass::MaybeModal,
         // 履歴ダイアログは読取モーダル（リスト選択）を開く（書込みではない）。
         PathHistoryDialog => DebugCmdClass::MaybeModal,
+        // ディレクトリ移動ダイアログは入力モーダルを開く（移動は書込みではない）。
+        ChangeDirectoryDialog => DebugCmdClass::MaybeModal,
+        // ドライブ選択はリスト選択モーダルを開く（移動は書込みではない）。
+        ChangeDriveDialog => DebugCmdClass::MaybeModal,
+        // ジャンプ（リスト選択）・登録（ラベル入力）はモーダルを開く。登録は config.toml を
+        // 書くがユーザファイル操作ではないので allow_write は要さない。
+        JumpDialog | RegisterPath => DebugCmdClass::MaybeModal,
         OpenSettings | OpenTaskManager => DebugCmdClass::Unsupported,
         _ => DebugCmdClass::NonModal,
     }
@@ -622,6 +629,22 @@ impl MainWindow {
             }
             Command::PathHistoryDialog => {
                 self.path_history_dialog(is_left)?;
+                return Ok(());
+            }
+            Command::ChangeDirectoryDialog => {
+                self.change_directory_dialog(is_left)?;
+                return Ok(());
+            }
+            Command::ChangeDriveDialog => {
+                self.change_drive_dialog(is_left)?;
+                return Ok(());
+            }
+            Command::JumpDialog => {
+                self.jump_dialog(is_left)?;
+                return Ok(());
+            }
+            Command::RegisterPath => {
+                self.register_path(is_left)?;
                 return Ok(());
             }
             Command::FocusLeft => {
@@ -3824,6 +3847,133 @@ impl MainWindow {
         let loc = Location::parse(&disp);
         if self.pane(is_left).borrow_mut().navigate(loc) {
             self.reload_side(is_left)?;
+        }
+        Ok(())
+    }
+
+    /// パスを入力してそこへ移動する。移動できなければエラーログ。
+    fn change_directory_dialog(&self, is_left: bool) -> w::AnyResult<()> {
+        let current = self.pane(is_left).borrow().loc_display();
+        let Some(input) = dialog::input_box(
+            &self.wnd,
+            "ディレクトリ移動",
+            "移動先のパスを入力して下さい。",
+            &current,
+            dialog::InputMode::Plain,
+        ) else {
+            return Ok(());
+        };
+        let input = input.trim();
+        if input.is_empty() {
+            return Ok(());
+        }
+        let loc = Location::parse(input);
+        if self.pane(is_left).borrow_mut().navigate(loc) {
+            self.reload_side(is_left)?;
+        } else {
+            let line = format!("移動できません: {input}");
+            self.log.error(&line);
+        }
+        Ok(())
+    }
+
+    /// ドライブ一覧（容量つき）から選んでそのルートへ移動する。
+    fn change_drive_dialog(&self, is_left: bool) -> w::AnyResult<()> {
+        let roots = w::GetLogicalDriveStrings().unwrap_or_default();
+        if roots.is_empty() {
+            return Ok(());
+        }
+        let labels: Vec<String> = roots
+            .iter()
+            .map(|r| {
+                let info = drive_info_text(Path::new(r));
+                if info.is_empty() { r.clone() } else { info }
+            })
+            .collect();
+        let cur = self
+            .pane(is_left)
+            .borrow()
+            .path()
+            .ancestors()
+            .last()
+            .map(|p| p.to_string_lossy().to_uppercase());
+        let initial = roots
+            .iter()
+            .position(|r| Some(r.to_uppercase()) == cur)
+            .unwrap_or(0);
+        let Some(idx) = dialog::list_box(&self.wnd, "ドライブの選択", &labels, initial) else {
+            return Ok(());
+        };
+        let Some(root) = roots.get(idx) else {
+            return Ok(());
+        };
+        if self
+            .pane(is_left)
+            .borrow_mut()
+            .navigate(Location::Real(PathBuf::from(root)))
+        {
+            self.reload_side(is_left)?;
+        }
+        Ok(())
+    }
+
+    /// 現在地を登録ディレクトリ（ブックマーク）に追加する。登録名を尋ね、config に保存。
+    fn register_path(&self, is_left: bool) -> w::AnyResult<()> {
+        let path = self.pane(is_left).borrow().loc_display();
+        let default_label = Path::new(&path)
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.clone());
+        let Some(label) = dialog::input_box(
+            &self.wnd,
+            "ディレクトリの登録",
+            "登録名を入力して下さい。",
+            &default_label,
+            dialog::InputMode::Plain,
+        ) else {
+            return Ok(());
+        };
+        let label = label.trim();
+        if label.is_empty() {
+            return Ok(());
+        }
+        {
+            let mut cfg = self.config.borrow_mut();
+            cfg.add_bookmark(label, &path);
+            let _ = cfg.save();
+        }
+        self.log.normal(&format!("登録しました: {label}"));
+        Ok(())
+    }
+
+    /// 登録ディレクトリの一覧から選んでそこへジャンプする。空なら情報ログのみ。
+    fn jump_dialog(&self, is_left: bool) -> w::AnyResult<()> {
+        let bookmarks: Vec<(String, String)> = self
+            .config
+            .borrow()
+            .bookmarks
+            .iter()
+            .map(|b| (b.label.clone(), b.path.clone()))
+            .collect();
+        if bookmarks.is_empty() {
+            self.log.info("登録ディレクトリがありません。");
+            return Ok(());
+        }
+        let labels: Vec<String> = bookmarks
+            .iter()
+            .map(|(l, p)| format!("{l}  ({p})"))
+            .collect();
+        let Some(idx) = dialog::list_box(&self.wnd, "ジャンプ", &labels, 0) else {
+            return Ok(());
+        };
+        let Some((_, path)) = bookmarks.get(idx) else {
+            return Ok(());
+        };
+        let loc = Location::parse(path);
+        if self.pane(is_left).borrow_mut().navigate(loc) {
+            self.reload_side(is_left)?;
+        } else {
+            self.log.error(&format!("移動できません: {path}"));
         }
         Ok(())
     }
