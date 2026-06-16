@@ -750,16 +750,18 @@ impl FileListState {
             ColumnKind::FileName => item.name.clone(),
             ColumnKind::FileBaseName => item.base_name.clone(),
             ColumnKind::FileExtension => item.extension.clone(),
-            ColumnKind::Length => {
-                if item.is_dir {
-                    "<DIR>".to_owned()
-                } else {
-                    // サイズ不明（書庫内の単体圧縮で安く取れない形式等）は 0 と詐称せず "--"。
-                    item.size
-                        .map(format_size)
-                        .unwrap_or_else(|| "--".to_owned())
+            ColumnKind::Length => match item.size {
+                // サイズが取れていればディレクトリでも数値表示（書庫内 dir 等）。
+                Some(sz) => format_size(sz),
+                // サイズ不明：ディレクトリは "<DIR>"、ファイルは 0 と詐称せず "--"。
+                None => {
+                    if item.is_dir {
+                        "<DIR>".to_owned()
+                    } else {
+                        "--".to_owned()
+                    }
                 }
-            }
+            },
             ColumnKind::CreateTime => format_time(item.created, "%Y/%m/%d %H:%M"),
             ColumnKind::LastWriteTime => format_time(item.modified, "%Y/%m/%d %H:%M"),
             ColumnKind::CreateTimeS => format_time(item.created, "%y/%m/%d %H:%M"),
@@ -1180,6 +1182,19 @@ mod tests {
         assert_eq!(
             FileListState::new().cell_text(&f, ColumnKind::Length),
             "1,234,567"
+        );
+        // #14: サイズが取れているディレクトリ（書庫内 dir 等）は数値表示。
+        let mut sized_dir = dir("withsize");
+        sized_dir.size = Some(4096);
+        assert_eq!(
+            FileListState::new().cell_text(&sized_dir, ColumnKind::Length),
+            "4,096"
+        );
+        // サイズ不明のファイルは 0 と詐称せず "--"。
+        let unknown = file("unknown.bin");
+        assert_eq!(
+            FileListState::new().cell_text(&unknown, ColumnKind::Length),
+            "--"
         );
         let mut attr = file("x");
         attr.system = true;
