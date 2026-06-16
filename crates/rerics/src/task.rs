@@ -146,6 +146,11 @@ pub enum WorkerEvent {
         temp_root: PathBuf,
         outcome: ArchiveOutcome,
     },
+    /// 書庫への書込み（追加/再構築）の完了。関与した両ペインを再読込する。
+    ArchiveWriteDone {
+        id: u64,
+        src_is_left: bool,
+    },
 }
 
 /// [`OperationHost`] の GUI 実装。ログをチャネルへ送り、共有フラグで中止を伝え、

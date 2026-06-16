@@ -14,13 +14,21 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::FileItem;
 
-/// バックエンドの能力。形式ごとに異なってよい（UI はこれで操作可否を出し分ける）。
-#[derive(Clone, Copy, Debug)]
+/// バックエンドの能力。形式ごとに異なってよい（UI はこれで操作可否を出し分ける）。書込みは
+/// 操作別に持つ：**追加/mkdir は append で既存を壊さず CP932 安全**、削除/リネームは全体
+/// リビルドが要り CP932 名の再エンコード判断が絡む（後段）。
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Caps {
     /// 1ファイルだけを直接展開できる（順次専用なら false）。
     pub random_access: bool,
-    /// 書庫自体への書込み（追加/更新/削除）が可能。
-    pub writable: bool,
+    /// 既存を壊さず新規ファイルを追加できる（append・CP932 安全）。
+    pub can_add: bool,
+    /// 書庫内にディレクトリを作れる（append・CP932 安全）。
+    pub can_mkdir: bool,
+    /// 既存エントリを削除できる（要リビルド）。
+    pub can_remove: bool,
+    /// 既存エントリをリネームできる（要リビルド）。
+    pub can_rename: bool,
 }
 
 /// 書庫内の1エントリ（フラットなパスと最小メタデータ）。
@@ -103,16 +111,92 @@ pub trait ArchiveBackend {
     }
 }
 
-/// 書込みバックエンド（後付け用の seam・現状は実装しない）。
-///
-/// 将来 `Caps.writable == true` の backend のみがこれを提供する。メソッド名は
-/// 実FS/FTP 等の書込み操作に対応づけ、後から差し込んでも read trait を汚さない形にする。
+/// 書込みバックエンド。`caps()` の対応フラグが立つ backend だけが意味のある実装を持つ。
+/// メソッド名は実FS/FTP 等の書込み操作に対応づけ、read trait を汚さない形にする。
+/// add/mkdir は append（既存を触らない＝CP932 安全）、update/remove/rename は要リビルド。
 pub trait ArchiveWriter {
     fn add(&mut self, inner: &str, bytes: &[u8]) -> io::Result<()>;
     fn update(&mut self, inner: &str, bytes: &[u8]) -> io::Result<()>;
     fn remove(&mut self, inner: &str) -> io::Result<()>;
     fn rename(&mut self, inner: &str, new: &str) -> io::Result<()>;
     fn mkdir(&mut self, inner: &str) -> io::Result<()>;
+}
+
+/// 書込み backend を選ぶ。対応形式（現状 zip のみ）以外は `Unsupported`。
+pub fn open_archive_writer(path: &Path) -> io::Result<Box<dyn ArchiveWriter>> {
+    match classify_archive(path) {
+        Some(ArchiveKind::Zip) => Ok(Box::new(ZipWriter::open(path)?)),
+        _ => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "この書庫形式は書込み未対応",
+        )),
+    }
+}
+
+/// zip の書込み（append）。`new_append` で開いて新規エントリだけを足す＝**既存エントリの
+/// 生バイト名を一切触らないので CP932 名も無傷**。update/remove/rename は全体リビルドが要り
+/// CP932 名の再エンコード判断が絡むため、現状は未対応エラー。
+pub struct ZipWriter {
+    path: PathBuf,
+}
+
+impl ZipWriter {
+    pub fn open(path: &Path) -> io::Result<Self> {
+        // 開ける zip か確認する。
+        let f = std::fs::File::open(path)?;
+        zip::ZipArchive::new(f).map_err(zip_err)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// append で開いた ZipWriter を得る（既存エントリは読み込まれるが finish で生のまま書く）。
+    fn appender(&self) -> io::Result<zip::ZipWriter<std::fs::File>> {
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.path)?;
+        zip::ZipWriter::new_append(f).map_err(zip_err)
+    }
+}
+
+impl ArchiveWriter for ZipWriter {
+    fn add(&mut self, inner: &str, bytes: &[u8]) -> io::Result<()> {
+        use std::io::Write;
+        let name = normalize_inner(inner);
+        if name.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "空のエントリ名"));
+        }
+        let mut zw = self.appender()?;
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        zw.start_file(&name, opts).map_err(zip_err)?;
+        zw.write_all(bytes)?;
+        zw.finish().map_err(zip_err)?;
+        Ok(())
+    }
+
+    fn mkdir(&mut self, inner: &str) -> io::Result<()> {
+        let name = normalize_inner(inner);
+        if name.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "空のディレクトリ名"));
+        }
+        let mut zw = self.appender()?;
+        zw.add_directory(&name, zip::write::SimpleFileOptions::default())
+            .map_err(zip_err)?;
+        zw.finish().map_err(zip_err)?;
+        Ok(())
+    }
+
+    fn update(&mut self, _inner: &str, _bytes: &[u8]) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "更新は未対応"))
+    }
+    fn remove(&mut self, _inner: &str) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "削除は未対応"))
+    }
+    fn rename(&mut self, _inner: &str, _new: &str) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "リネームは未対応"))
+    }
 }
 
 /// 圧縮レイヤの種別（tar 系のラップ／単体圧縮で共有）。
@@ -270,7 +354,7 @@ impl ArchiveBackend for RarBackend {
     fn caps(&self) -> Caps {
         Caps {
             random_access: false,
-            writable: false,
+            ..Default::default()
         }
     }
 
@@ -416,7 +500,9 @@ impl ArchiveBackend for ZipBackend {
     fn caps(&self) -> Caps {
         Caps {
             random_access: true,
-            writable: false,
+            can_add: true,
+            can_mkdir: true,
+            ..Default::default()
         }
     }
 
@@ -492,7 +578,7 @@ impl ArchiveBackend for SevenZBackend {
     fn caps(&self) -> Caps {
         Caps {
             random_access: !self.solid,
-            writable: false,
+            ..Default::default()
         }
     }
 
@@ -639,7 +725,7 @@ impl ArchiveBackend for TarBackend {
     fn caps(&self) -> Caps {
         Caps {
             random_access: false,
-            writable: false,
+            ..Default::default()
         }
     }
 
@@ -758,7 +844,7 @@ impl ArchiveBackend for SingleFileBackend {
     fn caps(&self) -> Caps {
         Caps {
             random_access: true,
-            writable: false,
+            ..Default::default()
         }
     }
 
@@ -949,7 +1035,7 @@ fn single_inner_name(path: &Path) -> String {
 /// 書庫内パスを正規化：'\\' を '/' に、空セグメントと "." を除去して '/' 区切りへ。
 /// 先頭/連続/末尾スラッシュが畳まれ、空文字＝ルート。".." は読取側では素の
 /// セグメントとして残す（実FS への展開時のサニタイズは展開コピー側で別途行う）。
-fn normalize_inner(s: &str) -> String {
+pub(crate) fn normalize_inner(s: &str) -> String {
     s.replace('\\', "/")
         .split('/')
         .filter(|seg| !seg.is_empty() && *seg != ".")
@@ -959,7 +1045,7 @@ fn normalize_inner(s: &str) -> String {
 
 /// 生バイト名を文字列へ復号する。valid UTF-8 ならそのまま（UTF-8 フラグ付きの
 /// 現代 zip・ASCII）、不正なら CP932(Shift_JIS) とみなす（フラグ無しの旧 zip）。
-fn decode_name(raw: &[u8]) -> String {
+pub(crate) fn decode_name(raw: &[u8]) -> String {
     if let Ok(s) = std::str::from_utf8(raw) {
         return s.to_owned();
     }
@@ -1496,6 +1582,44 @@ mod tests {
             assert_eq!(head, b"hello", "{name}");
             assert!(trunc, "{name}");
         }
+    }
+
+    /// zip への append：**既存の CP932 名エントリを壊さず**新規ファイル/ディレクトリを足せる。
+    #[test]
+    fn zip_append_preserves_cp932_names() {
+        let mut cp932 = vec![0x93, 0xfa, 0x96, 0x7b, 0x8c, 0xea]; // 日本語
+        cp932.extend_from_slice(b".txt");
+        let path = temp_path("append_cp932");
+        build_stored_zip_raw(&path, &[(&cp932, b"orig")]);
+
+        // 追加（add）と mkdir を append で実行。
+        let mut w = open_archive_writer(&path).unwrap();
+        w.add("added.txt", b"NEW").unwrap();
+        w.mkdir("newdir").unwrap();
+        // 未対応操作はエラー。
+        assert!(w.remove("added.txt").is_err());
+        assert!(w.rename("added.txt", "x").is_err());
+
+        let be = ZipBackend::open(&path).unwrap();
+        let list = be.list().unwrap();
+        // 既存の CP932 名が壊れていない（正しくデコードできる）。
+        assert!(
+            list.iter().any(|e| e.path == "日本語.txt"),
+            "CP932 名が保持される: {:?}",
+            list.iter().map(|e| &e.path).collect::<Vec<_>>()
+        );
+        // 既存データも無傷、新規も読める。
+        assert_eq!(be.read("日本語.txt").unwrap(), b"orig");
+        assert_eq!(be.read("added.txt").unwrap(), b"NEW");
+        assert!(list.iter().any(|e| e.path == "newdir" && e.is_dir));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 書込み未対応形式（7z 等）は `open_archive_writer` がエラー。
+    #[test]
+    fn writer_unsupported_for_non_zip() {
+        assert!(open_archive_writer(&fixture("solid.7z")).is_err());
+        assert!(open_archive_writer(&fixture("tree.tar")).is_err());
     }
 
     /// 拡張子分類（二重拡張子・短縮形・単体・非書庫）。

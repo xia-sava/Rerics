@@ -14,7 +14,9 @@ mod status;
 mod vfs;
 mod viewer;
 
-pub use archive::{ArchiveBackend, ArchiveEntry, ArchiveWriter, Caps, open_archive};
+pub use archive::{
+    ArchiveBackend, ArchiveEntry, ArchiveWriter, Caps, open_archive, open_archive_writer,
+};
 pub use config::{
     Config, DEFAULT_CONFIG_TOML, FontSpec, Layout, ResolvedTheme, State, TabState, Theme,
     ThemeColors, WindowState, clamp_to_work, config_path, data_dir, load_toml, save_toml,
@@ -32,8 +34,8 @@ pub use media::{
     rotated_dims,
 };
 pub use operation::{
-    ConflictResolution, DeleteWarnChoice, OpSummary, OperationHost, ProgressHandle, run_compress,
-    run_copy, run_delete, run_extract,
+    ConflictResolution, DeleteWarnChoice, OpSummary, OperationHost, ProgressHandle,
+    run_archive_add, run_archive_rebuild, run_compress, run_copy, run_delete, run_extract,
 };
 pub use status::{format_drive, format_selected, format_size};
 pub use vfs::{Location, is_archive_path};

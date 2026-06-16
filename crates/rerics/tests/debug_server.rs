@@ -13,7 +13,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
@@ -59,26 +59,35 @@ impl Server {
             std::fs::write(data.join("config.toml"), config_toml).unwrap();
         }
 
-        let mut child = Command::new(env!("CARGO_BIN_EXE_rerics"))
-            .arg("--debug-server=0")
-            .arg("--headless")
-            .env("RERICS_DATA_DIR", &data)
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("spawn rerics");
-        let port = read_port(&mut child);
+        let (child, port) = spawn_and_wait(&data, false);
+        Server { child, port, base }
+    }
 
-        // 起動待ち（最大 ~10 秒）。HTTP は listening 直後でも、UI スレッドとの往復が
-        // 回り始めるまで /state が返らないことがあるのでポーリングする。
-        let mut up = false;
-        for _ in 0..50 {
-            if req(port, "GET", "/state", "").is_some() {
-                up = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(200));
+    /// 左=実FSサンドボックス（`real_files`）、右=書庫(zip・`zip_entries`)で起動する。
+    /// 書込み許可つき（`--debug-allow-write`）＝書庫への追加/移動/mkdir を駆動できる。
+    /// 右ペインは zip の中へ入った状態で始まる。
+    fn start_archive(real_files: &[(&str, &[u8])], zip_entries: &[(&str, &[u8])]) -> Server {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("rerics_it_{}_{}", std::process::id(), n));
+        let data = base.join("data");
+        let sbx = base.join("sbx");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&sbx).unwrap();
+        for (name, body) in real_files {
+            std::fs::write(sbx.join(name), body).unwrap();
         }
-        assert!(up, "debug server did not come up");
+        let zip = base.join("arc.zip");
+        build_stored_zip(&zip, zip_entries);
+        std::fs::write(
+            data.join("state.toml"),
+            format!(
+                "active_tab = 0\nsplit_ratio = 0.5\n[[tabs]]\nleft = '{l}'\nright = '{r}'\nactive_right = false\n",
+                l = sbx.display(),
+                r = zip.display(),
+            ),
+        )
+        .unwrap();
+        let (child, port) = spawn_and_wait(&data, true);
         Server { child, port, base }
     }
 
@@ -95,6 +104,131 @@ impl Drop for Server {
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.base);
     }
+}
+
+/// `--debug-server=0 --headless`（必要なら `--debug-allow-write`）で起動し、`/state` が
+/// 返るまで待って `(子, ポート)` を返す。
+fn spawn_and_wait(data: &Path, allow_write: bool) -> (Child, u16) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_rerics"));
+    cmd.arg("--debug-server=0").arg("--headless");
+    if allow_write {
+        cmd.arg("--debug-allow-write");
+    }
+    let mut child = cmd
+        .env("RERICS_DATA_DIR", data)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn rerics");
+    let port = read_port(&mut child);
+    // 起動待ち（最大 ~10 秒）。HTTP は listening 直後でも、UI スレッドとの往復が
+    // 回り始めるまで /state が返らないことがあるのでポーリングする。
+    let mut up = false;
+    for _ in 0..50 {
+        if req(port, "GET", "/state", "").is_some() {
+            up = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(up, "debug server did not come up");
+    (child, port)
+}
+
+/// 無圧縮(stored)・UTF-8 フラグ無しの zip を手組みする（テスト用 fixture・依存を増やさない）。
+fn build_stored_zip(path: &Path, entries: &[(&str, &[u8])]) {
+    fn u16le(v: &mut Vec<u8>, x: u16) {
+        v.extend_from_slice(&x.to_le_bytes());
+    }
+    fn u32le(v: &mut Vec<u8>, x: u32) {
+        v.extend_from_slice(&x.to_le_bytes());
+    }
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &b in data {
+            crc ^= b as u32;
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+            }
+        }
+        !crc
+    }
+    let mut out = Vec::new();
+    let mut central = Vec::new();
+    for (name, data) in entries {
+        let name = name.as_bytes();
+        let crc = crc32(data);
+        let off = out.len() as u32;
+        u32le(&mut out, 0x0403_4b50);
+        u16le(&mut out, 20);
+        u16le(&mut out, 0);
+        u16le(&mut out, 0);
+        u16le(&mut out, 0);
+        u16le(&mut out, 0);
+        u32le(&mut out, crc);
+        u32le(&mut out, data.len() as u32);
+        u32le(&mut out, data.len() as u32);
+        u16le(&mut out, name.len() as u16);
+        u16le(&mut out, 0);
+        out.extend_from_slice(name);
+        out.extend_from_slice(data);
+        u32le(&mut central, 0x0201_4b50);
+        u16le(&mut central, 20);
+        u16le(&mut central, 20);
+        u16le(&mut central, 0);
+        u16le(&mut central, 0);
+        u16le(&mut central, 0);
+        u16le(&mut central, 0);
+        u32le(&mut central, crc);
+        u32le(&mut central, data.len() as u32);
+        u32le(&mut central, data.len() as u32);
+        u16le(&mut central, name.len() as u16);
+        u16le(&mut central, 0);
+        u16le(&mut central, 0);
+        u16le(&mut central, 0);
+        u16le(&mut central, 0);
+        u32le(&mut central, 0);
+        u32le(&mut central, off);
+        central.extend_from_slice(name);
+    }
+    let cd_off = out.len() as u32;
+    let cd_size = central.len() as u32;
+    out.extend_from_slice(&central);
+    u32le(&mut out, 0x0605_4b50);
+    u16le(&mut out, 0);
+    u16le(&mut out, 0);
+    u16le(&mut out, entries.len() as u16);
+    u16le(&mut out, entries.len() as u16);
+    u32le(&mut out, cd_size);
+    u32le(&mut out, cd_off);
+    u16le(&mut out, 0);
+    std::fs::write(path, &out).unwrap();
+}
+
+/// `path` を GET し続け、`pred(body)` が真になるまで待つ（最大 ~5 秒）。ワーカ完了や
+/// モーダル出現など非同期な状態変化を待つのに使う。最後に観測した body を返す。
+fn poll<F: Fn(&str) -> bool>(server: &Server, path: &str, pred: F) -> String {
+    let mut last = String::new();
+    for _ in 0..50 {
+        if let Some((_, body)) = server.req("GET", path, "") {
+            if pred(&body) {
+                return body;
+            }
+            last = body;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    last
+}
+
+/// モーダルが開く（`/state/modal` が非 null になる）まで待ち、その body を返す。
+fn wait_modal(server: &Server) -> String {
+    poll(server, "/state/modal", |b| b.trim() != "null")
+}
+
+/// `haystack` 中の `needle` の出現回数。
+fn count_substr(haystack: &str, needle: &str) -> usize {
+    haystack.matches(needle).count()
 }
 
 /// 子の stdout が報告する**実バインドポート**を読む（最大 20 秒）。別スレッドで読むので、
@@ -194,4 +328,112 @@ fn debug_server_smoke() {
         .expect("resolved colors")
         .1;
     assert!(pc.contains("\"cursor\""), "resolved_colors should list palette: {pc}");
+}
+
+/// 書庫への追加（非衝突＝無言 append）と、同名衝突→「再構築して置換」の配線を検証する。
+/// 観測はすべて `/state` 経由（右ペインは zip の中＝反映が見える）。
+#[test]
+fn archive_add_and_replace() {
+    let server = Server::start_archive(
+        &[("a.txt", b"AAA"), ("b.txt", b"BBB")],
+        &[("a.txt", b"OLD-IN-ZIP"), ("existing.txt", b"keep-me")],
+    );
+    // 右ペインは zip の中（既存の a.txt / existing.txt が見える）。
+    let r0 = server.req("GET", "/state/panes/right/items", "").unwrap().1;
+    assert!(
+        r0.contains("\"name\":\"a.txt\"") && r0.contains("\"name\":\"existing.txt\""),
+        "right pane should be inside the zip: {r0}"
+    );
+
+    // --- 非衝突 add：b.txt（実FS）→ zip。モーダル無しの無言 append。 ---
+    // 左 items は [.., a.txt, b.txt]。CursorDown×2 で b.txt。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/Copy", "").unwrap();
+    let m = server.req("GET", "/state/modal", "").unwrap().1;
+    assert_eq!(m.trim(), "null", "non-colliding add must not prompt: {m}");
+    let r1 = poll(&server, "/state/panes/right/items", |b| {
+        b.contains("\"name\":\"b.txt\"")
+    });
+    assert!(r1.contains("\"name\":\"b.txt\""), "b.txt should be added to the archive: {r1}");
+
+    // --- 衝突 replace：a.txt（実FS, AAA）は zip の a.txt と同名 → モーダル → 既定=置換。 ---
+    // reload でカーソルは .. に戻る。CursorDown×1 で a.txt。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/Copy", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(
+        modal.contains("\"kind\":\"archive_add\""),
+        "same-name collision should prompt archive_add: {modal}"
+    );
+    // 既定ラジオ＝「再構築して置換」。OK で置換。
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    // 置換は rebuild 経路を通る。
+    let lg = poll(&server, "/state/log", |b| b.contains("Rebuild"));
+    assert!(lg.contains("Rebuild"), "replace should run the rebuild path: {lg}");
+    assert!(
+        !lg.contains("失敗しました"),
+        "replace must not fail (the old append-on-collision bug): {lg}"
+    );
+    // a.txt は重複しない（壊れた append なら Duplicate filename で失敗していた）。
+    let r2 = poll(&server, "/state/panes/right/items", |b| {
+        count_substr(b, "\"name\":\"a.txt\"") == 1 && b.contains("\"name\":\"b.txt\"")
+    });
+    assert_eq!(
+        count_substr(&r2, "\"name\":\"a.txt\""),
+        1,
+        "a.txt must not be duplicated after replace: {r2}"
+    );
+    assert!(r2.contains("\"name\":\"existing.txt\""), "existing entry must be preserved: {r2}");
+}
+
+/// 書庫内 mkdir（＋同名はエラー）と、実FS→書庫への move（元削除）の配線を検証する。
+#[test]
+fn archive_mkdir_and_move() {
+    let server = Server::start_archive(&[("m.txt", b"MMM")], &[("existing.txt", b"keep")]);
+
+    // 右ペイン（書庫）をアクティブにして mkdir。
+    server.req("POST", "/command/FocusRight", "").unwrap();
+    server.req("POST", "/command/MakeDirectory", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/text", "newdir").unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    let r = poll(&server, "/state/panes/right/items", |b| {
+        b.contains("\"name\":\"newdir\"")
+    });
+    assert!(r.contains("\"name\":\"newdir\""), "newdir should be created in the archive: {r}");
+
+    // 同名 mkdir はエラー（実FS のディレクトリ作成と同じ挙動）。
+    server.req("POST", "/command/MakeDirectory", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/text", "newdir").unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    let lg = poll(&server, "/state/log", |b| b.contains("すでに存在します"));
+    assert!(lg.contains("すでに存在します"), "duplicate mkdir should error: {lg}");
+    // エラーの message box を閉じ、モーダルが消えるまで待つ（残っていると後続コマンドを
+    // 横取りして active ペインが切り替わらず、move が誤判定される）。
+    wait_modal(&server);
+    server.req("POST", "/modal/key/enter", "");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    // 重複ディレクトリは増えない。
+    let r2 = server.req("GET", "/state/panes/right/items", "").unwrap().1;
+    assert_eq!(
+        count_substr(&r2, "\"name\":\"newdir\""),
+        1,
+        "no duplicate directory entry: {r2}"
+    );
+
+    // --- move：m.txt（実FS, 非衝突）→ 書庫。追加成功で元を削除する。 ---
+    server.req("POST", "/command/FocusLeft", "").unwrap();
+    // 左 items は [.., m.txt]。CursorDown×1 で m.txt。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/Move", "").unwrap();
+    let r3 = poll(&server, "/state/panes/right/items", |b| {
+        b.contains("\"name\":\"m.txt\"")
+    });
+    assert!(r3.contains("\"name\":\"m.txt\""), "moved file should appear in the archive: {r3}");
+    let l = poll(&server, "/state/panes/left/items", |b| {
+        !b.contains("\"name\":\"m.txt\"")
+    });
+    assert!(!l.contains("\"name\":\"m.txt\""), "source must be deleted after move: {l}");
 }
