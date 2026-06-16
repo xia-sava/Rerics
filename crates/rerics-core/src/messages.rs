@@ -66,6 +66,31 @@ pub fn compress_failure(name: &str, reason: &str) -> String {
     format!("圧縮に失敗しました。- {name} ({reason})")
 }
 
+/// `Add {0}`（書庫への追加の逐次ログ）。
+pub fn archive_add(name: &str) -> String {
+    format!("Add {name}")
+}
+
+/// `Add {0} {1}%`（書庫への追加のバイト進捗。インプレース更新行）。
+pub fn archive_add_progress(name: &str, percent: u32) -> String {
+    format!("Add {name} {percent}%")
+}
+
+/// `書庫への追加に失敗しました。- {0}`（理由も併記する）。
+pub fn archive_add_failure(name: &str, reason: &str) -> String {
+    format!("書庫への追加に失敗しました。- {name} ({reason})")
+}
+
+/// `Rebuild`（書庫を再構築して書き戻す処理の開始行）。
+pub fn archive_rebuild() -> String {
+    "Rebuild".to_string()
+}
+
+/// `Rebuild {0}%`（再構築の進捗。インプレース更新行）。
+pub fn archive_rebuild_progress(percent: u32) -> String {
+    format!("Rebuild {percent}%")
+}
+
 /// `{0} Success, {1} Error`（削除の結果サマリ）。
 pub fn delete_result(ok: usize, err: usize) -> String {
     format!("{ok} Success, {err} Error")

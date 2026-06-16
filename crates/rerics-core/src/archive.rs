@@ -1035,7 +1035,7 @@ fn single_inner_name(path: &Path) -> String {
 /// 書庫内パスを正規化：'\\' を '/' に、空セグメントと "." を除去して '/' 区切りへ。
 /// 先頭/連続/末尾スラッシュが畳まれ、空文字＝ルート。".." は読取側では素の
 /// セグメントとして残す（実FS への展開時のサニタイズは展開コピー側で別途行う）。
-fn normalize_inner(s: &str) -> String {
+pub(crate) fn normalize_inner(s: &str) -> String {
     s.replace('\\', "/")
         .split('/')
         .filter(|seg| !seg.is_empty() && *seg != ".")
@@ -1045,7 +1045,7 @@ fn normalize_inner(s: &str) -> String {
 
 /// 生バイト名を文字列へ復号する。valid UTF-8 ならそのまま（UTF-8 フラグ付きの
 /// 現代 zip・ASCII）、不正なら CP932(Shift_JIS) とみなす（フラグ無しの旧 zip）。
-fn decode_name(raw: &[u8]) -> String {
+pub(crate) fn decode_name(raw: &[u8]) -> String {
     if let Ok(s) = std::str::from_utf8(raw) {
         return s.to_owned();
     }

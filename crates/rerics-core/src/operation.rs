@@ -9,7 +9,7 @@ use std::path::Path;
 use std::time::{Instant, SystemTime};
 
 use crate::LogLevel;
-use crate::archive::{ArchiveBackend, ArchiveEntry, entries_at};
+use crate::archive::{ArchiveBackend, ArchiveEntry, decode_name, entries_at, normalize_inner};
 use crate::messages;
 
 /// 同名ファイルが存在したときの解決方法。原作 `frmCopyOption` の選択肢に対応する。
@@ -278,6 +278,279 @@ fn add_to_zip(
         } else {
             sum.ok += 1;
         }
+        Flow::Continue
+    }
+}
+
+/// `inner_prefix`（'/' 区切り・正規化済み・"" はルート）の下に `name` を繋いだ書庫内パス。
+fn join_inner(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() {
+        name.to_string()
+    } else {
+        format!("{prefix}/{name}")
+    }
+}
+
+/// 実FS の項目群を既存 zip 書庫へ追記する（append）。`inner_prefix` は書庫内の追加先
+/// ディレクトリ。`new_append` で開き新規エントリだけ足す＝**既存エントリの生バイト名を
+/// 一切触らないので CP932 名も無傷**。同名があっても重複エントリとして後ろに足す（多くの
+/// 展開ツールは後勝ちで読む）。中断時も finish して既存書庫を壊さない。
+pub fn run_archive_add(
+    host: &dyn OperationHost,
+    src_dir: &Path,
+    names: &[String],
+    dst_zip: &Path,
+    inner_prefix: &str,
+) -> OpSummary {
+    let mut sum = OpSummary::default();
+    let file = match std::fs::OpenOptions::new().read(true).write(true).open(dst_zip) {
+        Ok(f) => f,
+        Err(e) => {
+            host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
+            sum.err += 1;
+            host.log(LogLevel::Error, &messages::copy_result(sum.ok, sum.skip, sum.err));
+            return sum;
+        }
+    };
+    let mut zw = match zip::ZipWriter::new_append(file) {
+        Ok(z) => z,
+        Err(e) => {
+            host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
+            sum.err += 1;
+            host.log(LogLevel::Error, &messages::copy_result(sum.ok, sum.skip, sum.err));
+            return sum;
+        }
+    };
+    for name in names {
+        if should_stop(host) {
+            sum.cancelled = true;
+            break;
+        }
+        let src = src_dir.join(name);
+        let rel = join_inner(inner_prefix, name);
+        if let Flow::Cancel = add_archive_item(host, &mut zw, &src, &rel, &mut sum) {
+            sum.cancelled = true;
+            break;
+        }
+    }
+    if let Err(e) = zw.finish() {
+        host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
+        sum.err += 1;
+    }
+    let level = if sum.err == 0 { LogLevel::Info } else { LogLevel::Error };
+    host.log(level, &messages::copy_result(sum.ok, sum.skip, sum.err));
+    sum
+}
+
+/// 既存 zip を読み直し、追加項目と同名のエントリを除いて新しい zip に書き戻してから
+/// 追加項目を足す（同名を確実に置換・重複を残さない）。書き戻し時に既存エントリ名を
+/// 正しくデコードして UTF-8 名で書く＝**CP932 名は UTF-8 へ近代化される**。一時ファイルへ
+/// 書いてから元へ rename して差し替える（途中失敗で元書庫を壊さない）。
+pub fn run_archive_rebuild(
+    host: &dyn OperationHost,
+    src_dir: &Path,
+    names: &[String],
+    dst_zip: &Path,
+    inner_prefix: &str,
+) -> OpSummary {
+    let mut sum = OpSummary::default();
+    // 追加項目の書庫内パス。これに一致 or その配下の既存エントリは捨てて置換する。
+    let new_tops: Vec<String> = names.iter().map(|n| join_inner(inner_prefix, n)).collect();
+
+    let src_file = match std::fs::File::open(dst_zip) {
+        Ok(f) => f,
+        Err(e) => {
+            host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
+            sum.err += 1;
+            host.log(LogLevel::Error, &messages::copy_result(sum.ok, sum.skip, sum.err));
+            return sum;
+        }
+    };
+    let mut src_zip = match zip::ZipArchive::new(src_file) {
+        Ok(z) => z,
+        Err(e) => {
+            host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
+            sum.err += 1;
+            host.log(LogLevel::Error, &messages::copy_result(sum.ok, sum.skip, sum.err));
+            return sum;
+        }
+    };
+
+    let mut tmp_path = dst_zip.to_path_buf();
+    tmp_path.set_file_name(format!("{}.rerics-tmp", file_name(dst_zip)));
+    let tmp_file = match std::fs::File::create(&tmp_path) {
+        Ok(f) => f,
+        Err(e) => {
+            host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
+            sum.err += 1;
+            host.log(LogLevel::Error, &messages::copy_result(sum.ok, sum.skip, sum.err));
+            return sum;
+        }
+    };
+    let mut zw = zip::ZipWriter::new(tmp_file);
+
+    // 既存エントリを UTF-8 名で書き戻す（置換対象は捨てる）。大書庫では時間がかかるので
+    // 進捗をインプレース行で見せる。
+    let total = src_zip.len();
+    let handle = host.begin_progress(LogLevel::Normal, &messages::archive_rebuild());
+    let mut tracker = ProgressTracker::new();
+    for i in 0..total {
+        if should_stop(host) {
+            sum.cancelled = true;
+            break;
+        }
+        let file = match src_zip.by_index(i) {
+            Ok(f) => f,
+            Err(e) => {
+                host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
+                sum.err += 1;
+                continue;
+            }
+        };
+        let name = normalize_inner(&decode_name(file.name_raw()));
+        if name.is_empty() {
+            continue;
+        }
+        let replaced = new_tops
+            .iter()
+            .any(|t| name == *t || name.starts_with(&format!("{t}/")));
+        if replaced {
+            drop(file);
+            continue;
+        }
+        let out_name = if file.is_dir() { format!("{name}/") } else { name };
+        if let Err(e) = zw.raw_copy_file_rename(file, out_name) {
+            host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
+            sum.err += 1;
+        }
+        if let Some(pct) = tracker.tick((i + 1) as u64, total as u64) {
+            host.update_progress(handle, &messages::archive_rebuild_progress(pct));
+        }
+    }
+
+    // 追加項目を足す。
+    if !sum.cancelled {
+        for name in names {
+            if should_stop(host) {
+                sum.cancelled = true;
+                break;
+            }
+            let src = src_dir.join(name);
+            let rel = join_inner(inner_prefix, name);
+            if let Flow::Cancel = add_archive_item(host, &mut zw, &src, &rel, &mut sum) {
+                sum.cancelled = true;
+                break;
+            }
+        }
+    }
+
+    let finished = zw.finish();
+    if sum.cancelled || sum.err > 0 {
+        drop(finished);
+        let _ = std::fs::remove_file(&tmp_path);
+        host.log(LogLevel::Error, &messages::copy_result(sum.ok, sum.skip, sum.err));
+        return sum;
+    }
+    if let Err(e) = finished {
+        let _ = std::fs::remove_file(&tmp_path);
+        host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
+        sum.err += 1;
+        host.log(LogLevel::Error, &messages::copy_result(sum.ok, sum.skip, sum.err));
+        return sum;
+    }
+    if let Err(e) = std::fs::rename(&tmp_path, dst_zip) {
+        let _ = std::fs::remove_file(&tmp_path);
+        host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
+        sum.err += 1;
+    }
+    let level = if sum.err == 0 { LogLevel::Info } else { LogLevel::Error };
+    host.log(level, &messages::copy_result(sum.ok, sum.skip, sum.err));
+    sum
+}
+
+/// 1項目を zip へ追記する（ディレクトリは再帰）。`rel` は書庫内パス（'/' 区切り）。
+/// [`add_to_zip`] と同じ処理だがログ文言を「追加」にする。
+fn add_archive_item(
+    host: &dyn OperationHost,
+    zw: &mut zip::ZipWriter<std::fs::File>,
+    src: &Path,
+    rel: &str,
+    sum: &mut OpSummary,
+) -> Flow {
+    use std::io::{Read, Write};
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let name = file_name(src);
+    if src.is_dir() {
+        if let Err(e) = zw.add_directory(format!("{rel}/"), opts) {
+            host.log(LogLevel::Error, &messages::archive_add_failure(&name, &e.to_string()));
+            sum.err += 1;
+            return Flow::Continue;
+        }
+        let entries = match std::fs::read_dir(src) {
+            Ok(e) => e,
+            Err(e) => {
+                host.log(LogLevel::Error, &messages::archive_add_failure(&name, &e.to_string()));
+                sum.err += 1;
+                return Flow::Continue;
+            }
+        };
+        for entry in entries {
+            if should_stop(host) {
+                return Flow::Cancel;
+            }
+            let Ok(entry) = entry else { continue };
+            let child_name = entry.file_name().to_string_lossy().into_owned();
+            let child_rel = format!("{rel}/{child_name}");
+            if let Flow::Cancel = add_archive_item(host, zw, &entry.path(), &child_rel, sum) {
+                return Flow::Cancel;
+            }
+        }
+        Flow::Continue
+    } else {
+        let mut reader = match std::fs::File::open(src) {
+            Ok(f) => f,
+            Err(e) => {
+                host.log(LogLevel::Error, &messages::archive_add_failure(&name, &e.to_string()));
+                sum.err += 1;
+                return Flow::Continue;
+            }
+        };
+        let total = reader.metadata().map(|m| m.len()).unwrap_or(0);
+        let handle = host.begin_progress(LogLevel::Normal, &messages::archive_add(&name));
+        if let Err(e) = zw.start_file(rel.to_string(), opts) {
+            host.log(LogLevel::Error, &messages::archive_add_failure(&name, &e.to_string()));
+            sum.err += 1;
+            return Flow::Continue;
+        }
+        // チャンクで書き、ファイル内のバイト進捗を更新する（大ファイルでも行が固まらない）。
+        // 中止はファイル境界で見る（zip エントリの途中で止めると壊れるので現在のファイルは
+        // 書き切る）。
+        let mut buf = vec![0u8; 256 * 1024];
+        let mut written = 0u64;
+        let mut tracker = ProgressTracker::new();
+        loop {
+            let n = match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => {
+                    host.log(LogLevel::Error, &messages::archive_add_failure(&name, &e.to_string()));
+                    sum.err += 1;
+                    return Flow::Continue;
+                }
+            };
+            if let Err(e) = zw.write_all(&buf[..n]) {
+                host.log(LogLevel::Error, &messages::archive_add_failure(&name, &e.to_string()));
+                sum.err += 1;
+                return Flow::Continue;
+            }
+            written += n as u64;
+            if let Some(pct) = tracker.tick(written, total) {
+                host.update_progress(handle, &messages::archive_add_progress(&name, pct));
+            }
+        }
+        host.update_progress(handle, &messages::archive_add(&name));
+        sum.ok += 1;
         Flow::Continue
     }
 }
@@ -1277,5 +1550,168 @@ mod tests {
         assert!(sum.cancelled);
         // 中止時は作りかけ zip を残さない。
         assert!(!zip.exists());
+    }
+
+    /// 標準 CRC-32（IEEE・反転多項式）。手組み stored zip の検証値用。
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &b in data {
+            crc ^= b as u32;
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+            }
+        }
+        !crc
+    }
+
+    /// 無圧縮(stored)・UTF-8 フラグ無しで任意の生バイト名 zip を手組みする
+    /// （CP932 名の検証用。高レベル writer は UTF-8 フラグを立ててしまうため）。
+    fn build_stored_zip_raw(path: &Path, entries: &[(&[u8], &[u8])]) {
+        fn u16le(v: &mut Vec<u8>, x: u16) {
+            v.extend_from_slice(&x.to_le_bytes());
+        }
+        fn u32le(v: &mut Vec<u8>, x: u32) {
+            v.extend_from_slice(&x.to_le_bytes());
+        }
+        let mut out: Vec<u8> = Vec::new();
+        let mut central: Vec<u8> = Vec::new();
+        for (name, data) in entries {
+            let crc = crc32(data);
+            let off = out.len() as u32;
+            // local file header
+            u32le(&mut out, 0x0403_4b50);
+            u16le(&mut out, 20);
+            u16le(&mut out, 0); // flags（UTF-8 ビット無し）
+            u16le(&mut out, 0); // method stored
+            u16le(&mut out, 0);
+            u16le(&mut out, 0);
+            u32le(&mut out, crc);
+            u32le(&mut out, data.len() as u32);
+            u32le(&mut out, data.len() as u32);
+            u16le(&mut out, name.len() as u16);
+            u16le(&mut out, 0);
+            out.extend_from_slice(name);
+            out.extend_from_slice(data);
+            // central directory header
+            u32le(&mut central, 0x0201_4b50);
+            u16le(&mut central, 20);
+            u16le(&mut central, 20);
+            u16le(&mut central, 0);
+            u16le(&mut central, 0);
+            u16le(&mut central, 0);
+            u16le(&mut central, 0);
+            u32le(&mut central, crc);
+            u32le(&mut central, data.len() as u32);
+            u32le(&mut central, data.len() as u32);
+            u16le(&mut central, name.len() as u16);
+            u16le(&mut central, 0);
+            u16le(&mut central, 0);
+            u16le(&mut central, 0);
+            u16le(&mut central, 0);
+            u32le(&mut central, 0);
+            u32le(&mut central, off);
+            central.extend_from_slice(name);
+        }
+        let cd_off = out.len() as u32;
+        let cd_size = central.len() as u32;
+        out.extend_from_slice(&central);
+        u32le(&mut out, 0x0605_4b50);
+        u16le(&mut out, 0);
+        u16le(&mut out, 0);
+        u16le(&mut out, entries.len() as u16);
+        u16le(&mut out, entries.len() as u16);
+        u32le(&mut out, cd_size);
+        u32le(&mut out, cd_off);
+        u16le(&mut out, 0);
+        std::fs::write(path, &out).unwrap();
+    }
+
+    /// CP932（UTF-8 フラグ無し）の "日本語.txt" の生バイト列。
+    fn cp932_nihongo_txt() -> Vec<u8> {
+        let mut n = vec![0x93, 0xfa, 0x96, 0x7b, 0x8c, 0xea];
+        n.extend_from_slice(b".txt");
+        n
+    }
+
+    #[test]
+    fn archive_add_appends_and_preserves_existing_cp932() {
+        let dir = TempDir::new();
+        let zip = dir.join("a.zip");
+        let cp = cp932_nihongo_txt();
+        build_stored_zip_raw(&zip, &[(&cp, b"orig")]);
+        let src = TempDir::new();
+        src.write_file("new.txt", "hello");
+        let host = FakeHost::new();
+        let sum = run_archive_add(&host, &src.path, &["new.txt".to_owned()], &zip, "");
+        assert_eq!(sum.err, 0);
+        assert_eq!(sum.ok, 1);
+        let be = crate::open_archive(&zip).unwrap();
+        let paths: Vec<String> = be.list().unwrap().into_iter().map(|e| e.path).collect();
+        // append は既存の生バイト名を触らない＝CP932 名が壊れない。
+        assert!(paths.iter().any(|p| p == "日本語.txt"), "CP932 名保持: {paths:?}");
+        assert_eq!(be.read("日本語.txt").unwrap(), b"orig");
+        assert_eq!(be.read("new.txt").unwrap(), b"hello");
+    }
+
+    #[test]
+    fn archive_rebuild_replaces_same_name_without_duplicate() {
+        let dir = TempDir::new();
+        let zip = dir.join("a.zip");
+        build_stored_zip_raw(&zip, &[(b"a.txt", b"old"), (b"b.txt", b"keep")]);
+        let src = TempDir::new();
+        src.write_file("a.txt", "new");
+        let host = FakeHost::new();
+        let sum = run_archive_rebuild(&host, &src.path, &["a.txt".to_owned()], &zip, "");
+        assert_eq!(sum.err, 0);
+        let be = crate::open_archive(&zip).unwrap();
+        let files: Vec<String> = be
+            .list()
+            .unwrap()
+            .into_iter()
+            .filter(|e| !e.is_dir)
+            .map(|e| e.path)
+            .collect();
+        // 同名は置換され重複しない。
+        assert_eq!(files.iter().filter(|p| *p == "a.txt").count(), 1, "重複なし: {files:?}");
+        assert_eq!(be.read("a.txt").unwrap(), b"new");
+        assert_eq!(be.read("b.txt").unwrap(), b"keep");
+    }
+
+    #[test]
+    fn archive_rebuild_modernizes_cp932_name() {
+        let dir = TempDir::new();
+        let zip = dir.join("a.zip");
+        let cp = cp932_nihongo_txt();
+        build_stored_zip_raw(&zip, &[(&cp, b"orig"), (b"a.txt", b"old")]);
+        let src = TempDir::new();
+        src.write_file("a.txt", "new");
+        let host = FakeHost::new();
+        let sum = run_archive_rebuild(&host, &src.path, &["a.txt".to_owned()], &zip, "");
+        assert_eq!(sum.err, 0);
+        let be = crate::open_archive(&zip).unwrap();
+        // 触っていない CP932 名は近代化（UTF-8 化）後も同じ表示名で読める。
+        assert_eq!(be.read("日本語.txt").unwrap(), b"orig");
+        assert_eq!(be.read("a.txt").unwrap(), b"new");
+    }
+
+    #[test]
+    fn archive_rebuild_cancel_keeps_original() {
+        let dir = TempDir::new();
+        let zip = dir.join("a.zip");
+        let cp = cp932_nihongo_txt();
+        build_stored_zip_raw(&zip, &[(&cp, b"orig"), (b"a.txt", b"old")]);
+        let src = TempDir::new();
+        src.write_file("a.txt", "new");
+        // 即中止：書き戻しループの最初で止まる。
+        let host = FakeHost::cancelling(0);
+        let sum = run_archive_rebuild(&host, &src.path, &["a.txt".to_owned()], &zip, "");
+        assert!(sum.cancelled);
+        // 元書庫は無傷（中身も CP932 名も元のまま）。
+        let be = crate::open_archive(&zip).unwrap();
+        assert_eq!(be.read("a.txt").unwrap(), b"old");
+        assert_eq!(be.read("日本語.txt").unwrap(), b"orig");
+        // 一時ファイルは残らない。
+        assert!(!dir.join("a.zip.rerics-tmp").exists());
     }
 }

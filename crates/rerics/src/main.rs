@@ -2582,8 +2582,8 @@ impl MainWindow {
     /// 入力ダイアログで名前を尋ね、アクティブペインの現在パス直下にディレクトリを作る。
     /// 作成後は一覧を更新し、新ディレクトリへカーソルを移す。
     fn make_directory(&self, is_left: bool) -> w::AnyResult<()> {
-        if self.block_if_archive(is_left, "ディレクトリの作成") {
-            return Ok(());
+        if self.pane(is_left).borrow().is_archive() {
+            return self.make_directory_in_archive(is_left);
         }
         let name = dialog::input_box(
             &self.wnd,
@@ -2601,6 +2601,79 @@ impl MainWindow {
         }
         let dir = self.pane(is_left).borrow().path().join(name);
         if let Err(e) = std::fs::create_dir(&dir) {
+            let line = messages::create_directory_failure(name, &e.to_string());
+            self.log.error(&line);
+            dialog::message_box(&self.wnd, "ディレクトリの作成", &line, dialog::MessageStyle::Error);
+            return Ok(());
+        }
+        self.log.normal(&messages::create_directory(name));
+        self.reload_side(is_left)?;
+        let view = self.view(is_left);
+        let pr = view.page_rows();
+        view.state().borrow_mut().set_cursor_position(name, pr);
+        view.refresh()?;
+        Ok(())
+    }
+
+    /// 書庫内にディレクトリを作る（`caps.can_mkdir` のとき。append で既存を壊さない）。
+    fn make_directory_in_archive(&self, is_left: bool) -> w::AnyResult<()> {
+        let (archive, inner) = {
+            let p = self.pane(is_left).borrow();
+            match p.loc() {
+                Location::Archive { archive, inner } => (archive.clone(), inner.clone()),
+                _ => return Ok(()),
+            }
+        };
+        let backend = match rerics_core::open_archive(&archive) {
+            Ok(b) if b.caps().can_mkdir => b,
+            Ok(_) => {
+                self.log.warn("この書庫形式はディレクトリの作成に未対応です");
+                return Ok(());
+            }
+            Err(e) => {
+                self.log.error(&format!("書庫を開けません: {}", e));
+                return Ok(());
+            }
+        };
+        let name = dialog::input_box(
+            &self.wnd,
+            "ディレクトリの作成",
+            &messages::directory_name_question(),
+            "新しいディレクトリ",
+            dialog::InputMode::Plain,
+        );
+        let Some(name) = name else {
+            return Ok(());
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(());
+        }
+        let target = if inner.is_empty() {
+            name.to_string()
+        } else {
+            format!("{inner}/{name}")
+        };
+        // 同名（ファイル/ディレクトリ）が既存なら、実FS のディレクトリ作成と同じくエラーにする。
+        let existing: Vec<String> = backend
+            .list()
+            .map(|es| es.into_iter().map(|e| e.path).collect())
+            .unwrap_or_default();
+        let prefix = format!("{target}/");
+        if existing.iter().any(|p| *p == target || p.starts_with(&prefix)) {
+            let line = messages::create_directory_failure(name, "すでに存在します");
+            self.log.error(&line);
+            dialog::message_box(&self.wnd, "ディレクトリの作成", &line, dialog::MessageStyle::Error);
+            return Ok(());
+        }
+        let mut writer = match rerics_core::open_archive_writer(&archive) {
+            Ok(w) => w,
+            Err(e) => {
+                self.log.error(&format!("書庫を開けません: {}", e));
+                return Ok(());
+            }
+        };
+        if let Err(e) = writer.mkdir(&target) {
             let line = messages::create_directory_failure(name, &e.to_string());
             self.log.error(&line);
             dialog::message_box(&self.wnd, "ディレクトリの作成", &line, dialog::MessageStyle::Error);
@@ -2748,7 +2821,6 @@ impl MainWindow {
 
     /// アクティブペインの選択（無ければカーソル）を反対側ペインへコピー/移動する。
     fn copy_or_move(&self, is_left: bool, move_it: bool) -> w::AnyResult<()> {
-        let verb = if move_it { "移動" } else { "コピー" };
         let src_is_archive = self.pane(is_left).borrow().is_archive();
         let dst_is_archive = self.pane(!is_left).borrow().is_archive();
 
@@ -2764,10 +2836,9 @@ impl MainWindow {
             }
             return self.extract_from_archive(is_left);
         }
-        // dst が書庫＝書庫への書込み。圧縮追加は後段（v1 では未対応）。
+        // dst が書庫＝実FS から書庫への追加（コピー）／移動（追加後に元を削除）。
         if dst_is_archive {
-            self.log.warn(&format!("書庫への{}は未対応です", verb));
-            return Ok(());
+            return self.add_to_archive(is_left, move_it);
         }
 
         let names = self.selected_or_cursor_names(is_left);
@@ -2822,6 +2893,141 @@ impl MainWindow {
             }
         };
         self.start_extract(archive, inner, names, dst_dir)
+    }
+
+    /// 実FS の選択項目を反対側ペイン（書庫）へ追加する。move なら追加成功後に実FS の元を消す。
+    /// 同名エントリがあれば追加方式（append／再構築して置換）を尋ねる。
+    fn add_to_archive(&self, is_left: bool, move_it: bool) -> w::AnyResult<()> {
+        fn inner_join(prefix: &str, name: &str) -> String {
+            if prefix.is_empty() {
+                name.to_string()
+            } else {
+                format!("{prefix}/{name}")
+            }
+        }
+        let names = self.selected_or_cursor_names(is_left);
+        if names.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        let src_dir = match self.pane(is_left).borrow().as_real_path() {
+            Some(p) => p.to_path_buf(),
+            None => {
+                self.log.warn("追加元が実フォルダではありません");
+                return Ok(());
+            }
+        };
+        let (archive, inner) = {
+            let p = self.pane(!is_left).borrow();
+            match p.loc() {
+                Location::Archive { archive, inner } => (archive.clone(), inner.clone()),
+                _ => return Ok(()),
+            }
+        };
+        let backend = match rerics_core::open_archive(&archive) {
+            Ok(b) => b,
+            Err(e) => {
+                self.log.error(&format!("書庫を開けません: {}", e));
+                return Ok(());
+            }
+        };
+        if !backend.caps().can_add {
+            self.log.warn("この書庫形式はファイルの追加に未対応です");
+            return Ok(());
+        }
+        // 同名衝突をスキャンして方式を決める（衝突ゼロなら無言で append）。
+        let existing: Vec<String> = backend
+            .list()
+            .map(|es| es.into_iter().map(|e| e.path).collect())
+            .unwrap_or_default();
+        let colliding: Vec<String> = names
+            .iter()
+            .filter(|n| {
+                let t = inner_join(&inner, n);
+                let pfx = format!("{t}/");
+                existing.iter().any(|p| *p == t || p.starts_with(&pfx))
+            })
+            .cloned()
+            .collect();
+        let mode = if !colliding.is_empty() {
+            let summary = format!(
+                "{} 個が書庫内の既存と同名です。\n追加方式を選んでください。",
+                colliding.len()
+            );
+            match dialog::archive_add_box(&self.wnd, &summary) {
+                Some(m) => m,
+                None => return Ok(()),
+            }
+        } else {
+            dialog::ArchiveAddMode::Append
+        };
+        // zip は同名エントリの追記ができない。スキップは衝突分を除いて append、
+        // 置換は全件を再構築（rebuild）で足す。move のとき元を消すのは実際に足した分だけ。
+        let targets: Vec<String> = match mode {
+            dialog::ArchiveAddMode::Append => {
+                names.into_iter().filter(|n| !colliding.contains(n)).collect()
+            }
+            dialog::ArchiveAddMode::Rebuild => names,
+        };
+        if targets.is_empty() {
+            self.log.warn(&format!("{} 件すべて同名のためスキップしました", colliding.len()));
+            return Ok(());
+        }
+        self.start_archive_add(archive, inner, src_dir, targets, move_it, mode, is_left)
+    }
+
+    /// 書庫への追加をワーカースレッドで起動する。`mode` に応じて append／再構築を選び、
+    /// move なら全件成功後に実FS の元を削除する。完了で関与した両ペインを再読込させる。
+    fn start_archive_add(
+        &self,
+        archive: PathBuf,
+        inner: String,
+        src_dir: PathBuf,
+        names: Vec<String>,
+        move_it: bool,
+        mode: dialog::ArchiveAddMode,
+        is_left: bool,
+    ) -> w::AnyResult<()> {
+        let control = Arc::new(TaskControl::new());
+        let host = ChannelHost::new(
+            self.task_tx.clone(),
+            self.shutdown.clone(),
+            control.clone(),
+            self.progress_seq.clone(),
+        );
+        let id = self.next_id();
+        let label = if move_it { "書庫へ移動" } else { "書庫へ追加" };
+        let desc = format!("{} -> {}", short_desc(&names), archive.display());
+        self.register_task(id, label, desc, control)?;
+        std::thread::spawn(move || {
+            let summary = match mode {
+                dialog::ArchiveAddMode::Append => {
+                    rerics_core::run_archive_add(&host, &src_dir, &names, &archive, &inner)
+                }
+                dialog::ArchiveAddMode::Rebuild => {
+                    rerics_core::run_archive_rebuild(&host, &src_dir, &names, &archive, &inner)
+                }
+            };
+            // move は全件成功（エラー無し・未中断）のときだけ実FS の元を削除する。
+            if move_it && summary.err == 0 && !summary.cancelled {
+                for name in &names {
+                    let p = src_dir.join(name);
+                    let r = if p.is_dir() {
+                        std::fs::remove_dir_all(&p)
+                    } else {
+                        std::fs::remove_file(&p)
+                    };
+                    if let Err(e) = r {
+                        let _ = host.tx.send(WorkerEvent::Log {
+                            level: LogLevel::Error,
+                            text: messages::delete_failure(name, &e.to_string()),
+                        });
+                    }
+                }
+            }
+            let _ = host.tx.send(WorkerEvent::ArchiveWriteDone { id, src_is_left: is_left });
+        });
+        Ok(())
     }
 
     /// 書庫からの取り出しをワーカースレッドで起動する。ワーカ内で書庫を開いて
@@ -3085,6 +3291,12 @@ impl MainWindow {
                             }
                         }
                     }
+                    self.maybe_kill_task_timer();
+                }
+                WorkerEvent::ArchiveWriteDone { id, src_is_left } => {
+                    self.tasks.borrow_mut().retain(|e| e.id != id);
+                    self.reload_side(src_is_left)?;
+                    self.reload_side(!src_is_left)?;
                     self.maybe_kill_task_timer();
                 }
             }
