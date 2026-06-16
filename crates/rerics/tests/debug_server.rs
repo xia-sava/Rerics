@@ -825,3 +825,20 @@ fn shell_clipboard_copy_paste() {
         "pasted file should appear in the destination folder: {items}"
     );
 }
+
+/// #10: F5 リロードでカーソルが「同名ファイル」に留まる（先頭 .. へ戻らない）。
+#[test]
+fn reload_keeps_cursor_on_same_file() {
+    let server = Server::start(&["a.txt", "b.txt", "c.txt"], "");
+
+    // 左 items は [.., a.txt, b.txt, c.txt]。CursorDown×2 で b.txt(index 2)。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    let before = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(before.trim(), "2", "カーソルは b.txt(index 2) のはず");
+
+    // F5 相当。カーソル保持なら 2 のまま、旧挙動なら 0(..) へ戻る。
+    server.req("POST", "/command/Reload", "").unwrap();
+    let after = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
+    assert_eq!(after.trim(), "2", "リロード後もカーソルは b.txt に留まるべき（先頭へ戻らない）");
+}

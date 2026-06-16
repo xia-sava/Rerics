@@ -92,8 +92,9 @@ fn split_base_ext(name: &str, is_dir: bool) -> (String, String) {
 }
 
 /// ソート種別。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum SortType {
+    #[default]
     FileName,
     Extension,
     Length,

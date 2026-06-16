@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use toml::Value;
 
-use crate::file_list::{Colors, Column, default_columns};
+use crate::file_list::{Colors, Column, SortType, default_columns};
 use crate::input::KeyMap;
 
 /// 設定/状態ファイルの保存先ディレクトリを返す。
@@ -341,13 +341,21 @@ pub struct WindowState {
     pub maximized: bool,
 }
 
-/// 1タブ分の状態（左右ペインのパスとアクティブ側）。
+/// 1タブ分の状態（左右ペインのパスとアクティブ側・各ペインのソート種別/昇降）。
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct TabState {
     pub left: String,
     pub right: String,
     #[serde(default)]
     pub active_right: bool,
+    #[serde(default)]
+    pub sort_left: SortType,
+    #[serde(default)]
+    pub sort_left_reverse: bool,
+    #[serde(default)]
+    pub sort_right: SortType,
+    #[serde(default)]
+    pub sort_right_reverse: bool,
 }
 
 /// 自動保存される全体状態。
@@ -581,8 +589,8 @@ mod tests {
         let st = State {
             window: None,
             tabs: vec![
-                TabState { left: "C:\\a".into(), right: "C:\\b".into(), active_right: false },
-                TabState { left: "C:\\c".into(), right: "C:\\d".into(), active_right: true },
+                TabState { left: "C:\\a".into(), right: "C:\\b".into(), active_right: false, ..Default::default() },
+                TabState { left: "C:\\c".into(), right: "C:\\d".into(), active_right: true, ..Default::default() },
             ],
             active_tab: 1,
             ..State::default()
@@ -593,6 +601,42 @@ mod tests {
         assert_eq!(st.active_tab, back.active_tab);
         assert_eq!(back.active().unwrap().left, "C:\\c");
         assert!(back.active().unwrap().active_right);
+    }
+
+    #[test]
+    fn tabstate_sort_roundtrip() {
+        let st = State {
+            window: None,
+            tabs: vec![TabState {
+                left: "C:\\a".into(),
+                right: "C:\\b".into(),
+                active_right: true,
+                sort_left: SortType::Length,
+                sort_left_reverse: true,
+                sort_right: SortType::LastWriteTime,
+                sort_right_reverse: false,
+            }],
+            active_tab: 0,
+            ..State::default()
+        };
+        let s = toml::to_string(&st).unwrap();
+        let back: State = toml::from_str(&s).unwrap();
+        let t = &back.tabs[0];
+        assert_eq!(t.sort_left, SortType::Length);
+        assert!(t.sort_left_reverse);
+        assert_eq!(t.sort_right, SortType::LastWriteTime);
+        assert!(!t.sort_right_reverse);
+    }
+
+    #[test]
+    fn tabstate_without_sort_fields_defaults() {
+        // 旧 state.toml（ソートフィールド無し）を読んでも既定（FileName・昇順）に落ちる。
+        let toml = "left = \"C:\\\\a\"\nright = \"C:\\\\b\"\nactive_right = false\n";
+        let t: TabState = toml::from_str(toml).unwrap();
+        assert_eq!(t.sort_left, SortType::FileName);
+        assert!(!t.sort_left_reverse);
+        assert_eq!(t.sort_right, SortType::FileName);
+        assert!(!t.sort_right_reverse);
     }
 
     #[test]
