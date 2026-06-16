@@ -862,7 +862,8 @@ impl FileListView {
                 if col.align == Align::Right {
                     flags |= co::DT::RIGHT;
                 }
-                let rect = w::RECT { left: left + margin, top: y, right: right - margin, bottom: y + item_h };
+                // 左は n 幅マージン、右パディングは 0（原作の左 4/右 0 の非対称に倣い右を詰める）。
+                let rect = w::RECT { left: left + margin, top: y, right, bottom: y + item_h };
                 dc.DrawText(&text, rect, flags)?;
             }
             // 4. カーソル下線。
@@ -947,25 +948,10 @@ impl FileListView {
         if sort_match {
             let tw = dc.GetTextExtentPoint32(&col.text).map(|sz| sz.cx).unwrap_or(0);
             let x0 = left + margin + tw + 8;
-            let top = 6;
-            let bot = header_h - 8;
-            let pen = w::HPEN::CreatePen(co::PS::SOLID, 1, w::COLORREF::from_rgb(64, 64, 64))?;
-            let _pen_sel = dc.SelectObject(&*pen)?;
-            if !s.sort_reverse {
-                // 昇順: 頂点上。
-                dc.MoveToEx(x0, bot, None)?;
-                dc.LineTo(x0 + 3, top)?;
-                dc.LineTo(x0 + 6, bot)?;
-                dc.MoveToEx(x0, bot, None)?;
-                dc.LineTo(x0 + 6, bot)?;
-            } else {
-                // 降順: 頂点下。
-                dc.MoveToEx(x0, top, None)?;
-                dc.LineTo(x0 + 6, top)?;
-                dc.MoveToEx(x0, top, None)?;
-                dc.LineTo(x0 + 3, bot)?;
-                dc.LineTo(x0 + 6, top)?;
-            }
+            // 線分描画ではなく三角グリフを文字として描く（昇順=△ 上向き／降順=▽ 下向き）。
+            let glyph = if s.sort_reverse { "▽" } else { "△" };
+            let rect = w::RECT { left: x0, top: 0, right, bottom: header_h };
+            dc.DrawText(glyph, rect, co::DT::SINGLELINE | co::DT::NOPREFIX | co::DT::VCENTER)?;
         }
         Ok(())
     }
