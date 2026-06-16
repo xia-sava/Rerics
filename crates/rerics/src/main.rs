@@ -6,6 +6,7 @@ mod debug_json;
 mod debug_server;
 mod dialog;
 mod file_list;
+mod icons;
 mod log_view;
 mod menu;
 mod pane_view;
@@ -261,6 +262,10 @@ impl MainWindow {
 
         let left = PaneView::new(&wnd, gui::dpi(m, m), gui::dpi(400, 400), &config);
         let right = PaneView::new(&wnd, gui::dpi(m, m), gui::dpi(400, 400), &config);
+        // シェルアイコンのキャッシュを左右ペインで共有する。
+        let icon_cache = Rc::new(icons::IconCache::new());
+        left.list().set_icon_cache(icon_cache.clone());
+        right.list().set_icon_cache(icon_cache.clone());
         let splitter = splitter::SplitterView::new(
             &wnd,
             gui::dpi(0, 0),

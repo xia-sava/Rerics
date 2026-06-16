@@ -9,6 +9,8 @@ use std::rc::Rc;
 use rerics_core::{Align, ColumnKind, Colors, Config, FileListState, Rgb, SortType};
 use winsafe::{self as w, co, gui, prelude::*};
 
+use crate::icons::{ICON_LOGICAL, IconCache};
+
 /// マウス操作の状態機械。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MouseEvent {
@@ -56,6 +58,8 @@ struct Inner {
     /// 展開済みファイル数／総数（プログレスバーの充填率に使う。total=0 は不定）。
     loading_done: Cell<u64>,
     loading_total: Cell<u64>,
+    /// シェルアイコンのキャッシュ（左右ペインで共有・main 側から注入）。未設定なら描かない。
+    icon_cache: RefCell<Option<Rc<IconCache>>>,
 }
 
 /// ファイル一覧コントロール。
@@ -104,6 +108,7 @@ impl FileListView {
             loading: Cell::new(false),
             loading_done: Cell::new(0),
             loading_total: Cell::new(0),
+            icon_cache: RefCell::new(None),
         });
         let me = Self { wnd, inner };
         me.setup_events();
@@ -116,6 +121,16 @@ impl FileListView {
 
     pub fn hwnd(&self) -> &w::HWND {
         self.wnd.hwnd()
+    }
+
+    /// シェルアイコンのキャッシュを注入する（左右ペインで同一インスタンスを共有）。
+    pub fn set_icon_cache(&self, cache: Rc<IconCache>) {
+        *self.inner.icon_cache.borrow_mut() = Some(cache);
+    }
+
+    /// アイコンの描画サイズ（物理 px・DPI スケール済み）。
+    fn icon_px(&self) -> i32 {
+        gui::dpi_x(ICON_LOGICAL)
     }
 
     pub fn on_activate(&self, cb: impl Fn(usize) + 'static) {
@@ -320,7 +335,13 @@ impl FileListView {
     }
 
     fn item_height(&self) -> i32 {
-        self.font_height()
+        // アイコンが収まる高さを最低限確保する（アイコン未設定でもフォント高で従来どおり）。
+        let icon = if self.inner.icon_cache.borrow().is_some() {
+            self.icon_px() + gui::dpi_y(2)
+        } else {
+            0
+        };
+        self.font_height().max(icon)
     }
 
     /// フォントを生成する（設定のファミリ・サイズ）。
@@ -832,6 +853,8 @@ impl FileListView {
         let page = self.page_rows();
         let bottom = s.scroll_bottom(page);
         let sel_bg = w::HBRUSH::CreateSolidBrush(rgb(colors.selected_file_bg))?;
+        let icon_cache = self.inner.icon_cache.borrow();
+        let icon_px = self.icon_px();
         for i in s.scroll_top..=bottom {
             if i >= s.count() {
                 break;
@@ -862,8 +885,19 @@ impl FileListView {
                 if col.align == Align::Right {
                     flags |= co::DT::RIGHT;
                 }
-                // 左は n 幅マージン、右パディングは 0（原作の左 4/右 0 の非対称に倣い右を詰める）。
-                let rect = w::RECT { left: left + margin, top: y, right, bottom: y + item_h };
+                // 名前列の左にシェルアイコンを内包する（モダン方式・専用列は持たない）。
+                let mut text_left = left + margin;
+                let is_name_col =
+                    matches!(col.kind, ColumnKind::FileName | ColumnKind::FileBaseName);
+                if is_name_col {
+                    if let Some(cache) = icon_cache.as_ref() {
+                        let iy = y + (item_h - icon_px) / 2;
+                        cache.draw(dc, item.is_dir, &item.extension, text_left, iy, icon_px);
+                        text_left += icon_px + gui::dpi_x(2);
+                    }
+                }
+                // 左は n 幅マージン（＋アイコン幅）、右パディングは 0（原作の左 4/右 0 に倣う）。
+                let rect = w::RECT { left: text_left, top: y, right, bottom: y + item_h };
                 dc.DrawText(&text, rect, flags)?;
             }
             // 4. カーソル下線。
