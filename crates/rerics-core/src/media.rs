@@ -287,6 +287,19 @@ pub fn load_image(bytes: &[u8]) -> Option<Box<dyn FrameSource>> {
     StillImage::load(bytes).map(|s| Box::new(s) as Box<dyn FrameSource>)
 }
 
+/// サムネイル用：バイト列をデコードし、長辺が `max` px 以内に収まるよう縮小した RGBA を返す
+/// （アスペクト比保持）。リスト一覧の小プレビュー生成に使う。失敗時は `None`。
+pub fn decode_thumbnail(bytes: &[u8], max: u32) -> Option<(u32, u32, Vec<u8>)> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let thumb = img.thumbnail(max.max(1), max.max(1));
+    let rgba = thumb.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    if w == 0 || h == 0 {
+        return None;
+    }
+    Some((w, h, rgba.into_raw()))
+}
+
 /// 拡張子から判定したメディア種別。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaKind {
@@ -562,5 +575,25 @@ mod tests {
         assert!(s.next_frame().is_none());
         s.reset();
         assert!(s.next_frame().is_some());
+    }
+
+    #[test]
+    fn decode_thumbnail_fits_within_max_and_keeps_aspect() {
+        // 80x40 の画像を長辺 16 に縮小。アスペクト比保持で 16x8 になり RGBA 長が一致。
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            80,
+            40,
+            image::Rgba([10, 20, 30, 255]),
+        ))
+        .write_to(&mut buf, image::ImageFormat::Png)
+        .unwrap();
+        let (w, h, rgba) = decode_thumbnail(buf.get_ref(), 16).unwrap();
+        assert!(w <= 16 && h <= 16, "縮小後は max 以内: {w}x{h}");
+        assert_eq!(w, 16);
+        assert_eq!(h, 8);
+        assert_eq!(rgba.len(), (w * h * 4) as usize);
+        // 壊れたバイト列は None。
+        assert!(decode_thumbnail(&[0, 1, 2, 3], 16).is_none());
     }
 }

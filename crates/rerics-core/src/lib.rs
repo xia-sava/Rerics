@@ -30,8 +30,8 @@ pub use input::{Command, KeyChord, KeyMap, vk};
 pub use log::{LogLevel, LogLine, LogState};
 pub use media::{
     AnimatedImage, Frame, FrameSource, MediaKind, Placement, StillImage, clamp_pan,
-    composite_over_checker, fit_scale, load_image, placement, rgba_to_bgra, rotate_rgba,
-    rotated_dims,
+    composite_over_checker, decode_thumbnail, fit_scale, load_image, placement, rgba_to_bgra,
+    rotate_rgba, rotated_dims,
 };
 pub use operation::{
     ConflictResolution, DeleteWarnChoice, DirInfo, OpSummary, OperationHost, ProgressHandle,
