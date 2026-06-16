@@ -90,9 +90,8 @@ enum DebugCmdClass {
 fn debug_command_class(cmd: Command) -> DebugCmdClass {
     use Command::*;
     match cmd {
-        MakeDirectory | CreateFile | Rename | Delete | Copy | Move | Compress | Extract => {
-            DebugCmdClass::ModalWrite
-        }
+        MakeDirectory | CreateFile | Rename | Delete | Copy | Move | Compress | Extract
+        | RenameSequenceDialog => DebugCmdClass::ModalWrite,
         // ViewFile は暗号化書庫でパスワード入力モーダルを開き得る（書込みではない）。
         ViewFile => DebugCmdClass::MaybeModal,
         // 履歴ダイアログは読取モーダル（リスト選択）を開く（書込みではない）。
@@ -655,6 +654,10 @@ impl MainWindow {
             }
             Command::DirectoryInformation => {
                 self.directory_information(is_left)?;
+                return Ok(());
+            }
+            Command::RenameSequenceDialog => {
+                self.rename_sequence_dialog(is_left)?;
                 return Ok(());
             }
             Command::FocusLeft => {
@@ -3406,6 +3409,233 @@ impl MainWindow {
             });
         });
         Ok(())
+    }
+
+    /// 連番リネームダイアログ。プレフィックス・開始番号・桁数・拡張子保持を入力し、
+    /// プレビューしながら OK で一括リネームする（実FSのみ・選択/カーソル対象）。
+    fn rename_sequence_dialog(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内では連番リネームは未対応です。");
+            return Ok(());
+        }
+        let names = self.selected_or_cursor_names(is_left);
+        if names.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        let dir = self.pane(is_left).borrow().path().to_path_buf();
+
+        let wnd = gui::WindowModal::new(gui::WindowModalOpts {
+            title: "連番リネーム",
+            size: gui::dpi(420, 220),
+            style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
+            process_dlg_msgs: true,
+            ..Default::default()
+        });
+        let _lp = gui::Label::new(&wnd, gui::LabelOpts {
+            text: "プレフィックス:",
+            position: gui::dpi(12, 14),
+            size: gui::dpi(110, 16),
+            ..Default::default()
+        });
+        // prefix は最初に作る（debug-server の入力欄ターゲットが先頭の Edit のため）。
+        let prefix = gui::Edit::new(&wnd, gui::EditOpts {
+            control_style: co::ES::AUTOHSCROLL,
+            position: gui::dpi(126, 12),
+            width: gui::dpi_x(280),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        });
+        let _ls = gui::Label::new(&wnd, gui::LabelOpts {
+            text: "開始番号:",
+            position: gui::dpi(12, 44),
+            size: gui::dpi(110, 16),
+            ..Default::default()
+        });
+        let start = gui::Edit::new(&wnd, gui::EditOpts {
+            text: "1",
+            control_style: co::ES::AUTOHSCROLL,
+            position: gui::dpi(126, 42),
+            width: gui::dpi_x(80),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        });
+        let _ld = gui::Label::new(&wnd, gui::LabelOpts {
+            text: "桁数:",
+            position: gui::dpi(220, 44),
+            size: gui::dpi(50, 16),
+            ..Default::default()
+        });
+        let digits = gui::Edit::new(&wnd, gui::EditOpts {
+            text: "3",
+            control_style: co::ES::AUTOHSCROLL,
+            position: gui::dpi(272, 42),
+            width: gui::dpi_x(60),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        });
+        let keep = gui::CheckBox::new(&wnd, gui::CheckBoxOpts {
+            text: "元の拡張子を残す(&E)",
+            position: gui::dpi(126, 74),
+            size: gui::dpi(220, 18),
+            ..Default::default()
+        });
+        let preview = gui::Label::new(&wnd, gui::LabelOpts {
+            text: "",
+            position: gui::dpi(12, 104),
+            size: gui::dpi(394, 40),
+            ..Default::default()
+        });
+        let ok = gui::Button::new(&wnd, gui::ButtonOpts {
+            text: "OK",
+            control_style: co::BS::DEFPUSHBUTTON,
+            ctrl_id: 1,
+            position: gui::dpi(232, 156),
+            width: gui::dpi_x(80),
+            height: gui::dpi_y(26),
+            ..Default::default()
+        });
+        let cancel = gui::Button::new(&wnd, gui::ButtonOpts {
+            text: "中止(&S)",
+            ctrl_id: 2,
+            position: gui::dpi(320, 156),
+            width: gui::dpi_x(86),
+            height: gui::dpi_y(26),
+            ..Default::default()
+        });
+
+        // プレビュー更新（フィールド変化のたびに先頭・末尾の変換例を出す）。
+        let update: std::rc::Rc<dyn Fn()> = {
+            let prefix = prefix.clone();
+            let start = start.clone();
+            let digits = digits.clone();
+            let keep = keep.clone();
+            let preview = preview.clone();
+            let names = names.clone();
+            std::rc::Rc::new(move || {
+                let p = prefix.text().unwrap_or_default();
+                let s = start.text().unwrap_or_default().trim().parse::<u64>().unwrap_or(1);
+                let d = digits.text().unwrap_or_default().trim().parse::<usize>().unwrap_or(3);
+                let news = rerics_core::sequence_names(&names, &p, s, d, keep.is_checked());
+                let text = match (names.first(), news.first()) {
+                    (Some(o1), Some(n1)) if names.len() > 1 => format!(
+                        "例: {o1} → {n1}  …  {} → {}",
+                        names.last().unwrap(),
+                        news.last().unwrap()
+                    ),
+                    (Some(o1), Some(n1)) => format!("例: {o1} → {n1}"),
+                    _ => String::new(),
+                };
+                let _ = preview.hwnd().SetWindowText(&text);
+            })
+        };
+        for ed in [&prefix, &start, &digits] {
+            let u = update.clone();
+            ed.on().en_change(move || {
+                u();
+                Ok(())
+            });
+        }
+        {
+            let u = update.clone();
+            keep.on().bn_clicked(move || {
+                u();
+                Ok(())
+            });
+        }
+
+        #[cfg(feature = "debug-server")]
+        let reg_wnd = wnd.clone();
+        {
+            let prefix = prefix.clone();
+            let keep = keep.clone();
+            let update = update.clone();
+            wnd.on().wm_create(move |_| {
+                keep.set_check(true);
+                update();
+                prefix.hwnd().SetFocus();
+                #[cfg(feature = "debug-server")]
+                crate::debug_server::modal_registry::push(
+                    "rename_seq",
+                    "連番リネーム",
+                    "",
+                    reg_wnd.hwnd().ptr() as isize,
+                    true,
+                    vec![("OK".to_string(), 1u16), ("中止(&S)".to_string(), 2u16)],
+                );
+                Ok(0)
+            });
+        }
+
+        {
+            let this = self.clone();
+            let wnd2 = wnd.clone();
+            let prefix = prefix.clone();
+            let start = start.clone();
+            let digits = digits.clone();
+            let keep = keep.clone();
+            let names = names.clone();
+            let dir = dir.clone();
+            ok.on().bn_clicked(move || {
+                let p = prefix.text().unwrap_or_default();
+                let s = start.text().unwrap_or_default().trim().parse::<u64>().unwrap_or(1);
+                let d = digits.text().unwrap_or_default().trim().parse::<usize>().unwrap_or(3);
+                let news = rerics_core::sequence_names(&names, &p, s, d, keep.is_checked());
+                this.apply_sequence_rename(is_left, &dir, &names, &news);
+                wnd2.close();
+                Ok(())
+            });
+        }
+        {
+            let wnd2 = wnd.clone();
+            cancel.on().bn_clicked(move || {
+                wnd2.close();
+                Ok(())
+            });
+        }
+
+        let _ = wnd.show_modal(&self.wnd);
+        #[cfg(feature = "debug-server")]
+        crate::debug_server::modal_registry::pop();
+        let _ = (prefix, start, digits, keep, preview, ok, cancel);
+        Ok(())
+    }
+
+    /// 連番リネームの実行：集合内の入れ替えでも壊れないよう一時名を経由する二段階改名。
+    /// 新名の重複・集合外の既存ファイルとの衝突は中止する。
+    fn apply_sequence_rename(&self, is_left: bool, dir: &Path, olds: &[String], news: &[String]) {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for n in news {
+            if !seen.insert(n.as_str()) {
+                self.log.error(&format!("連番リネーム中止：新しい名前が重複します（{n}）"));
+                return;
+            }
+        }
+        let old_set: HashSet<&str> = olds.iter().map(String::as_str).collect();
+        for n in news {
+            if !old_set.contains(n.as_str()) && dir.join(n).exists() {
+                self.log.error(&format!("連番リネーム中止：既存ファイルと衝突します（{n}）"));
+                return;
+            }
+        }
+        let mut tmps = Vec::new();
+        for (i, old) in olds.iter().enumerate() {
+            let tmp = format!("{old}.rerics-seq-{i}");
+            if let Err(e) = std::fs::rename(dir.join(old), dir.join(&tmp)) {
+                self.log.error(&format!("リネーム失敗（{old}）：{e}"));
+                let _ = self.reload_side(is_left);
+                return;
+            }
+            tmps.push(tmp);
+        }
+        for (tmp, new) in tmps.iter().zip(news.iter()) {
+            if let Err(e) = std::fs::rename(dir.join(tmp), dir.join(new)) {
+                self.log.error(&format!("リネーム失敗（→{new}）：{e}"));
+            }
+        }
+        self.log.normal(&format!("連番リネーム: {} 件", news.len()));
+        let _ = self.reload_side(is_left);
     }
 
     fn start_delete(&self, dir: PathBuf, names: Vec<String>) -> w::AnyResult<()> {

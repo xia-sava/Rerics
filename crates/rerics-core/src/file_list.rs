@@ -919,6 +919,37 @@ pub fn find_match(
     None
 }
 
+/// 連番リネームの新名を生成する。各 `names[i]` を `{prefix}{番号:0digits}{元拡張子?}`
+/// に変換する。`start` から連番、`digits` 桁で0詰め、`keep_ext` なら元の拡張子
+/// （先頭ドットつき）を残す。GUI から独立した純関数（プレビューと実行で共用）。
+pub fn sequence_names(
+    names: &[String],
+    prefix: &str,
+    start: u64,
+    digits: usize,
+    keep_ext: bool,
+) -> Vec<String> {
+    let width = digits.max(1);
+    names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let num = start + i as u64;
+            let ext = if keep_ext { ext_with_dot(name) } else { String::new() };
+            format!("{prefix}{num:0width$}{ext}")
+        })
+        .collect()
+}
+
+/// ファイル名から拡張子を先頭ドットつきで取り出す（"a.txt"→".txt"・".bashrc"や
+/// 拡張子なしは ""）。最後のドット以降を拡張子とみなす。
+fn ext_with_dot(name: &str) -> String {
+    match name.rsplit_once('.') {
+        Some((base, ext)) if !base.is_empty() => format!(".{ext}"),
+        _ => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -955,6 +986,17 @@ mod tests {
         assert_eq!(find_match(&items, 0, "zzz", true, true), None);
         assert_eq!(find_match(&items, 0, "", true, true), None);
         assert_eq!(find_match(&items, 0, "..", true, false), None);
+    }
+
+    #[test]
+    fn sequence_names_pads_keeps_or_drops_ext() {
+        let names = vec!["a.txt".to_owned(), "b.jpg".to_owned(), "noext".to_owned()];
+        // 拡張子を保持。
+        let out = sequence_names(&names, "img", 1, 3, true);
+        assert_eq!(out, vec!["img001.txt", "img002.jpg", "img003"]);
+        // 拡張子を残さず・桁上がりも 0 詰め幅で。
+        let out2 = sequence_names(&names, "p", 9, 2, false);
+        assert_eq!(out2, vec!["p09", "p10", "p11"]);
     }
 
     fn state_with(n: usize) -> FileListState {

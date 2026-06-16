@@ -91,6 +91,30 @@ impl Server {
         Server { child, port, base }
     }
 
+    /// `start` と同じだが書込み許可つき（`--debug-allow-write`）で起動する。
+    /// 実FS を破壊的に変更するコマンド（連番リネーム等）の e2e 用。
+    fn start_writable(sandbox_files: &[&str]) -> Server {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("rerics_it_{}_{}", std::process::id(), n));
+        let data = base.join("data");
+        let sbx = base.join("sbx");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&sbx).unwrap();
+        for f in sandbox_files {
+            std::fs::write(sbx.join(f), b"x").unwrap();
+        }
+        std::fs::write(
+            data.join("state.toml"),
+            format!(
+                "active_tab = 0\nsplit_ratio = 0.5\n[[tabs]]\nleft = '{p}'\nright = '{p}'\nactive_right = false\n",
+                p = sbx.display()
+            ),
+        )
+        .unwrap();
+        let (child, port) = spawn_and_wait(&data, true);
+        Server { child, port, base }
+    }
+
     /// HTTP リクエストを投げる。`(status, body)` を返す。
     fn req(&self, method: &str, path: &str, body: &str) -> Option<(u16, String)> {
         req(self.port, method, path, body)
@@ -711,4 +735,28 @@ fn info_directory_information() {
     // 結果ダイアログを閉じる。
     server.req("POST", "/modal/key/enter", "").unwrap();
     poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
+/// RenameSequenceDialog＝選択を連番にリネームする（プレフィックス＋0詰め＋拡張子保持）。
+#[test]
+fn rename_sequence_with_prefix() {
+    let server = Server::start_writable(&["a.txt", "b.txt"]);
+    // a.txt(1) と b.txt(2) をマークする（Space＝MarkToggle はマーク後に下へ）。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/MarkToggle", "").unwrap();
+    server.req("POST", "/command/MarkToggle", "").unwrap();
+
+    server.req("POST", "/command/RenameSequenceDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"rename_seq\""), "should open rename_seq modal: {modal}");
+
+    // プレフィックスを "img" に（先頭の Edit）。開始番号 1・桁 3・拡張子保持は既定。
+    server.req("POST", "/modal/text", "img").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+
+    let items = poll(&server, "/state/panes/left/items", |b| b.contains("img001.txt"));
+    assert!(items.contains("\"name\":\"img001.txt\""), "a.txt -> img001.txt: {items}");
+    assert!(items.contains("\"name\":\"img002.txt\""), "b.txt -> img002.txt: {items}");
+    assert!(!items.contains("\"name\":\"a.txt\""), "old a.txt should be gone: {items}");
+    assert!(!items.contains("\"name\":\"b.txt\""), "old b.txt should be gone: {items}");
 }
