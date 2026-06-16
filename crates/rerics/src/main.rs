@@ -304,8 +304,18 @@ impl MainWindow {
                 let left_path = normalize_path(&t.left, ".");
                 let right_path = normalize_path(&t.right, &home);
                 TabSnapshot {
-                    left_state: Self::build_state_for(&left_path, &config.columns),
-                    right_state: Self::build_state_for(&right_path, &config.columns),
+                    left_state: Self::build_state_for(
+                        &left_path,
+                        &config.columns,
+                        t.sort_left,
+                        t.sort_left_reverse,
+                    ),
+                    right_state: Self::build_state_for(
+                        &right_path,
+                        &config.columns,
+                        t.sort_right,
+                        t.sort_right_reverse,
+                    ),
                     left_path,
                     right_path,
                     active_right: t.active_right,
@@ -316,8 +326,18 @@ impl MainWindow {
             let left_path = ".".to_owned();
             let right_path = home.clone();
             tabs.push(TabSnapshot {
-                left_state: Self::build_state_for(&left_path, &config.columns),
-                right_state: Self::build_state_for(&right_path, &config.columns),
+                left_state: Self::build_state_for(
+                    &left_path,
+                    &config.columns,
+                    SortType::default(),
+                    false,
+                ),
+                right_state: Self::build_state_for(
+                    &right_path,
+                    &config.columns,
+                    SortType::default(),
+                    false,
+                ),
                 left_path,
                 right_path,
                 active_right: false,
@@ -511,6 +531,10 @@ impl MainWindow {
                     left: t.left_path.clone(),
                     right: t.right_path.clone(),
                     active_right: t.active_right,
+                    sort_left: t.left_state.sort_type,
+                    sort_left_reverse: t.left_state.sort_reverse,
+                    sort_right: t.right_state.sort_type,
+                    sort_right_reverse: t.right_state.sort_reverse,
                 })
                 .collect();
             let state = rerics_core::State {
@@ -539,6 +563,7 @@ impl MainWindow {
             this.active_right.set(!is_left);
             this.view(is_left).set_cursor_visible(true);
             this.view(!is_left).set_cursor_visible(false);
+            let _ = this.update_title();
             this.key_sink.hwnd().SetFocus();
         });
 
@@ -694,8 +719,8 @@ impl MainWindow {
                 state.borrow_mut().clear_all();
             }
             Command::Reload => {
-                self.reload_side(true)?;
-                self.reload_side(false)?;
+                self.reload_side_impl(true, true)?;
+                self.reload_side_impl(false, true)?;
                 return Ok(());
             }
             Command::SortByName => self.sort_active(is_left, SortType::FileName, false),
@@ -917,14 +942,19 @@ impl MainWindow {
     }
 
     /// 指定パスの一覧を読み、既定ソートでカーソル先頭の `FileListState` を組む。
-    fn build_state_for(path: &str, columns: &[Column]) -> FileListState {
+    fn build_state_for(
+        path: &str,
+        columns: &[Column],
+        sort_type: SortType,
+        sort_reverse: bool,
+    ) -> FileListState {
         let items = Pane::restore(path).read();
         let mut s = FileListState::new();
         s.columns = columns.to_vec();
-        let sort = s.sort_type;
-        let reverse = s.sort_reverse;
+        s.sort_type = sort_type;
+        s.sort_reverse = sort_reverse;
         s.items = items;
-        s.sort(sort, reverse);
+        s.sort(sort_type, sort_reverse);
         s.cursor = 0;
         s.scroll_top = 0;
         s
@@ -948,6 +978,11 @@ impl MainWindow {
         *self.view(true).state().borrow_mut() = snap.left_state.clone();
         *self.view(false).state().borrow_mut() = snap.right_state.clone();
         self.active_right.set(snap.active_right);
+        // 起動・タブ切替の直後からアクティブ側ペインにカーソル下線を出す（反対側は消す）。
+        // キー入力はキーシンクに集約するため、ペインに Win32 フォーカスを与えず可視状態だけ揃える。
+        let active_is_left = !snap.active_right;
+        self.view(active_is_left).set_cursor_visible(true);
+        self.view(!active_is_left).set_cursor_visible(false);
         self.bar(true).set_path(&snap.left_path);
         self.bar(false).set_path(&snap.right_path);
         self.view(true).autofit_columns()?;
@@ -975,13 +1010,11 @@ impl MainWindow {
         self.tabs.borrow_mut()[i] = snap;
     }
 
-    /// ウィンドウタイトルに `[現在/総数]` を反映する。
+    /// ウィンドウタイトルにアクティブタブ・アクティブペインの現在パスを反映する。
     fn update_title(&self) -> w::AnyResult<()> {
-        let total = self.tabs.borrow().len();
-        let n = self.active.get() + 1;
-        self.wnd
-            .hwnd()
-            .SetWindowText(&format!("Rerics [{}/{}]", n, total))?;
+        let path = self.pane(!self.active_right.get()).borrow().loc_display();
+        let title = if path.is_empty() { "Rerics".to_owned() } else { path };
+        self.wnd.hwnd().SetWindowText(&title)?;
         Ok(())
     }
 
@@ -1054,9 +1087,20 @@ impl MainWindow {
         let left_path = self.left_pane.borrow().loc_display();
         let right_path = self.right_pane.borrow().loc_display();
         let columns = self.config.borrow().columns.clone();
+        // 複製元の現在ソートを引き継ぐ（見えているままの新タブにする）。
+        let (sl, slr) = {
+            let st = self.view(true).state();
+            let s = st.borrow();
+            (s.sort_type, s.sort_reverse)
+        };
+        let (sr, srr) = {
+            let st = self.view(false).state();
+            let s = st.borrow();
+            (s.sort_type, s.sort_reverse)
+        };
         let snap = TabSnapshot {
-            left_state: Self::build_state_for(&left_path, &columns),
-            right_state: Self::build_state_for(&right_path, &columns),
+            left_state: Self::build_state_for(&left_path, &columns, sl, slr),
+            right_state: Self::build_state_for(&right_path, &columns, sr, srr),
             left_path,
             right_path,
             active_right: self.active_right.get(),
@@ -2423,11 +2467,26 @@ impl MainWindow {
     /// 対象が「未展開の非ランダムアクセス書庫」なら、ここで一括展開を非同期に開始し
     /// （スピナー表示）、一覧反映は展開完了イベントに委ねて早期 return する。
     fn reload_side(&self, is_left: bool) -> w::AnyResult<()> {
+        self.reload_side_impl(is_left, false)
+    }
+
+    /// ペインを再読込する。`keep_cursor` が真なら再読込前のカーソル下ファイル名とスクロール位置を
+    /// 退避し、同名ファイルがあればそこへカーソルを戻す（無ければ元の index 付近へ）。F5 リロード用。
+    /// ディレクトリ移動など他経路は false で常に先頭へ。
+    fn reload_side_impl(&self, is_left: bool, keep_cursor: bool) -> w::AnyResult<()> {
         if self.maybe_start_archive_extract(is_left)? {
             return Ok(());
         }
         let view = self.view(is_left);
         view.clear_loading();
+        // 再読込前のカーソル位置（同名復元用）とスクロール位置を退避する。
+        let (keep_name, keep_scroll, keep_idx) = if keep_cursor {
+            let st = view.state();
+            let s = st.borrow();
+            (s.items.get(s.cursor).map(|it| it.name.clone()), s.scroll_top, s.cursor)
+        } else {
+            (None, 0, 0)
+        };
         let items = self.read_side_items(is_left);
         let items = match self.mask(is_left).borrow().as_ref() {
             Some(m) => items
@@ -2445,13 +2504,26 @@ impl MainWindow {
             let sort = s.sort_type;
             let reverse = s.sort_reverse;
             s.sort(sort, reverse);
-            s.set_cursor(0, pr);
+            if keep_cursor {
+                let found = keep_name
+                    .as_deref()
+                    .map(|n| s.set_cursor_position(n, pr))
+                    .unwrap_or(false);
+                if !found {
+                    s.set_cursor(keep_idx as isize, pr);
+                }
+                // スクロール位置を復元（カーソルが画面内に収まる限り見た目を維持）。
+                s.set_scroll_top(keep_scroll as isize, pr);
+            } else {
+                s.set_cursor(0, pr);
+            }
         }
         self.bar(is_left).set_path(&path);
         view.autofit_columns()?;
         view.refresh()?;
         self.update_selected_info(is_left);
         self.update_drive_info(is_left);
+        self.update_title()?;
         self.refresh_tab_bar()?;
         self.cleanup_unreferenced_temps();
         Ok(())
