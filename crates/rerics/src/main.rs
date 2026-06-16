@@ -11,6 +11,7 @@ mod menu;
 mod pane_view;
 mod path_bar;
 mod settings_dialog;
+mod shell;
 mod splitter;
 mod media_view;
 mod status_bar;
@@ -91,7 +92,7 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
     use Command::*;
     match cmd {
         MakeDirectory | CreateFile | Rename | Delete | Copy | Move | Compress | Extract
-        | RenameSequenceDialog => DebugCmdClass::ModalWrite,
+        | RenameSequenceDialog | SendToRecycled => DebugCmdClass::ModalWrite,
         // ViewFile は暗号化書庫でパスワード入力モーダルを開き得る（書込みではない）。
         ViewFile => DebugCmdClass::MaybeModal,
         // 履歴ダイアログは読取モーダル（リスト選択）を開く（書込みではない）。
@@ -777,6 +778,10 @@ impl MainWindow {
             }
             Command::Delete => {
                 self.delete(is_left)?;
+                return Ok(());
+            }
+            Command::SendToRecycled => {
+                self.send_to_recycled(is_left)?;
                 return Ok(());
             }
             Command::PathMask => {
@@ -3965,6 +3970,41 @@ impl MainWindow {
         }
         let dir = self.pane(is_left).borrow().path().to_path_buf();
         self.start_delete(dir, names)
+    }
+
+    /// 選択（無ければカーソル）をゴミ箱へ送る（確認ダイアログ付き・実FSのみ・同期）。
+    fn send_to_recycled(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内ではゴミ箱送りは未対応です。");
+            return Ok(());
+        }
+        let names = self.selected_or_cursor_names(is_left);
+        if names.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        let short = if names.len() > 1 {
+            format!("{}他", names[0])
+        } else {
+            names[0].clone()
+        };
+        let ans = dialog::message_box(
+            &self.wnd,
+            "ゴミ箱へ送る",
+            &format!("{short}をゴミ箱へ送りますか？"),
+            dialog::MessageStyle::YesNo,
+        );
+        if ans != dialog::MessageResult::Yes {
+            return Ok(());
+        }
+        let dir = self.pane(is_left).borrow().path().to_path_buf();
+        let paths: Vec<PathBuf> = names.iter().map(|n| dir.join(n)).collect();
+        match shell::send_to_recycle(&paths) {
+            Ok(()) => self.log.normal(&format!("ゴミ箱へ送りました: {} 件", names.len())),
+            Err(e) => self.log.error(&format!("ゴミ箱送りに失敗しました: {e}")),
+        }
+        self.reload_side(is_left)?;
+        Ok(())
     }
 
     /// 入力ダイアログでパスマスクを尋ね、表示フィルタを設定/解除して一覧を更新する。

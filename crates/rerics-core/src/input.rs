@@ -18,6 +18,7 @@ pub mod vk {
     pub const UP: u16 = 0x26;
     pub const RIGHT: u16 = 0x27;
     pub const DOWN: u16 = 0x28;
+    pub const DELETE: u16 = 0x2E;
     pub const ESCAPE: u16 = 0x1B;
     pub const F1: u16 = 0x70;
     pub const F2: u16 = 0x71;
@@ -106,6 +107,7 @@ pub enum Command {
     CurrentToOpposite,
     Rename,
     Delete,
+    SendToRecycled,
     CreateFile,
     ViewFile,
     Compress,
@@ -176,6 +178,7 @@ impl Command {
             (CurrentToOpposite, "CurrentToOpposite"),
             (Rename, "Rename"),
             (Delete, "Delete"),
+            (SendToRecycled, "SendToRecycled"),
             (CreateFile, "CreateFile"),
             (ViewFile, "ViewFile"),
             (Compress, "Compress"),
@@ -233,6 +236,7 @@ const KEY_NAMES: &[(u16, &str)] = &[
     (vk::UP, "Up"),
     (vk::RIGHT, "Right"),
     (vk::DOWN, "Down"),
+    (vk::DELETE, "Del"),
     (vk::ESCAPE, "Esc"),
     (vk::F1, "F1"),
     (vk::F2, "F2"),
@@ -377,6 +381,7 @@ impl Default for KeyMap {
         m.bind(KeyChord::key(vk::C), Copy);
         m.bind(KeyChord::key(vk::M), Move);
         m.bind(KeyChord::key(vk::D), Delete);
+        m.bind(KeyChord::key(vk::DELETE), SendToRecycled);
         m.bind(KeyChord::key(vk::R), Rename);
         m.bind(KeyChord::key(vk::F2), Rename);
         m.bind(KeyChord::new(vk::R, false, true, false), RenameSequenceDialog);

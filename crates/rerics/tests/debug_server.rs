@@ -760,3 +760,23 @@ fn rename_sequence_with_prefix() {
     assert!(!items.contains("\"name\":\"a.txt\""), "old a.txt should be gone: {items}");
     assert!(!items.contains("\"name\":\"b.txt\""), "old b.txt should be gone: {items}");
 }
+
+/// SendToRecycled＝確認の上ゴミ箱へ送る（ファイルが一覧から消える）。
+/// ※検証で実ゴミ箱に 1 バイトの一時ファイルが入る（無害）。
+#[test]
+fn shell_send_to_recycled() {
+    // ソート昇順で a_del.txt が先頭ファイル（index 1）、z_keep.txt が後。
+    let server = Server::start_writable(&["a_del.txt", "z_keep.txt"]);
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+
+    server.req("POST", "/command/SendToRecycled", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\u{30b4}\u{30df}\u{7bb1}"), "should confirm before recycling: {modal}");
+    // 「はい」で実行。
+    server.req("POST", "/modal/command/yes", "").unwrap();
+
+    let items = poll(&server, "/state/panes/left/items", |b| !b.contains("a_del.txt"));
+    assert!(!items.contains("\"name\":\"a_del.txt\""), "recycled file should leave the pane: {items}");
+    assert!(items.contains("\"name\":\"z_keep.txt\""), "other files remain: {items}");
+}
