@@ -544,3 +544,28 @@ fn nav_history_back_forward() {
     let fwd = poll(&server, "/state/panes/left/location", |b| b.trim() == parent);
     assert_eq!(fwd.trim(), parent, "HistoryForward should go back to the parent");
 }
+
+/// PathHistoryDialog＝移動履歴の一覧（list_box モーダル）から選んでジャンプする。
+#[test]
+fn nav_path_history_dialog() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1;
+    let sbx = sbx.trim().to_string();
+
+    // 親へ移動して履歴を1件作る。
+    server.req("POST", "/command/ToParent", "").unwrap();
+    let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx);
+    assert_ne!(parent.trim(), sbx, "ToParent should leave the sandbox");
+
+    // 履歴ダイアログを開く（リスト選択モーダル）。
+    server.req("POST", "/command/PathHistoryDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"list\""), "should open a list modal: {modal}");
+    assert!(modal.contains("sbx"), "history should list the sandbox: {modal}");
+
+    // 先頭（直前の現在地＝sbx）を選んで OK＝そこへジャンプ。
+    server.req("POST", "/modal/select/0", "").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    let back = poll(&server, "/state/panes/left/location", |b| b.trim() == sbx);
+    assert_eq!(back.trim(), sbx, "selecting a history entry should navigate there");
+}

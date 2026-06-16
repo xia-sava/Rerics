@@ -95,6 +95,8 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         }
         // ViewFile は暗号化書庫でパスワード入力モーダルを開き得る（書込みではない）。
         ViewFile => DebugCmdClass::MaybeModal,
+        // 履歴ダイアログは読取モーダル（リスト選択）を開く（書込みではない）。
+        PathHistoryDialog => DebugCmdClass::MaybeModal,
         OpenSettings | OpenTaskManager => DebugCmdClass::Unsupported,
         _ => DebugCmdClass::NonModal,
     }
@@ -616,6 +618,10 @@ impl MainWindow {
             }
             Command::HistoryForward => {
                 self.history_move(is_left, true)?;
+                return Ok(());
+            }
+            Command::PathHistoryDialog => {
+                self.path_history_dialog(is_left)?;
                 return Ok(());
             }
             Command::FocusLeft => {
@@ -1680,6 +1686,9 @@ impl MainWindow {
                 debug_server::Request::ModalCommand { role } => {
                     let _ = tx.send(self.debug_modal_command(&role));
                 }
+                debug_server::Request::ModalSelect { index } => {
+                    let _ = tx.send(self.debug_modal_select(index));
+                }
             }
         }
     }
@@ -1753,6 +1762,38 @@ impl MainWindow {
             }
         });
         found
+    }
+
+    /// モーダル内の最初の ListBox 子コントロールを探す。
+    #[cfg(feature = "debug-server")]
+    fn debug_modal_listbox(modal: &w::HWND) -> Option<w::HWND> {
+        let mut found: Option<w::HWND> = None;
+        modal.EnumChildWindows(|c| {
+            if c.GetClassName().map(|s| s.eq_ignore_ascii_case("ListBox")).unwrap_or(false) {
+                found = Some(c);
+                false
+            } else {
+                true
+            }
+        });
+        found
+    }
+
+    /// `POST /modal/select/<index>`：リスト選択モーダルの選択行を設定する。
+    #[cfg(feature = "debug-server")]
+    fn debug_modal_select(&self, index: usize) -> debug_server::Response {
+        let Some(modal) = self.debug_modal_hwnd() else {
+            return debug_server::Response::BadRequest("no modal open".into());
+        };
+        match Self::debug_modal_listbox(&modal) {
+            Some(list) => {
+                unsafe {
+                    let _ = list.SendMessage(w::msg::lb::SetCurSel { index: Some(index as u32) });
+                }
+                debug_server::Response::Json(self.debug_state_value().to_string())
+            }
+            None => debug_server::Response::BadRequest("modal has no list".into()),
+        }
     }
 
     /// `POST /modal/key/<key>`：開いているモーダルへキー送出（enter/esc/y/n/tab）。
@@ -2221,12 +2262,24 @@ impl MainWindow {
                 } else {
                     serde_json::Value::Null
                 };
+                // リスト選択モーダルなら現在の選択を実コントロールから読む。
+                let selected = if e.items.is_empty() {
+                    e.selected
+                } else {
+                    let m = unsafe { w::HWND::from_ptr(e.modal_ptr as *mut std::ffi::c_void) };
+                    Self::debug_modal_listbox(&m)
+                        .and_then(|l| unsafe { l.SendMessage(w::msg::lb::GetCurSel {}) })
+                        .map(|n| n as usize)
+                        .unwrap_or(e.selected)
+                };
                 json!({
                     "kind": e.kind,
                     "title": e.title,
                     "prompt": e.prompt,
                     "has_input": e.has_input,
                     "input": input,
+                    "items": e.items,
+                    "selected": selected,
                     "buttons": e.buttons.iter().map(|(l, id)| json!({ "label": l, "id": id })).collect::<Vec<_>>(),
                 })
             }
@@ -3750,6 +3803,26 @@ impl MainWindow {
             if forward { p.go_forward() } else { p.go_back() }
         };
         if moved {
+            self.reload_side(is_left)?;
+        }
+        Ok(())
+    }
+
+    /// 移動履歴の一覧から選んでそこへジャンプする。履歴が空なら情報ログのみ。
+    fn path_history_dialog(&self, is_left: bool) -> w::AnyResult<()> {
+        let history = self.pane(is_left).borrow().history();
+        if history.is_empty() {
+            self.log.info("移動履歴がありません。");
+            return Ok(());
+        }
+        let Some(idx) = dialog::list_box(&self.wnd, "移動履歴", &history, 0) else {
+            return Ok(());
+        };
+        let Some(disp) = history.get(idx).cloned() else {
+            return Ok(());
+        };
+        let loc = Location::parse(&disp);
+        if self.pane(is_left).borrow_mut().navigate(loc) {
             self.reload_side(is_left)?;
         }
         Ok(())
