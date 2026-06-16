@@ -92,7 +92,7 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
     use Command::*;
     match cmd {
         MakeDirectory | CreateFile | Rename | Delete | Copy | Move | Compress | Extract
-        | RenameSequenceDialog | SendToRecycled => DebugCmdClass::ModalWrite,
+        | RenameSequenceDialog | SendToRecycled | CreateShortcut => DebugCmdClass::ModalWrite,
         // ViewFile は暗号化書庫でパスワード入力モーダルを開き得る（書込みではない）。
         ViewFile => DebugCmdClass::MaybeModal,
         // 履歴ダイアログは読取モーダル（リスト選択）を開く（書込みではない）。
@@ -782,6 +782,10 @@ impl MainWindow {
             }
             Command::SendToRecycled => {
                 self.send_to_recycled(is_left)?;
+                return Ok(());
+            }
+            Command::CreateShortcut => {
+                self.create_shortcut(is_left)?;
                 return Ok(());
             }
             Command::PathMask => {
@@ -4002,6 +4006,34 @@ impl MainWindow {
         match shell::send_to_recycle(&paths) {
             Ok(()) => self.log.normal(&format!("ゴミ箱へ送りました: {} 件", names.len())),
             Err(e) => self.log.error(&format!("ゴミ箱送りに失敗しました: {e}")),
+        }
+        self.reload_side(is_left)?;
+        Ok(())
+    }
+
+    /// 選択（無ければカーソル）の各項目を指すショートカット（.lnk）を同じ場所に作る。
+    fn create_shortcut(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内ではショートカット作成は未対応です。");
+            return Ok(());
+        }
+        let names = self.selected_or_cursor_names(is_left);
+        if names.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        let dir = self.pane(is_left).borrow().path().to_path_buf();
+        let mut ok = 0usize;
+        for name in &names {
+            let target = dir.join(name);
+            let lnk = dir.join(format!("{name}.lnk"));
+            match shell::create_shortcut(&target, &lnk) {
+                Ok(()) => ok += 1,
+                Err(e) => self.log.error(&format!("ショートカット作成に失敗しました（{name}）：{e}")),
+            }
+        }
+        if ok > 0 {
+            self.log.normal(&format!("ショートカットを作成しました: {ok} 件"));
         }
         self.reload_side(is_left)?;
         Ok(())

@@ -780,3 +780,19 @@ fn shell_send_to_recycled() {
     assert!(!items.contains("\"name\":\"a_del.txt\""), "recycled file should leave the pane: {items}");
     assert!(items.contains("\"name\":\"z_keep.txt\""), "other files remain: {items}");
 }
+
+/// CreateShortcut＝カーソル項目を指す .lnk を同じ場所に作る。
+#[test]
+fn shell_create_shortcut() {
+    let server = Server::start_writable(&["doc.txt"]);
+    // ".." から doc.txt（唯一のファイル・index 1）へ。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+
+    server.req("POST", "/command/CreateShortcut", "").unwrap();
+    let items = poll(&server, "/state/panes/left/items", |b| b.contains("doc.txt.lnk"));
+    assert!(
+        items.contains("\"name\":\"doc.txt.lnk\""),
+        "a .lnk shortcut should be created next to the target: {items}"
+    );
+}

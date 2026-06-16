@@ -67,3 +67,38 @@ pub fn send_to_recycle(paths: &[std::path::PathBuf]) -> Result<(), String> {
 fn absolute(p: &Path) -> std::path::PathBuf {
     std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
 }
+
+/// null 終端の UTF-16 列を作る（Win32 文字列引数用）。
+fn wide(p: &Path) -> Vec<u16> {
+    absolute(p).as_os_str().encode_wide().chain(std::iter::once(0)).collect()
+}
+
+/// `target` を指すショートカット（.lnk）を `lnk` に作る（COM `IShellLink`）。
+pub fn create_shortcut(target: &Path, lnk: &Path) -> Result<(), String> {
+    use windows::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+        IPersistFile,
+    };
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+    use windows::core::{Interface, PCWSTR};
+
+    let target_w = wide(target);
+    let lnk_w = wide(lnk);
+    let dir_w = target.parent().map(wide);
+
+    unsafe {
+        // 既に初期化済みでも害はない（戻り値は無視する）。
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)
+            .map_err(|e| e.to_string())?;
+        link.SetPath(PCWSTR(target_w.as_ptr())).map_err(|e| e.to_string())?;
+        if let Some(d) = &dir_w {
+            let _ = link.SetWorkingDirectory(PCWSTR(d.as_ptr()));
+        }
+        let persist: IPersistFile = link.cast().map_err(|e| e.to_string())?;
+        persist
+            .Save(PCWSTR(lnk_w.as_ptr()), true)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}

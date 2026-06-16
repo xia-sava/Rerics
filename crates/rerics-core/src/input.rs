@@ -108,6 +108,7 @@ pub enum Command {
     Rename,
     Delete,
     SendToRecycled,
+    CreateShortcut,
     CreateFile,
     ViewFile,
     Compress,
@@ -179,6 +180,7 @@ impl Command {
             (Rename, "Rename"),
             (Delete, "Delete"),
             (SendToRecycled, "SendToRecycled"),
+            (CreateShortcut, "CreateShortcut"),
             (CreateFile, "CreateFile"),
             (ViewFile, "ViewFile"),
             (Compress, "Compress"),
@@ -382,6 +384,7 @@ impl Default for KeyMap {
         m.bind(KeyChord::key(vk::M), Move);
         m.bind(KeyChord::key(vk::D), Delete);
         m.bind(KeyChord::key(vk::DELETE), SendToRecycled);
+        m.bind(KeyChord::key(vk::T), CreateShortcut);
         m.bind(KeyChord::key(vk::R), Rename);
         m.bind(KeyChord::key(vk::F2), Rename);
         m.bind(KeyChord::new(vk::R, false, true, false), RenameSequenceDialog);
