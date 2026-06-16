@@ -146,6 +146,29 @@ impl Location {
         Location::Real(absolutize(p))
     }
 
+    /// 同じドライブのルート（`C:\`）への Location。実FS のときのみ返す。
+    /// 書庫内は対象外（None）。既にルートならルートを返す。
+    pub fn to_root(&self) -> Option<Location> {
+        use std::path::Component;
+        let Location::Real(p) = self else {
+            return None;
+        };
+        let mut comps = p.components();
+        match comps.next() {
+            // "C:" のようなドライブ等のプレフィックス＋ルート区切りでドライブルート。
+            Some(Component::Prefix(pre)) => {
+                let mut s = pre.as_os_str().to_os_string();
+                s.push(std::path::MAIN_SEPARATOR_STR);
+                Some(Location::Real(PathBuf::from(s)))
+            }
+            // プレフィックスの無い絶対パス（"\foo"）はそのままルート区切りへ。
+            Some(Component::RootDir) => {
+                Some(Location::Real(PathBuf::from(std::path::MAIN_SEPARATOR_STR)))
+            }
+            _ => None,
+        }
+    }
+
     /// 親へ。`Some((親 Location, 出てきた名前))`。書庫ルートから出ると実FS の親へ。
     pub fn to_parent(&self) -> Option<(Location, String)> {
         match self {
@@ -231,6 +254,20 @@ mod tests {
         let p = loc.as_real_path().expect("real");
         assert!(p.is_absolute());
         assert!(loc.to_parent().is_some());
+    }
+
+    #[test]
+    fn to_root_returns_drive_root() {
+        let r = Location::Real(PathBuf::from("C:\\foo\\bar\\baz"));
+        assert_eq!(r.to_root().and_then(|l| l.as_real_path().map(Path::to_path_buf)),
+            Some(PathBuf::from("C:\\")));
+        // 既にルートでも安全にルートを返す。
+        let already = Location::Real(PathBuf::from("C:\\"));
+        assert_eq!(already.to_root().and_then(|l| l.as_real_path().map(Path::to_path_buf)),
+            Some(PathBuf::from("C:\\")));
+        // 書庫内は対象外。
+        let arc = Location::Archive { archive: PathBuf::from("C:\\a.zip"), inner: "x".into() };
+        assert!(arc.to_root().is_none());
     }
 
     #[test]

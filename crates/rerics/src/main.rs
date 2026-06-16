@@ -606,6 +606,18 @@ impl MainWindow {
                 self.to_parent(is_left)?;
                 return Ok(());
             }
+            Command::ToRoot => {
+                self.to_root(is_left)?;
+                return Ok(());
+            }
+            Command::HistoryBack => {
+                self.history_move(is_left, false)?;
+                return Ok(());
+            }
+            Command::HistoryForward => {
+                self.history_move(is_left, true)?;
+                return Ok(());
+            }
             Command::FocusLeft => {
                 self.view(true).hwnd().SetFocus();
                 return Ok(());
@@ -3712,6 +3724,34 @@ impl MainWindow {
             s.center_cursor(pr);
         }
         view.refresh()?;
+        Ok(())
+    }
+
+    /// カレントのドライブルート（`C:\`）へ移動する。書庫内では効かない（警告のみ）。
+    fn to_root(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内ではルートへ移動できません。");
+            return Ok(());
+        }
+        let root = self.pane(is_left).borrow().loc().to_root();
+        let Some(root) = root else {
+            return Ok(());
+        };
+        if self.pane(is_left).borrow_mut().navigate(root) {
+            self.reload_side(is_left)?;
+        }
+        Ok(())
+    }
+
+    /// パス移動履歴を前後する（`forward`=進む / それ以外=戻る）。移動できたら再読込。
+    fn history_move(&self, is_left: bool, forward: bool) -> w::AnyResult<()> {
+        let moved = {
+            let mut p = self.pane(is_left).borrow_mut();
+            if forward { p.go_forward() } else { p.go_back() }
+        };
+        if moved {
+            self.reload_side(is_left)?;
+        }
         Ok(())
     }
 

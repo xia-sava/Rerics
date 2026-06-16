@@ -504,3 +504,43 @@ fn archive_rename() {
     assert_eq!(count_substr(&r2, "\"name\":\"z.txt\""), 1, "no duplicate z.txt: {r2}");
     assert!(r2.contains("\"name\":\"b.txt\""), "b.txt must remain after failed rename: {r2}");
 }
+
+/// ToRoot＝カレントのドライブルートへ移動する。
+#[test]
+fn nav_to_root() {
+    let server = Server::start(&["a.txt"], "");
+    // 開始は sbx。location は JSON 文字列 "X:\\...\\sbx"（バックスラッシュはエスケープ）。
+    let before = server.req("GET", "/state/panes/left/location", "").unwrap().1;
+    assert!(before.contains("sbx"), "should start in the sandbox: {before}");
+    let drive = before.chars().nth(1).expect("drive letter"); // 先頭の引用符の次＝ドライブ文字
+    // ルートは JSON では "X:\\"（X, :, \\）。
+    let expected = format!("\"{drive}:\\\\\"");
+
+    server.req("POST", "/command/ToRoot", "").unwrap();
+    let after = poll(&server, "/state/panes/left/location", |b| b.trim() == expected);
+    assert_eq!(after.trim(), expected, "ToRoot should jump to the drive root");
+}
+
+/// HistoryBack/HistoryForward＝パス移動履歴を前後する。
+#[test]
+fn nav_history_back_forward() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1;
+    let sbx = sbx.trim().to_string();
+
+    // 親へ移動（sbx → その親）。
+    server.req("POST", "/command/ToParent", "").unwrap();
+    let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx);
+    let parent = parent.trim().to_string();
+    assert_ne!(parent, sbx, "ToParent should leave the sandbox");
+
+    // 戻る＝sbx へ。
+    server.req("POST", "/command/HistoryBack", "").unwrap();
+    let back = poll(&server, "/state/panes/left/location", |b| b.trim() == sbx);
+    assert_eq!(back.trim(), sbx, "HistoryBack should return to the sandbox");
+
+    // 進む＝親へ。
+    server.req("POST", "/command/HistoryForward", "").unwrap();
+    let fwd = poll(&server, "/state/panes/left/location", |b| b.trim() == parent);
+    assert_eq!(fwd.trim(), parent, "HistoryForward should go back to the parent");
+}
