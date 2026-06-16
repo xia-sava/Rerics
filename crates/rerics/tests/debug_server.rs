@@ -796,3 +796,32 @@ fn shell_create_shortcut() {
         "a .lnk shortcut should be created next to the target: {items}"
     );
 }
+
+/// ClipCopy→（サブフォルダへ移動して）ClipPaste で実コピーされる。
+/// ※検証で OS のクリップボードを上書きする（汚染許容・テスト実行時のみ）。
+#[test]
+fn shell_clipboard_copy_paste() {
+    let server = Server::start_writable(&["file.txt"]);
+    // 貼付先サブフォルダをディスクに作って一覧へ反映。
+    std::fs::create_dir_all(server.base.join("sbx").join("dest")).unwrap();
+    server.req("POST", "/command/Reload", "").unwrap();
+    // items=[.., dest(1), file.txt(2)]。file.txt へカーソルを合わせてコピー。
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"dest\""));
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
+    server.req("POST", "/command/ClipCopy", "").unwrap();
+
+    // dest へ入って貼り付け。
+    server.req("POST", "/command/CursorUp", "").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+    server.req("POST", "/command/EnterDir", "").unwrap();
+    poll(&server, "/state/panes/left/location", |b| b.contains("dest"));
+    server.req("POST", "/command/ClipPaste", "").unwrap();
+
+    let items = poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"file.txt\""));
+    assert!(
+        items.contains("\"name\":\"file.txt\""),
+        "pasted file should appear in the destination folder: {items}"
+    );
+}

@@ -92,7 +92,9 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
     use Command::*;
     match cmd {
         MakeDirectory | CreateFile | Rename | Delete | Copy | Move | Compress | Extract
-        | RenameSequenceDialog | SendToRecycled | CreateShortcut => DebugCmdClass::ModalWrite,
+        | RenameSequenceDialog | SendToRecycled | CreateShortcut | ClipPaste => {
+            DebugCmdClass::ModalWrite
+        }
         // ViewFile は暗号化書庫でパスワード入力モーダルを開き得る（書込みではない）。
         ViewFile => DebugCmdClass::MaybeModal,
         // 履歴ダイアログは読取モーダル（リスト選択）を開く（書込みではない）。
@@ -786,6 +788,18 @@ impl MainWindow {
             }
             Command::CreateShortcut => {
                 self.create_shortcut(is_left)?;
+                return Ok(());
+            }
+            Command::ClipCopy => {
+                self.clip_copy(is_left, false)?;
+                return Ok(());
+            }
+            Command::ClipCut => {
+                self.clip_copy(is_left, true)?;
+                return Ok(());
+            }
+            Command::ClipPaste => {
+                self.clip_paste(is_left)?;
                 return Ok(());
             }
             Command::PathMask => {
@@ -4036,6 +4050,92 @@ impl MainWindow {
             self.log.normal(&format!("ショートカットを作成しました: {ok} 件"));
         }
         self.reload_side(is_left)?;
+        Ok(())
+    }
+
+    /// 選択（無ければカーソル）のパスをクリップボードへ載せる（`move_it`＝切り取り）。
+    fn clip_copy(&self, is_left: bool, move_it: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内ではクリップボード操作は未対応です。");
+            return Ok(());
+        }
+        let names = self.selected_or_cursor_names(is_left);
+        if names.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        let dir = self.pane(is_left).borrow().path().to_path_buf();
+        let paths: Vec<PathBuf> = names.iter().map(|n| dir.join(n)).collect();
+        match shell::clip_copy_files(self.wnd.hwnd(), &paths, move_it) {
+            Ok(()) => {
+                let verb = if move_it { "切り取り" } else { "コピー" };
+                self.log.normal(&format!("クリップボードへ{verb}: {} 件", names.len()));
+            }
+            Err(e) => self.log.error(&format!("クリップボード操作に失敗しました: {e}")),
+        }
+        Ok(())
+    }
+
+    /// クリップボードのファイルを現在地へ貼り付ける（コピー/移動はクリップボードの指定に従う）。
+    fn clip_paste(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内へは貼り付けできません。");
+            return Ok(());
+        }
+        let (paths, move_it) = match shell::clip_paste_files(self.wnd.hwnd()) {
+            Ok(v) => v,
+            Err(e) => {
+                self.log.info(&e);
+                return Ok(());
+            }
+        };
+        // 親ディレクトリごとにまとめて run_copy する（複数フォルダ由来でも壊れない）。
+        let mut groups: std::collections::BTreeMap<PathBuf, Vec<String>> = Default::default();
+        for p in &paths {
+            if let (Some(par), Some(nm)) = (p.parent(), p.file_name()) {
+                groups
+                    .entry(par.to_path_buf())
+                    .or_default()
+                    .push(nm.to_string_lossy().into_owned());
+            }
+        }
+        if groups.is_empty() {
+            return Ok(());
+        }
+        let dst = self.pane(is_left).borrow().path().to_path_buf();
+        self.start_clip_paste(dst, groups.into_iter().collect(), move_it)
+    }
+
+    fn start_clip_paste(
+        &self,
+        dst: PathBuf,
+        groups: Vec<(PathBuf, Vec<String>)>,
+        move_it: bool,
+    ) -> w::AnyResult<()> {
+        let control = Arc::new(TaskControl::new());
+        let host = ChannelHost::new(
+            self.task_tx.clone(),
+            self.shutdown.clone(),
+            control.clone(),
+            self.progress_seq.clone(),
+        );
+        let id = self.next_id();
+        let total: usize = groups.iter().map(|(_, n)| n.len()).sum();
+        let text = if move_it { "貼り付け(移動)" } else { "貼り付け(コピー)" };
+        self.register_task(id, text, format!("{total} 件"), control)?;
+        let dst2 = dst.clone();
+        std::thread::spawn(move || {
+            for (src, names) in groups {
+                rerics_core::run_copy(&host, &src, &dst2, &names, move_it);
+            }
+            let kind = if move_it { OpKind::Move } else { OpKind::Copy };
+            let _ = host.tx.send(WorkerEvent::Done {
+                id,
+                kind,
+                src_dir: dst2.clone(),
+                dst_dir: dst2,
+            });
+        });
         Ok(())
     }
 
