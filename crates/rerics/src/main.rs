@@ -202,6 +202,8 @@ struct MainWindow {
     archive_extracted: Rc<RefCell<std::collections::HashMap<PathBuf, PathBuf>>>,
     /// 現在ワーカが一括展開中の書庫（二重起動＝同一 temp への並行展開を防ぐ）。
     archive_extracting: Rc<RefCell<std::collections::HashSet<PathBuf>>>,
+    /// temp を作った書庫 → その temp ルート dir。セッション中掃除（参照ゼロで回収）の元。
+    archive_temp_dirs: Rc<RefCell<std::collections::HashMap<PathBuf, PathBuf>>>,
     #[cfg(feature = "debug-server")]
     debug: debug_server::Bridge,
 }
@@ -272,8 +274,10 @@ impl MainWindow {
 
         let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "..".to_owned());
 
-        // 前回の異常終了で残った一時展開を起動時に掃除する。
+        // 前回の異常終了で残った一時展開を起動時に掃除する。自pid分を消し、さらに死んでる
+        // 他pid（クラッシュ残骸）の dir も裏で回収する（生存インスタンスの temp は触らない）。
         Self::clear_archive_temp();
+        Self::sweep_dead_pid_temps();
 
         let state = rerics_core::State::load();
         let initial_window = state.window.clone();
@@ -355,6 +359,7 @@ impl MainWindow {
             archive_passwords: Rc::new(RefCell::new(std::collections::HashMap::new())),
             archive_extracted: Rc::new(RefCell::new(std::collections::HashMap::new())),
             archive_extracting: Rc::new(RefCell::new(std::collections::HashSet::new())),
+            archive_temp_dirs: Rc::new(RefCell::new(std::collections::HashMap::new())),
             #[cfg(feature = "debug-server")]
             debug: debug_server::Bridge::new(debug_port, debug_allow_write, debug_headless),
         }
@@ -873,6 +878,7 @@ impl MainWindow {
         for is_left in [true, false] {
             let _ = self.maybe_start_archive_extract(is_left);
         }
+        self.cleanup_unreferenced_temps();
         self.key_sink.hwnd().SetFocus();
         Ok(())
     }
@@ -1141,6 +1147,9 @@ impl MainWindow {
                 self.media.open(files, index);
             }
             Location::Archive { archive, inner } => {
+                // resolver/プリフェッチが作る temp が登録済みルート配下に来るよう、ここで登録する
+                // （セッション中掃除の参照元）。
+                self.register_archive_temp(&archive);
                 // 同階層の閲覧可能メディアを巡回対象にし（実FS と同じ体験）、表示中の位置を求める。
                 // 実パスへの展開は resolver が移動時に1枚ずつ遅延実行する（一括展開しない）。
                 let mut entries: Vec<(String, String)> = Vec::new();
@@ -1211,7 +1220,7 @@ impl MainWindow {
                     // BG にカレント位置を伝える（先読みの中心を移動先へ寄せる）。
                     cur.store(i, Ordering::Relaxed);
                     let (inner_file, nm) = entries.get(i)?;
-                    match Self::extract_entry_to_temp(&archive, inner_file, nm, password.as_deref()) {
+                    match Self::extract_entry_to_temp(&archive, inner_file, password.as_deref()) {
                         Ok(p) => Some(p),
                         Err(e) => {
                             log.error(&format!("書庫内メディアを展開できません: {}: {}", nm, e));
@@ -1328,9 +1337,9 @@ impl MainWindow {
                 if idx >= n {
                     continue;
                 }
-                let (inner, name) = &entries[idx];
+                let (inner, _name) = &entries[idx];
                 // BG は静的呼び＝プロンプト不可。暗号化エントリは展開せず（FG が同期展開で扱う）。
-                let _ = Self::extract_entry_to_temp(archive, inner, name, None);
+                let _ = Self::extract_entry_to_temp(archive, inner, None);
             }
             // カレント変化を待つ短い休止（FG は同期展開で割り込むので latency は問題にならない）。
             std::thread::sleep(Duration::from_millis(120));
@@ -1400,9 +1409,10 @@ impl MainWindow {
     /// 復号する）。パスワードが合えば書庫単位でキャッシュし、同一書庫の他エントリで再入力
     /// させない。誤入力は数回まで再入力を促す。
     fn read_archive_entry(&self, archive: &Path, inner: &str) -> std::io::Result<Vec<u8>> {
-        // 一括展開済み書庫は temp の実FS から直接読む（再展開しない）。
-        if let Some(root) = self.archive_extracted.borrow().get(archive).cloned() {
-            let p = root.join(Self::inner_to_pathbuf(inner));
+        // 既に temp に在れば実FS から直接読む（一括展開済み or per-file 展開済み・再展開しない）。
+        let root = self.register_archive_temp(archive);
+        if let Some(rel) = Self::safe_inner_path(inner) {
+            let p = root.join(&rel);
             if p.is_file() {
                 return std::fs::read(&p);
             }
@@ -1510,86 +1520,108 @@ impl MainWindow {
         let _ = std::fs::remove_dir_all(Self::archive_temp_dir());
     }
 
-    /// 非ランダムアクセス書庫（ソリッド 7z 等）の一括展開先 temp_root（書庫パス＋mtime キー）。
-    /// 個別展開（`extract_entry_to_temp`）の hash dir と衝突しないよう "all_" を前置する。
-    fn archive_extract_root(archive: &Path) -> PathBuf {
+    /// 書庫1つ分の temp をまとめる dir 名＝書庫パス＋mtime のハッシュ。一括展開も per-file 展開も
+    /// この配下に置くので、回収はこの dir を1発削除すれば済む（mtime 込み＝外部更新で別 key）。
+    fn archive_key(archive: &Path) -> String {
         let stamp = std::fs::metadata(archive)
             .and_then(|m| m.modified())
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let key = format!("{}\u{0}{}", archive.display(), stamp);
-        Self::archive_temp_dir().join(format!("all_{:016x}", hash64(&key)))
+        format!(
+            "{:016x}",
+            hash64(&format!("{}\u{0}{}", archive.display(), stamp))
+        )
     }
 
-    /// 一括展開の完了マーカ（temp_root の兄弟ファイル `all_<hash>.done`）。中断/クラッシュで
-    /// 残った不完全な temp_root を「完了済み」と誤認しないため、展開成功後にだけ作る。
-    fn archive_extract_marker(root: &Path) -> PathBuf {
-        root.with_extension("done")
+    /// 書庫1つ分の temp ルート（`cache/archive/<pid>/<key>/`）。
+    fn archive_temp_root(archive: &Path) -> PathBuf {
+        Self::archive_temp_dir().join(Self::archive_key(archive))
     }
 
-    /// 書庫内パス（'/' 区切り）を実FS の相対パスへ。空セグメントは捨てる。
-    fn inner_to_pathbuf(inner: &str) -> PathBuf {
+    /// 一括展開の完了マーカ（`<key>.done`・ルートの兄弟）。content と混ざらないよう外に置く。
+    /// 中断/クラッシュで残った不完全なルートを「完了済み」と誤認しないため成功後にだけ作る。
+    fn archive_extract_marker(archive: &Path) -> PathBuf {
+        Self::archive_temp_dir().join(format!("{}.done", Self::archive_key(archive)))
+    }
+
+    /// この書庫の temp ルートをレジストリに登録して返す（セッション中の参照カウント掃除の元）。
+    fn register_archive_temp(&self, archive: &Path) -> PathBuf {
+        let root = Self::archive_temp_root(archive);
+        self.archive_temp_dirs
+            .borrow_mut()
+            .entry(archive.to_path_buf())
+            .or_insert_with(|| root.clone());
+        root
+    }
+
+    /// 書庫内パス（'/' 区切り）を temp ルート配下の安全な相対パスへ。空/"."は捨て、".."や '\\'
+    /// 混入は弾く（zip-slip 対策）。有効セグメントが無ければ None。
+    fn safe_inner_path(inner: &str) -> Option<PathBuf> {
         let mut p = PathBuf::new();
+        let mut any = false;
         for seg in inner.split('/') {
-            if !seg.is_empty() {
-                p.push(seg);
+            if seg.is_empty() || seg == "." {
+                continue;
             }
+            if seg == ".." || seg.contains('\\') {
+                return None;
+            }
+            p.push(seg);
+            any = true;
         }
-        p
+        any.then_some(p)
     }
 
-    /// 書庫内ファイルの実パスを得る。一括展開済み書庫なら temp_root 配下の実FS を返し、
-    /// そうでなければ個別に一時展開する（従来経路）。
+    /// 書庫内パスを temp ルート配下の相対パスへ（読み取り用途・不正は空）。
+    fn inner_to_pathbuf(inner: &str) -> PathBuf {
+        Self::safe_inner_path(inner).unwrap_or_default()
+    }
+
+    /// 書庫内ファイルの実パスを得る。temp に既に在ればそれを、無ければ個別展開する。
     fn resolve_archive_file(
         &self,
         archive: &Path,
         inner_file: &str,
-        name: &str,
+        _name: &str,
         password: Option<&[u8]>,
     ) -> std::io::Result<PathBuf> {
-        if let Some(root) = self.archive_extracted.borrow().get(archive).cloned() {
-            let p = root.join(Self::inner_to_pathbuf(inner_file));
+        let root = self.register_archive_temp(archive);
+        if let Some(rel) = Self::safe_inner_path(inner_file) {
+            let p = root.join(&rel);
             if p.is_file() {
                 return Ok(p);
             }
         }
-        Self::extract_entry_to_temp(archive, inner_file, name, password)
+        Self::extract_entry_to_temp(archive, inner_file, password)
     }
 
-    /// 書庫内エントリを一時ディレクトリへ展開し実パスを返す。元の名前を保つ。
-    /// キーに**書庫の mtime を含め**、同一キーの temp が既に在れば**再展開せず再利用**する
-    /// （外部から書庫が更新されれば mtime が変わり別 temp に展開＝古い展開物を二度と参照しない）。
-    /// 書込みは「一時名→rename」のアトミック方式で、将来 BG 並行展開を足しても書きかけを
-    /// 読む競合が起きないようにしておく（計画 §7.6）。
+    /// 書庫内エントリを temp（`<root>/<inner>`）へ展開し実パスを返す。既に在れば再利用する
+    /// （mtime 込みキーなので外部更新時は別ルート＝古い展開物を二度と参照しない）。書込みは
+    /// 「一時名→rename」のアトミック方式（BG 並行展開でも書きかけを読まない・計画 §7.6）。
+    ///
+    /// static のまま（メディア resolver クロージャ・BG プリフェッチからも呼ぶ）。レジストリ
+    /// 登録は主スレッド側 `register_archive_temp` に委ねる（呼ぶ書庫は既に登録済み）。
     fn extract_entry_to_temp(
         archive: &Path,
         inner_file: &str,
-        name: &str,
         password: Option<&[u8]>,
     ) -> std::io::Result<PathBuf> {
-        // 末尾コンポーネントだけを採り、区切りや ".." での書き出し先逸脱を防ぐ（拡張子は保つ）。
-        let safe = Path::new(name)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("entry");
-        let stamp = std::fs::metadata(archive)
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let key = format!("{}\u{0}{}\u{0}{}", archive.display(), stamp, inner_file);
-        let sub = Self::archive_temp_dir().join(format!("{:016x}", hash64(&key)));
-        let path = sub.join(safe);
+        let rel = Self::safe_inner_path(inner_file).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "不正な書庫内パス")
+        })?;
+        let path = Self::archive_temp_root(archive).join(&rel);
         if path.is_file() {
             return Ok(path);
         }
-        std::fs::create_dir_all(&sub)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         let backend = open_archive(archive)?;
         let bytes = backend.read_with_password(inner_file, password)?;
-        let tmp = sub.join(format!("{}.tmp.{}", safe, std::process::id()));
+        let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("entry");
+        let tmp = path.with_file_name(format!("{}.tmp.{}", fname, std::process::id()));
         std::fs::write(&tmp, &bytes)?;
         std::fs::rename(&tmp, &path)?;
         Ok(path)
@@ -2264,7 +2296,7 @@ impl MainWindow {
         }
         let view = self.view(is_left);
         view.clear_loading();
-        let items = self.pane(is_left).borrow().read();
+        let items = self.read_side_items(is_left);
         let items = match self.mask(is_left).borrow().as_ref() {
             Some(m) => items
                 .into_iter()
@@ -2289,7 +2321,128 @@ impl MainWindow {
         self.update_selected_info(is_left);
         self.update_drive_info(is_left);
         self.refresh_tab_bar()?;
+        self.cleanup_unreferenced_temps();
         Ok(())
+    }
+
+    /// ペインの一覧を読む。一括展開済み書庫は **temp の実FS から**列挙する（tar.gz 等を毎回
+    /// 再解凍しないため）。それ以外（実FS・RA書庫・未展開）は従来どおり `Pane::read`。
+    fn read_side_items(&self, is_left: bool) -> Vec<rerics_core::FileItem> {
+        let loc = self.pane(is_left).borrow().loc().clone();
+        if let Location::Archive { archive, inner } = &loc {
+            if let Some(root) = self.archive_extracted.borrow().get(archive).cloned() {
+                let dir = root.join(Self::inner_to_pathbuf(inner));
+                if let Ok(items) = rerics_core::read_items(&dir) {
+                    return items;
+                }
+            }
+        }
+        self.pane(is_left).borrow().read()
+    }
+
+    /// 全タブのペイン位置から「temp を保持すべき書庫」を割り出し、それ以外の登録済み temp を
+    /// 裏で削除する。保持＝どれかのペインが（中に居る）or（それが見える親dirに居る）。ナビ/
+    /// タブ操作の後に呼ぶ。削除は best-effort（外部が掴むファイルは残し、起動時掃除で回収）。
+    fn cleanup_unreferenced_temps(&self) {
+        use std::collections::HashSet;
+        // 参照中の場所を全部集める（アクティブタブはライブ、他タブはスナップショット文字列）。
+        let mut locs: Vec<Location> = vec![
+            self.left_pane.borrow().loc().clone(),
+            self.right_pane.borrow().loc().clone(),
+        ];
+        let active = self.active.get();
+        for (i, t) in self.tabs.borrow().iter().enumerate() {
+            if i == active {
+                continue;
+            }
+            locs.push(Location::parse(&t.left_path));
+            locs.push(Location::parse(&t.right_path));
+        }
+        let mut inside: HashSet<PathBuf> = HashSet::new();
+        let mut dirs: HashSet<PathBuf> = HashSet::new();
+        for loc in &locs {
+            match loc {
+                Location::Archive { archive, .. } => {
+                    inside.insert(archive.clone());
+                }
+                Location::Real(d) => {
+                    dirs.insert(d.clone());
+                }
+            }
+        }
+        let mut to_delete: Vec<PathBuf> = Vec::new();
+        {
+            let mut reg = self.archive_temp_dirs.borrow_mut();
+            let mut extracted = self.archive_extracted.borrow_mut();
+            reg.retain(|archive, root| {
+                let referenced = inside.contains(archive)
+                    || archive.parent().is_some_and(|p| dirs.contains(p));
+                if !referenced {
+                    to_delete.push(root.clone());
+                    to_delete.push(Self::archive_extract_marker(archive));
+                    extracted.remove(archive);
+                }
+                referenced
+            });
+        }
+        if to_delete.is_empty() {
+            return;
+        }
+        std::thread::spawn(move || {
+            for p in to_delete {
+                if p.is_dir() {
+                    let _ = std::fs::remove_dir_all(&p);
+                } else {
+                    let _ = std::fs::remove_file(&p);
+                }
+            }
+        });
+    }
+
+    /// pid が生存しているか（`OpenProcess` 成功で生存とみなす）。死にpid temp の起動時掃除に使う。
+    fn pid_alive(pid: u32) -> bool {
+        use std::ffi::c_void;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+            fn CloseHandle(h: *mut c_void) -> i32;
+        }
+        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if h.is_null() {
+                return false;
+            }
+            CloseHandle(h);
+            true
+        }
+    }
+
+    /// 起動時に `cache/archive/<pid>/` を走査し、生きていない pid の dir を裏で削除する
+    /// （クラッシュ/前回終了の残骸回収）。生存インスタンスの temp は触らない。
+    fn sweep_dead_pid_temps() {
+        let base = data_dir().join("cache").join("archive");
+        let self_pid = std::process::id();
+        std::thread::spawn(move || {
+            let Ok(rd) = std::fs::read_dir(&base) else {
+                return;
+            };
+            for ent in rd.flatten() {
+                if !ent.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    continue;
+                }
+                let Some(pid) = ent
+                    .file_name()
+                    .to_str()
+                    .and_then(|s| s.parse::<u32>().ok())
+                else {
+                    continue;
+                };
+                if pid != self_pid && !Self::pid_alive(pid) {
+                    let _ = std::fs::remove_dir_all(ent.path());
+                }
+            }
+        });
     }
 
     /// 対象ペインが「未展開の非ランダムアクセス書庫」なら一括展開を非同期で開始する。
@@ -2316,8 +2469,8 @@ impl MainWindow {
         if random_access {
             return Ok(false);
         }
-        let root = Self::archive_extract_root(&archive);
-        if Self::archive_extract_marker(&root).is_file() && root.is_dir() {
+        let root = self.register_archive_temp(&archive);
+        if Self::archive_extract_marker(&archive).is_file() && root.is_dir() {
             self.archive_extracted.borrow_mut().insert(archive, root);
             return Ok(false);
         }
@@ -2345,7 +2498,7 @@ impl MainWindow {
         self.view(is_left).set_loading();
         let tx = self.task_tx.clone();
         let shutdown = self.shutdown.clone();
-        let marker = Self::archive_extract_marker(&root);
+        let marker = Self::archive_extract_marker(&archive);
         std::thread::spawn(move || {
             let result: Result<ArchiveOutcome, String> = (|| {
                 let backend = open_archive(&archive).map_err(|e| e.to_string())?;

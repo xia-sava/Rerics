@@ -8,7 +8,9 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::FileItem;
 
@@ -113,18 +115,125 @@ pub trait ArchiveWriter {
     fn mkdir(&mut self, inner: &str) -> io::Result<()>;
 }
 
+/// 圧縮レイヤの種別（tar 系のラップ／単体圧縮で共有）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Comp {
+    None,
+    Gz,
+    Bz2,
+    Xz,
+    Zstd,
+}
+
+/// 書庫の種別（拡張子から決定）。二重拡張子（.tar.gz 等）を見るため file_name 全体で判定する。
+enum ArchiveKind {
+    Zip,
+    SevenZ,
+    #[cfg(feature = "rar")]
+    Rar,
+    /// tar 本体＋ラップ圧縮（None=無圧縮）。
+    Tar(Comp),
+    /// 単体圧縮ファイル（1エントリ）。
+    Single(Comp),
+}
+
+/// ファイル名（小文字化）から書庫種別を決める。未知は `None`。rar は feature 無効時は
+/// 「書庫でない」扱い（従来どおり関連付け起動へ回す）。
+fn classify_archive(path: &Path) -> Option<ArchiveKind> {
+    let name = path.file_name()?.to_str()?.to_ascii_lowercase();
+    let ends = |s: &str| name.ends_with(s);
+    // tar 系（二重拡張子・短縮形）。
+    if ends(".tar") {
+        return Some(ArchiveKind::Tar(Comp::None));
+    }
+    if ends(".tar.gz") || ends(".tgz") {
+        return Some(ArchiveKind::Tar(Comp::Gz));
+    }
+    if ends(".tar.bz2") || ends(".tbz2") || ends(".tbz") {
+        return Some(ArchiveKind::Tar(Comp::Bz2));
+    }
+    if ends(".tar.xz") || ends(".txz") {
+        return Some(ArchiveKind::Tar(Comp::Xz));
+    }
+    if ends(".tar.zst") || ends(".tar.zstd") || ends(".tzst") {
+        return Some(ArchiveKind::Tar(Comp::Zstd));
+    }
+    // 単体圧縮（.tar.* は上で捌け済み）。
+    if ends(".gz") {
+        return Some(ArchiveKind::Single(Comp::Gz));
+    }
+    if ends(".bz2") {
+        return Some(ArchiveKind::Single(Comp::Bz2));
+    }
+    if ends(".xz") {
+        return Some(ArchiveKind::Single(Comp::Xz));
+    }
+    if ends(".zst") || ends(".zstd") {
+        return Some(ArchiveKind::Single(Comp::Zstd));
+    }
+    if ends(".zip") {
+        return Some(ArchiveKind::Zip);
+    }
+    if ends(".7z") {
+        return Some(ArchiveKind::SevenZ);
+    }
+    if ends(".rar") {
+        #[cfg(feature = "rar")]
+        return Some(ArchiveKind::Rar);
+        #[cfg(not(feature = "rar"))]
+        return None;
+    }
+    None
+}
+
+/// 既知の書庫拡張子か（GUI の「潜れる書庫」判定が実在チェックと併せて使う）。
+pub fn is_known_archive(path: &Path) -> bool {
+    classify_archive(path).is_some()
+}
+
 /// 拡張子から読取バックエンドを選ぶ。未対応形式は `Unsupported` エラー。
 pub fn open_archive(path: &Path) -> io::Result<Box<dyn ArchiveBackend>> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|s| s.to_ascii_lowercase());
-    match ext.as_deref() {
-        Some("zip") => Ok(Box::new(ZipBackend::open(path)?)),
-        Some("7z") => Ok(Box::new(SevenZBackend::open(path)?)),
+    match classify_archive(path) {
+        Some(ArchiveKind::Zip) => Ok(Box::new(ZipBackend::open(path)?)),
+        Some(ArchiveKind::SevenZ) => Ok(Box::new(SevenZBackend::open(path)?)),
         #[cfg(feature = "rar")]
-        Some("rar") => Ok(Box::new(RarBackend::open(path)?)),
+        Some(ArchiveKind::Rar) => Ok(Box::new(RarBackend::open(path)?)),
+        Some(ArchiveKind::Tar(comp)) => Ok(Box::new(TarBackend::open(path, comp)?)),
+        Some(ArchiveKind::Single(comp)) => Ok(Box::new(SingleFileBackend::open(path, comp)?)),
         _ => Err(io::Error::new(io::ErrorKind::Unsupported, "未対応の書庫形式")),
+    }
+}
+
+/// 任意の Read を圧縮種別に応じた解凍ストリームへラップする（`Comp::None` は素通し）。
+fn wrap_comp<R: io::Read + 'static>(r: R, comp: Comp) -> io::Result<Box<dyn io::Read>> {
+    Ok(match comp {
+        Comp::None => Box::new(r),
+        Comp::Gz => Box::new(flate2::read::GzDecoder::new(r)),
+        Comp::Bz2 => Box::new(bzip2::read::BzDecoder::new(r)),
+        Comp::Xz => Box::new(lzma_rust2::XzReader::new(r, true)),
+        Comp::Zstd => {
+            Box::new(ruzstd::decoding::StreamingDecoder::new(r).map_err(io::Error::other)?)
+        }
+    })
+}
+
+/// 圧縮種別に応じてファイルを解凍ストリームにラップする。
+fn decoded_reader(path: &Path, comp: Comp) -> io::Result<Box<dyn io::Read>> {
+    wrap_comp(std::fs::File::open(path)?, comp)
+}
+
+/// 元の読み取りバイト数を `count` に積む薄いラッパ。tar の一括展開で「圧縮ファイルを
+/// どこまで消費したか」を進捗（バイト基準）に使う（順次 tar は件数を事前に数えられない）。
+struct CountingReader<R> {
+    inner: R,
+    count: Arc<AtomicU64>,
+}
+
+impl<R: io::Read> io::Read for CountingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.count.fetch_add(n as u64, Ordering::Relaxed);
+        Ok(n)
     }
 }
 
@@ -503,6 +612,338 @@ fn safe_join(dest: &Path, inner: &str) -> Option<PathBuf> {
         p.push(seg);
     }
     Some(p)
+}
+
+/// tar 書庫の読取バックエンド（無圧縮 tar ＋ gz/bz2/xz/zstd ラップ）。tar は順次アクセスなので
+/// `random_access: false`（個別取り出しは毎回先頭から舐める＝GUI 側で一括展開へ倒す）。書込み不可。
+pub struct TarBackend {
+    path: PathBuf,
+    comp: Comp,
+}
+
+impl TarBackend {
+    /// 構築のみ（重い展開は list/extract_all 側で。壊れた tar はそこで弾く）。
+    pub(crate) fn open(path: &Path, comp: Comp) -> io::Result<Self> {
+        Ok(Self {
+            path: path.to_path_buf(),
+            comp,
+        })
+    }
+
+    fn archive(&self) -> io::Result<tar::Archive<Box<dyn io::Read>>> {
+        Ok(tar::Archive::new(decoded_reader(&self.path, self.comp)?))
+    }
+}
+
+impl ArchiveBackend for TarBackend {
+    fn caps(&self) -> Caps {
+        Caps {
+            random_access: false,
+            writable: false,
+        }
+    }
+
+    fn list(&self) -> io::Result<Vec<ArchiveEntry>> {
+        let mut ar = self.archive()?;
+        let mut out = Vec::new();
+        for entry in ar.entries()? {
+            let entry = entry?;
+            let is_dir = entry.header().entry_type().is_dir();
+            let path = normalize_inner(&entry.path()?.to_string_lossy());
+            if path.is_empty() {
+                continue;
+            }
+            let mtime = entry
+                .header()
+                .mtime()
+                .ok()
+                .map(|s| UNIX_EPOCH + Duration::from_secs(s));
+            out.push(ArchiveEntry {
+                path,
+                is_dir,
+                size: Some(entry.size()),
+                packed_size: None,
+                mtime,
+                is_encrypted: false,
+            });
+        }
+        Ok(out)
+    }
+
+    fn read(&self, inner: &str) -> io::Result<Vec<u8>> {
+        use std::io::Read;
+        let want = normalize_inner(inner);
+        let mut ar = self.archive()?;
+        for entry in ar.entries()? {
+            let mut entry = entry?;
+            if entry.header().entry_type().is_dir() {
+                continue;
+            }
+            let path = normalize_inner(&entry.path()?.to_string_lossy());
+            if path == want {
+                let mut buf = Vec::with_capacity(entry.size() as usize);
+                entry.read_to_end(&mut buf)?;
+                return Ok(buf);
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "書庫内ファイルが見つかりません",
+        ))
+    }
+
+    fn extract_all(
+        &self,
+        dest: &Path,
+        each: &mut dyn FnMut(&str, u64, u64) -> bool,
+    ) -> io::Result<()> {
+        use std::io::Read;
+        // 順次 tar は件数を事前に数えられないので、進捗は「圧縮ファイルの消費バイト数／
+        // ファイルサイズ」で見せる（単一パス＝再解凍しない・バーが滑らかに伸びる）。
+        let total = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
+        let count = Arc::new(AtomicU64::new(0));
+        let counted = CountingReader {
+            inner: std::fs::File::open(&self.path)?,
+            count: count.clone(),
+        };
+        let mut ar = tar::Archive::new(wrap_comp(counted, self.comp)?);
+        for entry in ar.entries()? {
+            let mut entry = entry?;
+            let is_dir = entry.header().entry_type().is_dir();
+            let path = normalize_inner(&entry.path()?.to_string_lossy());
+            if path.is_empty() {
+                continue;
+            }
+            let Some(p) = safe_join(dest, &path) else {
+                continue;
+            };
+            if is_dir {
+                std::fs::create_dir_all(&p)?;
+                continue;
+            }
+            if !each(&path, count.load(Ordering::Relaxed), total) {
+                return Ok(());
+            }
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut buf = Vec::with_capacity(entry.size() as usize);
+            entry.read_to_end(&mut buf)?;
+            std::fs::write(&p, &buf)?;
+        }
+        Ok(())
+    }
+}
+
+/// 単体圧縮ファイル（gz/bz2/xz/zstd で1ファイルを包んだだけ）の読取バックエンド。中身は1
+/// エントリ（圧縮拡張子を除いた名前）として見せ、読む時に丸ごと解凍する。1エントリなので
+/// `random_access: true`（一括展開には倒さない）。書込み不可。
+pub struct SingleFileBackend {
+    path: PathBuf,
+    comp: Comp,
+    inner: String,
+}
+
+impl SingleFileBackend {
+    pub(crate) fn open(path: &Path, comp: Comp) -> io::Result<Self> {
+        Ok(Self {
+            path: path.to_path_buf(),
+            comp,
+            inner: single_inner_name(path),
+        })
+    }
+}
+
+impl ArchiveBackend for SingleFileBackend {
+    fn caps(&self) -> Caps {
+        Caps {
+            random_access: true,
+            writable: false,
+        }
+    }
+
+    fn list(&self) -> io::Result<Vec<ArchiveEntry>> {
+        let packed = std::fs::metadata(&self.path).ok().map(|m| m.len());
+        Ok(vec![ArchiveEntry {
+            path: self.inner.clone(),
+            is_dir: false,
+            // 展開後サイズはメタから安く取れる形式（gz/xz）だけ埋める。取れなければ None＝
+            // 表示は空欄（解凍してまで数えると一覧取得で UI が固まるため詐称しない）。
+            size: uncompressed_size(&self.path, self.comp),
+            packed_size: packed,
+            mtime: None,
+            is_encrypted: false,
+        }])
+    }
+
+    fn read(&self, inner: &str) -> io::Result<Vec<u8>> {
+        use std::io::Read;
+        if normalize_inner(inner) != self.inner {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "書庫内ファイルが見つかりません",
+            ));
+        }
+        let mut r = decoded_reader(&self.path, self.comp)?;
+        let mut buf = Vec::new();
+        r.read_to_end(&mut buf)?;
+        Ok(buf)
+    }
+
+    fn read_capped(&self, inner: &str, cap: usize) -> io::Result<(Vec<u8>, bool)> {
+        use std::io::Read;
+        if normalize_inner(inner) != self.inner {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "書庫内ファイルが見つかりません",
+            ));
+        }
+        let r = decoded_reader(&self.path, self.comp)?;
+        let mut buf = Vec::new();
+        r.take(cap as u64 + 1).read_to_end(&mut buf)?;
+        let truncated = buf.len() > cap;
+        buf.truncate(cap);
+        Ok((buf, truncated))
+    }
+}
+
+/// 単体圧縮ファイルの「展開後サイズ」を、**解凍せずに**コンテナのメタから安く得る。
+/// gz は末尾 ISIZE、xz は末尾 Index から求める。取れない形式（bz2/zstd 等）は `None`。
+fn uncompressed_size(path: &Path, comp: Comp) -> Option<u64> {
+    match comp {
+        Comp::Gz => gz_isize(path),
+        Comp::Xz => xz_uncompressed_size(path),
+        Comp::Zstd => zstd_content_size(path),
+        _ => None,
+    }
+}
+
+/// gzip 末尾4バイトの ISIZE（展開後サイズ mod 2^32）。4GB 超は値が回るが実用上十分。
+fn gz_isize(path: &Path) -> Option<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    f.seek(SeekFrom::End(-4)).ok()?;
+    let mut buf = [0u8; 4];
+    f.read_exact(&mut buf).ok()?;
+    Some(u32::from_le_bytes(buf) as u64)
+}
+
+/// .xz の Stream Footer→Index を辿り、全ブロックの Uncompressed Size を合算する（解凍不要）。
+fn xz_uncompressed_size(path: &Path) -> Option<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let file_len = f.seek(SeekFrom::End(0)).ok()?;
+    if file_len < 12 {
+        return None;
+    }
+    // Stream Footer（末尾12バイト）：CRC32(4) | Backward Size(4) | Stream Flags(2) | "YZ"(2)。
+    f.seek(SeekFrom::End(-12)).ok()?;
+    let mut footer = [0u8; 12];
+    f.read_exact(&mut footer).ok()?;
+    if &footer[10..12] != b"YZ" {
+        return None;
+    }
+    let backward = u32::from_le_bytes([footer[4], footer[5], footer[6], footer[7]]) as u64;
+    let index_size = backward.checked_add(1)?.checked_mul(4)?;
+    let index_pos = file_len.checked_sub(12)?.checked_sub(index_size)?;
+    f.seek(SeekFrom::Start(index_pos)).ok()?;
+    let mut idx = vec![0u8; index_size as usize];
+    f.read_exact(&mut idx).ok()?;
+    // Index：Indicator(0x00) | Number of Records(varint) | {Unpadded, Uncompressed}... | pad | CRC32。
+    if idx.first().copied()? != 0 {
+        return None;
+    }
+    let mut p = 1usize;
+    let count = read_xz_varint(&idx, &mut p)?;
+    let mut total = 0u64;
+    for _ in 0..count {
+        let _unpadded = read_xz_varint(&idx, &mut p)?;
+        let uncompressed = read_xz_varint(&idx, &mut p)?;
+        total = total.checked_add(uncompressed)?;
+    }
+    Some(total)
+}
+
+/// zstd フレームヘッダの Frame_Content_Size（展開後サイズ）を読む（解凍不要）。ヘッダに
+/// サイズが無い場合（FCS_flag=0 かつ非 single-segment）は `None`。
+fn zstd_content_size(path: &Path) -> Option<u64> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut buf = [0u8; 18];
+    let n = f.read(&mut buf).ok()?;
+    if n < 5 || buf[0..4] != [0x28, 0xB5, 0x2F, 0xFD] {
+        return None;
+    }
+    let desc = buf[4];
+    let fcs_flag = desc >> 6;
+    let single_segment = (desc >> 5) & 1;
+    let did_flag = desc & 0x3;
+    let mut pos = 5usize;
+    if single_segment == 0 {
+        pos += 1; // Window_Descriptor
+    }
+    pos += match did_flag {
+        1 => 1,
+        2 => 2,
+        3 => 4,
+        _ => 0,
+    };
+    let fcs_size = match fcs_flag {
+        0 if single_segment == 1 => 1,
+        0 => return None,
+        1 => 2,
+        2 => 4,
+        3 => 8,
+        _ => return None,
+    };
+    if pos + fcs_size > n {
+        return None;
+    }
+    let b = &buf[pos..pos + fcs_size];
+    Some(match fcs_size {
+        1 => b[0] as u64,
+        2 => u16::from_le_bytes([b[0], b[1]]) as u64 + 256,
+        4 => u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as u64,
+        _ => u64::from_le_bytes(b.try_into().ok()?),
+    })
+}
+
+/// xz の可変長整数（little-endian base-128・最上位ビット=継続）。
+fn read_xz_varint(buf: &[u8], pos: &mut usize) -> Option<u64> {
+    let mut result = 0u64;
+    let mut shift = 0u32;
+    loop {
+        let b = *buf.get(*pos)?;
+        *pos += 1;
+        result |= ((b & 0x7f) as u64).checked_shl(shift)?;
+        if b & 0x80 == 0 {
+            return Some(result);
+        }
+        shift += 7;
+        if shift >= 64 {
+            return None;
+        }
+    }
+}
+
+/// 単体圧縮ファイルの内側エントリ名＝圧縮拡張子を除いたファイル名（`foo.json.xz`→`foo.json`）。
+fn single_inner_name(path: &Path) -> String {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("data");
+    let lower = name.to_ascii_lowercase();
+    for suf in [".gz", ".bz2", ".xz", ".zstd", ".zst"] {
+        if lower.ends_with(suf) {
+            let stem = &name[..name.len() - suf.len()];
+            return if stem.is_empty() {
+                "data".to_owned()
+            } else {
+                stem.to_owned()
+            };
+        }
+    }
+    name.to_owned()
 }
 
 /// 書庫内パスを正規化：'\\' を '/' に、空セグメントと "." を除去して '/' 区切りへ。
@@ -999,5 +1440,72 @@ mod tests {
         // 1件も展開していない（最初の each で false）。
         assert!(!dest.join("a.txt").exists());
         let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    /// tar 本体＋各圧縮ラップ（gz/bz2/xz/zstd）の一覧・読取・一括展開。すべて非RA。
+    #[test]
+    fn tar_family_list_read_extract() {
+        for name in ["tree.tar", "tree.tar.gz", "tree.tar.bz2", "tree.tar.xz", "tree.tar.zst"] {
+            let be = open_archive(&fixture(name)).unwrap();
+            assert!(!be.caps().random_access, "{name}: tar は非RA");
+            let list = be.list().unwrap();
+            assert!(
+                list.iter().any(|e| e.path == "a.txt" && !e.is_dir && e.size == Some(3)),
+                "{name}: a.txt"
+            );
+            assert!(list.iter().any(|e| e.path == "sub/c.txt"), "{name}: sub/c.txt");
+            assert_eq!(be.read("a.txt").unwrap(), b"AAA", "{name}");
+            assert_eq!(be.read("sub/d.txt").unwrap(), b"DDD", "{name}");
+            let dest = std::env::temp_dir().join(format!(
+                "rerics_tar_{}_{}",
+                std::process::id(),
+                name.replace('.', "_")
+            ));
+            let _ = std::fs::remove_dir_all(&dest);
+            std::fs::create_dir_all(&dest).unwrap();
+            let mut called = false;
+            be.extract_all(&dest, &mut |_p, _done, total| {
+                // tar の進捗は「消費バイト数／圧縮ファイルサイズ」（total>0）。
+                assert!(total > 0, "{name}: total はファイルサイズ");
+                called = true;
+                true
+            })
+            .unwrap();
+            assert!(called, "{name}: コールバックが呼ばれる");
+            assert_eq!(std::fs::read(dest.join("a.txt")).unwrap(), b"AAA", "{name}");
+            assert_eq!(std::fs::read(dest.join("sub").join("c.txt")).unwrap(), b"CCC", "{name}");
+            let _ = std::fs::remove_dir_all(&dest);
+        }
+    }
+
+    /// 単体圧縮（gz/xz）＝1エントリ（圧縮拡張子を除いた名前）・ランダムアクセス可・読む時に解凍。
+    #[test]
+    fn single_file_compressed_one_entry() {
+        for name in ["note.txt.xz", "note.txt.gz", "note.txt.zst"] {
+            let be = open_archive(&fixture(name)).unwrap();
+            assert!(be.caps().random_access, "{name}: 単体は RA");
+            let list = be.list().unwrap();
+            assert_eq!(list.len(), 1, "{name}");
+            assert_eq!(list[0].path, "note.txt", "{name}");
+            assert!(!list[0].is_dir);
+            // gz/xz/zstd は展開後サイズ（"hello world"=11）をメタ/ヘッダから取れる。
+            assert_eq!(list[0].size, Some(11), "{name}: 展開後サイズ");
+            assert_eq!(be.read("note.txt").unwrap(), b"hello world", "{name}");
+            assert!(be.read("nope").is_err(), "{name}");
+            let (head, trunc) = be.read_capped("note.txt", 5).unwrap();
+            assert_eq!(head, b"hello", "{name}");
+            assert!(trunc, "{name}");
+        }
+    }
+
+    /// 拡張子分類（二重拡張子・短縮形・単体・非書庫）。
+    #[test]
+    fn classify_known_extensions() {
+        for p in ["x.tar", "x.tar.gz", "x.tgz", "x.tar.zstd", "x.json.xz", "a.zip", "a.7z"] {
+            assert!(is_known_archive(Path::new(p)), "{p} は書庫のはず");
+        }
+        for p in ["a.txt", "a.png", "noext"] {
+            assert!(!is_known_archive(Path::new(p)), "{p} は非書庫のはず");
+        }
     }
 }

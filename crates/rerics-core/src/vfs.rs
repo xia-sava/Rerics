@@ -195,20 +195,7 @@ fn join_inner(inner: &str, name: &str) -> String {
 
 /// パスが「潜れる書庫ファイル」か（実在するファイル＋既知の書庫拡張子）。
 pub fn is_archive_path(p: &Path) -> bool {
-    if !p.is_file() {
-        return false;
-    }
-    let ext = p
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|s| s.to_ascii_lowercase());
-    match ext.as_deref() {
-        Some("zip") => true,
-        Some("7z") => true,
-        #[cfg(feature = "rar")]
-        Some("rar") => true,
-        _ => false,
-    }
+    p.is_file() && crate::archive::is_known_archive(p)
 }
 
 #[cfg(test)]
