@@ -544,3 +544,109 @@ fn nav_history_back_forward() {
     let fwd = poll(&server, "/state/panes/left/location", |b| b.trim() == parent);
     assert_eq!(fwd.trim(), parent, "HistoryForward should go back to the parent");
 }
+
+/// PathHistoryDialog＝移動履歴の一覧（list_box モーダル）から選んでジャンプする。
+#[test]
+fn nav_path_history_dialog() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1;
+    let sbx = sbx.trim().to_string();
+
+    // 親へ移動して履歴を1件作る。
+    server.req("POST", "/command/ToParent", "").unwrap();
+    let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx);
+    assert_ne!(parent.trim(), sbx, "ToParent should leave the sandbox");
+
+    // 履歴ダイアログを開く（リスト選択モーダル）。
+    server.req("POST", "/command/PathHistoryDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"list\""), "should open a list modal: {modal}");
+    assert!(modal.contains("sbx"), "history should list the sandbox: {modal}");
+
+    // 先頭（直前の現在地＝sbx）を選んで OK＝そこへジャンプ。
+    server.req("POST", "/modal/select/0", "").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    let back = poll(&server, "/state/panes/left/location", |b| b.trim() == sbx);
+    assert_eq!(back.trim(), sbx, "selecting a history entry should navigate there");
+}
+
+/// ChangeDirectoryDialog＝パスを入力してそこへ移動する（input_box モーダル）。
+#[test]
+fn nav_change_directory_dialog() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx_json = server
+        .req("GET", "/state/panes/left/location", "")
+        .unwrap()
+        .1
+        .trim()
+        .to_string();
+    // JSON 文字列（"...\\sbx"）を実パス（...\sbx）へ戻して入力に使う。
+    let sbx_raw = sbx_json.trim_matches('"').replace("\\\\", "\\");
+
+    // いったん親へ移動してから、ダイアログで sbx を打って戻る。
+    server.req("POST", "/command/ToParent", "").unwrap();
+    let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx_json);
+    assert_ne!(parent.trim(), sbx_json, "ToParent should leave the sandbox");
+
+    server.req("POST", "/command/ChangeDirectoryDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"has_input\":true"), "CD should open a text-input modal: {modal}");
+
+    server.req("POST", "/modal/text", &sbx_raw).unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    let back = poll(&server, "/state/panes/left/location", |b| b.trim() == sbx_json);
+    assert_eq!(back.trim(), sbx_json, "typing a path should navigate there");
+}
+
+/// RegisterPath で現在地を登録し、JumpDialog でそこへ戻る。
+#[test]
+fn nav_register_and_jump() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx_json = server
+        .req("GET", "/state/panes/left/location", "")
+        .unwrap()
+        .1
+        .trim()
+        .to_string();
+
+    // 現在地（sbx）を "home" として登録する。
+    server.req("POST", "/command/RegisterPath", "").unwrap();
+    let m = wait_modal(&server);
+    assert!(m.contains("\"has_input\":true"), "register should ask for a label: {m}");
+    server.req("POST", "/modal/text", "home").unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+
+    // 親へ移動してから、ジャンプで登録先（sbx）へ戻る。
+    server.req("POST", "/command/ToParent", "").unwrap();
+    poll(&server, "/state/panes/left/location", |b| b.trim() != sbx_json);
+
+    server.req("POST", "/command/JumpDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"list\""), "jump should open a list: {modal}");
+    assert!(modal.contains("home"), "jump should list the bookmark: {modal}");
+    server.req("POST", "/modal/select/0", "").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    let back = poll(&server, "/state/panes/left/location", |b| b.trim() == sbx_json);
+    assert_eq!(back.trim(), sbx_json, "jump should navigate to the bookmark");
+}
+
+/// ChangeDriveDialog＝ドライブ一覧から選んでそのルートへ移動する。
+/// 既定選択は現在ドライブなので、OK で現在ドライブのルートへ移る。
+#[test]
+fn nav_change_drive_dialog() {
+    let server = Server::start(&["a.txt"], "");
+    let before = server.req("GET", "/state/panes/left/location", "").unwrap().1;
+    let drive = before.chars().nth(1).expect("drive letter");
+    let expected = format!("\"{drive}:\\\\\"");
+
+    server.req("POST", "/command/ChangeDriveDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"list\""), "drive dialog should open a list: {modal}");
+    assert!(modal.contains("\"items\":[\""), "should list at least one drive: {modal}");
+
+    // 既定選択（現在ドライブ）のまま OK。
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    let after = poll(&server, "/state/panes/left/location", |b| b.trim() == expected);
+    assert_eq!(after.trim(), expected, "selecting the current drive should go to its root");
+}

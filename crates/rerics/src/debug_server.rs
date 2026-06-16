@@ -33,6 +33,10 @@ pub mod modal_registry {
         pub has_input: bool,
         /// (ラベル, ctrl_id)。OK=1・Cancel=2、その他は 100+。
         pub buttons: Vec<(String, u16)>,
+        /// リスト選択モーダルの項目（リストでなければ空）。
+        pub items: Vec<String>,
+        /// リスト選択モーダルの初期選択行（リストでなければ 0）。
+        pub selected: usize,
     }
 
     thread_local! {
@@ -57,6 +61,31 @@ pub mod modal_registry {
                 modal_ptr,
                 has_input,
                 buttons,
+                items: Vec::new(),
+                selected: 0,
+            })
+        });
+    }
+
+    /// リスト選択モーダルを登録する（`dialog::list_box` が wm_create で呼ぶ）。
+    pub fn push_list(
+        kind: &'static str,
+        title: &str,
+        items: Vec<String>,
+        selected: usize,
+        modal_ptr: isize,
+        buttons: Vec<(String, u16)>,
+    ) {
+        STACK.with(|s| {
+            s.borrow_mut().push(ModalEntry {
+                kind,
+                title: title.to_string(),
+                prompt: String::new(),
+                modal_ptr,
+                has_input: false,
+                buttons,
+                items,
+                selected,
             })
         });
     }
@@ -94,6 +123,8 @@ pub enum Request {
     ModalText { value: String },
     /// `POST /modal/command/<role>`：開いているモーダルのボタンを役割名/ラベルで押す。
     ModalCommand { role: String },
+    /// `POST /modal/select/<index>`：リスト選択モーダルの選択行を index にする。
+    ModalSelect { index: usize },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -217,6 +248,11 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::ModalKey { key: key.trim_end_matches('/').to_string() })
             } else if let Some(role) = path.strip_prefix("/modal/command/") {
                 Some(Request::ModalCommand { role: role.trim_end_matches('/').to_string() })
+            } else if let Some(n) = path.strip_prefix("/modal/select/") {
+                n.trim_end_matches('/')
+                    .parse::<usize>()
+                    .ok()
+                    .map(|index| Request::ModalSelect { index })
             } else if path == "/modal/text" {
                 let mut value = String::new();
                 let _ = std::io::Read::read_to_string(req.as_reader(), &mut value);
