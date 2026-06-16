@@ -35,7 +35,8 @@ pub use media::{
 };
 pub use operation::{
     ConflictResolution, DeleteWarnChoice, OpSummary, OperationHost, ProgressHandle,
-    run_archive_add, run_archive_rebuild, run_compress, run_copy, run_delete, run_extract,
+    run_archive_add, run_archive_delete, run_archive_rebuild, run_archive_rename, run_compress,
+    run_copy, run_delete, run_extract,
 };
 pub use status::{format_drive, format_selected, format_size};
 pub use vfs::{Location, is_archive_path};

@@ -502,7 +502,8 @@ impl ArchiveBackend for ZipBackend {
             random_access: true,
             can_add: true,
             can_mkdir: true,
-            ..Default::default()
+            can_remove: true,
+            can_rename: true,
         }
     }
 

@@ -437,3 +437,70 @@ fn archive_mkdir_and_move() {
     });
     assert!(!l.contains("\"name\":\"m.txt\""), "source must be deleted after move: {l}");
 }
+
+/// 書庫内エントリの削除（確認ダイアログ→リビルド）を検証する。
+#[test]
+fn archive_delete() {
+    let server = Server::start_archive(
+        &[("dummy.txt", b"x")],
+        &[("a.txt", b"AAA"), ("b.txt", b"BBB"), ("keep.txt", b"K")],
+    );
+    server.req("POST", "/command/FocusRight", "").unwrap();
+    // 右 items は [.., a.txt, b.txt, keep.txt]。CursorDown×1 で a.txt。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/Delete", "").unwrap();
+    // YesNo 確認モーダル → はい（既定ボタン＝enter）。
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"message\""), "delete should confirm first: {modal}");
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    // a.txt が消え、他は残る。
+    let r = poll(&server, "/state/panes/right/items", |b| {
+        !b.contains("\"name\":\"a.txt\"")
+    });
+    assert!(!r.contains("\"name\":\"a.txt\""), "a.txt should be deleted: {r}");
+    assert!(
+        r.contains("\"name\":\"b.txt\"") && r.contains("\"name\":\"keep.txt\""),
+        "other entries must remain: {r}"
+    );
+}
+
+/// 書庫内エントリの改名（リビルド）と、衝突時のエラーを検証する。
+#[test]
+fn archive_rename() {
+    let server = Server::start_archive(
+        &[("dummy.txt", b"x")],
+        &[("a.txt", b"AAA"), ("b.txt", b"BBB")],
+    );
+    server.req("POST", "/command/FocusRight", "").unwrap();
+    // 右 items は [.., a.txt, b.txt]。CursorDown×1 で a.txt。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/Rename", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/text", "z.txt").unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    let r = poll(&server, "/state/panes/right/items", |b| {
+        b.contains("\"name\":\"z.txt\"")
+    });
+    assert!(
+        r.contains("\"name\":\"z.txt\"") && !r.contains("\"name\":\"a.txt\""),
+        "a.txt should be renamed to z.txt: {r}"
+    );
+
+    // 衝突：b.txt -> z.txt（z.txt は既存）はエラー。reload でカーソルは .. に戻る。
+    // items は [.., b.txt, z.txt]。CursorDown×1 で b.txt。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/Rename", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/text", "z.txt").unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    let lg = poll(&server, "/state/log", |b| b.contains("同名が存在します"));
+    assert!(lg.contains("同名が存在します"), "rename collision should error: {lg}");
+    // エラーの message box を閉じる。
+    wait_modal(&server);
+    server.req("POST", "/modal/key/enter", "");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    // z.txt は1つのまま（衝突は置換せずエラー）。
+    let r2 = server.req("GET", "/state/panes/right/items", "").unwrap().1;
+    assert_eq!(count_substr(&r2, "\"name\":\"z.txt\""), 1, "no duplicate z.txt: {r2}");
+    assert!(r2.contains("\"name\":\"b.txt\""), "b.txt must remain after failed rename: {r2}");
+}

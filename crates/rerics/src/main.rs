@@ -3030,6 +3030,167 @@ impl MainWindow {
         Ok(())
     }
 
+    /// 書庫内の削除/改名をワーカースレッドで起動する（どちらも全体リビルド）。完了で
+    /// 関与ペインを再読込する。
+    fn start_archive_op(
+        &self,
+        archive: PathBuf,
+        inner: String,
+        op: ArchiveOp,
+        is_left: bool,
+    ) -> w::AnyResult<()> {
+        let control = Arc::new(TaskControl::new());
+        let host = ChannelHost::new(
+            self.task_tx.clone(),
+            self.shutdown.clone(),
+            control.clone(),
+            self.progress_seq.clone(),
+        );
+        let id = self.next_id();
+        let (label, desc): (&str, String) = match &op {
+            ArchiveOp::Delete(names) => {
+                ("書庫から削除", format!("{} ({})", short_desc(names), archive.display()))
+            }
+            ArchiveOp::Rename { old, new } => ("書庫内で改名", format!("{old} -> {new}")),
+        };
+        self.register_task(id, label, desc, control)?;
+        std::thread::spawn(move || {
+            match op {
+                ArchiveOp::Delete(names) => {
+                    rerics_core::run_archive_delete(&host, &archive, &inner, &names);
+                }
+                ArchiveOp::Rename { old, new } => {
+                    rerics_core::run_archive_rename(&host, &archive, &inner, &old, &new);
+                }
+            }
+            let _ = host.tx.send(WorkerEvent::ArchiveWriteDone { id, src_is_left: is_left });
+        });
+        Ok(())
+    }
+
+    /// 書庫内のカーソル項目を改名する（`caps.can_rename` のとき・全体リビルド）。
+    /// 新しい名前が既存と衝突する場合は安全側でエラーにする（実FS と違い上書きしない）。
+    fn rename_in_archive(&self, is_left: bool) -> w::AnyResult<()> {
+        let (archive, inner) = {
+            let p = self.pane(is_left).borrow();
+            match p.loc() {
+                Location::Archive { archive, inner } => (archive.clone(), inner.clone()),
+                _ => return Ok(()),
+            }
+        };
+        let backend = match rerics_core::open_archive(&archive) {
+            Ok(b) if b.caps().can_rename => b,
+            Ok(_) => {
+                self.log.warn("この書庫形式は名前の変更に未対応です");
+                return Ok(());
+            }
+            Err(e) => {
+                self.log.error(&format!("書庫を開けません: {}", e));
+                return Ok(());
+            }
+        };
+        let old = {
+            let view = self.view(is_left);
+            let state = view.state();
+            let s = state.borrow();
+            match s.items.get(s.cursor) {
+                Some(it) if !it.is_parent => it.name.clone(),
+                _ => return Ok(()),
+            }
+        };
+        let new = dialog::input_box(
+            &self.wnd,
+            "名前の変更",
+            "新しい名前を入力して下さい。",
+            &old,
+            dialog::InputMode::Plain,
+        );
+        let Some(new) = new else {
+            return Ok(());
+        };
+        let new = new.trim();
+        if new.is_empty() || new == old.as_str() {
+            return Ok(());
+        }
+        let target = if inner.is_empty() {
+            new.to_string()
+        } else {
+            format!("{inner}/{new}")
+        };
+        let existing: Vec<String> = backend
+            .list()
+            .map(|es| es.into_iter().map(|e| e.path).collect())
+            .unwrap_or_default();
+        let pfx = format!("{target}/");
+        if existing.iter().any(|p| *p == target || p.starts_with(&pfx)) {
+            let line = messages::rename_failure(&old, "同名が存在します");
+            self.log.error(&line);
+            dialog::message_box(&self.wnd, "名前の変更", &line, dialog::MessageStyle::Error);
+            return Ok(());
+        }
+        self.start_archive_op(archive, inner, ArchiveOp::Rename { old, new: new.to_string() }, is_left)
+    }
+
+    /// 書庫内の選択（無ければカーソル）を確認付きで削除する（`caps.can_remove`・全体リビルド）。
+    fn delete_in_archive(&self, is_left: bool) -> w::AnyResult<()> {
+        let (archive, inner) = {
+            let p = self.pane(is_left).borrow();
+            match p.loc() {
+                Location::Archive { archive, inner } => (archive.clone(), inner.clone()),
+                _ => return Ok(()),
+            }
+        };
+        match rerics_core::open_archive(&archive) {
+            Ok(b) if b.caps().can_remove => {}
+            Ok(_) => {
+                self.log.warn("この書庫形式は削除に未対応です");
+                return Ok(());
+            }
+            Err(e) => {
+                self.log.error(&format!("書庫を開けません: {}", e));
+                return Ok(());
+            }
+        }
+        let names: Vec<String> = {
+            let view = self.view(is_left);
+            let state = view.state();
+            let s = state.borrow();
+            let selected: Vec<String> = s
+                .items
+                .iter()
+                .filter(|it| it.selected && !it.is_parent)
+                .map(|it| it.name.clone())
+                .collect();
+            if selected.is_empty() {
+                match s.items.get(s.cursor) {
+                    Some(it) if !it.is_parent => vec![it.name.clone()],
+                    _ => Vec::new(),
+                }
+            } else {
+                selected
+            }
+        };
+        if names.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        let short = if names.len() > 1 {
+            format!("{}他", names[0])
+        } else {
+            names[0].clone()
+        };
+        let ans = dialog::message_box(
+            &self.wnd,
+            "削除",
+            &messages::delete_question(&short),
+            dialog::MessageStyle::YesNo,
+        );
+        if ans != dialog::MessageResult::Yes {
+            return Ok(());
+        }
+        self.start_archive_op(archive, inner, ArchiveOp::Delete(names), is_left)
+    }
+
     /// 書庫からの取り出しをワーカースレッドで起動する。ワーカ内で書庫を開いて
     /// `run_extract` を回し、完了で dst ペインを再読込させる。
     fn start_extract(
@@ -3340,8 +3501,8 @@ impl MainWindow {
 
     /// カーソル位置の項目を入力ダイアログでリネームする。完了後は新名へカーソルを移す。
     fn rename(&self, is_left: bool) -> w::AnyResult<()> {
-        if self.block_if_archive(is_left, "名前の変更") {
-            return Ok(());
+        if self.pane(is_left).borrow().is_archive() {
+            return self.rename_in_archive(is_left);
         }
         let view = self.view(is_left);
         let old = {
@@ -3386,8 +3547,8 @@ impl MainWindow {
 
     /// アクティブペインの選択（無ければカーソル）を確認ダイアログ付きで削除する。
     fn delete(&self, is_left: bool) -> w::AnyResult<()> {
-        if self.block_if_archive(is_left, "削除") {
-            return Ok(());
+        if self.pane(is_left).borrow().is_archive() {
+            return self.delete_in_archive(is_left);
         }
         let names: Vec<String> = {
             let state = self.view(is_left).state();
@@ -3668,6 +3829,14 @@ impl MainWindow {
         let cur_left = (pt as f64 * self.split_ratio.get()).round() as i32;
         self.set_left_width(cur_left + delta)
     }
+}
+
+/// 書庫内で全体リビルドを伴う編集操作（ワーカースレッドへ渡す）。
+enum ArchiveOp {
+    /// 指定エントリ（ディレクトリは配下も）を削除する。
+    Delete(Vec<String>),
+    /// `old` を `new` に改名する。
+    Rename { old: String, new: String },
 }
 
 /// タスク詳細用の短い対象表記（複数なら先頭名＋「他」）。

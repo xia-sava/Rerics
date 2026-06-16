@@ -81,6 +81,11 @@ pub fn archive_add_failure(name: &str, reason: &str) -> String {
     format!("書庫への追加に失敗しました。- {name} ({reason})")
 }
 
+/// `書庫の更新に失敗しました。- {0}`（再構築＝削除/改名/置換の共通失敗・理由併記）。
+pub fn archive_update_failure(name: &str, reason: &str) -> String {
+    format!("書庫の更新に失敗しました。- {name} ({reason})")
+}
+
 /// `Rebuild`（書庫を再構築して書き戻す処理の開始行）。
 pub fn archive_rebuild() -> String {
     "Rebuild".to_string()

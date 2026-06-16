@@ -342,55 +342,53 @@ pub fn run_archive_add(
     sum
 }
 
-/// 既存 zip を読み直し、追加項目と同名のエントリを除いて新しい zip に書き戻してから
-/// 追加項目を足す（同名を確実に置換・重複を残さない）。書き戻し時に既存エントリ名を
-/// 正しくデコードして UTF-8 名で書く＝**CP932 名は UTF-8 へ近代化される**。一時ファイルへ
-/// 書いてから元へ rename して差し替える（途中失敗で元書庫を壊さない）。
-pub fn run_archive_rebuild(
+/// 既存 zip を読み直し、各エントリに `decide` を適用して新しい一時 zip に書き戻し、元へ
+/// rename で差し替える（途中失敗・中止で元書庫を壊さない）。`decide(正規化名, is_dir)` は
+/// `None`=そのエントリを捨てる、`Some(out)`=その正規化名（ディレクトリは内部で末尾 '/' を
+/// 付ける）で書き戻す。書き戻し後に `extra=(src_dir, names, inner_prefix)` があれば実FS の
+/// 項目を足す。既存名は decode して UTF-8 で書くので **CP932 名は UTF-8 へ近代化**される。
+/// 結果サマリ（err/cancelled・追加分の ok）を返す。最終的な結果ログ行は呼び出し側が出す。
+fn rewrite_archive(
     host: &dyn OperationHost,
-    src_dir: &Path,
-    names: &[String],
     dst_zip: &Path,
-    inner_prefix: &str,
+    decide: impl Fn(&str, bool) -> Option<String>,
+    extra: Option<(&Path, &[String], &str)>,
 ) -> OpSummary {
     let mut sum = OpSummary::default();
-    // 追加項目の書庫内パス。これに一致 or その配下の既存エントリは捨てて置換する。
-    let new_tops: Vec<String> = names.iter().map(|n| join_inner(inner_prefix, n)).collect();
+    let zip_name = file_name(dst_zip);
+    let logfail =
+        |e: String| host.log(LogLevel::Error, &messages::archive_update_failure(&zip_name, &e));
 
     let src_file = match std::fs::File::open(dst_zip) {
         Ok(f) => f,
         Err(e) => {
-            host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
+            logfail(e.to_string());
             sum.err += 1;
-            host.log(LogLevel::Error, &messages::copy_result(sum.ok, sum.skip, sum.err));
             return sum;
         }
     };
     let mut src_zip = match zip::ZipArchive::new(src_file) {
         Ok(z) => z,
         Err(e) => {
-            host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
+            logfail(e.to_string());
             sum.err += 1;
-            host.log(LogLevel::Error, &messages::copy_result(sum.ok, sum.skip, sum.err));
             return sum;
         }
     };
 
     let mut tmp_path = dst_zip.to_path_buf();
-    tmp_path.set_file_name(format!("{}.rerics-tmp", file_name(dst_zip)));
+    tmp_path.set_file_name(format!("{}.rerics-tmp", zip_name));
     let tmp_file = match std::fs::File::create(&tmp_path) {
         Ok(f) => f,
         Err(e) => {
-            host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
+            logfail(e.to_string());
             sum.err += 1;
-            host.log(LogLevel::Error, &messages::copy_result(sum.ok, sum.skip, sum.err));
             return sum;
         }
     };
     let mut zw = zip::ZipWriter::new(tmp_file);
 
-    // 既存エントリを UTF-8 名で書き戻す（置換対象は捨てる）。大書庫では時間がかかるので
-    // 進捗をインプレース行で見せる。
+    // 既存エントリを decide に従って書き戻す。大書庫では時間がかかるので進捗を出す。
     let total = src_zip.len();
     let handle = host.begin_progress(LogLevel::Normal, &messages::archive_rebuild());
     let mut tracker = ProgressTracker::new();
@@ -402,7 +400,7 @@ pub fn run_archive_rebuild(
         let file = match src_zip.by_index(i) {
             Ok(f) => f,
             Err(e) => {
-                host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
+                logfail(e.to_string());
                 sum.err += 1;
                 continue;
             }
@@ -411,35 +409,36 @@ pub fn run_archive_rebuild(
         if name.is_empty() {
             continue;
         }
-        let replaced = new_tops
-            .iter()
-            .any(|t| name == *t || name.starts_with(&format!("{t}/")));
-        if replaced {
-            drop(file);
-            continue;
-        }
-        let out_name = if file.is_dir() { format!("{name}/") } else { name };
-        if let Err(e) = zw.raw_copy_file_rename(file, out_name) {
-            host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
-            sum.err += 1;
+        let is_dir = file.is_dir();
+        match decide(&name, is_dir) {
+            None => drop(file),
+            Some(out) => {
+                let out_name = if is_dir { format!("{out}/") } else { out };
+                if let Err(e) = zw.raw_copy_file_rename(file, out_name) {
+                    logfail(e.to_string());
+                    sum.err += 1;
+                }
+            }
         }
         if let Some(pct) = tracker.tick((i + 1) as u64, total as u64) {
             host.update_progress(handle, &messages::archive_rebuild_progress(pct));
         }
     }
 
-    // 追加項目を足す。
+    // 追加項目を足す（rebuild=追加/置換のときだけ）。
     if !sum.cancelled {
-        for name in names {
-            if should_stop(host) {
-                sum.cancelled = true;
-                break;
-            }
-            let src = src_dir.join(name);
-            let rel = join_inner(inner_prefix, name);
-            if let Flow::Cancel = add_archive_item(host, &mut zw, &src, &rel, &mut sum) {
-                sum.cancelled = true;
-                break;
+        if let Some((src_dir, names, inner_prefix)) = extra {
+            for name in names {
+                if should_stop(host) {
+                    sum.cancelled = true;
+                    break;
+                }
+                let src = src_dir.join(name);
+                let rel = join_inner(inner_prefix, name);
+                if let Flow::Cancel = add_archive_item(host, &mut zw, &src, &rel, &mut sum) {
+                    sum.cancelled = true;
+                    break;
+                }
             }
         }
     }
@@ -448,23 +447,112 @@ pub fn run_archive_rebuild(
     if sum.cancelled || sum.err > 0 {
         drop(finished);
         let _ = std::fs::remove_file(&tmp_path);
-        host.log(LogLevel::Error, &messages::copy_result(sum.ok, sum.skip, sum.err));
         return sum;
     }
     if let Err(e) = finished {
         let _ = std::fs::remove_file(&tmp_path);
-        host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
+        logfail(e.to_string());
         sum.err += 1;
-        host.log(LogLevel::Error, &messages::copy_result(sum.ok, sum.skip, sum.err));
         return sum;
     }
     if let Err(e) = std::fs::rename(&tmp_path, dst_zip) {
         let _ = std::fs::remove_file(&tmp_path);
-        host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
+        logfail(e.to_string());
         sum.err += 1;
     }
-    let level = if sum.err == 0 { LogLevel::Info } else { LogLevel::Error };
+    sum
+}
+
+/// 既存 zip を再構築し、追加項目と同名のエントリを除いてから追加項目を足す（同名を確実に
+/// 置換・重複を残さない）。CP932 名は UTF-8 へ近代化される。
+pub fn run_archive_rebuild(
+    host: &dyn OperationHost,
+    src_dir: &Path,
+    names: &[String],
+    dst_zip: &Path,
+    inner_prefix: &str,
+) -> OpSummary {
+    // 追加項目の書庫内パス。これに一致 or その配下の既存エントリは捨てて置換する。
+    let new_tops: Vec<String> = names.iter().map(|n| join_inner(inner_prefix, n)).collect();
+    let sum = rewrite_archive(
+        host,
+        dst_zip,
+        |name, _is_dir| {
+            let replaced = new_tops
+                .iter()
+                .any(|t| name == t.as_str() || name.starts_with(&format!("{t}/")));
+            if replaced { None } else { Some(name.to_string()) }
+        },
+        Some((src_dir, names, inner_prefix)),
+    );
+    let level = if sum.err == 0 && !sum.cancelled { LogLevel::Info } else { LogLevel::Error };
     host.log(level, &messages::copy_result(sum.ok, sum.skip, sum.err));
+    sum
+}
+
+/// 書庫内の `names`（`inner` 直下のエントリ名）を削除する。全体を再構築して該当エントリ
+/// （ディレクトリはその配下も）を除く。CP932 名は UTF-8 へ近代化される。一時ファイルへ
+/// 書いてから差し替えるので、途中失敗・中止で元書庫を壊さない。
+pub fn run_archive_delete(
+    host: &dyn OperationHost,
+    archive: &Path,
+    inner: &str,
+    names: &[String],
+) -> OpSummary {
+    let targets: Vec<String> = names.iter().map(|n| join_inner(inner, n)).collect();
+    let mut sum = rewrite_archive(
+        host,
+        archive,
+        |name, _is_dir| {
+            let removed = targets
+                .iter()
+                .any(|t| name == t.as_str() || name.starts_with(&format!("{t}/")));
+            if removed { None } else { Some(name.to_string()) }
+        },
+        None,
+    );
+    if !sum.cancelled && sum.err == 0 {
+        for name in names {
+            host.log(LogLevel::Normal, &messages::delete(name));
+        }
+        sum.ok = names.len();
+    }
+    let level = if sum.err == 0 && !sum.cancelled { LogLevel::Info } else { LogLevel::Error };
+    host.log(level, &messages::delete_result(sum.ok, sum.err));
+    sum
+}
+
+/// 書庫内の `old`（`inner` 直下）を `new` へ改名する。ディレクトリはその配下のパスも
+/// まとめて付け替える。全体を再構築し、CP932 名は UTF-8 へ近代化される。`new` が既存と
+/// 衝突するかの判定は呼び出し側（GUI）で行う前提。
+pub fn run_archive_rename(
+    host: &dyn OperationHost,
+    archive: &Path,
+    inner: &str,
+    old: &str,
+    new: &str,
+) -> OpSummary {
+    let from = join_inner(inner, old);
+    let to = join_inner(inner, new);
+    let from_pfx = format!("{from}/");
+    let mut sum = rewrite_archive(
+        host,
+        archive,
+        |name, _is_dir| {
+            if name == from.as_str() {
+                Some(to.clone())
+            } else if let Some(rest) = name.strip_prefix(&from_pfx) {
+                Some(format!("{to}/{rest}"))
+            } else {
+                Some(name.to_string())
+            }
+        },
+        None,
+    );
+    if !sum.cancelled && sum.err == 0 {
+        host.log(LogLevel::Normal, &messages::rename(old, new));
+        sum.ok = 1;
+    }
     sum
 }
 
@@ -1712,6 +1800,88 @@ mod tests {
         assert_eq!(be.read("a.txt").unwrap(), b"old");
         assert_eq!(be.read("日本語.txt").unwrap(), b"orig");
         // 一時ファイルは残らない。
+        assert!(!dir.join("a.zip.rerics-tmp").exists());
+    }
+
+    #[test]
+    fn archive_delete_removes_entry_and_preserves_cp932() {
+        let dir = TempDir::new();
+        let zip = dir.join("a.zip");
+        let cp = cp932_nihongo_txt();
+        build_stored_zip_raw(&zip, &[(&cp, b"orig"), (b"a.txt", b"AAA"), (b"b.txt", b"BBB")]);
+        let host = FakeHost::new();
+        let sum = run_archive_delete(&host, &zip, "", &["a.txt".to_owned()]);
+        assert_eq!(sum.err, 0);
+        assert_eq!(sum.ok, 1);
+        let be = crate::open_archive(&zip).unwrap();
+        let paths: Vec<String> = be.list().unwrap().into_iter().map(|e| e.path).collect();
+        assert!(!paths.iter().any(|p| p == "a.txt"), "a.txt must be removed: {paths:?}");
+        // 触っていないエントリは残り、CP932 名も保持される。
+        assert_eq!(be.read("b.txt").unwrap(), b"BBB");
+        assert_eq!(be.read("日本語.txt").unwrap(), b"orig");
+    }
+
+    #[test]
+    fn archive_delete_dir_removes_subtree() {
+        let dir = TempDir::new();
+        let zip = dir.join("a.zip");
+        build_stored_zip_raw(
+            &zip,
+            &[(b"sub/c.txt", b"C"), (b"sub/d.txt", b"D"), (b"e.txt", b"E")],
+        );
+        let host = FakeHost::new();
+        let sum = run_archive_delete(&host, &zip, "", &["sub".to_owned()]);
+        assert_eq!(sum.err, 0);
+        let be = crate::open_archive(&zip).unwrap();
+        let paths: Vec<String> = be.list().unwrap().into_iter().map(|e| e.path).collect();
+        assert!(!paths.iter().any(|p| p.starts_with("sub/")), "subtree removed: {paths:?}");
+        assert_eq!(be.read("e.txt").unwrap(), b"E");
+    }
+
+    #[test]
+    fn archive_rename_file_and_preserves_cp932() {
+        let dir = TempDir::new();
+        let zip = dir.join("a.zip");
+        let cp = cp932_nihongo_txt();
+        build_stored_zip_raw(&zip, &[(&cp, b"orig"), (b"a.txt", b"AAA")]);
+        let host = FakeHost::new();
+        let sum = run_archive_rename(&host, &zip, "", "a.txt", "z.txt");
+        assert_eq!(sum.err, 0);
+        let be = crate::open_archive(&zip).unwrap();
+        let paths: Vec<String> = be.list().unwrap().into_iter().map(|e| e.path).collect();
+        assert!(!paths.iter().any(|p| p == "a.txt"), "old name gone: {paths:?}");
+        assert_eq!(be.read("z.txt").unwrap(), b"AAA");
+        // 触っていない CP932 名は近代化後も同じ表示名で読める。
+        assert_eq!(be.read("日本語.txt").unwrap(), b"orig");
+    }
+
+    #[test]
+    fn archive_rename_dir_renames_subtree() {
+        let dir = TempDir::new();
+        let zip = dir.join("a.zip");
+        build_stored_zip_raw(&zip, &[(b"sub/c.txt", b"C"), (b"e.txt", b"E")]);
+        let host = FakeHost::new();
+        let sum = run_archive_rename(&host, &zip, "", "sub", "box");
+        assert_eq!(sum.err, 0);
+        let be = crate::open_archive(&zip).unwrap();
+        let paths: Vec<String> = be.list().unwrap().into_iter().map(|e| e.path).collect();
+        assert!(!paths.iter().any(|p| p.starts_with("sub/")), "old subtree gone: {paths:?}");
+        assert_eq!(be.read("box/c.txt").unwrap(), b"C");
+        assert_eq!(be.read("e.txt").unwrap(), b"E");
+    }
+
+    #[test]
+    fn archive_delete_cancel_keeps_original() {
+        let dir = TempDir::new();
+        let zip = dir.join("a.zip");
+        build_stored_zip_raw(&zip, &[(b"a.txt", b"AAA"), (b"b.txt", b"BBB")]);
+        let host = FakeHost::cancelling(0);
+        let sum = run_archive_delete(&host, &zip, "", &["a.txt".to_owned()]);
+        assert!(sum.cancelled);
+        // 元書庫は無傷。
+        let be = crate::open_archive(&zip).unwrap();
+        assert_eq!(be.read("a.txt").unwrap(), b"AAA");
+        assert_eq!(be.read("b.txt").unwrap(), b"BBB");
         assert!(!dir.join("a.zip.rerics-tmp").exists());
     }
 }
