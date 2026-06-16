@@ -18,7 +18,7 @@ pub use archive::{
     ArchiveBackend, ArchiveEntry, ArchiveWriter, Caps, open_archive, open_archive_writer,
 };
 pub use config::{
-    Config, DEFAULT_CONFIG_TOML, FontSpec, Layout, ResolvedTheme, State, TabState, Theme,
+    Bookmark, Config, DEFAULT_CONFIG_TOML, FontSpec, Layout, ResolvedTheme, State, TabState, Theme,
     ThemeColors, WindowState, clamp_to_work, config_path, data_dir, load_toml, save_toml,
     state_path,
 };
@@ -51,7 +51,14 @@ use std::path::Path;
 /// ナビゲーションは「移動できたか」を返し、失敗時は「移動しない」で吸収する。
 pub struct Pane {
     loc: Location,
+    /// 戻る履歴（古い→新しい。末尾が直前の現在地）。
+    back: Vec<Location>,
+    /// 進む履歴（戻った後にだけ積まれる。新しい移動で破棄）。
+    forward: Vec<Location>,
 }
+
+/// 移動履歴の上限（これを超えると古い方から捨てる）。
+const HISTORY_LIMIT: usize = 256;
 
 impl Pane {
     /// 指定パス（実FS）を絶対パス化して開く。
@@ -60,6 +67,8 @@ impl Pane {
         let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
         Self {
             loc: Location::Real(abs),
+            back: Vec::new(),
+            forward: Vec::new(),
         }
     }
 
@@ -68,7 +77,18 @@ impl Pane {
     pub fn restore(display: &str) -> Self {
         Self {
             loc: Location::parse(display),
+            back: Vec::new(),
+            forward: Vec::new(),
         }
+    }
+
+    /// 現在地を `back` に積み、`forward` を破棄する（新しい移動の共通前処理）。
+    fn record_history(&mut self) {
+        self.back.push(self.loc.clone());
+        if self.back.len() > HISTORY_LIMIT {
+            self.back.remove(0);
+        }
+        self.forward.clear();
     }
 
     /// 現在地（実FS or 書庫内）。
@@ -112,6 +132,7 @@ impl Pane {
     pub fn enter(&mut self, name: &str, is_dir: bool) -> bool {
         match self.loc.enter(name, is_dir) {
             Some(next) if next.read().is_ok() => {
+                self.record_history();
                 self.loc = next;
                 true
             }
@@ -123,11 +144,52 @@ impl Pane {
     pub fn to_parent(&mut self) -> Option<String> {
         let (parent, prev) = self.loc.to_parent()?;
         if parent.read().is_ok() {
+            self.record_history();
             self.loc = parent;
             Some(prev)
         } else {
             None
         }
+    }
+
+    /// 任意の現在地へ移動する（パス入力・ジャンプ・ドライブ変更・ルート移動の共通口）。
+    /// 侵入先が読めることを確認してから確定し、確定できたら履歴に積む。
+    pub fn navigate(&mut self, loc: Location) -> bool {
+        if loc.read().is_ok() {
+            self.record_history();
+            self.loc = loc;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 戻る。読めなくなった履歴は飛ばし、読める所まで遡る。移動できたら `true`。
+    pub fn go_back(&mut self) -> bool {
+        while let Some(prev) = self.back.pop() {
+            if prev.read().is_ok() {
+                self.forward.push(std::mem::replace(&mut self.loc, prev));
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 進む。読めなくなった履歴は飛ばす。移動できたら `true`。
+    pub fn go_forward(&mut self) -> bool {
+        while let Some(next) = self.forward.pop() {
+            if next.read().is_ok() {
+                self.back.push(std::mem::replace(&mut self.loc, next));
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 移動履歴（新しい順）を表示文字列で返す。先頭が直前の現在地。
+    /// 履歴ダイアログ用。現在地そのものは含めない。
+    pub fn history(&self) -> Vec<String> {
+        self.back.iter().rev().map(|l| l.loc_display()).collect()
     }
 }
 
@@ -157,5 +219,40 @@ mod tests {
         assert_eq!(p.path(), start.parent().unwrap());
         assert!(p.enter("rerics-core", true));
         assert_eq!(p.path(), start.as_path());
+    }
+
+    #[test]
+    fn pane_history_back_forward() {
+        let mut p = Pane::open(env!("CARGO_MANIFEST_DIR"));
+        let start = p.path().to_path_buf(); // .../crates/rerics-core
+        assert_eq!(p.to_parent().as_deref(), Some("rerics-core"));
+        let parent = p.path().to_path_buf(); // .../crates
+        assert_ne!(start, parent);
+
+        // 戻る→進む の往復。
+        assert!(p.go_back());
+        assert_eq!(p.path(), start);
+        assert!(p.go_forward());
+        assert_eq!(p.path(), parent);
+
+        // 戻った後の navigate は forward を破棄する。
+        assert!(p.go_back()); // -> start, forward=[parent]
+        assert!(p.navigate(Location::Real(parent.clone())));
+        assert_eq!(p.path(), parent);
+        assert!(!p.go_forward(), "navigate 後は forward が空のはず");
+        assert!(p.go_back());
+        assert_eq!(p.path(), start);
+
+        // これ以上は戻れない。
+        assert!(!p.go_back());
+    }
+
+    #[test]
+    fn pane_history_lists_visited_newest_first() {
+        let mut p = Pane::open(env!("CARGO_MANIFEST_DIR"));
+        let start_disp = p.loc_display();
+        assert_eq!(p.to_parent().as_deref(), Some("rerics-core"));
+        // 直前の現在地（rerics-core）が履歴の先頭に出る。
+        assert_eq!(p.history().first().map(String::as_str), Some(start_disp.as_str()));
     }
 }

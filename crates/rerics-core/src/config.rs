@@ -162,6 +162,13 @@ impl Default for ThemeColors {
     }
 }
 
+/// 登録ディレクトリ（ブックマーク）。`label` で一覧表示し、選ぶと `path` へジャンプする。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bookmark {
+    pub label: String,
+    pub path: String,
+}
+
 /// アプリ全体の設定。デフォルトは埋め込み `default.toml`、ユーザ `config.toml` は
 /// デフォルトとの差分のみを記録し、適用時に再帰マージする。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,6 +181,8 @@ pub struct Config {
     pub columns: Vec<Column>,
     /// キーバインド（チョード文字列 → コマンドトークン）。
     pub keybinds: BTreeMap<String, String>,
+    /// 登録ディレクトリ（ジャンプ先）。
+    pub bookmarks: Vec<Bookmark>,
     /// 起動時に解決した実テーマ。ファイルには保存しない（`resolve_theme` で設定）。
     #[serde(skip)]
     pub resolved: ResolvedTheme,
@@ -188,6 +197,7 @@ impl Default for Config {
             colors: ThemeColors::default(),
             columns: default_columns(),
             keybinds: KeyMap::default().to_string_map(),
+            bookmarks: Vec::new(),
             resolved: ResolvedTheme::default(),
         }
     }
@@ -277,6 +287,15 @@ impl Config {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(path, text)
+    }
+
+    /// 登録ディレクトリを追加する。同じ `path` が既にあれば `label` を更新する。
+    pub fn add_bookmark(&mut self, label: &str, path: &str) {
+        if let Some(b) = self.bookmarks.iter_mut().find(|b| b.path == path) {
+            b.label = label.to_owned();
+        } else {
+            self.bookmarks.push(Bookmark { label: label.to_owned(), path: path.to_owned() });
+        }
     }
 
     /// 設定からキーマップを組む。
@@ -463,6 +482,33 @@ mod tests {
         Config::default().save_to(&path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.trim().is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn add_bookmark_dedupes_by_path() {
+        let mut cfg = Config::default();
+        cfg.add_bookmark("home", "C:\\Users\\me");
+        cfg.add_bookmark("docs", "C:\\Users\\me\\Documents");
+        assert_eq!(cfg.bookmarks.len(), 2);
+        // 同じ path への再追加は重複させず label を更新する。
+        cfg.add_bookmark("ホーム", "C:\\Users\\me");
+        assert_eq!(cfg.bookmarks.len(), 2);
+        assert_eq!(cfg.bookmarks[0].label, "ホーム");
+    }
+
+    #[test]
+    fn bookmarks_roundtrip_through_save() {
+        let path = std::env::temp_dir().join("rerics_cfg_bookmarks.toml");
+        let _ = std::fs::remove_file(&path);
+        let mut cfg = Config::default();
+        cfg.add_bookmark("proj", "D:\\work\\proj");
+        cfg.save_to(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[[bookmarks]]"), "bookmarks should be saved: {text}");
+        assert!(text.contains("proj"));
+        let back = Config::load_from(&path);
+        assert_eq!(back.bookmarks, cfg.bookmarks);
         let _ = std::fs::remove_file(&path);
     }
 

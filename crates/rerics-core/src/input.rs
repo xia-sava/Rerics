@@ -37,6 +37,14 @@ pub mod vk {
     pub const D2: u16 = 0x32;
     pub const D3: u16 = 0x33;
     pub const D4: u16 = 0x34;
+    // 記号キー（JIS 配列前提。記号⇔VK の対応は配列依存なので、既定割当に使う際は
+    // 実機の VK を確認してから割り当てる）。
+    pub const OEM_1: u16 = 0xBA; // JIS: ":" "*"
+    pub const OEM_PLUS: u16 = 0xBB; // JIS: ";" "+"
+    pub const OEM_3: u16 = 0xC0; // JIS: "@" "`"
+    pub const OEM_4: u16 = 0xDB; // JIS: "[" "{"
+    pub const OEM_5: u16 = 0xDC; // JIS: "\\" "|"（￥）
+    pub const OEM_6: u16 = 0xDD; // JIS: "]" "}"
 }
 
 /// ファイラのコマンド（段階的に拡張していく）。
@@ -50,6 +58,9 @@ pub enum Command {
     CursorPageDown,
     EnterDir,
     ToParent,
+    ToRoot,
+    HistoryBack,
+    HistoryForward,
     FocusLeft,
     FocusRight,
     MarkToggle,
@@ -109,6 +120,9 @@ impl Command {
             (CursorPageDown, "CursorPageDown"),
             (EnterDir, "EnterDir"),
             (ToParent, "ToParent"),
+            (ToRoot, "ToRoot"),
+            (HistoryBack, "HistoryBack"),
+            (HistoryForward, "HistoryForward"),
             (FocusLeft, "FocusLeft"),
             (FocusRight, "FocusRight"),
             (MarkToggle, "MarkToggle"),
@@ -196,6 +210,12 @@ const KEY_NAMES: &[(u16, &str)] = &[
     (vk::F5, "F5"),
     (vk::F7, "F7"),
     (vk::TAB, "Tab"),
+    (vk::OEM_1, ":"),
+    (vk::OEM_PLUS, ";"),
+    (vk::OEM_3, "@"),
+    (vk::OEM_4, "["),
+    (vk::OEM_5, "\\"),
+    (vk::OEM_6, "]"),
 ];
 
 /// VK をトークン名へ変換する（A-Z/0-9 はその文字）。
@@ -511,7 +531,10 @@ mod tests {
 
     #[test]
     fn chord_token_roundtrip() {
-        for s in ["Up", "Ctrl+A", "Ctrl+Shift+Tab", "Shift+F7", "C", "Ctrl+0", "Esc"] {
+        for s in [
+            "Up", "Ctrl+A", "Ctrl+Shift+Tab", "Shift+F7", "C", "Ctrl+0", "Esc", ";", ":", "]",
+            "\\", "@", "[", "Shift+;",
+        ] {
             let chord = KeyChord::parse(s).unwrap();
             assert_eq!(chord.to_token().as_deref(), Some(s));
         }
