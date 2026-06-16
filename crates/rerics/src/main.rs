@@ -742,6 +742,14 @@ impl MainWindow {
                 self.view_file(is_left)?;
                 return Ok(());
             }
+            Command::Edit => {
+                self.edit(is_left)?;
+                return Ok(());
+            }
+            Command::PropertyDialog => {
+                self.property_dialog(is_left)?;
+                return Ok(());
+            }
             Command::Copy => {
                 self.copy_or_move(is_left, false)?;
                 return Ok(());
@@ -4136,6 +4144,56 @@ impl MainWindow {
                 dst_dir: dst2,
             });
         });
+        Ok(())
+    }
+
+    /// カーソル上のファイルを設定エディタ（config の editor）で開く（外部プロセス・実FSのみ）。
+    fn edit(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内のファイルは編集起動に未対応です。");
+            return Ok(());
+        }
+        let name = {
+            let view = self.view(is_left);
+            let state = view.state();
+            let s = state.borrow();
+            match s.items.get(s.cursor) {
+                Some(it) if !it.is_parent && !it.is_dir => it.name.clone(),
+                _ => return Ok(()),
+            }
+        };
+        let path = self.pane(is_left).borrow().path().join(&name);
+        let editor = self.config.borrow().editor.clone();
+        if editor.trim().is_empty() {
+            self.log.warn("エディタが設定されていません（config の editor）。");
+            return Ok(());
+        }
+        match shell::launch_editor(&editor, &path) {
+            Ok(()) => self.log.normal(&format!("編集: {name}")),
+            Err(e) => self.log.error(&e),
+        }
+        Ok(())
+    }
+
+    /// カーソル項目の Windows シェルのプロパティシートを開く（実FSのみ・モードレス）。
+    fn property_dialog(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内ではプロパティ表示に未対応です。");
+            return Ok(());
+        }
+        let name = {
+            let view = self.view(is_left);
+            let state = view.state();
+            let s = state.borrow();
+            match s.items.get(s.cursor) {
+                Some(it) if !it.is_parent => it.name.clone(),
+                _ => return Ok(()),
+            }
+        };
+        let path = self.pane(is_left).borrow().path().join(&name);
+        if let Err(e) = shell::show_properties(self.wnd.hwnd(), &path) {
+            self.log.error(&e);
+        }
         Ok(())
     }
 

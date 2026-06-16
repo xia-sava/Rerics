@@ -80,6 +80,41 @@ unsafe extern "system" {
     fn RegisterClipboardFormatW(lpsz: *const u16) -> u32;
 }
 
+#[link(name = "shell32")]
+unsafe extern "system" {
+    fn SHObjectProperties(hwnd: *mut c_void, dwType: u32, szObject: *const u16, szPage: *const u16)
+        -> i32;
+}
+
+const SHOP_FILEPATH: u32 = 0x0000_0002;
+
+/// シェルのプロパティシート（モードレス）を表示する。
+pub fn show_properties(owner: &w::HWND, path: &Path) -> Result<(), String> {
+    let obj = wide(path);
+    let ok = unsafe {
+        SHObjectProperties(
+            owner.ptr() as *mut c_void,
+            SHOP_FILEPATH,
+            obj.as_ptr(),
+            std::ptr::null(),
+        )
+    };
+    if ok != 0 {
+        Ok(())
+    } else {
+        Err("プロパティを表示できません".to_string())
+    }
+}
+
+/// 設定されたエディタで `file` を開く（外部プロセス起動・非ブロッキング）。
+pub fn launch_editor(editor: &str, file: &Path) -> Result<(), String> {
+    std::process::Command::new(editor)
+        .arg(file)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("{editor} を起動できません: {e}"))
+}
+
 const DROPEFFECT_COPY: u32 = 1;
 const DROPEFFECT_MOVE: u32 = 2;
 

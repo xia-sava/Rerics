@@ -183,6 +183,8 @@ pub struct Config {
     pub keybinds: BTreeMap<String, String>,
     /// 登録ディレクトリ（ジャンプ先）。
     pub bookmarks: Vec<Bookmark>,
+    /// Edit コマンドで開く外部エディタ（実行ファイル名 or パス）。
+    pub editor: String,
     /// 起動時に解決した実テーマ。ファイルには保存しない（`resolve_theme` で設定）。
     #[serde(skip)]
     pub resolved: ResolvedTheme,
@@ -198,6 +200,7 @@ impl Default for Config {
             columns: default_columns(),
             keybinds: KeyMap::default().to_string_map(),
             bookmarks: Vec::new(),
+            editor: "notepad.exe".to_owned(),
             resolved: ResolvedTheme::default(),
         }
     }

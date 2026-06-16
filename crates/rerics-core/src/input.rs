@@ -29,6 +29,7 @@ pub mod vk {
     pub const A: u16 = 0x41;
     pub const C: u16 = 0x43;
     pub const D: u16 = 0x44;
+    pub const E: u16 = 0x45;
     pub const F: u16 = 0x46;
     pub const I: u16 = 0x49;
     pub const J: u16 = 0x4A;
@@ -115,6 +116,8 @@ pub enum Command {
     ClipPaste,
     CreateFile,
     ViewFile,
+    Edit,
+    PropertyDialog,
     Compress,
     Extract,
     NextDrive,
@@ -190,6 +193,8 @@ impl Command {
             (ClipPaste, "ClipPaste"),
             (CreateFile, "CreateFile"),
             (ViewFile, "ViewFile"),
+            (Edit, "Edit"),
+            (PropertyDialog, "PropertyDialog"),
             (Compress, "Compress"),
             (Extract, "Extract"),
             (NextDrive, "NextDrive"),
@@ -403,6 +408,8 @@ impl Default for KeyMap {
         m.bind(KeyChord::key(vk::U), Extract);
         // 表示・ペイン（原作: V=View / O・Shift+O / Ctrl+←→=最大化 / Y・Shift+P=マスク）。
         m.bind(KeyChord::key(vk::V), ViewFile);
+        m.bind(KeyChord::key(vk::E), Edit);
+        m.bind(KeyChord::new(vk::RETURN, false, false, true), PropertyDialog);
         m.bind(KeyChord::key(vk::O), OppositeToCurrent);
         m.bind(KeyChord::new(vk::O, false, true, false), CurrentToOpposite);
         m.bind(KeyChord::new(vk::RIGHT, true, false, false), MaximizeLeft);
