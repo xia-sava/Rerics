@@ -43,6 +43,7 @@ pub mod vk {
     pub const U: u16 = 0x55;
     pub const V: u16 = 0x56;
     pub const W: u16 = 0x57;
+    pub const X: u16 = 0x58;
     pub const Y: u16 = 0x59;
     pub const D0: u16 = 0x30;
     pub const D1: u16 = 0x31;
@@ -109,6 +110,9 @@ pub enum Command {
     Delete,
     SendToRecycled,
     CreateShortcut,
+    ClipCopy,
+    ClipCut,
+    ClipPaste,
     CreateFile,
     ViewFile,
     Compress,
@@ -181,6 +185,9 @@ impl Command {
             (Delete, "Delete"),
             (SendToRecycled, "SendToRecycled"),
             (CreateShortcut, "CreateShortcut"),
+            (ClipCopy, "ClipCopy"),
+            (ClipCut, "ClipCut"),
+            (ClipPaste, "ClipPaste"),
             (CreateFile, "CreateFile"),
             (ViewFile, "ViewFile"),
             (Compress, "Compress"),
@@ -385,6 +392,9 @@ impl Default for KeyMap {
         m.bind(KeyChord::key(vk::D), Delete);
         m.bind(KeyChord::key(vk::DELETE), SendToRecycled);
         m.bind(KeyChord::key(vk::T), CreateShortcut);
+        m.bind(KeyChord::new(vk::C, true, false, false), ClipCopy);
+        m.bind(KeyChord::new(vk::X, true, false, false), ClipCut);
+        m.bind(KeyChord::new(vk::V, true, false, false), ClipPaste);
         m.bind(KeyChord::key(vk::R), Rename);
         m.bind(KeyChord::key(vk::F2), Rename);
         m.bind(KeyChord::new(vk::R, false, true, false), RenameSequenceDialog);
