@@ -653,6 +653,10 @@ impl MainWindow {
                 self.incremental_search(is_left)?;
                 return Ok(());
             }
+            Command::DirectoryInformation => {
+                self.directory_information(is_left)?;
+                return Ok(());
+            }
             Command::FocusLeft => {
                 self.view(true).hwnd().SetFocus();
                 return Ok(());
@@ -3364,6 +3368,46 @@ impl MainWindow {
     }
 
     /// 削除をワーカースレッドで起動する。
+    /// カーソル/選択のディスク使用量を再帰計算する（実FSのみ・別スレッド）。完了は
+    /// `DirInfoDone` で受け、結果をダイアログ＋ログに出す。
+    fn directory_information(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内では使用量計算は未対応です。");
+            return Ok(());
+        }
+        let names = self.selected_or_cursor_names(is_left);
+        if names.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        let dir = self.pane(is_left).borrow().path().to_path_buf();
+        self.start_dir_info(dir, names)
+    }
+
+    fn start_dir_info(&self, dir: PathBuf, names: Vec<String>) -> w::AnyResult<()> {
+        let control = Arc::new(TaskControl::new());
+        let host = ChannelHost::new(
+            self.task_tx.clone(),
+            self.shutdown.clone(),
+            control.clone(),
+            self.progress_seq.clone(),
+        );
+        let id = self.next_id();
+        let label = short_desc(&names);
+        self.register_task(id, "情報", label.clone(), control)?;
+        std::thread::spawn(move || {
+            let info = rerics_core::run_calc_size(&host, &dir, &names);
+            let _ = host.tx.send(WorkerEvent::DirInfoDone {
+                id,
+                label,
+                bytes: info.bytes,
+                files: info.files,
+                dirs: info.dirs,
+            });
+        });
+        Ok(())
+    }
+
     fn start_delete(&self, dir: PathBuf, names: Vec<String>) -> w::AnyResult<()> {
         let control = Arc::new(TaskControl::new());
         let host = ChannelHost::new(
@@ -3553,6 +3597,15 @@ impl MainWindow {
                     self.reload_side(src_is_left)?;
                     self.reload_side(!src_is_left)?;
                     self.maybe_kill_task_timer();
+                }
+                WorkerEvent::DirInfoDone { id, label, bytes, files, dirs } => {
+                    self.tasks.borrow_mut().retain(|e| e.id != id);
+                    self.maybe_kill_task_timer();
+                    let msg = messages::directory_information(&label, bytes, files, dirs);
+                    self.log.normal(&msg);
+                    self.in_dialog.set(true);
+                    dialog::message_box(&self.wnd, "情報", &msg, dialog::MessageStyle::OkOnly);
+                    self.in_dialog.set(false);
                 }
             }
         }

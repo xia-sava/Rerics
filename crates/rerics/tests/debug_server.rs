@@ -693,3 +693,22 @@ fn find_incremental_search_cancel_restores() {
     let c = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
     assert_eq!(c.trim(), "1", "cancel should restore the original cursor: {c}");
 }
+
+/// DirectoryInformation＝カーソル位置の使用量を計算し結果ダイアログを出す。
+#[test]
+fn info_directory_information() {
+    let server = Server::start(&["a.txt"], "");
+    // ".." から a.txt（1バイト・b"x"）へカーソルを移す。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+
+    // 計算はワーカで走り、完了後に結果モーダルが出る。
+    server.req("POST", "/command/DirectoryInformation", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("ファイル"), "should show a result dialog: {modal}");
+    assert!(modal.contains("1 \u{30d0}\u{30a4}\u{30c8}"), "should count 1 byte: {modal}");
+
+    // 結果ダイアログを閉じる。
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}

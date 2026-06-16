@@ -151,6 +151,14 @@ pub enum WorkerEvent {
         id: u64,
         src_is_left: bool,
     },
+    /// ディレクトリ使用量計算の完了。結果をダイアログ＋ログで表示する。
+    DirInfoDone {
+        id: u64,
+        label: String,
+        bytes: u64,
+        files: u64,
+        dirs: u64,
+    },
 }
 
 /// [`OperationHost`] の GUI 実装。ログをチャネルへ送り、共有フラグで中止を伝え、

@@ -959,6 +959,52 @@ pub fn run_delete(host: &dyn OperationHost, dir: &Path, names: &[String]) -> OpS
     sum
 }
 
+/// ディレクトリ使用量の集計結果。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DirInfo {
+    pub bytes: u64,
+    pub files: u64,
+    pub dirs: u64,
+}
+
+/// `dir` 直下の `names`（ファイル/ディレクトリ）の使用量を再帰集計する。選んだ
+/// ディレクトリ自身も `dirs` に数える。ファイル境界で中止/中断を確認する。
+pub fn run_calc_size(host: &dyn OperationHost, dir: &Path, names: &[String]) -> DirInfo {
+    let mut info = DirInfo::default();
+    for name in names {
+        if should_stop(host) {
+            break;
+        }
+        calc_into(host, &dir.join(name), &mut info);
+    }
+    info
+}
+
+fn calc_into(host: &dyn OperationHost, path: &Path, info: &mut DirInfo) {
+    if should_stop(host) {
+        return;
+    }
+    host.wait_while_suspended();
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    if meta.is_dir() {
+        info.dirs += 1;
+        if let Ok(rd) = std::fs::read_dir(path) {
+            for entry in rd.flatten() {
+                if should_stop(host) {
+                    return;
+                }
+                calc_into(host, &entry.path(), info);
+            }
+        }
+    } else {
+        info.files += 1;
+        info.bytes += meta.len();
+    }
+}
+
 /// `path` のファイル名部分を取り出す。
 fn file_name(path: &Path) -> String {
     path.file_name()
@@ -1307,6 +1353,19 @@ mod tests {
         assert_eq!(sum.ok, 1);
         assert!(!src.join("a.txt").exists());
         assert!(dst.join("a.txt").exists());
+    }
+
+    #[test]
+    fn calc_size_counts_files_dirs_and_bytes() {
+        let base = TempDir::new();
+        base.write_file("a.txt", "12345"); // 5 bytes
+        std::fs::create_dir_all(base.join("sub")).unwrap();
+        base.write_file("sub/b.txt", "xyz"); // 3 bytes
+        let host = FakeHost::new();
+        let info = run_calc_size(&host, &base.path, &["a.txt".to_owned(), "sub".to_owned()]);
+        assert_eq!(info.files, 2, "a.txt と sub/b.txt の2ファイル");
+        assert_eq!(info.dirs, 1, "選んだ sub 自身を数える");
+        assert_eq!(info.bytes, 8, "5 + 3 バイト");
     }
 
     #[test]

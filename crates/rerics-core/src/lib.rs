@@ -34,9 +34,9 @@ pub use media::{
     rotated_dims,
 };
 pub use operation::{
-    ConflictResolution, DeleteWarnChoice, OpSummary, OperationHost, ProgressHandle,
-    run_archive_add, run_archive_delete, run_archive_rebuild, run_archive_rename, run_compress,
-    run_copy, run_delete, run_extract,
+    ConflictResolution, DeleteWarnChoice, DirInfo, OpSummary, OperationHost, ProgressHandle,
+    run_archive_add, run_archive_delete, run_archive_rebuild, run_archive_rename, run_calc_size,
+    run_compress, run_copy, run_delete, run_extract,
 };
 pub use status::{format_drive, format_selected, format_size};
 pub use vfs::{Location, is_archive_path};
