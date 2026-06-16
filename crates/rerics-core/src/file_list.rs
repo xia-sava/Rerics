@@ -880,6 +880,45 @@ fn glob_one(name: &[char], pat: &[char]) -> bool {
     pi == pat.len()
 }
 
+/// `query`（大小無視・部分一致）に一致する項目の添字を探す。`from` から `forward`
+/// 方向に走査し、`wrap` なら端で折り返す。".."（親）は対象外。query 空・該当なし・
+/// 空リストは `None`。インクリメンタルサーチの心臓部（打鍵ごとに呼ぶ）。
+pub fn find_match(
+    items: &[FileItem],
+    from: usize,
+    query: &str,
+    forward: bool,
+    wrap: bool,
+) -> Option<usize> {
+    if query.is_empty() || items.is_empty() {
+        return None;
+    }
+    let q = query.to_lowercase();
+    let n = items.len();
+    let from = from.min(n - 1);
+    let matches = |i: usize| !items[i].is_parent && items[i].name.to_lowercase().contains(&q);
+    // 走査する件数：折り返し時は全件、片方向のみなら端まで。
+    let count = if wrap {
+        n
+    } else if forward {
+        n - from
+    } else {
+        from + 1
+    };
+    for k in 0..count {
+        // forward なら from→末尾（必要なら先頭へ折り返し）、backward なら from→先頭。
+        let i = if forward {
+            (from + k) % n
+        } else {
+            (from + n - (k % n)) % n
+        };
+        if matches(i) {
+            return Some(i);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -891,6 +930,31 @@ mod tests {
 
     fn dir(name: &str) -> FileItem {
         FileItem::bare(name.to_owned(), true)
+    }
+
+    #[test]
+    fn find_match_direction_wrap_and_parent() {
+        let items = vec![
+            FileItem::parent(),
+            file("Apple.txt"),
+            file("banana.txt"),
+            file("Cherry.txt"),
+            file("apricot.txt"),
+        ];
+        // 大小無視・部分一致・先頭から。
+        assert_eq!(find_match(&items, 0, "ap", true, false), Some(1)); // Apple
+        // index2 から前方＝apricot。
+        assert_eq!(find_match(&items, 2, "ap", true, false), Some(4));
+        // 折り返し無しで後ろに無ければ自身のみ評価。
+        assert_eq!(find_match(&items, 4, "ap", true, false), Some(4));
+        // 折り返しありで末尾から banana を拾う。
+        assert_eq!(find_match(&items, 4, "ban", true, true), Some(2));
+        // 後方検索。
+        assert_eq!(find_match(&items, 3, "ap", false, false), Some(1));
+        // 該当なし・空クエリ・".." は対象外。
+        assert_eq!(find_match(&items, 0, "zzz", true, true), None);
+        assert_eq!(find_match(&items, 0, "", true, true), None);
+        assert_eq!(find_match(&items, 0, "..", true, false), None);
     }
 
     fn state_with(n: usize) -> FileListState {

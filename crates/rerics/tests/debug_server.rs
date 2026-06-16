@@ -650,3 +650,46 @@ fn nav_change_drive_dialog() {
     let after = poll(&server, "/state/panes/left/location", |b| b.trim() == expected);
     assert_eq!(after.trim(), expected, "selecting the current drive should go to its root");
 }
+
+/// IncrementalSearchDialog＝打鍵ごとにカーソルが一致項目へ追従し、OK で確定する。
+#[test]
+fn find_incremental_search_follows_typing() {
+    let server = Server::start(&["alpha.txt", "banana.txt", "cherry.txt"], "");
+    // items は [.., alpha(1), banana(2), cherry(3)]。
+    server.req("POST", "/command/IncrementalSearchDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"incremental\""), "should open incremental modal: {modal}");
+    assert!(modal.contains("\"has_input\":true"), "should have a text field: {modal}");
+
+    // "ban" と打つとカーソルが banana.txt（index 2）へ追従する。
+    server.req("POST", "/modal/text", "ban").unwrap();
+    let c = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
+    assert_eq!(c.trim(), "2", "cursor should follow typing to banana.txt: {c}");
+
+    // OK で確定。モーダルが閉じてもカーソルは 2 のまま。
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    let c2 = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(c2.trim(), "2", "cursor should stay put after confirm: {c2}");
+}
+
+/// 中止すると開始時のカーソルへ戻す。
+#[test]
+fn find_incremental_search_cancel_restores() {
+    let server = Server::start(&["alpha.txt", "banana.txt", "cherry.txt"], "");
+    // 開始カーソルを 1（alpha）にしておく。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    let origin = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+    assert_eq!(origin.trim(), "1");
+
+    server.req("POST", "/command/IncrementalSearchDialog", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/text", "cher").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "3");
+
+    // 中止で origin(1) に戻る。
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    let c = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(c.trim(), "1", "cancel should restore the original cursor: {c}");
+}

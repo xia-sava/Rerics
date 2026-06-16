@@ -24,7 +24,7 @@ pub use config::{
 };
 pub use file_list::{
     Align, Colors, Column, ColumnKind, FileItem, FileListState, Rgb, SortType, auto_adjust_columns,
-    column_sample, default_columns, glob_match, read_items,
+    column_sample, default_columns, find_match, glob_match, read_items,
 };
 pub use input::{Command, KeyChord, KeyMap, vk};
 pub use log::{LogLevel, LogLine, LogState};
