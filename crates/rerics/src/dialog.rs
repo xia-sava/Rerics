@@ -128,6 +128,55 @@ pub mod keyhook {
     }
 }
 
+/// 標準モーダル窓を作る（タイトル＋クライアント幅高）。原作 `PluginForm` 相当の佇まい
+/// （× 無し・最大化/最小化無し・親中央・`IsDialogMessage` 処理あり）を一元化する。
+pub fn modal_window(title: &str, w: i32, h: i32) -> gui::WindowModal {
+    gui::WindowModal::new(gui::WindowModalOpts {
+        title,
+        size: gui::dpi(w, h),
+        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
+        process_dlg_msgs: true,
+        ..Default::default()
+    })
+}
+
+/// モーダルの標準 `wm_create` 配線を仕込む：初期フォーカス（[`focus_initial`]）＋
+/// （debug-server 時）`modal_registry` 登録。各ダイアログは内容コントロール作成後に呼ぶ。
+/// `buttons` は (ラベル, ctrl_id) の列（OK=1・Cancel=2 等）。
+pub fn arm_modal(
+    wnd: &gui::WindowModal,
+    kind: &'static str,
+    reg_title: &str,
+    reg_prompt: &str,
+    has_input: bool,
+    buttons: Vec<(String, u16)>,
+) {
+    let wf = wnd.clone();
+    #[cfg(feature = "debug-server")]
+    let reg = (kind, reg_title.to_string(), reg_prompt.to_string(), has_input, buttons);
+    #[cfg(not(feature = "debug-server"))]
+    let _ = (kind, reg_title, reg_prompt, has_input, buttons);
+    wnd.on().wm_create(move |_| {
+        focus_initial(wf.hwnd());
+        #[cfg(feature = "debug-server")]
+        crate::debug_server::modal_registry::push(
+            reg.0,
+            &reg.1,
+            &reg.2,
+            wf.hwnd().ptr() as isize,
+            reg.3,
+            reg.4.clone(),
+        );
+        Ok(0)
+    });
+}
+
+/// モーダルを閉じた後始末（`modal_registry` から取り除く）。`show_modal` 直後に呼ぶ。
+pub fn disarm_modal() {
+    #[cfg(feature = "debug-server")]
+    crate::debug_server::modal_registry::pop();
+}
+
 /// 原作 WinForms の「ロード時にタブ順先頭のコントロールへフォーカス」を再現する基盤処理。
 ///
 /// winsafe の既定（`delegate_focus_to_first_child`）は先頭の子＝ラベル等にもフォーカスを
@@ -860,13 +909,7 @@ const SORT_KINDS: &[(&str, SortType)] = &[
 /// ソート設定ダイアログ。種別と昇順/降順を選ばせ、OK なら `(種別, 降順か)` を返す。
 /// 中止/Esc は `None`。`cur`/`reverse` を初期選択にする。
 pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option<(SortType, bool)> {
-    let wnd = gui::WindowModal::new(gui::WindowModalOpts {
-        title: "ソート設定",
-        size: gui::dpi(320, 320),
-        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
-        process_dlg_msgs: true,
-        ..Default::default()
-    });
+    let wnd = modal_window("ソート設定", 320, 320);
 
     let _ = gui::Label::new(
         &wnd,
@@ -938,24 +981,14 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
 
     let result: Rc<RefCell<Option<(SortType, bool)>>> = Rc::new(RefCell::new(None));
 
-    #[cfg(feature = "debug-server")]
-    let reg_wnd = wnd.clone();
-    {
-        let wf = wnd.clone();
-        wnd.on().wm_create(move |_| {
-            focus_initial(wf.hwnd());
-            #[cfg(feature = "debug-server")]
-            crate::debug_server::modal_registry::push(
-                "sort",
-                "ソート設定",
-                "ソートの種別と昇降",
-                reg_wnd.hwnd().ptr() as isize,
-                false,
-                vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
-            );
-            Ok(0)
-        });
-    }
+    arm_modal(
+        &wnd,
+        "sort",
+        "ソート設定",
+        "ソートの種別と昇降",
+        false,
+        vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
+    );
     {
         let result = result.clone();
         let kinds = kinds.clone();
@@ -982,8 +1015,7 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
     }
 
     let _ = wnd.show_modal(parent);
-    #[cfg(feature = "debug-server")]
-    crate::debug_server::modal_registry::pop();
+    disarm_modal();
     let _ = (ok, cancel);
     let r = *result.borrow();
     r
