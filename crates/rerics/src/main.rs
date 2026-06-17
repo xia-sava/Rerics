@@ -4465,6 +4465,38 @@ impl MainWindow {
             }
         }
 
+        // サブディレクトリ再帰適用（単一ディレクトリ時のみ）。属性・日時を独立に配下へ。
+        if single_is_dir && (res.sub_attr || res.sub_time) {
+            let sub_attrs = if res.sub_attr { res.attrs } else { [None; 4] };
+            let sub_modified = if res.sub_time { res.modified } else { None };
+            let sub_created = if res.sub_time { res.created } else { None };
+            let mut descendants = Vec::new();
+            Self::collect_descendants(&paths[0], &mut descendants);
+            let mut sub_changed = 0usize;
+            let mut sub_errors = 0usize;
+            for p in &descendants {
+                match self.apply_meta(p, &sub_attrs, sub_modified, sub_created) {
+                    Ok(true) => sub_changed += 1,
+                    Ok(false) => {}
+                    Err(e) => {
+                        sub_errors += 1;
+                        self.log.error(&format!("配下の属性/日時の変更に失敗: {} ({})", p.display(), e));
+                    }
+                }
+            }
+            if sub_changed > 0 {
+                self.log.normal(&format!("配下 {sub_changed} 件の属性／日時を変更しました。"));
+            }
+            if sub_errors > 0 {
+                dialog::message_box(
+                    &self.wnd,
+                    "名前の変更",
+                    &format!("配下 {sub_errors} 件の変更に失敗しました（ログ参照）。"),
+                    dialog::MessageStyle::Warning,
+                );
+            }
+        }
+
         self.reload_side(is_left)?;
         if let Some(n) = cursor_name {
             let pr = self.view(is_left).page_rows();
@@ -4472,6 +4504,22 @@ impl MainWindow {
         }
         self.view(is_left).refresh()?;
         Ok(())
+    }
+
+    /// `root` 配下の全エントリ（ファイル・ディレクトリ）を再帰収集する。シンボリックリンク
+    /// 等の reparse は辿らない（`file_type().is_dir()` は付け替え先を辿らないため自然に除外）。
+    fn collect_descendants(root: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = std::fs::read_dir(root) else {
+            return;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            out.push(path.clone());
+            if is_dir {
+                Self::collect_descendants(&path, out);
+            }
+        }
     }
 
     /// 1ファイルへ属性（据え置き＝None は触らない）と更新日時を適用する。
