@@ -869,7 +869,14 @@ impl FileListView {
         // 3. 行。
         let page = self.page_rows();
         let bottom = s.scroll_bottom(page);
-        let sel_bg = w::HBRUSH::CreateSolidBrush(rgb(colors.selected_file_bg))?;
+        // マーク行の背景。非アクティブ側は選択背景を背景方向へ寄せて淡くし、
+        // 文字色も通常色へ戻して「どちらのペインがアクティブか」を一目で示す。
+        let sel_bg_color = if cursor_visible {
+            colors.selected_file_bg
+        } else {
+            colors.selected_file_bg.blend(colors.background, 3, 5)
+        };
+        let sel_bg = w::HBRUSH::CreateSolidBrush(rgb(sel_bg_color))?;
         let icon_cache = self.inner.icon_cache.borrow();
         let icon_px = self.icon_px();
         let dir = self.inner.dir.borrow();
@@ -884,7 +891,7 @@ impl FileListView {
                     w::RECT { left: 0, top: y, right: total_w, bottom: y + item_h + 1 },
                     &sel_bg,
                 )?;
-                colors.selected_file
+                if cursor_visible { colors.selected_file } else { colors.item_color(item) }
             } else {
                 colors.item_color(item)
             };
