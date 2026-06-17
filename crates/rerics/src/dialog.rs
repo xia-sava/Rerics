@@ -524,9 +524,12 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
     #[cfg(feature = "debug-server")]
     let (reg_prompt, reg_wnd) = (name.to_string(), wnd.clone());
     {
-        let ok = ok.clone();
+        let radios = radios.clone();
         wnd.on().wm_create(move |_| {
-            ok.hwnd().SetFocus();
+            // 初期フォーカスは選択中ラジオに置く（開いてすぐ矢印で選べる＝原作準拠）。
+            if let Some(rb) = radios.selected() {
+                rb.hwnd().SetFocus();
+            }
             #[cfg(feature = "debug-server")]
             crate::debug_server::modal_registry::push(
                 "conflict",
@@ -655,9 +658,12 @@ pub fn archive_add_box(parent: &impl GuiParent, summary: &str) -> Option<Archive
     #[cfg(feature = "debug-server")]
     let (reg_prompt, reg_wnd) = (summary.to_string(), wnd.clone());
     {
-        let ok = ok.clone();
+        let radios = radios.clone();
         wnd.on().wm_create(move |_| {
-            ok.hwnd().SetFocus();
+            // 初期フォーカスは選択中ラジオに置く（原作準拠）。
+            if let Some(rb) = radios.selected() {
+                rb.hwnd().SetFocus();
+            }
             #[cfg(feature = "debug-server")]
             crate::debug_server::modal_registry::push(
                 "archive_add",
@@ -798,9 +804,12 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
     #[cfg(feature = "debug-server")]
     let reg_wnd = wnd.clone();
     {
-        let ok = ok.clone();
+        let kinds = kinds.clone();
         wnd.on().wm_create(move |_| {
-            ok.hwnd().SetFocus();
+            // 初期フォーカスは選択中の種別ラジオに置く（開いてすぐ矢印で選べる＝原作準拠）。
+            if let Some(rb) = kinds.selected() {
+                rb.hwnd().SetFocus();
+            }
             #[cfg(feature = "debug-server")]
             crate::debug_server::modal_registry::push(
                 "sort",
@@ -1004,9 +1013,15 @@ pub fn rename_box(
     #[cfg(feature = "debug-server")]
     let reg_wnd = wnd.clone();
     {
-        let ok = ok.clone();
+        let name_edit = name_edit.clone();
+        let checks = checks.clone();
         wnd.on().wm_create(move |_| {
-            ok.hwnd().SetFocus();
+            // 初期フォーカスは名前 Edit（単一）か先頭の属性チェック（一括）に置く（原作準拠）。
+            if let Some(e) = name_edit.as_ref() {
+                e.hwnd().SetFocus();
+            } else if let Some(c) = checks.first() {
+                c.hwnd().SetFocus();
+            }
             #[cfg(feature = "debug-server")]
             crate::debug_server::modal_registry::push(
                 "rename",
