@@ -1095,27 +1095,34 @@ pub fn archive_add_box(parent: &impl GuiParent, summary: &str) -> Option<Archive
     r
 }
 
-/// ソート設定ダイアログの種別リスト（表示ラベル → ソート種別・表示順）。
+/// ソート設定ダイアログの種別ラジオ（表示ラベル → ソート種別・表示順）。
+/// エクスプローラ互換は独立チェックで名前/拡張子に直交させるため、種別はこの6つのみ。
 const SORT_KINDS: &[(&str, SortType)] = &[
-    ("名前(&N)", SortType::FileName),
+    ("名前順(&F)", SortType::FileName),
     ("拡張子(&E)", SortType::Extension),
+    ("更新日付(&D)", SortType::LastWriteTime),
     ("サイズ(&S)", SortType::Length),
-    ("更新日時(&M)", SortType::LastWriteTime),
-    ("作成日時(&C)", SortType::CreateTime),
     ("属性(&A)", SortType::Attribute),
-    ("名前(Explorer風)", SortType::FileNameExpLike),
-    ("拡張子(Explorer風)", SortType::ExtensionExpLike),
+    ("作成日付(&C)", SortType::CreateTime),
 ];
 
 /// ソート設定ダイアログ。種別と昇順/降順を選ばせ、OK なら `(種別, 降順か)` を返す。
 /// 中止/Esc は `None`。`cur`/`reverse` を初期選択にする。
 pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option<(SortType, bool)> {
-    let wnd = modal_window("ソート設定", 320, 320);
+    let wnd = modal_window("ソート", 280, 300);
+
+    // エクスプローラ互換は名前/拡張子に直交するチェック。種別ラジオは互換なしの素の種別を選び、
+    // 互換種別が現在値なら対応する素の種別ラジオを選びチェックを立てる。
+    let (init_kind, init_exp) = match cur {
+        SortType::FileNameExpLike => (SortType::FileName, true),
+        SortType::ExtensionExpLike => (SortType::Extension, true),
+        other => (other, false),
+    };
 
     let _ = gui::Label::new(
         &wnd,
         gui::LabelOpts {
-            text: "並べ替えの基準",
+            text: "ソート方法",
             position: gui::dpi(16, 12),
             size: gui::dpi(200, 18),
             ..Default::default()
@@ -1129,31 +1136,32 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
             .map(|(i, (label, ty))| gui::RadioButtonOpts {
                 text: label,
                 position: gui::dpi(24, 36 + i as i32 * 24),
-                size: gui::dpi(260, 20),
-                selected: *ty == cur,
+                size: gui::dpi(240, 20),
+                selected: *ty == init_kind,
                 ..Default::default()
             })
             .collect::<Vec<_>>(),
     );
 
-    let dir = gui::RadioGroup::new(
+    let reverse_cb = gui::CheckBox::new(
         &wnd,
-        &[
-            gui::RadioButtonOpts {
-                text: "昇順(&U)",
-                position: gui::dpi(24, 236),
-                size: gui::dpi(120, 20),
-                selected: !reverse,
-                ..Default::default()
-            },
-            gui::RadioButtonOpts {
-                text: "降順(&D)",
-                position: gui::dpi(150, 236),
-                size: gui::dpi(120, 20),
-                selected: reverse,
-                ..Default::default()
-            },
-        ],
+        gui::CheckBoxOpts {
+            text: "降順(&R)",
+            position: gui::dpi(24, 184),
+            size: gui::dpi(240, 18),
+            check_state: if reverse { co::BST::CHECKED } else { co::BST::UNCHECKED },
+            ..Default::default()
+        },
+    );
+    let explike = gui::CheckBox::new(
+        &wnd,
+        gui::CheckBoxOpts {
+            text: "エクスプローラ互換(&X)",
+            position: gui::dpi(24, 208),
+            size: gui::dpi(240, 18),
+            check_state: if init_exp { co::BST::CHECKED } else { co::BST::UNCHECKED },
+            ..Default::default()
+        },
     );
 
     let ok = gui::Button::new(
@@ -1162,7 +1170,7 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
             text: "OK",
             control_style: co::BS::DEFPUSHBUTTON,
             ctrl_id: 1,
-            position: gui::dpi(132, 274),
+            position: gui::dpi(96, 244),
             width: gui::dpi_x(80),
             height: gui::dpi_y(26),
             ..Default::default()
@@ -1173,7 +1181,7 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
         gui::ButtonOpts {
             text: "キャンセル",
             ctrl_id: 2,
-            position: gui::dpi(220, 274),
+            position: gui::dpi(184, 244),
             width: gui::dpi_x(84),
             height: gui::dpi_y(26),
             ..Default::default()
@@ -1185,7 +1193,7 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
     arm_modal(
         &wnd,
         "sort",
-        "ソート設定",
+        "ソート",
         "ソートの種別と昇降",
         false,
         vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
@@ -1194,15 +1202,21 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
     {
         let result = result.clone();
         let kinds = kinds.clone();
-        let dir = dir.clone();
+        let reverse_cb = reverse_cb.clone();
+        let explike = explike.clone();
         let wnd2 = wnd.clone();
         ok.on().bn_clicked(move || {
-            let ty = kinds
+            let base = kinds
                 .selected_index()
                 .and_then(|i| SORT_KINDS.get(i as usize))
                 .map(|(_, t)| *t)
                 .unwrap_or(SortType::FileName);
-            let rev = dir.selected_index() == Some(1);
+            let ty = match (base, explike.is_checked()) {
+                (SortType::FileName, true) => SortType::FileNameExpLike,
+                (SortType::Extension, true) => SortType::ExtensionExpLike,
+                (t, _) => t,
+            };
+            let rev = reverse_cb.is_checked();
             *result.borrow_mut() = Some((ty, rev));
             wnd2.close();
             Ok(())

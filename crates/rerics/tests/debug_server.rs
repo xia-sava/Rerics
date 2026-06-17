@@ -903,6 +903,35 @@ fn sort_dialog_opens_and_closes() {
     assert!(items.contains("\"name\":\"a.txt\""), "list should remain: {items}");
 }
 
+/// ソート設定モーダルで「種別ラジオ＋エクスプローラ互換チェック＋降順チェック」を
+/// ニーモニックで操作し、OK 後の種別/昇降が組み合わせどおりになることを担保する。
+/// （互換チェックは名前/拡張子に直交＝拡張子＋互換で ExtensionExpLike になる。）
+#[test]
+fn sort_dialog_explike_and_reverse() {
+    let server = Server::start(&["a.txt", "b.txt"], "");
+    let before = server.req("GET", "/state/panes/left/sort/type", "").unwrap().1;
+    assert_eq!(before.trim(), "\"FileName\"", "default sort should be FileName");
+
+    server.req("POST", "/command/SortDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"sort\""), "should open sort modal: {modal}");
+
+    // 初期フォーカス＝選択中ラジオ（名前順）。↓で拡張子ラジオへ。
+    // Tab で降順チェック→互換チェックの順にフォーカスし、Space でそれぞれトグルする。
+    server.req("POST", "/modal/key/down", "").unwrap();
+    server.req("POST", "/modal/key/tab", "").unwrap();
+    server.req("POST", "/modal/key/space", "").unwrap();
+    server.req("POST", "/modal/key/tab", "").unwrap();
+    server.req("POST", "/modal/key/space", "").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+
+    let ty = server.req("GET", "/state/panes/left/sort/type", "").unwrap().1;
+    assert_eq!(ty.trim(), "\"ExtensionExpLike\"", "拡張子＋互換 → ExtensionExpLike: {ty}");
+    let rev = server.req("GET", "/state/panes/left/sort/reverse", "").unwrap().1;
+    assert_eq!(rev.trim(), "true", "降順チェックで reverse=true: {rev}");
+}
+
 /// IncrementalSearchDialog＝打鍵ごとにカーソルが一致項目へ追従し、OK で確定する。
 #[test]
 fn find_incremental_search_follows_typing() {
