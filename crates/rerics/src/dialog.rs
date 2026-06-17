@@ -1072,6 +1072,10 @@ pub struct RenameResult {
     pub created: Option<SystemTime>,
     /// 複数一括時の名前変換（単一は即時に `name` へ反映済みなので `None`）。
     pub name_case: NameCase,
+    /// 単一ディレクトリ時、属性を配下へ再帰適用するか。
+    pub sub_attr: bool,
+    /// 単一ディレクトリ時、日時を配下へ再帰適用するか。
+    pub sub_time: bool,
 }
 
 /// 日時欄の横の「...」ボタンに、原作の日時クイック設定メニュー（現在時刻／00:00:00）を
@@ -1124,7 +1128,11 @@ pub fn rename_box(
     created: Option<SystemTime>,
 ) -> Option<RenameResult> {
     let is_single = single.is_some();
-    let wnd = modal_window("名前の変更", 360, 340);
+    // 単一ディレクトリ時のみ「サブディレクトリにも適用」チェックを出す（その分縦に広げる）。
+    let show_sub = is_single && single_is_dir;
+    let win_h = if show_sub { 388 } else { 340 };
+    let btn_y = if show_sub { 348 } else { 290 };
+    let wnd = modal_window("名前の変更", 360, win_h);
 
     // 名前行（常設）。単一＝編集可・名前プリフィル、複数＝無効で変換結果ラベルを表示。
     // 右の「...」は名前変換メニュー（原作 btnFileName）。
@@ -1281,13 +1289,40 @@ pub fn rename_box(
         },
     );
 
+    // サブディレクトリ再帰適用（単一ディレクトリ時のみ）。属性用・日時用を独立に持つ。
+    let sub_checks: Option<(gui::CheckBox, gui::CheckBox)> = if show_sub {
+        let sub_attr = gui::CheckBox::new(
+            &wnd,
+            gui::CheckBoxOpts {
+                text: "サブディレクトリにも属性を適用(&B)",
+                control_style: co::BS::AUTOCHECKBOX,
+                position: gui::dpi(24, 254),
+                size: gui::dpi(320, 22),
+                ..Default::default()
+            },
+        );
+        let sub_time = gui::CheckBox::new(
+            &wnd,
+            gui::CheckBoxOpts {
+                text: "サブディレクトリにも日時を適用(&G)",
+                control_style: co::BS::AUTOCHECKBOX,
+                position: gui::dpi(24, 280),
+                size: gui::dpi(320, 22),
+                ..Default::default()
+            },
+        );
+        Some((sub_attr, sub_time))
+    } else {
+        None
+    };
+
     let ok = gui::Button::new(
         &wnd,
         gui::ButtonOpts {
             text: "OK",
             control_style: co::BS::DEFPUSHBUTTON,
             ctrl_id: 1,
-            position: gui::dpi(172, 290),
+            position: gui::dpi(172, btn_y),
             width: gui::dpi_x(80),
             height: gui::dpi_y(26),
             ..Default::default()
@@ -1298,7 +1333,7 @@ pub fn rename_box(
         gui::ButtonOpts {
             text: "キャンセル",
             ctrl_id: 2,
-            position: gui::dpi(260, 290),
+            position: gui::dpi(260, btn_y),
             width: gui::dpi_x(84),
             height: gui::dpi_y(26),
             ..Default::default()
@@ -1307,6 +1342,35 @@ pub fn rename_box(
 
     quick_time_menu(&mtime_btn, &mtime_edit);
     quick_time_menu(&ctime_btn, &ctime_edit);
+
+    // サブ適用チェック中は名前編集を無効化（原作 CheckSubState）。属性/日時の再帰だけ行う。
+    if let Some((sub_attr, sub_time)) = &sub_checks {
+        let refresh = {
+            let name_edit = name_edit.clone();
+            let name_btn = name_btn.clone();
+            let sub_attr = sub_attr.clone();
+            let sub_time = sub_time.clone();
+            move || {
+                let on = sub_attr.is_checked() || sub_time.is_checked();
+                name_edit.hwnd().EnableWindow(!on);
+                name_btn.hwnd().EnableWindow(!on);
+            }
+        };
+        {
+            let refresh = refresh.clone();
+            sub_attr.on().bn_clicked(move || {
+                refresh();
+                Ok(())
+            });
+        }
+        {
+            let refresh = refresh.clone();
+            sub_time.on().bn_clicked(move || {
+                refresh();
+                Ok(())
+            });
+        }
+    }
 
     // 名前変換の選択（複数一括時のみ保持。単一は即時に名前欄へ反映）。
     let name_case: Rc<Cell<NameCase>> = Rc::new(Cell::new(NameCase::None));
@@ -1401,6 +1465,7 @@ pub fn rename_box(
         let mtime_edit = mtime_edit.clone();
         let ctime_edit = ctime_edit.clone();
         let name_case = name_case.clone();
+        let sub_checks = sub_checks.clone();
         ok.on().bn_clicked(move || {
             let name = if is_single {
                 name_edit.text().ok().map(|s| s.trim().to_owned())
@@ -1421,12 +1486,18 @@ pub fn rename_box(
             };
             let modified = parse_time(&mtime_edit);
             let created = parse_time(&ctime_edit);
+            let (sub_attr, sub_time) = match &sub_checks {
+                Some((a, t)) => (a.is_checked(), t.is_checked()),
+                None => (false, false),
+            };
             *result.borrow_mut() = Some(RenameResult {
                 name,
                 attrs,
                 modified,
                 created,
                 name_case: name_case.get(),
+                sub_attr,
+                sub_time,
             });
             wnd2.close();
             Ok(())
@@ -1442,7 +1513,10 @@ pub fn rename_box(
 
     let _ = wnd.show_modal(parent);
     disarm_modal();
-    let _ = (ok, cancel, checks, name_edit, mtime_edit, ctime_edit, mtime_btn, ctime_btn, name_btn);
+    let _ = (
+        ok, cancel, checks, name_edit, mtime_edit, ctime_edit, mtime_btn, ctime_btn, name_btn,
+        sub_checks,
+    );
     result.borrow_mut().take()
 }
 
