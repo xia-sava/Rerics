@@ -545,6 +545,19 @@ impl MainWindow {
             this.load_snapshot(&snap)?;
             this.update_title()?;
             this.refresh_tab_bar()?;
+            // headless 時は本体を画面外へ送る。モーダルは親ウィンドウの中央に作られるので、
+            // これでモーダルも画面外に出て、headless 検証中の一瞬のフラッシュが見えなくなる
+            // （バックグラウンドプロセスゆえフォーカスは元々奪わない）。モーダルは VISIBLE の
+            // ままなので /snapshot/modal（PrintWindow）は画面外でもそのまま撮れる。
+            #[cfg(feature = "debug-server")]
+            if this.debug.headless {
+                let _ = this.wnd.hwnd().SetWindowPos(
+                    w::HwndPlace::None,
+                    w::POINT::with(-32000, -32000),
+                    w::SIZE::default(),
+                    co::SWP::NOSIZE | co::SWP::NOZORDER | co::SWP::NOACTIVATE,
+                );
+            }
             // hwnd が有効になったここでデバッグ制御サーバを起動する（指定時のみ）。
             #[cfg(feature = "debug-server")]
             if let Some(port) = this.debug.port {
