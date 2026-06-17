@@ -4871,8 +4871,17 @@ impl MainWindow {
                 _ => String::new(),
             }
         };
+        let selected: Vec<String> = {
+            let st = self.view(is_left).state();
+            let s = st.borrow();
+            s.items
+                .iter()
+                .filter(|it| it.selected && !it.is_parent)
+                .map(|it| format!("{}/{}", current, it.name))
+                .collect()
+        };
         let host = DialogMacroHost { app: self };
-        let ctx = MacroCtx { current, opposite, cursor_path, host: &host };
+        let ctx = MacroCtx { current, opposite, cursor_path, selected, host: &host };
         expand_macros(args, &ctx)
     }
 
