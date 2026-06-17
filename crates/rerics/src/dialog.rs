@@ -328,6 +328,87 @@ fn finalize(base: MessageResult, all_checked: bool) -> MessageResult {
     }
 }
 
+/// メッセージを UI フォント（ラベルと同じ `lfMenuFont`）で測り、論理単位の
+/// (ラベル幅, ラベル高) と**折返し済みテキスト**を返す。幅は最長行に合わせ `[MIN,MAX]` に
+/// クランプし、その幅で**手動折返し**する（空白優先・無ければ文字境界で割る）。`DrawText` の
+/// `DT_WORDBREAK` は空白でしか折らずパス等の連続文字列が切れるため、自前で折って切れを防ぐ。
+/// 測定できなければ元テキストをそのまま返す。
+fn measure_message(message: &str) -> (i32, i32, String) {
+    const MIN_LW: i32 = 300;
+    const MAX_LW: i32 = 560;
+    let measured = (|| -> w::SysResult<(i32, i32, String)> {
+        let mut ncm = w::NONCLIENTMETRICS::default();
+        unsafe {
+            w::SystemParametersInfo(
+                co::SPI::GETNONCLIENTMETRICS,
+                std::mem::size_of::<w::NONCLIENTMETRICS>() as u32,
+                &mut ncm,
+                co::SPIF::NoValue,
+            )?;
+        }
+        let font = w::HFONT::CreateFontIndirect(&ncm.lfMenuFont)?;
+        let dc = w::HWND::NULL.GetDC()?;
+        let _sel = dc.SelectObject(&*font)?;
+        let width = |s: &str| dc.GetTextExtentPoint32(s).map(|z| z.cx).unwrap_or(0);
+        let line_h = dc.GetTextExtentPoint32("Ag").map(|z| z.cy).unwrap_or(16);
+
+        let fx = gui::dpi_x(1000).max(1) as i64;
+        let fy = gui::dpi_y(1000).max(1) as i64;
+        let to_lx = |p: i32| (p as i64 * 1000 / fx) as i32;
+        let to_ly = |p: i32| ((p as i64 * 1000 + fy - 1) / fy) as i32;
+
+        // 折返し幅（物理）＝最長行の自然幅を [MIN,MAX] にクランプ。
+        let natural = message.split('\n').map(&width).max().unwrap_or(0);
+        let lw = (to_lx(natural) + 8).clamp(MIN_LW, MAX_LW);
+        let max_w = gui::dpi_x(lw);
+
+        // 手動折返し：空白で詰めていき、語単体が幅を超えるなら文字境界で割る。
+        let mut out: Vec<String> = Vec::new();
+        for line in message.split('\n') {
+            if width(line) <= max_w {
+                out.push(line.to_string());
+                continue;
+            }
+            let mut cur = String::new();
+            for word in line.split(' ') {
+                let cand =
+                    if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
+                if width(&cand) <= max_w {
+                    cur = cand;
+                    continue;
+                }
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                let mut rest = word;
+                while width(rest) > max_w {
+                    let mut cut = 0;
+                    for (i, _) in rest.char_indices().skip(1) {
+                        if width(&rest[..i]) > max_w {
+                            break;
+                        }
+                        cut = i;
+                    }
+                    if cut == 0 {
+                        // 1文字でも幅を超える（極端に狭い）→ 1文字ずつ進めて無限ループを防ぐ。
+                        cut = rest.char_indices().nth(1).map(|(i, _)| i).unwrap_or(rest.len());
+                    }
+                    out.push(rest[..cut].to_string());
+                    rest = &rest[cut..];
+                }
+                cur = rest.to_string();
+            }
+            out.push(cur);
+        }
+        if out.is_empty() {
+            out.push(String::new());
+        }
+        let h_phys = out.len() as i32 * line_h;
+        Ok((lw, to_ly(h_phys).max(18) + 6, out.join("\n")))
+    })();
+    measured.unwrap_or_else(|_| (MIN_LW, 48, message.to_string()))
+}
+
 /// 原作 `PluginMessage.Show` 相当。スタイルに応じてアイコン・ボタンを構成した
 /// モーダルを表示し、結果を返す。Enter=既定ボタン、Esc=CancelButton。
 pub fn message_box(
@@ -336,48 +417,60 @@ pub fn message_box(
     message: &str,
     style: MessageStyle,
 ) -> MessageResult {
-    let style_has_all = style.has_all_checkbox();
-    // 「すべてに適用」付きのスタイルはチェックを独立行にするぶん縦に広げる。
-    let win_h = if style_has_all { 185 } else { 150 };
-    let wnd = gui::WindowModal::new(gui::WindowModalOpts {
-        title,
-        size: gui::dpi(400, win_h),
-        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
-        process_dlg_msgs: true,
-        ..Default::default()
-    });
-
+    let has_all = style.has_all_checkbox();
     let has_icon = style.icon().is_some();
     let label_x = if has_icon { 56 } else { 16 };
-    let _label = gui::Label::new(
-        &wnd,
-        gui::LabelOpts {
-            text: message,
-            position: gui::dpi(label_x, 18),
-            size: gui::dpi(400 - label_x - 16, 60),
-            ..Default::default()
-        },
-    );
+
+    // メッセージを測ってラベル幅/高を決め、それに合わせて窓・ボタン位置を組む（切れ防止）。
+    let (label_w, label_h, wrapped) = measure_message(message);
+    let text_top = 18;
+    let content_bottom = text_top + label_h;
+    // 「すべてに適用」付きはチェックを独立行にするぶん縦に広げる。
+    let (checkbox_y, btn_y) = if has_all {
+        (content_bottom + 12, content_bottom + 42)
+    } else {
+        (0, content_bottom + 16)
+    };
+    let win_h = btn_y + 26 + 22;
 
     let specs = style.buttons();
     let cancel_index = style.cancel_index();
-    let has_all = style_has_all;
     let result = Rc::new(RefCell::new(style.default_result()));
 
     let btn_w = 96;
     let gap = 8;
     let n = specs.len() as i32;
-    // ボタンは中央寄せの独立行。チェックは（あれば）その上の独立行に左寄せで置く。
     let total = n * btn_w + (n - 1) * gap;
-    let mut x = (400 - total) / 2;
-    let btn_y = if has_all { 122 } else { 96 };
+    // 窓幅はラベルが収まりつつボタン行も収まる幅に。
+    let win_w = (label_x + label_w + 16).max(total + 32);
+
+    let wnd = gui::WindowModal::new(gui::WindowModalOpts {
+        title,
+        size: gui::dpi(win_w, win_h),
+        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
+        process_dlg_msgs: true,
+        ..Default::default()
+    });
+
+    let _label = gui::Label::new(
+        &wnd,
+        gui::LabelOpts {
+            text: &wrapped,
+            position: gui::dpi(label_x, text_top),
+            size: gui::dpi(label_w, label_h),
+            ..Default::default()
+        },
+    );
+
+    // ボタンは中央寄せの独立行。チェックは（あれば）その上の独立行に左寄せで置く。
+    let mut x = (win_w - total) / 2;
 
     let checkbox = if has_all {
         Some(gui::CheckBox::new(
             &wnd,
             gui::CheckBoxOpts {
                 text: "すべてに適用(&A)",
-                position: gui::dpi(16, 92),
+                position: gui::dpi(16, checkbox_y),
                 size: gui::dpi(160, 18),
                 ..Default::default()
             },
@@ -493,14 +586,58 @@ pub enum InputMode {
     Password,
 }
 
+/// 拡張子の前（最後の `.` の手前）の UTF-16 位置を返す。ディレクトリ・拡張子なし・
+/// 先頭ドット（`.gitignore` 等）は末尾位置。`EM_SETSEL` のキャレット位置に使う。
+fn before_ext_pos(name: &str, is_dir: bool) -> i32 {
+    let end = name.encode_utf16().count() as i32;
+    if is_dir {
+        return end;
+    }
+    match name.rfind('.') {
+        Some(0) | None => end,
+        Some(idx) => name[..idx].encode_utf16().count() as i32,
+    }
+}
+
+/// 入力欄の初期選択。`AsIs`＝明示設定なし（従来）、`BeforeExt`＝拡張子の前にキャレット
+/// （原作 RenameStyle "BeforeExtension"・選択なし）。改名系入力で使う。
+#[derive(Clone, Copy)]
+pub enum InputSelect {
+    AsIs,
+    BeforeExt { is_dir: bool },
+}
+
+impl InputSelect {
+    /// テキスト `text` を持つ `edit` に初期選択を適用する（フォーカス後に呼ぶ）。
+    fn apply(self, edit: &gui::Edit, text: &str) {
+        if let InputSelect::BeforeExt { is_dir } = self {
+            let pos = before_ext_pos(text, is_dir);
+            edit.set_selection(pos, pos);
+        }
+    }
+}
+
 /// 原作 `PluginMessage.Input` 相当。メッセージ＋1行入力のモーダルを表示し、
-/// OK なら入力文字列、キャンセル/Esc なら None を返す。
+/// OK なら入力文字列、キャンセル/Esc なら None を返す。初期選択は従来どおり（`AsIs`）。
 pub fn input_box(
     parent: &impl GuiParent,
     title: &str,
     message: &str,
     value: &str,
     mode: InputMode,
+) -> Option<String> {
+    input_box_select(parent, title, message, value, mode, InputSelect::AsIs)
+}
+
+/// [`input_box`] に初期選択（[`InputSelect`]）指定を加えた版。改名系入力で拡張子前に
+/// キャレットを置く（原作 RenameStyle）。
+pub fn input_box_select(
+    parent: &impl GuiParent,
+    title: &str,
+    message: &str,
+    value: &str,
+    mode: InputMode,
+    select: InputSelect,
 ) -> Option<String> {
     let wnd = gui::WindowModal::new(gui::WindowModalOpts {
         title,
@@ -567,8 +704,10 @@ pub fn input_box(
     let (reg_title, reg_prompt, reg_wnd) = (title.to_string(), message.to_string(), wnd.clone());
     {
         let edit = edit.clone();
+        let value = value.to_string();
         wnd.on().wm_create(move |_| {
             edit.hwnd().SetFocus();
+            select.apply(&edit, &value);
             #[cfg(feature = "debug-server")]
             crate::debug_server::modal_registry::push(
                 "input",
@@ -710,6 +849,8 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
     );
 
     let result = Rc::new(RefCell::new((ConflictResolution::Cancel, false)));
+    // 改名 Edit の初期キャレットは拡張子の前（原作 RenameStyle・衝突はファイル名）。
+    let rename_pos = before_ext_pos(name, false);
 
     // 「すべてに適用」中は改名ラジオを無効化（改名＋全適用は排他＝原作）。改名 Edit は
     // 「名前を変更してコピー」選択中かつ全適用未チェックのときだけ有効。
@@ -726,8 +867,15 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
     };
     {
         let refresh = refresh.clone();
+        let radios_c = radios.clone();
+        let rename = rename.clone();
         radios.on().bn_clicked(move || {
             refresh();
+            // 「名前を変更してコピー」を選んだら改名 Edit へフォーカス＋拡張子前にキャレット（原作）。
+            if radios_c.selected_index() == Some(3) {
+                rename.hwnd().SetFocus();
+                rename.set_selection(rename_pos, rename_pos);
+            }
             Ok(())
         });
     }
@@ -740,10 +888,12 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
     }
 
     {
-        // 作成時：初期の有効/無効を反映し、Shift 連動の keyhook を張る。
+        // 作成時：初期の有効/無効を反映し、Shift 連動＋改名欄の上下キーの keyhook を張る。
         let all_k = all.clone();
         let rename_k = rename.clone();
+        let radios_k = radios.clone();
         let refresh_c = refresh.clone();
+        let rename_sel = rename.clone();
         arm_modal(
             &wnd,
             "conflict",
@@ -753,16 +903,27 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
             vec![("OK".to_string(), 1u16), ("中止(&S)".to_string(), 2u16)],
             move |hwnd| {
                 refresh_c();
+                rename_sel.set_selection(rename_pos, rename_pos);
                 let all_k = all_k.clone();
                 let rename_k = rename_k.clone();
+                let radios_k = radios_k.clone();
                 let refresh_k = refresh_c.clone();
-                // 原作 frmCopyOption：Shift 押下中だけ「すべてに適用」を自動チェック。
-                // 改名 Edit 入力中は Shift を無視する。
                 keyhook::push(hwnd, move |vk, down| {
-                    if vk != 0x10 {
+                    let in_rename =
+                        w::HWND::GetFocus().map(|f| f.ptr()) == Some(rename_k.hwnd().ptr());
+                    // 改名 Edit 内の上下キー：ラジオ選択へ戻す（↑=強制上書き idx2・↓=スキップ
+                    // idx4）。単一行 Edit の上下は元々無動作なので横取りして問題ない。BM_CLICK で
+                    // 標準クリック相当（選択＋フォーカス＋BN_CLICKED→refresh）を起こす。
+                    if down && in_rename && (vk == 0x26 || vk == 0x28) {
+                        let target = if vk == 0x26 { 2 } else { 4 };
+                        unsafe {
+                            radios_k[target].hwnd().SendMessage(w::msg::bm::Click {});
+                        }
                         return;
                     }
-                    if w::HWND::GetFocus().map(|f| f.ptr()) == Some(rename_k.hwnd().ptr()) {
+                    // 原作 frmCopyOption：Shift 押下中だけ「すべてに適用」を自動チェック。
+                    // 改名 Edit 入力中は Shift を無視する。
+                    if vk != 0x10 || in_rename {
                         return;
                     }
                     all_k.set_check(down);
@@ -1447,9 +1608,10 @@ pub fn rename_box(
         vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
         move |_| {
             if is_single {
+                // 拡張子の前にキャレット（原作 RenameStyle・ディレクトリは末尾）。
                 if let Ok(t) = name_init.text() {
-                    let end = t.encode_utf16().count() as i32;
-                    name_init.set_selection(end, end);
+                    let pos = before_ext_pos(&t, single_is_dir);
+                    name_init.set_selection(pos, pos);
                 }
             } else {
                 name_init.hwnd().EnableWindow(false);
