@@ -579,34 +579,23 @@ fn rename_meta_dialog_opens_and_closes() {
     assert!(items.contains("\"name\":\"a.txt\""), "a.txt should still exist: {items}");
 }
 
-/// CreateFile＝data_dir/templates にテンプレートがあれば選択させ、選んだものを複製する。
+/// CreateFile＝入力したファイル名で空ファイルを作成する。
 #[test]
-fn create_file_from_template() {
+fn create_file_makes_empty_file() {
     let server = Server::start_writable(&["a.txt"]);
-    // テンプレートを置く（起動後でよい・CreateFile 実行時に走査される）。
-    let tdir = server.base.join("data").join("templates");
-    std::fs::create_dir_all(&tdir).unwrap();
-    std::fs::write(tdir.join("tpl.txt"), b"TEMPLATE BODY").unwrap();
 
     server.req("POST", "/command/CreateFile", "").unwrap();
-    // 1段目：テンプレート選択リスト。
+    // ファイル名入力ダイアログが開く。
     let modal = wait_modal(&server);
-    assert!(modal.contains("\"kind\":\"list\""), "should open template list: {modal}");
-    assert!(modal.contains("tpl.txt"), "template should be listed: {modal}");
-    // index 1 = tpl.txt（0 は「（空ファイル）」）。
-    server.req("POST", "/modal/select/1", "").unwrap();
-    server.req("POST", "/modal/command/ok", "").unwrap();
-    // 2段目：名前入力（既定＝tpl.txt）。list が閉じて input が開くまで待つ。
-    let m2 = poll(&server, "/state/modal", |b| b.contains("\"has_input\":true"));
-    assert!(m2.contains("\"has_input\":true"), "should ask for a name: {m2}");
+    assert!(modal.contains("\"has_input\":true"), "should ask for a name: {modal}");
     server.req("POST", "/modal/text", "made.txt").unwrap();
     server.req("POST", "/modal/key/enter", "").unwrap();
 
     let items = poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"made.txt\""));
     assert!(items.contains("\"name\":\"made.txt\""), "new file should appear: {items}");
-    // テンプレート内容が複製されている。
+    // 空ファイルが作られている。
     let body = std::fs::read(server.base.join("sbx").join("made.txt")).unwrap();
-    assert_eq!(body, b"TEMPLATE BODY", "template content should be copied");
+    assert!(body.is_empty(), "new file should be empty: {body:?}");
 }
 
 /// ToRoot＝カレントのドライブルートへ移動する。

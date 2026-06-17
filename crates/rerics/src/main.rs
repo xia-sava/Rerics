@@ -3177,51 +3177,17 @@ impl MainWindow {
         Ok(())
     }
 
-    /// 新規ファイルを作る。`data_dir/templates` にテンプレートがあれば選択させ、
-    /// 選んだテンプレートを複製する（既定名＝テンプレ名）。無ければ従来どおり空ファイル。
+    /// 新規ファイルを作る。入力されたファイル名で空ファイルを作成する。
     /// 既存ファイルは上書きしない。
     fn create_file(&self, is_left: bool) -> w::AnyResult<()> {
         if self.block_if_archive(is_left, "ファイルの作成") {
             return Ok(());
         }
-        let tdir = rerics_core::data_dir().join("templates");
-        let mut templates: Vec<String> = std::fs::read_dir(&tdir)
-            .map(|rd| {
-                rd.filter_map(|e| e.ok())
-                    .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-                    .map(|e| e.file_name().to_string_lossy().into_owned())
-                    .collect()
-            })
-            .unwrap_or_default();
-        templates.sort();
-
-        // テンプレート選択（先頭＝空ファイル）。無ければスキップ＝空ファイル。
-        let template: Option<std::path::PathBuf> = if templates.is_empty() {
-            None
-        } else {
-            let mut items = Vec::with_capacity(templates.len() + 1);
-            items.push("（空ファイル）".to_string());
-            items.extend(templates.iter().cloned());
-            let Some(idx) = dialog::list_box(&self.wnd, "テンプレートの選択", &items, 0) else {
-                return Ok(());
-            };
-            if idx == 0 {
-                None
-            } else {
-                Some(tdir.join(&templates[idx - 1]))
-            }
-        };
-
-        let default_name = template
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
         let name = dialog::input_box(
             &self.wnd,
             "新規ファイルの作成",
             "ファイル名を入力して下さい。",
-            &default_name,
+            "",
             dialog::InputMode::Plain,
         );
         let Some(name) = name else {
@@ -3237,14 +3203,11 @@ impl MainWindow {
             dialog::message_box(&self.wnd, "新規ファイルの作成", &msg, dialog::MessageStyle::Error);
             return Ok(());
         }
-        let made = match &template {
-            None => std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-                .map(|_| ()),
-            Some(tpl) => std::fs::copy(tpl, &path).map(|_| ()),
-        };
+        let made = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map(|_| ());
         if let Err(e) = made {
             let msg = if e.kind() == std::io::ErrorKind::AlreadyExists {
                 messages::all_ready_exists(name)
