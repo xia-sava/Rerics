@@ -586,14 +586,58 @@ pub enum InputMode {
     Password,
 }
 
+/// 拡張子の前（最後の `.` の手前）の UTF-16 位置を返す。ディレクトリ・拡張子なし・
+/// 先頭ドット（`.gitignore` 等）は末尾位置。`EM_SETSEL` のキャレット位置に使う。
+fn before_ext_pos(name: &str, is_dir: bool) -> i32 {
+    let end = name.encode_utf16().count() as i32;
+    if is_dir {
+        return end;
+    }
+    match name.rfind('.') {
+        Some(0) | None => end,
+        Some(idx) => name[..idx].encode_utf16().count() as i32,
+    }
+}
+
+/// 入力欄の初期選択。`AsIs`＝明示設定なし（従来）、`BeforeExt`＝拡張子の前にキャレット
+/// （原作 RenameStyle "BeforeExtension"・選択なし）。改名系入力で使う。
+#[derive(Clone, Copy)]
+pub enum InputSelect {
+    AsIs,
+    BeforeExt { is_dir: bool },
+}
+
+impl InputSelect {
+    /// テキスト `text` を持つ `edit` に初期選択を適用する（フォーカス後に呼ぶ）。
+    fn apply(self, edit: &gui::Edit, text: &str) {
+        if let InputSelect::BeforeExt { is_dir } = self {
+            let pos = before_ext_pos(text, is_dir);
+            edit.set_selection(pos, pos);
+        }
+    }
+}
+
 /// 原作 `PluginMessage.Input` 相当。メッセージ＋1行入力のモーダルを表示し、
-/// OK なら入力文字列、キャンセル/Esc なら None を返す。
+/// OK なら入力文字列、キャンセル/Esc なら None を返す。初期選択は従来どおり（`AsIs`）。
 pub fn input_box(
     parent: &impl GuiParent,
     title: &str,
     message: &str,
     value: &str,
     mode: InputMode,
+) -> Option<String> {
+    input_box_select(parent, title, message, value, mode, InputSelect::AsIs)
+}
+
+/// [`input_box`] に初期選択（[`InputSelect`]）指定を加えた版。改名系入力で拡張子前に
+/// キャレットを置く（原作 RenameStyle）。
+pub fn input_box_select(
+    parent: &impl GuiParent,
+    title: &str,
+    message: &str,
+    value: &str,
+    mode: InputMode,
+    select: InputSelect,
 ) -> Option<String> {
     let wnd = gui::WindowModal::new(gui::WindowModalOpts {
         title,
@@ -660,8 +704,10 @@ pub fn input_box(
     let (reg_title, reg_prompt, reg_wnd) = (title.to_string(), message.to_string(), wnd.clone());
     {
         let edit = edit.clone();
+        let value = value.to_string();
         wnd.on().wm_create(move |_| {
             edit.hwnd().SetFocus();
+            select.apply(&edit, &value);
             #[cfg(feature = "debug-server")]
             crate::debug_server::modal_registry::push(
                 "input",
@@ -837,6 +883,9 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
         let all_k = all.clone();
         let rename_k = rename.clone();
         let refresh_c = refresh.clone();
+        // 改名 Edit の初期キャレットは拡張子の前（原作 RenameStyle・衝突はファイル名）。
+        let rename_pos = before_ext_pos(name, false);
+        let rename_sel = rename.clone();
         arm_modal(
             &wnd,
             "conflict",
@@ -846,6 +895,7 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
             vec![("OK".to_string(), 1u16), ("中止(&S)".to_string(), 2u16)],
             move |hwnd| {
                 refresh_c();
+                rename_sel.set_selection(rename_pos, rename_pos);
                 let all_k = all_k.clone();
                 let rename_k = rename_k.clone();
                 let refresh_k = refresh_c.clone();
@@ -1540,9 +1590,10 @@ pub fn rename_box(
         vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
         move |_| {
             if is_single {
+                // 拡張子の前にキャレット（原作 RenameStyle・ディレクトリは末尾）。
                 if let Ok(t) = name_init.text() {
-                    let end = t.encode_utf16().count() as i32;
-                    name_init.set_selection(end, end);
+                    let pos = before_ext_pos(&t, single_is_dir);
+                    name_init.set_selection(pos, pos);
                 }
             } else {
                 name_init.hwnd().EnableWindow(false);

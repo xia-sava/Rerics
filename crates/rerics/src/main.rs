@@ -3622,21 +3622,22 @@ impl MainWindow {
                 return Ok(());
             }
         };
-        let old = {
+        let (old, old_is_dir) = {
             let view = self.view(is_left);
             let state = view.state();
             let s = state.borrow();
             match s.items.get(s.cursor) {
-                Some(it) if !it.is_parent => it.name.clone(),
+                Some(it) if !it.is_parent => (it.name.clone(), it.is_dir),
                 _ => return Ok(()),
             }
         };
-        let new = dialog::input_box(
+        let new = dialog::input_box_select(
             &self.wnd,
             "名前の変更",
             "新しい名前を入力して下さい。",
             &old,
             dialog::InputMode::Plain,
+            dialog::InputSelect::BeforeExt { is_dir: old_is_dir },
         );
         let Some(new) = new else {
             return Ok(());
