@@ -610,10 +610,14 @@ impl KeyMap {
     }
 
     /// トークン文字列のマップ（チョード→呼び出し）からキーマップを組む。
-    /// 解釈できない行は無視する。
+    /// 解釈できない行は無視する。**値が空文字のキーは未バインド**にする（既定を差分マージで
+    /// 上書きしたうえでここで読み飛ばす＝ユーザ config で既定キーを潰す手段）。
     pub fn from_string_map(map: &BTreeMap<String, String>) -> Self {
         let mut m = Self::new();
         for (k, v) in map {
+            if v.trim().is_empty() {
+                continue;
+            }
             if let (Some(chord), Some(inv)) = (KeyChord::parse(k), Invocation::parse(v)) {
                 m.bind_inv(chord, inv);
             }
@@ -877,6 +881,18 @@ mod tests {
             back.resolve_inv(&KeyChord::key(vk::F4)),
             Some(&Invocation::new(Command::ChangeDirectoryDialog, vec!["D:".into()]))
         );
+    }
+
+    #[test]
+    fn empty_value_unbinds_key() {
+        // 値が空文字のキーは未バインドになる（既定打ち消し用）。
+        let mut sm = KeyMap::default().to_string_map();
+        assert_eq!(sm.get("Down").map(String::as_str), Some("CursorDown"));
+        sm.insert("Down".to_string(), String::new());
+        let m = KeyMap::from_string_map(&sm);
+        assert_eq!(m.resolve(&KeyChord::key(vk::DOWN)), None);
+        // 空にしていない他キーは残る。
+        assert_eq!(m.resolve(&KeyChord::key(vk::UP)), Some(Command::CursorUp));
     }
 
     #[test]

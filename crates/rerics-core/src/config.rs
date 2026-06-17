@@ -468,6 +468,22 @@ mod tests {
     }
 
     #[test]
+    fn user_empty_value_unbinds_default_key() {
+        // ユーザ config で `"F4" = ""` と書くと、既定の F4 割当を打ち消せる（unbind）。
+        let path = std::env::temp_dir().join("rerics_cfg_unbind.toml");
+        std::fs::write(&path, "[keybinds]\n\"F4\" = \"\"\n").unwrap();
+        let cfg = Config::load_from(&path);
+        // マージ後の keybinds は空文字で上書きされ、
+        assert_eq!(cfg.keybinds.get("F4").map(String::as_str), Some(""));
+        // 実キーマップでは未バインドになる。
+        let km = cfg.keymap();
+        assert_eq!(km.resolve(&crate::KeyChord::key(crate::vk::F4)), None);
+        // 他キーは既定のまま。
+        assert_eq!(km.resolve(&crate::KeyChord::key(crate::vk::DOWN)), Some(crate::Command::CursorDown));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn save_writes_only_diff() {
         let path = std::env::temp_dir().join("rerics_cfg_savediff.toml");
         let _ = std::fs::remove_file(&path);
