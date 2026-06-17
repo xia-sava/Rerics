@@ -4326,19 +4326,20 @@ impl MainWindow {
         if self.pane(is_left).borrow().is_archive() {
             return self.rename_in_archive(is_left);
         }
-        // 対象＝選択（無ければカーソル）。1件なら名前編集つき単一、複数なら属性/日時の一括。
-        let targets: Vec<String> = {
+        // 対象＝選択（無ければカーソル）。1件なら名前編集つき単一、複数なら属性/日時/名前変換の一括。
+        // 名前変換のため (名前, ディレクトリか) を持つ。
+        let targets: Vec<(String, bool)> = {
             let state = self.view(is_left).state();
             let s = state.borrow();
-            let selected: Vec<String> = s
+            let selected: Vec<(String, bool)> = s
                 .items
                 .iter()
                 .filter(|it| it.selected && !it.is_parent)
-                .map(|it| it.name.clone())
+                .map(|it| (it.name.clone(), it.is_dir))
                 .collect();
             if selected.is_empty() {
                 match s.items.get(s.cursor) {
-                    Some(it) if !it.is_parent => vec![it.name.clone()],
+                    Some(it) if !it.is_parent => vec![(it.name.clone(), it.is_dir)],
                     _ => Vec::new(),
                 }
             } else {
@@ -4350,21 +4351,24 @@ impl MainWindow {
         }
         let dir = self.pane(is_left).borrow().path().to_path_buf();
 
-        let (single, attrs, modified, created) = if targets.len() == 1 {
-            let p = dir.join(&targets[0]);
+        let (single, single_is_dir, attrs, modified, created) = if targets.len() == 1 {
+            let (name, is_dir) = &targets[0];
+            let p = dir.join(name);
             (
-                Some(targets[0].clone()),
+                Some(name.clone()),
+                *is_dir,
                 rerics_core::read_attrs(&p).unwrap_or_default(),
                 rerics_core::modified_time(&p),
                 rerics_core::created_time(&p),
             )
         } else {
-            (None, rerics_core::FileAttrs::default(), None, None)
+            (None, false, rerics_core::FileAttrs::default(), None, None)
         };
 
         let Some(res) = dialog::rename_box(
             &self.wnd,
             single.as_deref(),
+            single_is_dir,
             targets.len(),
             attrs,
             modified,
@@ -4373,8 +4377,8 @@ impl MainWindow {
             return Ok(());
         };
 
-        // 単一は名前変更を先に処理し、以降の属性/日時は新パスへ適用する。
-        let mut paths: Vec<std::path::PathBuf> = targets.iter().map(|n| dir.join(n)).collect();
+        // 名前変更を先に処理し、以降の属性/日時は新パスへ適用する。
+        let mut paths: Vec<std::path::PathBuf> = targets.iter().map(|(n, _)| dir.join(n)).collect();
         let mut cursor_name = single.clone();
         if let (Some(old), Some(new)) = (single.as_ref(), res.name.as_ref()) {
             let new = new.trim();
@@ -4393,6 +4397,39 @@ impl MainWindow {
                 self.log.normal(&messages::rename(old, new));
                 paths = vec![dir.join(new)];
                 cursor_name = Some(new.to_owned());
+            }
+        }
+
+        // 複数一括の名前変換（大文字/小文字・拡張子）。各ファイルへ適用して新パスへ差し替える。
+        if single.is_none() && res.name_case != rerics_core::NameCase::None {
+            let mut new_paths = Vec::with_capacity(targets.len());
+            let mut rename_errors = 0usize;
+            for (name, is_dir) in &targets {
+                let new_name = res.name_case.apply(name, *is_dir);
+                if new_name == *name {
+                    new_paths.push(dir.join(name));
+                    continue;
+                }
+                match std::fs::rename(dir.join(name), dir.join(&new_name)) {
+                    Ok(()) => {
+                        self.log.normal(&messages::rename(name, &new_name));
+                        new_paths.push(dir.join(&new_name));
+                    }
+                    Err(e) => {
+                        rename_errors += 1;
+                        self.log.error(&messages::rename_failure(name, &e.to_string()));
+                        new_paths.push(dir.join(name));
+                    }
+                }
+            }
+            paths = new_paths;
+            if rename_errors > 0 {
+                dialog::message_box(
+                    &self.wnd,
+                    "名前の変更",
+                    &format!("{rename_errors} 件の名前変更に失敗しました（ログ参照）。"),
+                    dialog::MessageStyle::Warning,
+                );
             }
         }
 
@@ -4421,7 +4458,7 @@ impl MainWindow {
             if errors > 0 {
                 dialog::message_box(
                     &self.wnd,
-                    "名前と属性の変更",
+                    "名前の変更",
                     &format!("{errors} 件の属性／更新日時の変更に失敗しました（ログ参照）。"),
                     dialog::MessageStyle::Warning,
                 );

@@ -4,13 +4,14 @@
 //! スタイル（[`MessageStyle`]）でアイコン・ボタン構成を切り替える。`MessageStyle` の整数値は
 //! 原作の enum に一致させ、将来スクリプトからの `int` → enum 変換をそのまま通せるようにする。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use std::time::SystemTime;
 
 use rerics_core::{
-    ConflictResolution, FileAttrs, SortType, floor_to_local_midnight, format_local, parse_local,
+    ConflictResolution, FileAttrs, NameCase, SortType, floor_to_local_midnight, format_local,
+    parse_local,
 };
 use winsafe::{self as w, co, gui, prelude::*};
 
@@ -1069,6 +1070,8 @@ pub struct RenameResult {
     pub attrs: [Option<bool>; 4],
     pub modified: Option<SystemTime>,
     pub created: Option<SystemTime>,
+    /// 複数一括時の名前変換（単一は即時に `name` へ反映済みなので `None`）。
+    pub name_case: NameCase,
 }
 
 /// 日時欄の横の「...」ボタンに、原作の日時クイック設定メニュー（現在時刻／00:00:00）を
@@ -1107,12 +1110,14 @@ fn cb_tristate(cb: &gui::CheckBox) -> Option<bool> {
     }
 }
 
-/// 名前・属性・更新日時の変更ダイアログ。`single` が `Some` なら単一対象（名前編集可・
-/// 属性とチェックは現在値で初期化）、`None` なら `count` 件への一括（名前なし・属性は
-/// 据え置き＝中間状態で初期化）。OK なら [`RenameResult`]、中止/Esc なら `None`。
+/// 名前・属性・作成/更新日時の変更ダイアログ。`single` が `Some` なら単一対象（名前編集可・
+/// 属性とチェックは現在値で初期化・`single_is_dir` がディレクトリ判定）、`None` なら `count`
+/// 件への一括（名前は変換メニューで一括・属性は据え置き＝中間状態で初期化）。OK なら
+/// [`RenameResult`]、中止/Esc なら `None`。
 pub fn rename_box(
     parent: &impl GuiParent,
     single: Option<&str>,
+    single_is_dir: bool,
     count: usize,
     attrs: FileAttrs,
     modified: Option<SystemTime>,
@@ -1121,39 +1126,50 @@ pub fn rename_box(
     let is_single = single.is_some();
     let wnd = modal_window("名前の変更", 360, 340);
 
-    let name_edit = if let Some(name) = single {
+    // 名前行（常設）。単一＝編集可・名前プリフィル、複数＝無効で変換結果ラベルを表示。
+    // 右の「...」は名前変換メニュー（原作 btnFileName）。
+    let _ = gui::Label::new(
+        &wnd,
+        gui::LabelOpts {
+            text: "名前(&N)",
+            position: gui::dpi(16, 16),
+            size: gui::dpi(76, 18),
+            ..Default::default()
+        },
+    );
+    let name_edit = gui::Edit::new(
+        &wnd,
+        gui::EditOpts {
+            text: single.unwrap_or(""),
+            control_style: co::ES::AUTOHSCROLL,
+            position: gui::dpi(96, 14),
+            width: gui::dpi_x(212),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+    let name_btn = gui::Button::new(
+        &wnd,
+        gui::ButtonOpts {
+            text: "...",
+            ctrl_id: 12,
+            position: gui::dpi(312, 14),
+            width: gui::dpi_x(26),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+    if !is_single {
         let _ = gui::Label::new(
             &wnd,
             gui::LabelOpts {
-                text: "名前(&N)",
-                position: gui::dpi(16, 16),
-                size: gui::dpi(80, 18),
-                ..Default::default()
-            },
-        );
-        Some(gui::Edit::new(
-            &wnd,
-            gui::EditOpts {
-                text: name,
-                control_style: co::ES::AUTOHSCROLL,
-                position: gui::dpi(96, 14),
-                width: gui::dpi_x(248),
-                height: gui::dpi_y(22),
-                ..Default::default()
-            },
-        ))
-    } else {
-        let _ = gui::Label::new(
-            &wnd,
-            gui::LabelOpts {
-                text: &format!("{count} 個の項目に属性／日時を適用します。", count = count),
-                position: gui::dpi(16, 16),
+                text: &format!("{count} 個の項目に属性／日時／名前を適用します。"),
+                position: gui::dpi(16, 40),
                 size: gui::dpi(328, 18),
                 ..Default::default()
             },
         );
-        None
-    };
+    }
 
     // 属性チェック群。単一は2状態（現在値で初期化）、一括は3状態（中間＝据え置き）。
     let style = if is_single { co::BS::AUTOCHECKBOX } else { co::BS::AUTO3STATE };
@@ -1292,11 +1308,72 @@ pub fn rename_box(
     quick_time_menu(&mtime_btn, &mtime_edit);
     quick_time_menu(&ctime_btn, &ctime_edit);
 
+    // 名前変換の選択（複数一括時のみ保持。単一は即時に名前欄へ反映）。
+    let name_case: Rc<Cell<NameCase>> = Rc::new(Cell::new(NameCase::None));
+    // (種別, メニューラベル)。単一は先頭「何もしない」を出さない（原作準拠）。
+    let case_entries = [
+        (NameCase::None, "何もしない"),
+        (NameCase::Upper, "すべて大文字にする"),
+        (NameCase::Lower, "すべて小文字にする"),
+        (NameCase::ExtUpper, "拡張子を大文字にする"),
+        (NameCase::ExtLower, "拡張子を小文字にする"),
+    ];
+    {
+        let name_edit = name_edit.clone();
+        let name_btnf = name_btn.clone();
+        let name_case = name_case.clone();
+        name_btn.on().bn_clicked(move || {
+            let mut menu = w::HMENU::CreatePopupMenu()?;
+            let cur = name_case.get();
+            for (i, (kind, label)) in case_entries.iter().enumerate() {
+                if is_single && *kind == NameCase::None {
+                    continue;
+                }
+                let mut flags = co::MF::STRING;
+                if !is_single && *kind == cur {
+                    flags |= co::MF::CHECKED;
+                }
+                menu.AppendMenu(
+                    flags,
+                    w::IdMenu::Id((i + 1) as u16),
+                    w::BmpPtrStr::from_str(label),
+                )?;
+            }
+            let rc = name_btnf.hwnd().GetWindowRect()?;
+            let chosen = menu.TrackPopupMenu(
+                co::TPM::RETURNCMD | co::TPM::LEFTALIGN | co::TPM::TOPALIGN,
+                w::POINT::with(rc.left, rc.bottom),
+                name_btnf.hwnd(),
+            )?;
+            menu.DestroyMenu()?;
+            let Some(id) = chosen else {
+                return Ok(());
+            };
+            let kind =
+                case_entries.get((id - 1) as usize).map(|(k, _)| *k).unwrap_or(NameCase::None);
+            if is_single {
+                // 即時変換（「何もしない」は単一では出さない）。
+                let next = kind.apply(&name_edit.text()?, single_is_dir);
+                name_edit.set_text(&next)?;
+                let end = next.encode_utf16().count() as i32;
+                name_edit.set_selection(end, end);
+            } else {
+                name_case.set(kind);
+                // 無効な名前欄に選んだ変換のラベルを表示（何もしない＝空）。
+                let label = if kind == NameCase::None { "" } else { case_entries[(id - 1) as usize].1 };
+                name_edit.set_text(label)?;
+            }
+            Ok(())
+        });
+    }
+
     let result: Rc<RefCell<Option<RenameResult>>> = Rc::new(RefCell::new(None));
 
-    // 名前 Edit の初期キャレットは末尾（選択なし）に置く＝従来どおりの手触り。
+    // 単一＝名前 Edit の初期キャレットを末尾（選択なし）に＝従来どおりの手触り。
+    // 複数＝名前 Edit を無効化（名前は変換メニュー専用）し、フォーカスを属性へ移す。
     // arm_modal は focus_initial の後に on_create を呼ぶので、ここで設定すれば残る。
-    let name_caret = name_edit.clone();
+    let name_init = name_edit.clone();
+    let first_check = checks[0].clone();
     arm_modal(
         &wnd,
         "rename",
@@ -1305,11 +1382,14 @@ pub fn rename_box(
         true,
         vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
         move |_| {
-            if let Some(e) = &name_caret {
-                if let Ok(t) = e.text() {
+            if is_single {
+                if let Ok(t) = name_init.text() {
                     let end = t.encode_utf16().count() as i32;
-                    e.set_selection(end, end);
+                    name_init.set_selection(end, end);
                 }
+            } else {
+                name_init.hwnd().EnableWindow(false);
+                first_check.hwnd().SetFocus();
             }
         },
     );
@@ -1320,8 +1400,13 @@ pub fn rename_box(
         let name_edit = name_edit.clone();
         let mtime_edit = mtime_edit.clone();
         let ctime_edit = ctime_edit.clone();
+        let name_case = name_case.clone();
         ok.on().bn_clicked(move || {
-            let name = name_edit.as_ref().and_then(|e| e.text().ok()).map(|s| s.trim().to_owned());
+            let name = if is_single {
+                name_edit.text().ok().map(|s| s.trim().to_owned())
+            } else {
+                None
+            };
             let attrs = [
                 cb_tristate(&checks[0]),
                 cb_tristate(&checks[1]),
@@ -1336,7 +1421,13 @@ pub fn rename_box(
             };
             let modified = parse_time(&mtime_edit);
             let created = parse_time(&ctime_edit);
-            *result.borrow_mut() = Some(RenameResult { name, attrs, modified, created });
+            *result.borrow_mut() = Some(RenameResult {
+                name,
+                attrs,
+                modified,
+                created,
+                name_case: name_case.get(),
+            });
             wnd2.close();
             Ok(())
         });
@@ -1351,7 +1442,7 @@ pub fn rename_box(
 
     let _ = wnd.show_modal(parent);
     disarm_modal();
-    let _ = (ok, cancel, checks, name_edit, mtime_edit, ctime_edit, mtime_btn, ctime_btn);
+    let _ = (ok, cancel, checks, name_edit, mtime_edit, ctime_edit, mtime_btn, ctime_btn, name_btn);
     result.borrow_mut().take()
 }
 

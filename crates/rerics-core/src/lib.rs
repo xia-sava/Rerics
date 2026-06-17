@@ -29,8 +29,9 @@ pub use config::{
     state_path,
 };
 pub use file_list::{
-    Align, Colors, Column, ColumnKind, FileItem, FileListState, Rgb, SortType, auto_adjust_columns,
-    column_sample, default_columns, find_match, glob_match, read_items, sequence_names,
+    Align, Colors, Column, ColumnKind, FileItem, FileListState, NameCase, Rgb, SortType,
+    auto_adjust_columns, column_sample, default_columns, find_match, glob_match, read_items,
+    sequence_names,
 };
 pub use input::{Command, Invocation, KeyChord, KeyMap, vk};
 pub use log::{LogLevel, LogLine, LogState};
