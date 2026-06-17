@@ -33,6 +33,159 @@ mod ffi {
 
 const DI_NORMAL: u32 = 0x0003;
 
+/// モーダル中のキー観測（原作 `Form.KeyPreview=true` 相当）。
+///
+/// winsafe のモーダル窓は子コントロールにフォーカスがあると生キー（`WM_KEYDOWN`/`WM_KEYUP`）を
+/// 受け取れない（Phase 0 で実測）。スレッド単位の `WH_KEYBOARD` フックで全キーを観測し、
+/// Shift 連動グレーアウト等のカスタム挙動を可能にする。観測はスタックで持ち（モーダルは
+/// ネストし得る）、最前面の観測のみを呼ぶ。スタックが空になるとフックを自動解除する。
+///
+/// **状態（2026-06-17）**：フックの設置は確認済（`installed()=true`）だが、`WH_KEYBOARD` は
+/// `PostMessage` で注入した合成キーを拾わない＝headless の `/modal/key` では発火検証できない。
+/// 実キーボードでの発火検証と実配線は Phase 4（conflict_box の Shift 連動）で行う。それまで未使用。
+#[allow(dead_code)]
+pub mod keyhook {
+    use std::cell::RefCell;
+    use std::ffi::c_void;
+    use std::rc::Rc;
+
+    #[allow(non_snake_case)]
+    mod ffi {
+        use core::ffi::c_void;
+        pub type HookProc = unsafe extern "system" fn(i32, usize, isize) -> isize;
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            pub fn SetWindowsHookExW(
+                id: i32,
+                proc: HookProc,
+                hmod: *mut c_void,
+                thread: u32,
+            ) -> *mut c_void;
+            pub fn UnhookWindowsHookEx(h: *mut c_void) -> i32;
+            pub fn CallNextHookEx(h: *mut c_void, code: i32, wparam: usize, lparam: isize) -> isize;
+        }
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            pub fn GetCurrentThreadId() -> u32;
+        }
+    }
+
+    const WH_KEYBOARD: i32 = 2;
+
+    /// `(vk, is_down)` を受け取る観測。`is_down` は押下 true・解放 false。
+    type Observer = Rc<dyn Fn(u16, bool)>;
+
+    thread_local! {
+        static HOOK: RefCell<*mut c_void> = const { RefCell::new(core::ptr::null_mut()) };
+        static OBSERVERS: RefCell<Vec<Observer>> = const { RefCell::new(Vec::new()) };
+    }
+
+    unsafe extern "system" fn hook_proc(code: i32, wparam: usize, lparam: isize) -> isize {
+        if code >= 0 {
+            let vk = wparam as u16;
+            // lParam bit31：0=押下/リピート・1=解放。
+            let is_down = (lparam >> 31) & 1 == 0;
+            // 借用を保持したまま呼ぶと観測内のメッセージ処理で再入し得るので Rc を取り出してから呼ぶ。
+            let top = OBSERVERS.with(|o| o.borrow().last().cloned());
+            if let Some(f) = top {
+                f(vk, is_down);
+            }
+        }
+        let h = HOOK.with(|h| *h.borrow());
+        unsafe { ffi::CallNextHookEx(h, code, wparam, lparam) }
+    }
+
+    /// キー観測を積む。最初の1つでスレッドフックを張る。
+    pub fn push(cb: impl Fn(u16, bool) + 'static) {
+        OBSERVERS.with(|o| o.borrow_mut().push(Rc::new(cb)));
+        HOOK.with(|h| {
+            if h.borrow().is_null() {
+                let handle = unsafe {
+                    ffi::SetWindowsHookExW(
+                        WH_KEYBOARD,
+                        hook_proc,
+                        core::ptr::null_mut(),
+                        ffi::GetCurrentThreadId(),
+                    )
+                };
+                *h.borrow_mut() = handle;
+            }
+        });
+    }
+
+    /// フックが現在張られているか（診断用）。
+    pub fn installed() -> bool {
+        HOOK.with(|h| !h.borrow().is_null())
+    }
+
+    /// 最前面の観測を外す。空になったらフックを解除する。
+    pub fn pop() {
+        OBSERVERS.with(|o| {
+            o.borrow_mut().pop();
+        });
+        let empty = OBSERVERS.with(|o| o.borrow().is_empty());
+        if empty {
+            HOOK.with(|h| {
+                let handle = *h.borrow();
+                if !handle.is_null() {
+                    unsafe {
+                        ffi::UnhookWindowsHookEx(handle);
+                    }
+                    *h.borrow_mut() = core::ptr::null_mut();
+                }
+            });
+        }
+    }
+}
+
+/// 原作 WinForms の「ロード時にタブ順先頭のコントロールへフォーカス」を再現する基盤処理。
+///
+/// winsafe の既定（`delegate_focus_to_first_child`）は先頭の子＝ラベル等にもフォーカスを
+/// 投げるだけで、矢印操作の起点にならない。ここでは**先頭の「可視・有効・WS_TABSTOP」
+/// コントロール**を z 順で探し、それがラジオなら**同グループの選択中ラジオ**へ寄せる
+/// （開いてすぐ矢印で選べ、最初の矢印で選択を失わない＝原作の手触り）。各ダイアログは
+/// `wm_create` でこれを呼ぶだけ＝初期フォーカスのロジックを基盤に集約する。
+pub fn focus_initial(parent: &w::HWND) {
+    let style = |h: &w::HWND| h.GetWindowLongPtr(co::GWLP::STYLE) as u32;
+    let is_radio = |h: &w::HWND| {
+        h.GetClassName().map(|c| c.eq_ignore_ascii_case("button")).unwrap_or(false)
+            && matches!(style(h) & 0x0F, 0x04 | 0x09)
+    };
+    let checked = |h: &w::HWND| unsafe { h.SendMessage(w::msg::bm::GetCheck {}) } == co::BST::CHECKED;
+
+    // タブ順の先頭コントロール（ダイアログマネージャの規則で解決＝z 順依存しない）。
+    let Ok(first) = parent.GetNextDlgTabItem(&w::HWND::NULL, false) else {
+        return;
+    };
+    if first.ptr().is_null() {
+        return;
+    }
+
+    // 先頭がラジオで未選択なら、同グループの選択中ラジオへ寄せる（GetNextDlgGroupItem は
+    // グループ内を巡回する）。選択を失わずに矢印で操作できる＝原作の手触り。
+    let focus = if is_radio(&first) && !checked(&first) {
+        let mut found: Option<w::HWND> = None;
+        let mut cur = unsafe { first.raw_copy() };
+        for _ in 0..64 {
+            let Ok(next) = parent.GetNextDlgGroupItem(&cur, false) else {
+                break;
+            };
+            if next.ptr() == first.ptr() {
+                break;
+            }
+            if is_radio(&next) && checked(&next) {
+                found = Some(unsafe { next.raw_copy() });
+                break;
+            }
+            cur = next;
+        }
+        found.unwrap_or(first)
+    } else {
+        first
+    };
+    focus.SetFocus();
+}
+
 /// メッセージボックスのスタイル。整数値は原作 `RecordsLib.MessageStyle` に一致させ、
 /// 将来スクリプトからの `int` → enum 変換をそのまま通せるようにする。
 #[allow(dead_code)]
@@ -524,12 +677,9 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
     #[cfg(feature = "debug-server")]
     let (reg_prompt, reg_wnd) = (name.to_string(), wnd.clone());
     {
-        let radios = radios.clone();
+        let wf = wnd.clone();
         wnd.on().wm_create(move |_| {
-            // 初期フォーカスは選択中ラジオに置く（開いてすぐ矢印で選べる＝原作準拠）。
-            if let Some(rb) = radios.selected() {
-                rb.hwnd().SetFocus();
-            }
+            focus_initial(wf.hwnd());
             #[cfg(feature = "debug-server")]
             crate::debug_server::modal_registry::push(
                 "conflict",
@@ -658,12 +808,9 @@ pub fn archive_add_box(parent: &impl GuiParent, summary: &str) -> Option<Archive
     #[cfg(feature = "debug-server")]
     let (reg_prompt, reg_wnd) = (summary.to_string(), wnd.clone());
     {
-        let radios = radios.clone();
+        let wf = wnd.clone();
         wnd.on().wm_create(move |_| {
-            // 初期フォーカスは選択中ラジオに置く（原作準拠）。
-            if let Some(rb) = radios.selected() {
-                rb.hwnd().SetFocus();
-            }
+            focus_initial(wf.hwnd());
             #[cfg(feature = "debug-server")]
             crate::debug_server::modal_registry::push(
                 "archive_add",
@@ -804,12 +951,9 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
     #[cfg(feature = "debug-server")]
     let reg_wnd = wnd.clone();
     {
-        let kinds = kinds.clone();
+        let wf = wnd.clone();
         wnd.on().wm_create(move |_| {
-            // 初期フォーカスは選択中の種別ラジオに置く（開いてすぐ矢印で選べる＝原作準拠）。
-            if let Some(rb) = kinds.selected() {
-                rb.hwnd().SetFocus();
-            }
+            focus_initial(wf.hwnd());
             #[cfg(feature = "debug-server")]
             crate::debug_server::modal_registry::push(
                 "sort",
@@ -1013,15 +1157,9 @@ pub fn rename_box(
     #[cfg(feature = "debug-server")]
     let reg_wnd = wnd.clone();
     {
-        let name_edit = name_edit.clone();
-        let checks = checks.clone();
+        let wf = wnd.clone();
         wnd.on().wm_create(move |_| {
-            // 初期フォーカスは名前 Edit（単一）か先頭の属性チェック（一括）に置く（原作準拠）。
-            if let Some(e) = name_edit.as_ref() {
-                e.hwnd().SetFocus();
-            } else if let Some(c) = checks.first() {
-                c.hwnd().SetFocus();
-            }
+            focus_initial(wf.hwnd());
             #[cfg(feature = "debug-server")]
             crate::debug_server::modal_registry::push(
                 "rename",
