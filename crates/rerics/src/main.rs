@@ -2164,31 +2164,56 @@ impl MainWindow {
         }
     }
 
-    /// `POST /modal/key/<key>`：開いているモーダルへキー送出（enter/esc/y/n/tab）。
+    /// `POST /modal/key/<key>`：開いているモーダルへキー送出。`<key>` は `enter`/`esc`/`tab`/
+    /// `shift`/矢印/英数字など。`<key>/down`・`<key>/up` で押下のみ・解放のみを送れる
+    /// （「Shift を押している間だけ」のような down/up を分離して検証するため）。
     #[cfg(feature = "debug-server")]
     fn debug_modal_key(&self, key: &str) -> debug_server::Response {
         let Some(modal) = self.debug_modal_hwnd() else {
             return debug_server::Response::BadRequest("no modal open".into());
         };
-        let vk: u16 = match key.to_ascii_lowercase().as_str() {
+        // "shift/down" のように phase を付けられる（無ければ down→up の完全押下）。
+        let (name, phase) = key.split_once('/').map_or((key, None), |(n, p)| (n, Some(p)));
+        let lk = name.to_ascii_lowercase();
+        let vk: u16 = match lk.as_str() {
             "enter" | "return" => 0x0D,
             "esc" | "escape" => 0x1B,
             "tab" => 0x09,
-            "y" => 0x59,
-            "n" => 0x4E,
+            "shift" => 0x10,
+            "space" => 0x20,
+            "left" => 0x25,
+            "up" => 0x26,
+            "right" => 0x27,
+            "down" => 0x28,
+            "home" => 0x24,
+            "end" => 0x23,
+            s if s.len() == 1 && s.as_bytes()[0].is_ascii_alphabetic() => {
+                s.as_bytes()[0].to_ascii_uppercase() as u16
+            }
+            s if s.len() == 1 && s.as_bytes()[0].is_ascii_digit() => s.as_bytes()[0] as u16,
             _ => return debug_server::Response::BadRequest(format!("unknown modal key: {key}")),
         };
+        // 実キー入力はフォーカス中の子へ届く。IsDialogMessage の矢印グループ移動は
+        // 子宛メッセージでないと発動しないため、フォーカス中の窓へ送る（無ければモーダルへ）。
+        let send_down = phase != Some("up");
+        let send_up = phase != Some("down");
+        let focus = w::HWND::GetFocus();
+        let target = focus.as_ref().unwrap_or(&modal);
         unsafe {
-            let _ = modal.PostMessage(w::msg::WndMsg {
-                msg_id: co::WM::KEYDOWN,
-                wparam: vk as usize,
-                lparam: 0,
-            });
-            let _ = modal.PostMessage(w::msg::WndMsg {
-                msg_id: co::WM::from_raw(0x0101), // WM_KEYUP
-                wparam: vk as usize,
-                lparam: 0,
-            });
+            if send_down {
+                let _ = target.PostMessage(w::msg::WndMsg {
+                    msg_id: co::WM::KEYDOWN,
+                    wparam: vk as usize,
+                    lparam: 0,
+                });
+            }
+            if send_up {
+                let _ = target.PostMessage(w::msg::WndMsg {
+                    msg_id: co::WM::from_raw(0x0101), // WM_KEYUP
+                    wparam: vk as usize,
+                    lparam: 0,
+                });
+            }
         }
         debug_server::Response::Json(self.debug_state_value().to_string())
     }

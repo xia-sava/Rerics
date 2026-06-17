@@ -33,6 +33,199 @@ mod ffi {
 
 const DI_NORMAL: u32 = 0x0003;
 
+/// モーダル中のキー観測（原作 `Form.KeyPreview=true` 相当）。
+///
+/// winsafe のモーダル窓は子コントロールにフォーカスがあると生キーを受け取れない（Phase 0 実測）。
+/// `WH_KEYBOARD` フックは設置できるが `PostMessage` 合成キーを拾わず headless 検証不可だった。
+/// そこで**モーダルの全子コントロールを `SetWindowSubclass`（comctl32）でサブクラス化**して、
+/// 子へ dispatch される `WM_KEYDOWN`/`WM_KEYUP` を横取りする。これは**実キーでも PostMessage
+/// 合成キーでも発火する**ので headless で検証できる。Shift 連動グレーアウト等のカスタム挙動の土台。
+/// 観測はスタックで持ち（モーダルはネストし得る）、最前面の観測のみを呼ぶ。
+///
+/// conflict_box（同名衝突）の Shift 連動で使用。実キー・PostMessage 合成キー双方で発火する。
+pub mod keyhook {
+    use std::cell::RefCell;
+    use std::ffi::c_void;
+    use std::rc::Rc;
+    use winsafe::{self as w, co};
+
+    #[allow(non_snake_case)]
+    mod ffi {
+        use core::ffi::c_void;
+        pub type SubclassProc =
+            unsafe extern "system" fn(*mut c_void, u32, usize, isize, usize, usize) -> isize;
+        #[link(name = "comctl32")]
+        unsafe extern "system" {
+            pub fn SetWindowSubclass(
+                hwnd: *mut c_void,
+                proc: SubclassProc,
+                id: usize,
+                refdata: usize,
+            ) -> i32;
+            pub fn DefSubclassProc(
+                hwnd: *mut c_void,
+                msg: u32,
+                wparam: usize,
+                lparam: isize,
+            ) -> isize;
+        }
+    }
+
+    const SUBCLASS_ID: usize = 0x5245_4b59; // "REKY"
+    const WM_KEYDOWN: u32 = 0x0100;
+    const WM_KEYUP: u32 = 0x0101;
+
+    /// `(vk, is_down)` を受け取る観測。`is_down` は押下 true・解放 false。
+    type Observer = Rc<dyn Fn(u16, bool)>;
+
+    thread_local! {
+        static OBSERVERS: RefCell<Vec<Observer>> = const { RefCell::new(Vec::new()) };
+    }
+
+    unsafe extern "system" fn sub_proc(
+        hwnd: *mut c_void,
+        msg: u32,
+        wparam: usize,
+        lparam: isize,
+        _id: usize,
+        _ref: usize,
+    ) -> isize {
+        if msg == WM_KEYDOWN || msg == WM_KEYUP {
+            // 借用を保持したまま呼ぶと観測内のメッセージ処理で再入し得るので Rc を取り出してから呼ぶ。
+            let top = OBSERVERS.with(|o| o.borrow().last().cloned());
+            if let Some(f) = top {
+                f(wparam as u16, msg == WM_KEYDOWN);
+            }
+        }
+        unsafe { ffi::DefSubclassProc(hwnd, msg, wparam, lparam) }
+    }
+
+    /// 観測を積み、`parent` の全子コントロールをサブクラス化してキーを横取りする。
+    /// 子コントロールは作成済みである必要があるので `wm_create` の末尾で呼ぶ。
+    pub fn push(parent: &w::HWND, cb: impl Fn(u16, bool) + 'static) {
+        OBSERVERS.with(|o| o.borrow_mut().push(Rc::new(cb)));
+        if let Ok(mut cur) = parent.GetWindow(co::GW::CHILD) {
+            loop {
+                unsafe {
+                    ffi::SetWindowSubclass(cur.ptr() as *mut c_void, sub_proc, SUBCLASS_ID, 0);
+                }
+                match cur.GetWindow(co::GW::HWNDNEXT) {
+                    Ok(n) => cur = n,
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+
+    /// 最前面の観測を外す（サブクラスは窓破棄で自然消滅するので明示解除は不要）。
+    pub fn pop() {
+        OBSERVERS.with(|o| {
+            o.borrow_mut().pop();
+        });
+    }
+}
+
+/// 標準モーダル窓を作る（タイトル＋クライアント幅高）。原作 `PluginForm` 相当の佇まい
+/// （× 無し・最大化/最小化無し・親中央・`IsDialogMessage` 処理あり）を一元化する。
+pub fn modal_window(title: &str, w: i32, h: i32) -> gui::WindowModal {
+    gui::WindowModal::new(gui::WindowModalOpts {
+        title,
+        size: gui::dpi(w, h),
+        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
+        process_dlg_msgs: true,
+        ..Default::default()
+    })
+}
+
+/// モーダルの標準 `wm_create` 配線を仕込む：初期フォーカス（[`focus_initial`]）＋
+/// （debug-server 時）`modal_registry` 登録＋ダイアログ固有の作成時処理 `on_create`。
+/// `on_create` には親 `HWND` が渡る（子コントロール作成済み＝[`keyhook::push`] や
+/// 初期の有効/無効設定をここで行う）。固有処理が要らなければ `|_| {}` を渡す。
+/// `buttons` は (ラベル, ctrl_id) の列（OK=1・Cancel=2 等）。
+pub fn arm_modal(
+    wnd: &gui::WindowModal,
+    kind: &'static str,
+    reg_title: &str,
+    reg_prompt: &str,
+    has_input: bool,
+    buttons: Vec<(String, u16)>,
+    on_create: impl Fn(&w::HWND) + 'static,
+) {
+    let wf = wnd.clone();
+    #[cfg(feature = "debug-server")]
+    let reg = (kind, reg_title.to_string(), reg_prompt.to_string(), has_input, buttons);
+    #[cfg(not(feature = "debug-server"))]
+    let _ = (kind, reg_title, reg_prompt, has_input, buttons);
+    wnd.on().wm_create(move |_| {
+        focus_initial(wf.hwnd());
+        #[cfg(feature = "debug-server")]
+        crate::debug_server::modal_registry::push(
+            reg.0,
+            &reg.1,
+            &reg.2,
+            wf.hwnd().ptr() as isize,
+            reg.3,
+            reg.4.clone(),
+        );
+        on_create(wf.hwnd());
+        Ok(0)
+    });
+}
+
+/// モーダルを閉じた後始末（`modal_registry` から取り除く）。`show_modal` 直後に呼ぶ。
+pub fn disarm_modal() {
+    #[cfg(feature = "debug-server")]
+    crate::debug_server::modal_registry::pop();
+}
+
+/// 原作 WinForms の「ロード時にタブ順先頭のコントロールへフォーカス」を再現する基盤処理。
+///
+/// winsafe の既定（`delegate_focus_to_first_child`）は先頭の子＝ラベル等にもフォーカスを
+/// 投げるだけで、矢印操作の起点にならない。ここでは**先頭の「可視・有効・WS_TABSTOP」
+/// コントロール**を z 順で探し、それがラジオなら**同グループの選択中ラジオ**へ寄せる
+/// （開いてすぐ矢印で選べ、最初の矢印で選択を失わない＝原作の手触り）。各ダイアログは
+/// `wm_create` でこれを呼ぶだけ＝初期フォーカスのロジックを基盤に集約する。
+pub fn focus_initial(parent: &w::HWND) {
+    let style = |h: &w::HWND| h.GetWindowLongPtr(co::GWLP::STYLE) as u32;
+    let is_radio = |h: &w::HWND| {
+        h.GetClassName().map(|c| c.eq_ignore_ascii_case("button")).unwrap_or(false)
+            && matches!(style(h) & 0x0F, 0x04 | 0x09)
+    };
+    let checked = |h: &w::HWND| unsafe { h.SendMessage(w::msg::bm::GetCheck {}) } == co::BST::CHECKED;
+
+    // タブ順の先頭コントロール（ダイアログマネージャの規則で解決＝z 順依存しない）。
+    let Ok(first) = parent.GetNextDlgTabItem(&w::HWND::NULL, false) else {
+        return;
+    };
+    if first.ptr().is_null() {
+        return;
+    }
+
+    // 先頭がラジオで未選択なら、同グループの選択中ラジオへ寄せる（GetNextDlgGroupItem は
+    // グループ内を巡回する）。選択を失わずに矢印で操作できる＝原作の手触り。
+    let focus = if is_radio(&first) && !checked(&first) {
+        let mut found: Option<w::HWND> = None;
+        let mut cur = unsafe { first.raw_copy() };
+        for _ in 0..64 {
+            let Ok(next) = parent.GetNextDlgGroupItem(&cur, false) else {
+                break;
+            };
+            if next.ptr() == first.ptr() {
+                break;
+            }
+            if is_radio(&next) && checked(&next) {
+                found = Some(unsafe { next.raw_copy() });
+                break;
+            }
+            cur = next;
+        }
+        found.unwrap_or(first)
+    } else {
+        first
+    };
+    focus.SetFocus();
+}
+
 /// メッセージボックスのスタイル。整数値は原作 `RecordsLib.MessageStyle` に一致させ、
 /// 将来スクリプトからの `int` → enum 変換をそのまま通せるようにする。
 #[allow(dead_code)]
@@ -417,13 +610,7 @@ pub fn input_box(
 /// 在るとき、解決方法（最新ならコピー/上書き/強制上書き/名前変更/スキップ）と
 /// 「すべてに適用」を尋ねる。OK でラジオ選択＋チェック状態を、中止/Esc で `Cancel` を返す。
 pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution, bool) {
-    let wnd = gui::WindowModal::new(gui::WindowModalOpts {
-        title: "同名ファイルの処理",
-        size: gui::dpi(380, 250),
-        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
-        process_dlg_msgs: true,
-        ..Default::default()
-    });
+    let wnd = modal_window("同名ファイルの処理", 380, 250);
 
     let _label = gui::Label::new(
         &wnd,
@@ -487,7 +674,7 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
     let all = gui::CheckBox::new(
         &wnd,
         gui::CheckBoxOpts {
-            text: "すべてに適用(&A)",
+            text: "すべてに適用(SHIFT)",
             position: gui::dpi(16, 166),
             size: gui::dpi(220, 18),
             ..Default::default()
@@ -521,23 +708,65 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
 
     let result = Rc::new(RefCell::new((ConflictResolution::Cancel, false)));
 
-    #[cfg(feature = "debug-server")]
-    let (reg_prompt, reg_wnd) = (name.to_string(), wnd.clone());
+    // 「すべてに適用」中は改名ラジオを無効化（改名＋全適用は排他＝原作）。改名 Edit は
+    // 「名前を変更してコピー」選択中かつ全適用未チェックのときだけ有効。
+    let refresh: Rc<dyn Fn()> = {
+        let radios = radios.clone();
+        let rename = rename.clone();
+        let all = all.clone();
+        Rc::new(move || {
+            let all_checked = all.is_checked();
+            let rename_sel = radios.selected_index() == Some(3);
+            radios[3].hwnd().EnableWindow(!all_checked);
+            rename.hwnd().EnableWindow(rename_sel && !all_checked);
+        })
+    };
     {
-        let ok = ok.clone();
-        wnd.on().wm_create(move |_| {
-            ok.hwnd().SetFocus();
-            #[cfg(feature = "debug-server")]
-            crate::debug_server::modal_registry::push(
-                "conflict",
-                "同名ファイルの処理",
-                &reg_prompt,
-                reg_wnd.hwnd().ptr() as isize,
-                true,
-                vec![("OK".to_string(), 1u16), ("中止(&S)".to_string(), 2u16)],
-            );
-            Ok(0)
+        let refresh = refresh.clone();
+        radios.on().bn_clicked(move || {
+            refresh();
+            Ok(())
         });
+    }
+    {
+        let refresh = refresh.clone();
+        all.on().bn_clicked(move || {
+            refresh();
+            Ok(())
+        });
+    }
+
+    {
+        // 作成時：初期の有効/無効を反映し、Shift 連動の keyhook を張る。
+        let all_k = all.clone();
+        let rename_k = rename.clone();
+        let refresh_c = refresh.clone();
+        arm_modal(
+            &wnd,
+            "conflict",
+            "同名ファイルの処理",
+            name,
+            true,
+            vec![("OK".to_string(), 1u16), ("中止(&S)".to_string(), 2u16)],
+            move |hwnd| {
+                refresh_c();
+                let all_k = all_k.clone();
+                let rename_k = rename_k.clone();
+                let refresh_k = refresh_c.clone();
+                // 原作 frmCopyOption：Shift 押下中だけ「すべてに適用」を自動チェック。
+                // 改名 Edit 入力中は Shift を無視する。
+                keyhook::push(hwnd, move |vk, down| {
+                    if vk != 0x10 {
+                        return;
+                    }
+                    if w::HWND::GetFocus().map(|f| f.ptr()) == Some(rename_k.hwnd().ptr()) {
+                        return;
+                    }
+                    all_k.set_check(down);
+                    refresh_k();
+                });
+            },
+        );
     }
 
     {
@@ -569,8 +798,8 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
     }
 
     let _ = wnd.show_modal(parent);
-    #[cfg(feature = "debug-server")]
-    crate::debug_server::modal_registry::pop();
+    keyhook::pop();
+    disarm_modal();
     let _ = (ok, cancel);
     let r = result.borrow().clone();
     r
@@ -655,9 +884,9 @@ pub fn archive_add_box(parent: &impl GuiParent, summary: &str) -> Option<Archive
     #[cfg(feature = "debug-server")]
     let (reg_prompt, reg_wnd) = (summary.to_string(), wnd.clone());
     {
-        let ok = ok.clone();
+        let wf = wnd.clone();
         wnd.on().wm_create(move |_| {
-            ok.hwnd().SetFocus();
+            focus_initial(wf.hwnd());
             #[cfg(feature = "debug-server")]
             crate::debug_server::modal_registry::push(
                 "archive_add",
@@ -717,13 +946,7 @@ const SORT_KINDS: &[(&str, SortType)] = &[
 /// ソート設定ダイアログ。種別と昇順/降順を選ばせ、OK なら `(種別, 降順か)` を返す。
 /// 中止/Esc は `None`。`cur`/`reverse` を初期選択にする。
 pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option<(SortType, bool)> {
-    let wnd = gui::WindowModal::new(gui::WindowModalOpts {
-        title: "ソート設定",
-        size: gui::dpi(320, 320),
-        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
-        process_dlg_msgs: true,
-        ..Default::default()
-    });
+    let wnd = modal_window("ソート設定", 320, 320);
 
     let _ = gui::Label::new(
         &wnd,
@@ -795,24 +1018,15 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
 
     let result: Rc<RefCell<Option<(SortType, bool)>>> = Rc::new(RefCell::new(None));
 
-    #[cfg(feature = "debug-server")]
-    let reg_wnd = wnd.clone();
-    {
-        let ok = ok.clone();
-        wnd.on().wm_create(move |_| {
-            ok.hwnd().SetFocus();
-            #[cfg(feature = "debug-server")]
-            crate::debug_server::modal_registry::push(
-                "sort",
-                "ソート設定",
-                "ソートの種別と昇降",
-                reg_wnd.hwnd().ptr() as isize,
-                false,
-                vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
-            );
-            Ok(0)
-        });
-    }
+    arm_modal(
+        &wnd,
+        "sort",
+        "ソート設定",
+        "ソートの種別と昇降",
+        false,
+        vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
+        |_| {},
+    );
     {
         let result = result.clone();
         let kinds = kinds.clone();
@@ -839,8 +1053,7 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
     }
 
     let _ = wnd.show_modal(parent);
-    #[cfg(feature = "debug-server")]
-    crate::debug_server::modal_registry::pop();
+    disarm_modal();
     let _ = (ok, cancel);
     let r = *result.borrow();
     r
@@ -1004,9 +1217,9 @@ pub fn rename_box(
     #[cfg(feature = "debug-server")]
     let reg_wnd = wnd.clone();
     {
-        let ok = ok.clone();
+        let wf = wnd.clone();
         wnd.on().wm_create(move |_| {
-            ok.hwnd().SetFocus();
+            focus_initial(wf.hwnd());
             #[cfg(feature = "debug-server")]
             crate::debug_server::modal_registry::push(
                 "rename",
