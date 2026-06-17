@@ -29,8 +29,19 @@ pub struct MacroCtx<'a> {
     pub opposite: String,
     /// カーソル位置のフルパス（`<P>`）。無ければ空。
     pub cursor_path: String,
+    /// 選択（マーク）中ファイルのフルパス（`<M>`）。空＝選択なし。
+    pub selected: Vec<String>,
     /// ダイアログ系マクロを開くホスト。
     pub host: &'a dyn MacroHost,
+}
+
+/// `<C>/<O>/<P>` の引数フラグを適用する。`q` ならダブルクォートで囲む。
+fn apply_flag(value: &str, flag: &str) -> String {
+    if flag.eq_ignore_ascii_case("q") {
+        format!("\"{value}\"")
+    } else {
+        value.to_owned()
+    }
 }
 
 /// 各引数の `<...>` を展開した新しい引数列を返す。いずれかでキャンセルされたら [`MacroAbort`]。
@@ -64,9 +75,19 @@ fn expand_token(token: &str, ctx: &MacroCtx) -> Result<String, MacroAbort> {
         None => (token, ""),
     };
     match name.to_ascii_uppercase().as_str() {
-        "C" => Ok(ctx.current.clone()),
-        "O" => Ok(ctx.opposite.clone()),
-        "P" => Ok(ctx.cursor_path.clone()),
+        "C" => Ok(apply_flag(&ctx.current, arg)),
+        "O" => Ok(apply_flag(&ctx.opposite, arg)),
+        "P" => Ok(apply_flag(&ctx.cursor_path, arg)),
+        "M" => {
+            let q = arg.eq_ignore_ascii_case("q");
+            let joined = ctx
+                .selected
+                .iter()
+                .map(|p| if q { format!("\"{p}\"") } else { p.clone() })
+                .collect::<Vec<_>>()
+                .join(" ");
+            Ok(joined)
+        }
         "I" => ctx.host.prompt(arg).ok_or(MacroAbort),
         "FOLDERDIALOG" => ctx.host.choose_folder(arg).ok_or(MacroAbort),
         "OPENDIALOG" => ctx.host.choose_open_file(arg).ok_or(MacroAbort),
@@ -107,6 +128,7 @@ mod tests {
             current: "C:/cur".into(),
             opposite: "D:/opp".into(),
             cursor_path: "C:/cur/file.txt".into(),
+            selected: vec!["C:/cur/a.txt".into(), "C:/cur/b.txt".into()],
             host,
         }
     }
@@ -131,6 +153,29 @@ mod tests {
 
         let host = FakeHost::default();
         assert_eq!(expand_one("<I>", &ctx(&host)), Err(MacroAbort));
+    }
+
+    #[test]
+    fn multiple_input_macros_each_prompt() {
+        // 1引数中に複数の <I> があれば、それぞれ host.prompt が呼ばれて展開される。
+        let host = FakeHost { prompt: Some("X".into()), ..Default::default() };
+        assert_eq!(expand_one("<I:a>/<I:b>", &ctx(&host)), Ok("X/X".into()));
+    }
+
+    #[test]
+    fn marked_files_and_quote_flag() {
+        let host = FakeHost::default();
+        let c = ctx(&host);
+        // <M>＝選択ファイルのフルパスをスペース連結。
+        assert_eq!(expand_one("<M>", &c), Ok("C:/cur/a.txt C:/cur/b.txt".into()));
+        // <M:q>＝各パスをダブルクォート。
+        assert_eq!(expand_one("<M:q>", &c), Ok("\"C:/cur/a.txt\" \"C:/cur/b.txt\"".into()));
+        // <C:q>/<O:q>/<P:q>＝引用フラグ。
+        assert_eq!(expand_one("<C:q>", &c), Ok("\"C:/cur\"".into()));
+        assert_eq!(expand_one("<O:q>", &c), Ok("\"D:/opp\"".into()));
+        assert_eq!(expand_one("<P:q>", &c), Ok("\"C:/cur/file.txt\"".into()));
+        // フラグ無しは素のまま。
+        assert_eq!(expand_one("<C>", &c), Ok("C:/cur".into()));
     }
 
     #[test]

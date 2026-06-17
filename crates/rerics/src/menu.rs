@@ -48,6 +48,8 @@ const SORT_ITEMS: &[Item] = &[
     on("日付順(&D)", Command::SortByDate),
     SEP,
     on("昇順／降順を反転(&R)", Command::SortReverseToggle),
+    SEP,
+    on("ソート設定(&T)...", Command::SortDialog),
 ];
 
 const MENUS: &[MenuDef] = &[
@@ -89,7 +91,7 @@ const MENUS: &[MenuDef] = &[
             on("パスマスク(&P)", Command::PathMask),
             on("登録ディレクトリ(&R)", Command::JumpDialog),
             on("ディレクトリ履歴(&H)", Command::PathHistoryDialog),
-            off("キーバインドリスト"),
+            on("キーバインドリスト", Command::KeyBindsDialog),
             off("ログ表示切替"),
             off("サムネイル表示切替"),
             SEP,

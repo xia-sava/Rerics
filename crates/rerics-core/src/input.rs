@@ -54,6 +54,7 @@ pub mod vk {
     pub const P: u16 = 0x50;
     pub const Q: u16 = 0x51;
     pub const R: u16 = 0x52;
+    pub const S: u16 = 0x53;
     pub const T: u16 = 0x54;
     pub const U: u16 = 0x55;
     pub const V: u16 = 0x56;
@@ -115,6 +116,7 @@ pub enum Command {
     SortBySize,
     SortByDate,
     Sort,
+    SortDialog,
     SortReverseToggle,
     PageNext,
     PagePrevious,
@@ -145,6 +147,7 @@ pub enum Command {
     SelectMask,
     OpenTaskManager,
     OpenSettings,
+    KeyBindsDialog,
     MaximizeLeft,
     MaximizeRight,
     MaximizeLeftForce,
@@ -207,6 +210,7 @@ impl Command {
             (SortBySize, "SortBySize"),
             (SortByDate, "SortByDate"),
             (Sort, "Sort"),
+            (SortDialog, "SortDialog"),
             (SortReverseToggle, "SortReverseToggle"),
             (PageNext, "PageNext"),
             (PagePrevious, "PagePrevious"),
@@ -237,6 +241,7 @@ impl Command {
             (SelectMask, "SelectMask"),
             (OpenTaskManager, "OpenTaskManager"),
             (OpenSettings, "OpenSettings"),
+            (KeyBindsDialog, "KeyBindsDialog"),
             (MaximizeLeft, "MaximizeLeft"),
             (MaximizeRight, "MaximizeRight"),
             (MaximizeLeftForce, "MaximizeLeftForce"),
@@ -583,6 +588,7 @@ impl Default for KeyMap {
         m.bind(KeyChord::new(vk::LEFT, true, false, false), MaximizeRight);
         m.bind(KeyChord::key(vk::Y), PathMask);
         m.bind(KeyChord::new(vk::P, false, true, false), PathMask);
+        m.bind(KeyChord::key(vk::S), SortDialog);
         // ドライブ（原作: Shift+←→）。
         m.bind(KeyChord::new(vk::LEFT, false, true, false), PreviousDrive);
         m.bind(KeyChord::new(vk::RIGHT, false, true, false), NextDrive);

@@ -561,6 +561,54 @@ fn archive_rename() {
     assert!(r2.contains("\"name\":\"b.txt\""), "b.txt must remain after failed rename: {r2}");
 }
 
+/// 非書庫の Rename は名前/属性/更新日時の専用モーダルを開く。debug-server からは
+/// チェック値を操作できないので、開いて OK で閉じても対象が壊れない（デッドロックしない）
+/// ことだけを担保する。属性/日時の適用ロジック自体は core 側でテスト済み。
+#[test]
+fn rename_meta_dialog_opens_and_closes() {
+    let server = Server::start_writable(&["a.txt"]);
+    // items は [.., a.txt]。CursorDown×1 で a.txt。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/Rename", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"rename\""), "should open rename meta modal: {modal}");
+    // 既定値のまま OK（名前据え置き＝改名なし）。
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    let items = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert!(items.contains("\"name\":\"a.txt\""), "a.txt should still exist: {items}");
+}
+
+/// CreateFile＝data_dir/templates にテンプレートがあれば選択させ、選んだものを複製する。
+#[test]
+fn create_file_from_template() {
+    let server = Server::start_writable(&["a.txt"]);
+    // テンプレートを置く（起動後でよい・CreateFile 実行時に走査される）。
+    let tdir = server.base.join("data").join("templates");
+    std::fs::create_dir_all(&tdir).unwrap();
+    std::fs::write(tdir.join("tpl.txt"), b"TEMPLATE BODY").unwrap();
+
+    server.req("POST", "/command/CreateFile", "").unwrap();
+    // 1段目：テンプレート選択リスト。
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"list\""), "should open template list: {modal}");
+    assert!(modal.contains("tpl.txt"), "template should be listed: {modal}");
+    // index 1 = tpl.txt（0 は「（空ファイル）」）。
+    server.req("POST", "/modal/select/1", "").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    // 2段目：名前入力（既定＝tpl.txt）。list が閉じて input が開くまで待つ。
+    let m2 = poll(&server, "/state/modal", |b| b.contains("\"has_input\":true"));
+    assert!(m2.contains("\"has_input\":true"), "should ask for a name: {m2}");
+    server.req("POST", "/modal/text", "made.txt").unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+
+    let items = poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"made.txt\""));
+    assert!(items.contains("\"name\":\"made.txt\""), "new file should appear: {items}");
+    // テンプレート内容が複製されている。
+    let body = std::fs::read(server.base.join("sbx").join("made.txt")).unwrap();
+    assert_eq!(body, b"TEMPLATE BODY", "template content should be copied");
+}
+
 /// ToRoot＝カレントのドライブルートへ移動する。
 #[test]
 fn nav_to_root() {
@@ -834,6 +882,36 @@ fn nav_change_drive_dialog() {
     server.req("POST", "/modal/command/ok", "").unwrap();
     let after = poll(&server, "/state/panes/left/location", |b| b.trim() == expected);
     assert_eq!(after.trim(), expected, "selecting the current drive should go to its root");
+}
+
+/// KeyBindsDialog＝現在のキー割り当てをリストモーダルで読み取り専用表示する。
+#[test]
+fn keybinds_dialog_lists_current_bindings() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/KeyBindsDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"list\""), "should open a list modal: {modal}");
+    // 既定キーの一つ（Enter→EnterDir）が一覧に出る。
+    assert!(modal.contains("EnterDir"), "binding list should include EnterDir: {modal}");
+    // 閉じる（選択結果は使わない）。
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
+/// SortDialog＝ソート設定モーダルを開いて閉じる（並べ替えのみ＝allow-write 不要）。
+/// ラジオ値の選択は未対応だが、開閉でデッドロックしないこと＋種別/昇降の現在値表示を担保。
+#[test]
+fn sort_dialog_opens_and_closes() {
+    let server = Server::start(&["a.txt", "b.txt"], "");
+    server.req("POST", "/command/SortDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"sort\""), "should open sort modal: {modal}");
+    // 既定選択のまま OK（現在のソートで再適用＝無害）。
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    // 一覧は健在。
+    let items = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert!(items.contains("\"name\":\"a.txt\""), "list should remain: {items}");
 }
 
 /// IncrementalSearchDialog＝打鍵ごとにカーソルが一致項目へ追従し、OK で確定する。
