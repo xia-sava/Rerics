@@ -47,6 +47,11 @@ pub fn state_path() -> PathBuf {
     data_dir().join("state.toml")
 }
 
+/// 入力履歴ファイルのパス。
+pub fn history_path() -> PathBuf {
+    data_dir().join("history.toml")
+}
+
 /// TOML ファイルを読んでデシリアライズする。ファイルが無い・読めない・
 /// パースに失敗したいずれの場合も `T::default()` を返す。
 pub fn load_toml<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
@@ -404,6 +409,55 @@ impl State {
     }
 }
 
+/// 入力ダイアログの履歴上限（用途キーごと）。原作 `Other/InputHistoryCount` 相当。
+const HISTORY_CAP: usize = 30;
+
+/// 入力ダイアログの履歴ストア（用途キー別）。`history.toml` に永続。
+/// 各キーの `Vec` は**古い順**で持ち、`get` は新しい順に直して返す。
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct InputHistory {
+    #[serde(default)]
+    map: std::collections::HashMap<String, Vec<String>>,
+}
+
+impl InputHistory {
+    /// 履歴ファイルから読み込む（無ければ空）。
+    pub fn load() -> Self {
+        load_toml(&history_path())
+    }
+
+    /// 履歴ファイルへ保存する。
+    pub fn save(&self) -> std::io::Result<()> {
+        save_toml(&history_path(), self)
+    }
+
+    /// 指定キーの履歴を**新しい順**で返す（コンボの候補表示用）。
+    pub fn get(&self, key: &str) -> Vec<String> {
+        self.map
+            .get(key)
+            .map(|v| v.iter().rev().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// 値を履歴へ追加する。空（trim 後）は無視。既存の同値は末尾へ移動（重複排除）。
+    /// 上限を超えたら古いものから落とす。
+    pub fn add(&mut self, key: &str, value: &str) {
+        let v = value.trim();
+        if v.is_empty() {
+            return;
+        }
+        let list = self.map.entry(key.to_owned()).or_default();
+        if let Some(pos) = list.iter().position(|x| x == v) {
+            list.remove(pos);
+        }
+        list.push(v.to_owned());
+        if list.len() > HISTORY_CAP {
+            let n = list.len() - HISTORY_CAP;
+            list.drain(0..n);
+        }
+    }
+}
+
 /// 矩形 (x, y, w, h) を作業領域 work=(left, top, right, bottom) 内に収めるよう
 /// 補正した左上座標 (x, y) を返す。サイズは変えない。
 /// 右/下がはみ出す場合は左/上へ寄せ、それでも左/上が作業領域より手前なら
@@ -662,6 +716,32 @@ mod tests {
         assert!(st.active().is_none());
         let s = toml::to_string(&st).unwrap();
         assert!(!s.contains("[[tabs]]"));
+    }
+
+    #[test]
+    fn input_history_add_dedup_order_cap() {
+        let mut h = InputHistory::default();
+        h.add("path", "C:\\a");
+        h.add("path", "C:\\b");
+        h.add("path", "C:\\a"); // 既存は末尾へ移動＝最新
+        // 別キーは独立。
+        h.add("mask", "*.txt");
+        // 空・空白のみは無視。
+        h.add("path", "   ");
+        // get は新しい順。
+        assert_eq!(h.get("path"), vec!["C:\\a", "C:\\b"]);
+        assert_eq!(h.get("mask"), vec!["*.txt"]);
+        assert!(h.get("none").is_empty());
+
+        // 上限を超えたら古いものから落ちる（新しい順で先頭が最新）。
+        let mut h2 = InputHistory::default();
+        for i in 0..(HISTORY_CAP + 5) {
+            h2.add("k", &format!("v{i}"));
+        }
+        let got = h2.get("k");
+        assert_eq!(got.len(), HISTORY_CAP);
+        assert_eq!(got[0], format!("v{}", HISTORY_CAP + 4));
+        assert_eq!(got.last().unwrap(), &format!("v{}", 5));
     }
 
     #[test]

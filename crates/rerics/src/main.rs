@@ -1406,12 +1406,11 @@ impl MainWindow {
     /// 検索語を入力ダイアログで尋ね、ビューア内を検索する。
     fn viewer_search(&self) -> w::AnyResult<()> {
         let cur = self.viewer.search_term();
-        let input = dialog::input_box(
-            &self.wnd,
+        let input = self.input_with_history(
             "検索",
             "検索する文字列（空で解除・F3で次・Shift+F3で前）:",
             &cur,
-            dialog::InputMode::Plain,
+            "search",
         );
         if let Some(term) = input {
             self.viewer.set_search(term.trim())?;
@@ -3068,18 +3067,45 @@ impl MainWindow {
         }
     }
 
+    /// 履歴つき入力ダイアログ。用途キー `key` の履歴（新しい順）を候補に出し、
+    /// 確定した値を履歴へ追記して保存する。`history.toml` に永続。
+    fn input_with_history(
+        &self,
+        title: &str,
+        message: &str,
+        value: &str,
+        key: &str,
+    ) -> Option<String> {
+        let mut hist = rerics_core::InputHistory::load();
+        let items = hist.get(key);
+        let refs: Vec<&str> = items.iter().map(String::as_str).collect();
+        let result = dialog::input_box_full(
+            &self.wnd,
+            title,
+            message,
+            value,
+            dialog::InputMode::Plain,
+            dialog::InputSelect::AsIs,
+            Some(&refs),
+        );
+        if let Some(v) = &result {
+            hist.add(key, v);
+            let _ = hist.save();
+        }
+        result
+    }
+
     /// 入力ダイアログで名前を尋ね、アクティブペインの現在パス直下にディレクトリを作る。
     /// 作成後は一覧を更新し、新ディレクトリへカーソルを移す。
     fn make_directory(&self, is_left: bool) -> w::AnyResult<()> {
         if self.pane(is_left).borrow().is_archive() {
             return self.make_directory_in_archive(is_left);
         }
-        let name = dialog::input_box(
-            &self.wnd,
+        let name = self.input_with_history(
             "ディレクトリの作成",
             &messages::directory_name_question(),
             "新しいディレクトリ",
-            dialog::InputMode::Plain,
+            "mkdir",
         );
         let Some(name) = name else {
             return Ok(());
@@ -3124,12 +3150,11 @@ impl MainWindow {
                 return Ok(());
             }
         };
-        let name = dialog::input_box(
-            &self.wnd,
+        let name = self.input_with_history(
             "ディレクトリの作成",
             &messages::directory_name_question(),
             "新しいディレクトリ",
-            dialog::InputMode::Plain,
+            "mkdir",
         );
         let Some(name) = name else {
             return Ok(());
@@ -3183,12 +3208,11 @@ impl MainWindow {
         if self.block_if_archive(is_left, "ファイルの作成") {
             return Ok(());
         }
-        let name = dialog::input_box(
-            &self.wnd,
+        let name = self.input_with_history(
             "新規ファイルの作成",
             "ファイル名を入力して下さい。",
             "",
-            dialog::InputMode::Plain,
+            "createfile",
         );
         let Some(name) = name else {
             return Ok(());
@@ -3247,12 +3271,11 @@ impl MainWindow {
                 .unwrap_or_else(|| "archive".to_owned());
             format!("{base}.zip")
         };
-        let name = dialog::input_box(
-            &self.wnd,
+        let name = self.input_with_history(
             "圧縮",
             "圧縮ファイル名を入力して下さい。",
             &default_name,
-            dialog::InputMode::Plain,
+            "compress",
         );
         let Some(name) = name else {
             return Ok(());
@@ -4887,12 +4910,11 @@ impl MainWindow {
     /// 入力ダイアログでパスマスクを尋ね、表示フィルタを設定/解除して一覧を更新する。
     fn path_mask(&self, is_left: bool) -> w::AnyResult<()> {
         let cur = self.mask(is_left).borrow().clone().unwrap_or_default();
-        let input = dialog::input_box(
-            &self.wnd,
+        let input = self.input_with_history(
             "パスマスク",
             "表示するマスク（* で解除・カンマ区切り）:",
             &cur,
-            dialog::InputMode::Plain,
+            "pathmask",
         );
         let Some(input) = input else {
             return Ok(());
@@ -4909,12 +4931,11 @@ impl MainWindow {
 
     /// 入力ダイアログでマスクを尋ね、一致するファイルの選択状態を立てる。
     fn select_mask(&self, is_left: bool) -> w::AnyResult<()> {
-        let input = dialog::input_box(
-            &self.wnd,
+        let input = self.input_with_history(
             "マスクで選択",
             "選択するマスク（カンマ区切り）:",
             "",
-            dialog::InputMode::Plain,
+            "selectmask",
         );
         let Some(input) = input else {
             return Ok(());
@@ -5102,13 +5123,9 @@ impl MainWindow {
 
     fn change_directory_dialog(&self, is_left: bool) -> w::AnyResult<()> {
         let current = self.pane(is_left).borrow().loc_display();
-        let Some(input) = dialog::input_box(
-            &self.wnd,
-            "ディレクトリ移動",
-            "移動先のパスを入力して下さい。",
-            &current,
-            dialog::InputMode::Plain,
-        ) else {
+        let Some(input) =
+            self.input_with_history("ディレクトリ移動", "移動先のパスを入力して下さい。", &current, "changedir")
+        else {
             return Ok(());
         };
         let input = input.trim();
@@ -5172,13 +5189,9 @@ impl MainWindow {
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.clone());
-        let Some(label) = dialog::input_box(
-            &self.wnd,
-            "ディレクトリの登録",
-            "登録名を入力して下さい。",
-            &default_label,
-            dialog::InputMode::Plain,
-        ) else {
+        let Some(label) =
+            self.input_with_history("ディレクトリの登録", "登録名を入力して下さい。", &default_label, "register")
+        else {
             return Ok(());
         };
         let label = label.trim();

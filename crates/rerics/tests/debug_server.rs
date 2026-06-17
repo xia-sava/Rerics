@@ -691,6 +691,36 @@ fn nav_change_directory_dialog() {
     assert_eq!(back.trim(), sbx_json, "typing a path should navigate there");
 }
 
+/// 入力履歴（D2-1）：ChangeDirectory で打った値が history.toml の "changedir" バケツに永続する。
+/// 入力欄が履歴コンボへ変わっても `/modal/text`（コンボ内 Edit）で打てることも兼ねて確認する。
+#[test]
+fn input_history_changedir_persists() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx_json = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+    let sbx_raw = sbx_json.trim_matches('"').replace("\\\\", "\\");
+
+    server.req("POST", "/command/ChangeDirectoryDialog", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/text", &sbx_raw).unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+
+    // OK（Enter）後、履歴ファイルに "changedir" バケツと入力値が書かれる（保存はモーダル閉鎖直後）。
+    let hist_path = server.base.join("data").join("history.toml");
+    let mut hist = String::new();
+    for _ in 0..50 {
+        if let Ok(s) = std::fs::read_to_string(&hist_path) {
+            if s.contains("changedir") {
+                hist = s;
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(hist.contains("changedir"), "history.toml should have the changedir bucket: {hist}");
+    assert!(hist.contains("sbx"), "entered path should be recorded: {hist}");
+}
+
 /// 引数マクロ版 `ChangeDirectory("<I:…>")`：`<I:>` が入力モーダルを開き、打った値で移動する
 /// ことを確認する（引数基盤の段階2＝マクロ展開の実証）。
 #[test]

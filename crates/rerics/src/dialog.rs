@@ -626,7 +626,7 @@ pub fn input_box(
     value: &str,
     mode: InputMode,
 ) -> Option<String> {
-    input_box_select(parent, title, message, value, mode, InputSelect::AsIs)
+    input_box_full(parent, title, message, value, mode, InputSelect::AsIs, None)
 }
 
 /// [`input_box`] に初期選択（[`InputSelect`]）指定を加えた版。改名系入力で拡張子前に
@@ -638,6 +638,22 @@ pub fn input_box_select(
     value: &str,
     mode: InputMode,
     select: InputSelect,
+) -> Option<String> {
+    input_box_full(parent, title, message, value, mode, select, None)
+}
+
+/// [`input_box`] に履歴（用途キー別の過去入力）を加えた版。入力欄を編集可能コンボにし、
+/// `history`（新しい順）を候補に出す。`history` が `Some` のときのみコンボ・`None` は素の Edit。
+/// 原作 MessageForm の cboInput（Key 指定時の履歴コンボ）相当。`select` はコンボでは無視する。
+/// 履歴への追加・保存は呼び出し側（[`crate::MainWindow`]）が担う。
+pub fn input_box_full(
+    parent: &impl GuiParent,
+    title: &str,
+    message: &str,
+    value: &str,
+    mode: InputMode,
+    select: InputSelect,
+    history: Option<&[&str]>,
 ) -> Option<String> {
     let wnd = gui::WindowModal::new(gui::WindowModalOpts {
         title,
@@ -657,21 +673,63 @@ pub fn input_box_select(
         },
     );
 
-    let edit_style = match mode {
-        InputMode::Plain => co::ES::AUTOHSCROLL,
-        InputMode::Password => co::ES::AUTOHSCROLL | co::ES::PASSWORD,
+    // 履歴ありかつ Plain のときだけ編集可能コンボ（候補＝履歴・新しい順）。
+    // それ以外（履歴なし・パスワード）は従来どおり素の Edit。
+    let combo_history = match mode {
+        InputMode::Plain => history,
+        InputMode::Password => None,
     };
-    let edit = gui::Edit::new(
-        &wnd,
-        gui::EditOpts {
-            text: value,
-            control_style: edit_style,
-            position: gui::dpi(16, 38),
-            width: gui::dpi_x(328),
-            height: gui::dpi_y(24),
-            ..Default::default()
-        },
-    );
+    // 入力欄の現在値の読み取り・初期化（フォーカス＋初期値/選択）を、コンボ/Edit 共通の
+    // クロージャに包んで後段から扱う。コントロール実体は `_keep` で生存させる。
+    let read: Rc<dyn Fn() -> String>;
+    let on_create: Box<dyn Fn()>;
+    let _keep: Box<dyn std::any::Any>;
+    if let Some(items) = combo_history {
+        let combo = gui::ComboBox::new(
+            &wnd,
+            gui::ComboBoxOpts {
+                control_style: co::CBS::DROPDOWN,
+                position: gui::dpi(16, 38),
+                width: gui::dpi_x(328),
+                items,
+                ..Default::default()
+            },
+        );
+        let r = combo.clone();
+        read = Rc::new(move || r.hwnd().GetWindowText().unwrap_or_default());
+        let f = combo.clone();
+        let v = value.to_string();
+        on_create = Box::new(move || {
+            let _ = f.hwnd().SetWindowText(&v);
+            let _ = f.hwnd().SetFocus();
+        });
+        _keep = Box::new(combo);
+    } else {
+        let edit_style = match mode {
+            InputMode::Plain => co::ES::AUTOHSCROLL,
+            InputMode::Password => co::ES::AUTOHSCROLL | co::ES::PASSWORD,
+        };
+        let edit = gui::Edit::new(
+            &wnd,
+            gui::EditOpts {
+                text: value,
+                control_style: edit_style,
+                position: gui::dpi(16, 38),
+                width: gui::dpi_x(328),
+                height: gui::dpi_y(24),
+                ..Default::default()
+            },
+        );
+        let r = edit.clone();
+        read = Rc::new(move || r.text().unwrap_or_default());
+        let f = edit.clone();
+        let v = value.to_string();
+        on_create = Box::new(move || {
+            f.hwnd().SetFocus();
+            select.apply(&f, &v);
+        });
+        _keep = Box::new(edit);
+    }
 
     let ok = gui::Button::new(
         &wnd,
@@ -703,11 +761,8 @@ pub fn input_box_select(
     #[cfg(feature = "debug-server")]
     let (reg_title, reg_prompt, reg_wnd) = (title.to_string(), message.to_string(), wnd.clone());
     {
-        let edit = edit.clone();
-        let value = value.to_string();
         wnd.on().wm_create(move |_| {
-            edit.hwnd().SetFocus();
-            select.apply(&edit, &value);
+            on_create();
             #[cfg(feature = "debug-server")]
             crate::debug_server::modal_registry::push(
                 "input",
@@ -723,10 +778,10 @@ pub fn input_box_select(
 
     {
         let result = result.clone();
-        let edit = edit.clone();
+        let read = read.clone();
         let wnd2 = wnd.clone();
         ok.on().bn_clicked(move || {
-            *result.borrow_mut() = Some(edit.text().unwrap_or_default());
+            *result.borrow_mut() = Some(read());
             wnd2.close();
             Ok(())
         });

@@ -24,9 +24,9 @@ pub use attrs::{
     read_attrs, set_created_time, set_modified_time, write_attrs,
 };
 pub use config::{
-    Bookmark, Config, DEFAULT_CONFIG_TOML, FontSpec, Layout, ResolvedTheme, State, TabState, Theme,
-    ThemeColors, WindowState, clamp_to_work, config_path, data_dir, load_toml, save_toml,
-    state_path,
+    Bookmark, Config, DEFAULT_CONFIG_TOML, FontSpec, InputHistory, Layout, ResolvedTheme, State,
+    TabState, Theme, ThemeColors, WindowState, clamp_to_work, config_path, data_dir, history_path,
+    load_toml, save_toml, state_path,
 };
 pub use file_list::{
     Align, Colors, Column, ColumnKind, FileItem, FileListState, NameCase, Rgb, SeqCase, SortType,
