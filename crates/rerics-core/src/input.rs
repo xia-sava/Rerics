@@ -25,6 +25,20 @@ pub mod vk {
     pub const F4: u16 = 0x73;
     pub const F5: u16 = 0x74;
     pub const F7: u16 = 0x76;
+    pub const F9: u16 = 0x78;
+    pub const F10: u16 = 0x79;
+    // テンキー（NumPad）。`NUMPAD0..9` は 0x60..0x69、除算は DIVIDE。
+    pub const NUMPAD0: u16 = 0x60;
+    pub const NUMPAD1: u16 = 0x61;
+    pub const NUMPAD2: u16 = 0x62;
+    pub const NUMPAD3: u16 = 0x63;
+    pub const NUMPAD4: u16 = 0x64;
+    pub const NUMPAD5: u16 = 0x65;
+    pub const NUMPAD6: u16 = 0x66;
+    pub const NUMPAD7: u16 = 0x67;
+    pub const NUMPAD8: u16 = 0x68;
+    pub const NUMPAD9: u16 = 0x69;
+    pub const DIVIDE: u16 = 0x6F;
     pub const TAB: u16 = 0x09;
     pub const A: u16 = 0x41;
     pub const C: u16 = 0x43;
@@ -72,6 +86,7 @@ pub enum Command {
     CursorPageDown,
     SetCursorPosition,
     EnterDir,
+    View,
     ToParent,
     ToRoot,
     HistoryBack,
@@ -163,6 +178,7 @@ impl Command {
             (CursorPageDown, "CursorPageDown"),
             (SetCursorPosition, "SetCursorPosition"),
             (EnterDir, "EnterDir"),
+            (View, "View"),
             (ToParent, "ToParent"),
             (ToRoot, "ToRoot"),
             (HistoryBack, "HistoryBack"),
@@ -388,6 +404,19 @@ const KEY_NAMES: &[(u16, &str)] = &[
     (vk::F4, "F4"),
     (vk::F5, "F5"),
     (vk::F7, "F7"),
+    (vk::F9, "F9"),
+    (vk::F10, "F10"),
+    (vk::NUMPAD0, "NumPad0"),
+    (vk::NUMPAD1, "NumPad1"),
+    (vk::NUMPAD2, "NumPad2"),
+    (vk::NUMPAD3, "NumPad3"),
+    (vk::NUMPAD4, "NumPad4"),
+    (vk::NUMPAD5, "NumPad5"),
+    (vk::NUMPAD6, "NumPad6"),
+    (vk::NUMPAD7, "NumPad7"),
+    (vk::NUMPAD8, "NumPad8"),
+    (vk::NUMPAD9, "NumPad9"),
+    (vk::DIVIDE, "NumPad/"),
     (vk::TAB, "Tab"),
     (vk::OEM_1, ":"),
     (vk::OEM_PLUS, ";"),
@@ -610,10 +639,14 @@ impl KeyMap {
     }
 
     /// トークン文字列のマップ（チョード→呼び出し）からキーマップを組む。
-    /// 解釈できない行は無視する。
+    /// 解釈できない行は無視する。**値が空文字のキーは未バインド**にする（既定を差分マージで
+    /// 上書きしたうえでここで読み飛ばす＝ユーザ config で既定キーを潰す手段）。
     pub fn from_string_map(map: &BTreeMap<String, String>) -> Self {
         let mut m = Self::new();
         for (k, v) in map {
+            if v.trim().is_empty() {
+                continue;
+            }
             if let (Some(chord), Some(inv)) = (KeyChord::parse(k), Invocation::parse(v)) {
                 m.bind_inv(chord, inv);
             }
@@ -877,6 +910,18 @@ mod tests {
             back.resolve_inv(&KeyChord::key(vk::F4)),
             Some(&Invocation::new(Command::ChangeDirectoryDialog, vec!["D:".into()]))
         );
+    }
+
+    #[test]
+    fn empty_value_unbinds_key() {
+        // 値が空文字のキーは未バインドになる（既定打ち消し用）。
+        let mut sm = KeyMap::default().to_string_map();
+        assert_eq!(sm.get("Down").map(String::as_str), Some("CursorDown"));
+        sm.insert("Down".to_string(), String::new());
+        let m = KeyMap::from_string_map(&sm);
+        assert_eq!(m.resolve(&KeyChord::key(vk::DOWN)), None);
+        // 空にしていない他キーは残る。
+        assert_eq!(m.resolve(&KeyChord::key(vk::UP)), Some(Command::CursorUp));
     }
 
     #[test]

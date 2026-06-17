@@ -97,8 +97,9 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         | RenameSequenceDialog | SendToRecycled | CreateShortcut | ClipPaste => {
             DebugCmdClass::ModalWrite
         }
-        // ViewFile は暗号化書庫でパスワード入力モーダルを開き得る（書込みではない）。
-        ViewFile => DebugCmdClass::MaybeModal,
+        // View/ViewFile は暗号化書庫でパスワード入力モーダルを開き得る（書込みではない）。
+        // View はディレクトリ/書庫へ潜る場合もあるが、いずれも非破壊。
+        View | ViewFile => DebugCmdClass::MaybeModal,
         // 履歴ダイアログは読取モーダル（リスト選択）を開く（書込みではない）。
         PathHistoryDialog => DebugCmdClass::MaybeModal,
         // ディレクトリ移動は入力/フォルダ選択マクロでモーダルを開き得る（移動は書込みではない）。
@@ -711,6 +712,10 @@ impl MainWindow {
             Command::EnterDir => {
                 let cursor = state.borrow().cursor;
                 self.activate(is_left, cursor)?;
+                return Ok(());
+            }
+            Command::View => {
+                self.view_command(is_left, args.first().map(String::as_str))?;
                 return Ok(());
             }
             Command::ToParent => {
@@ -1368,6 +1373,49 @@ impl MainWindow {
     }
 
     /// カーソル下のファイルを種別に応じたビューアで開く（ディレクトリ/親は無視）。
+    /// 原作 `View` 相当。引数なし＝親へ戻る/ディレクトリ・書庫へ潜る/それ以外は内蔵ビューア
+    /// （拡張子で text/media 振り分け）。`type` 指定時はディレクトリでは何もせず、ファイルを
+    /// そのビューアで開く（`"text"`/`"bin"` は強制テキスト・他は拡張子振り分け）。
+    /// EnterDir（関連付けで外部起動）と違い、ファイルは常に内蔵ビューアで開くのが手触りの差。
+    fn view_command(&self, is_left: bool, vtype: Option<&str>) -> w::AnyResult<()> {
+        let (is_parent, is_dir, name) = {
+            let state = self.view(is_left).state();
+            let s = state.borrow();
+            match s.items.get(s.cursor) {
+                Some(it) => (it.is_parent, it.is_dir, it.name.clone()),
+                None => return Ok(()),
+            }
+        };
+        let typed = vtype.map(|t| !t.is_empty()).unwrap_or(false);
+        if !typed {
+            // 親・ディレクトリ・書庫は潜る（原作 View の type=="" 経路）。
+            if is_parent {
+                return self.to_parent(is_left);
+            }
+            if is_dir {
+                if self.pane(is_left).borrow_mut().enter(&name, true) {
+                    self.reload_side(is_left)?;
+                }
+                return Ok(());
+            }
+            if self.pane(is_left).borrow_mut().enter(&name, false) {
+                self.reload_side(is_left)?;
+                return Ok(());
+            }
+            return self.view_file(is_left);
+        }
+        // type 指定時：ディレクトリ/親は何もしない（原作 View）。
+        if is_parent || is_dir {
+            return Ok(());
+        }
+        match vtype {
+            Some(t) if t.eq_ignore_ascii_case("text") || t.eq_ignore_ascii_case("bin") => {
+                self.view_text(is_left, &name)
+            }
+            _ => self.view_file(is_left),
+        }
+    }
+
     fn view_file(&self, is_left: bool) -> w::AnyResult<()> {
         let (name, ext) = {
             let state = self.view(is_left).state();

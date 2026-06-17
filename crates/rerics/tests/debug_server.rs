@@ -766,6 +766,23 @@ fn change_drive_navigates_to_root() {
     );
 }
 
+/// `View`（引数なし）はファイルを内蔵ビューアで開く（EnterDir の外部起動と違う手触り）。
+#[test]
+fn view_command_opens_internal_viewer_for_file() {
+    let server = Server::start(&["note.txt"], "");
+    server
+        .req("POST", "/command/SetCursorPosition", r#"["note.txt"]"#)
+        .unwrap();
+    // View（type なし）＝内蔵テキストビューアで開く。MaybeModal 扱いなので exec は応答後に走る。
+    server.req("POST", "/command/View", "").unwrap();
+    let av = poll(&server, "/state/active_view", |b| b.trim() == "\"text\"");
+    assert_eq!(av.trim(), "\"text\"", "View on a text file should open the internal text viewer");
+    // 閉じると元へ戻る。
+    server.req("POST", "/view/key/close", "").unwrap();
+    let av2 = poll(&server, "/state/active_view", |b| b.trim() == "\"none\"");
+    assert_eq!(av2.trim(), "\"none\"", "closing the viewer returns to the list");
+}
+
 /// RegisterPath で現在地を登録し、JumpDialog でそこへ戻る。
 #[test]
 fn nav_register_and_jump() {
