@@ -849,6 +849,8 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
     );
 
     let result = Rc::new(RefCell::new((ConflictResolution::Cancel, false)));
+    // 改名 Edit の初期キャレットは拡張子の前（原作 RenameStyle・衝突はファイル名）。
+    let rename_pos = before_ext_pos(name, false);
 
     // 「すべてに適用」中は改名ラジオを無効化（改名＋全適用は排他＝原作）。改名 Edit は
     // 「名前を変更してコピー」選択中かつ全適用未チェックのときだけ有効。
@@ -865,8 +867,15 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
     };
     {
         let refresh = refresh.clone();
+        let radios_c = radios.clone();
+        let rename = rename.clone();
         radios.on().bn_clicked(move || {
             refresh();
+            // 「名前を変更してコピー」を選んだら改名 Edit へフォーカス＋拡張子前にキャレット（原作）。
+            if radios_c.selected_index() == Some(3) {
+                rename.hwnd().SetFocus();
+                rename.set_selection(rename_pos, rename_pos);
+            }
             Ok(())
         });
     }
@@ -879,12 +888,11 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
     }
 
     {
-        // 作成時：初期の有効/無効を反映し、Shift 連動の keyhook を張る。
+        // 作成時：初期の有効/無効を反映し、Shift 連動＋改名欄の上下キーの keyhook を張る。
         let all_k = all.clone();
         let rename_k = rename.clone();
+        let radios_k = radios.clone();
         let refresh_c = refresh.clone();
-        // 改名 Edit の初期キャレットは拡張子の前（原作 RenameStyle・衝突はファイル名）。
-        let rename_pos = before_ext_pos(name, false);
         let rename_sel = rename.clone();
         arm_modal(
             &wnd,
@@ -898,14 +906,24 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
                 rename_sel.set_selection(rename_pos, rename_pos);
                 let all_k = all_k.clone();
                 let rename_k = rename_k.clone();
+                let radios_k = radios_k.clone();
                 let refresh_k = refresh_c.clone();
-                // 原作 frmCopyOption：Shift 押下中だけ「すべてに適用」を自動チェック。
-                // 改名 Edit 入力中は Shift を無視する。
                 keyhook::push(hwnd, move |vk, down| {
-                    if vk != 0x10 {
+                    let in_rename =
+                        w::HWND::GetFocus().map(|f| f.ptr()) == Some(rename_k.hwnd().ptr());
+                    // 改名 Edit 内の上下キー：ラジオ選択へ戻す（↑=強制上書き idx2・↓=スキップ
+                    // idx4）。単一行 Edit の上下は元々無動作なので横取りして問題ない。BM_CLICK で
+                    // 標準クリック相当（選択＋フォーカス＋BN_CLICKED→refresh）を起こす。
+                    if down && in_rename && (vk == 0x26 || vk == 0x28) {
+                        let target = if vk == 0x26 { 2 } else { 4 };
+                        unsafe {
+                            radios_k[target].hwnd().SendMessage(w::msg::bm::Click {});
+                        }
                         return;
                     }
-                    if w::HWND::GetFocus().map(|f| f.ptr()) == Some(rename_k.hwnd().ptr()) {
+                    // 原作 frmCopyOption：Shift 押下中だけ「すべてに適用」を自動チェック。
+                    // 改名 Edit 入力中は Shift を無視する。
+                    if vk != 0x10 || in_rename {
                         return;
                     }
                     all_k.set_check(down);
