@@ -194,10 +194,18 @@ impl Pane {
         false
     }
 
-    /// 移動履歴（新しい順）を表示文字列で返す。先頭が直前の現在地。
-    /// 履歴ダイアログ用。現在地そのものは含めない。
+    /// 移動履歴（新しい順・重複除去）を表示文字列で返す。同じ場所を何度往復しても
+    /// 各場所は最後に訪れた1件だけ出す（原作 移動履歴＝MyPathHistory と同じ）。
+    /// 先頭が直前の現在地。現在地そのものは含めない。
+    /// 戻る/進む用の `back` スタックは全系列を保ち、この表示でのみ畳む。
     pub fn history(&self) -> Vec<String> {
-        self.back.iter().rev().map(|l| l.loc_display()).collect()
+        let mut seen = std::collections::HashSet::new();
+        self.back
+            .iter()
+            .rev()
+            .map(|l| l.loc_display())
+            .filter(|d| seen.insert(d.clone()))
+            .collect()
     }
 }
 
@@ -262,5 +270,30 @@ mod tests {
         assert_eq!(p.to_parent().as_deref(), Some("rerics-core"));
         // 直前の現在地（rerics-core）が履歴の先頭に出る。
         assert_eq!(p.history().first().map(String::as_str), Some(start_disp.as_str()));
+    }
+
+    #[test]
+    fn pane_history_dedups_repeated_visits() {
+        // rerics-core ↔ crates を往復しても、移動履歴は各場所1件（最後の訪問位置）に畳む。
+        let mut p = Pane::open(env!("CARGO_MANIFEST_DIR"));
+        let rc = p.loc().clone(); // .../crates/rerics-core
+        let crates = Location::Real(p.path().parent().unwrap().to_path_buf());
+        assert!(p.navigate(crates.clone()));
+        assert!(p.navigate(rc.clone()));
+        assert!(p.navigate(crates.clone()));
+        assert!(p.navigate(rc.clone()));
+        // back=[rc, crates, rc, crates] → 表示は新しい順・重複除去で [crates, rc]。
+        let hist = p.history();
+        assert_eq!(hist.len(), 2, "重複は畳まれる: {hist:?}");
+        let uniq: std::collections::HashSet<&String> = hist.iter().collect();
+        assert_eq!(uniq.len(), hist.len(), "履歴に重複が残ってはいけない: {hist:?}");
+        assert_eq!(hist[0], crates.loc_display(), "先頭は直前の現在地（crates）");
+
+        // 戻る/進む用の back スタックは全系列を保つ＝4回ぶん戻れる。
+        assert!(p.go_back()); // -> crates
+        assert!(p.go_back()); // -> rc
+        assert!(p.go_back()); // -> crates
+        assert!(p.go_back()); // -> rc(開始)
+        assert!(!p.go_back(), "これ以上は戻れない");
     }
 }
