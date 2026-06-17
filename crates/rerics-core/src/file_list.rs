@@ -398,6 +398,15 @@ impl Rgb {
     pub fn to_hex(self) -> String {
         format!("#{:02x}{:02x}{:02x}", self.r, self.g, self.b)
     }
+
+    /// 自身を `other` 方向へ `num/den` の比率で混ぜた色（整数演算・各チャンネル独立）。
+    /// `num=0` で自身、`num=den` で `other`。
+    pub fn blend(self, other: Rgb, num: u16, den: u16) -> Self {
+        let mix = |a: u8, b: u8| -> u8 {
+            ((a as u16 * (den - num) + b as u16 * num) / den) as u8
+        };
+        Self::new(mix(self.r, other.r), mix(self.g, other.g), mix(self.b, other.b))
+    }
 }
 
 impl Serialize for Rgb {
@@ -1223,6 +1232,20 @@ mod tests {
         assert!(glob_match("Foo.TXT", "*.txt"));
         assert!(glob_match("ab", "a?"));
         assert!(!glob_match("abc", "a?"));
+    }
+
+    #[test]
+    fn rgb_blend_endpoints_and_midpoint() {
+        let a = Rgb::new(0x60, 0xa0, 0x80);
+        let b = Rgb::new(0x00, 0x00, 0x00);
+        // num=0 で自身、num=den で other。
+        assert_eq!(a.blend(b, 0, 5), a);
+        assert_eq!(a.blend(b, 5, 5), b);
+        // 60% を黒へ寄せる＝各チャンネルが約 40% に減る。
+        assert_eq!(a.blend(b, 3, 5), Rgb::new(0x26, 0x40, 0x33));
+        // 白へ向けて 50% は中点。
+        let w = Rgb::new(0xff, 0xff, 0xff);
+        assert_eq!(b.blend(w, 1, 2), Rgb::new(0x7f, 0x7f, 0x7f));
     }
 
     #[test]
