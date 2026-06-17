@@ -328,6 +328,87 @@ fn finalize(base: MessageResult, all_checked: bool) -> MessageResult {
     }
 }
 
+/// メッセージを UI フォント（ラベルと同じ `lfMenuFont`）で測り、論理単位の
+/// (ラベル幅, ラベル高) と**折返し済みテキスト**を返す。幅は最長行に合わせ `[MIN,MAX]` に
+/// クランプし、その幅で**手動折返し**する（空白優先・無ければ文字境界で割る）。`DrawText` の
+/// `DT_WORDBREAK` は空白でしか折らずパス等の連続文字列が切れるため、自前で折って切れを防ぐ。
+/// 測定できなければ元テキストをそのまま返す。
+fn measure_message(message: &str) -> (i32, i32, String) {
+    const MIN_LW: i32 = 300;
+    const MAX_LW: i32 = 560;
+    let measured = (|| -> w::SysResult<(i32, i32, String)> {
+        let mut ncm = w::NONCLIENTMETRICS::default();
+        unsafe {
+            w::SystemParametersInfo(
+                co::SPI::GETNONCLIENTMETRICS,
+                std::mem::size_of::<w::NONCLIENTMETRICS>() as u32,
+                &mut ncm,
+                co::SPIF::NoValue,
+            )?;
+        }
+        let font = w::HFONT::CreateFontIndirect(&ncm.lfMenuFont)?;
+        let dc = w::HWND::NULL.GetDC()?;
+        let _sel = dc.SelectObject(&*font)?;
+        let width = |s: &str| dc.GetTextExtentPoint32(s).map(|z| z.cx).unwrap_or(0);
+        let line_h = dc.GetTextExtentPoint32("Ag").map(|z| z.cy).unwrap_or(16);
+
+        let fx = gui::dpi_x(1000).max(1) as i64;
+        let fy = gui::dpi_y(1000).max(1) as i64;
+        let to_lx = |p: i32| (p as i64 * 1000 / fx) as i32;
+        let to_ly = |p: i32| ((p as i64 * 1000 + fy - 1) / fy) as i32;
+
+        // 折返し幅（物理）＝最長行の自然幅を [MIN,MAX] にクランプ。
+        let natural = message.split('\n').map(&width).max().unwrap_or(0);
+        let lw = (to_lx(natural) + 8).clamp(MIN_LW, MAX_LW);
+        let max_w = gui::dpi_x(lw);
+
+        // 手動折返し：空白で詰めていき、語単体が幅を超えるなら文字境界で割る。
+        let mut out: Vec<String> = Vec::new();
+        for line in message.split('\n') {
+            if width(line) <= max_w {
+                out.push(line.to_string());
+                continue;
+            }
+            let mut cur = String::new();
+            for word in line.split(' ') {
+                let cand =
+                    if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
+                if width(&cand) <= max_w {
+                    cur = cand;
+                    continue;
+                }
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                let mut rest = word;
+                while width(rest) > max_w {
+                    let mut cut = 0;
+                    for (i, _) in rest.char_indices().skip(1) {
+                        if width(&rest[..i]) > max_w {
+                            break;
+                        }
+                        cut = i;
+                    }
+                    if cut == 0 {
+                        // 1文字でも幅を超える（極端に狭い）→ 1文字ずつ進めて無限ループを防ぐ。
+                        cut = rest.char_indices().nth(1).map(|(i, _)| i).unwrap_or(rest.len());
+                    }
+                    out.push(rest[..cut].to_string());
+                    rest = &rest[cut..];
+                }
+                cur = rest.to_string();
+            }
+            out.push(cur);
+        }
+        if out.is_empty() {
+            out.push(String::new());
+        }
+        let h_phys = out.len() as i32 * line_h;
+        Ok((lw, to_ly(h_phys).max(18) + 6, out.join("\n")))
+    })();
+    measured.unwrap_or_else(|_| (MIN_LW, 48, message.to_string()))
+}
+
 /// 原作 `PluginMessage.Show` 相当。スタイルに応じてアイコン・ボタンを構成した
 /// モーダルを表示し、結果を返す。Enter=既定ボタン、Esc=CancelButton。
 pub fn message_box(
@@ -336,48 +417,60 @@ pub fn message_box(
     message: &str,
     style: MessageStyle,
 ) -> MessageResult {
-    let style_has_all = style.has_all_checkbox();
-    // 「すべてに適用」付きのスタイルはチェックを独立行にするぶん縦に広げる。
-    let win_h = if style_has_all { 185 } else { 150 };
-    let wnd = gui::WindowModal::new(gui::WindowModalOpts {
-        title,
-        size: gui::dpi(400, win_h),
-        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
-        process_dlg_msgs: true,
-        ..Default::default()
-    });
-
+    let has_all = style.has_all_checkbox();
     let has_icon = style.icon().is_some();
     let label_x = if has_icon { 56 } else { 16 };
-    let _label = gui::Label::new(
-        &wnd,
-        gui::LabelOpts {
-            text: message,
-            position: gui::dpi(label_x, 18),
-            size: gui::dpi(400 - label_x - 16, 60),
-            ..Default::default()
-        },
-    );
+
+    // メッセージを測ってラベル幅/高を決め、それに合わせて窓・ボタン位置を組む（切れ防止）。
+    let (label_w, label_h, wrapped) = measure_message(message);
+    let text_top = 18;
+    let content_bottom = text_top + label_h;
+    // 「すべてに適用」付きはチェックを独立行にするぶん縦に広げる。
+    let (checkbox_y, btn_y) = if has_all {
+        (content_bottom + 12, content_bottom + 42)
+    } else {
+        (0, content_bottom + 16)
+    };
+    let win_h = btn_y + 26 + 22;
 
     let specs = style.buttons();
     let cancel_index = style.cancel_index();
-    let has_all = style_has_all;
     let result = Rc::new(RefCell::new(style.default_result()));
 
     let btn_w = 96;
     let gap = 8;
     let n = specs.len() as i32;
-    // ボタンは中央寄せの独立行。チェックは（あれば）その上の独立行に左寄せで置く。
     let total = n * btn_w + (n - 1) * gap;
-    let mut x = (400 - total) / 2;
-    let btn_y = if has_all { 122 } else { 96 };
+    // 窓幅はラベルが収まりつつボタン行も収まる幅に。
+    let win_w = (label_x + label_w + 16).max(total + 32);
+
+    let wnd = gui::WindowModal::new(gui::WindowModalOpts {
+        title,
+        size: gui::dpi(win_w, win_h),
+        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
+        process_dlg_msgs: true,
+        ..Default::default()
+    });
+
+    let _label = gui::Label::new(
+        &wnd,
+        gui::LabelOpts {
+            text: &wrapped,
+            position: gui::dpi(label_x, text_top),
+            size: gui::dpi(label_w, label_h),
+            ..Default::default()
+        },
+    );
+
+    // ボタンは中央寄せの独立行。チェックは（あれば）その上の独立行に左寄せで置く。
+    let mut x = (win_w - total) / 2;
 
     let checkbox = if has_all {
         Some(gui::CheckBox::new(
             &wnd,
             gui::CheckBoxOpts {
                 text: "すべてに適用(&A)",
-                position: gui::dpi(16, 92),
+                position: gui::dpi(16, checkbox_y),
                 size: gui::dpi(160, 18),
                 ..Default::default()
             },
