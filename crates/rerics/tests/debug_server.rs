@@ -836,6 +836,20 @@ fn nav_change_drive_dialog() {
     assert_eq!(after.trim(), expected, "selecting the current drive should go to its root");
 }
 
+/// KeyBindsDialog＝現在のキー割り当てをリストモーダルで読み取り専用表示する。
+#[test]
+fn keybinds_dialog_lists_current_bindings() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/KeyBindsDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"list\""), "should open a list modal: {modal}");
+    // 既定キーの一つ（Enter→EnterDir）が一覧に出る。
+    assert!(modal.contains("EnterDir"), "binding list should include EnterDir: {modal}");
+    // 閉じる（選択結果は使わない）。
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// IncrementalSearchDialog＝打鍵ごとにカーソルが一致項目へ追従し、OK で確定する。
 #[test]
 fn find_incremental_search_follows_typing() {

@@ -109,6 +109,8 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         // ジャンプ（リスト選択）・登録（ラベル入力）はモーダルを開く。登録は config.toml を
         // 書くがユーザファイル操作ではないので allow_write は要さない。
         JumpDialog | RegisterPath => DebugCmdClass::MaybeModal,
+        // キー割り当て一覧はリスト選択モーダル（読取専用・選択結果は使わない）。
+        KeyBindsDialog => DebugCmdClass::MaybeModal,
         // インクリメンタルサーチは入力モーダル（打鍵追従でカーソル移動・読取のみ）。
         IncrementalSearchDialog => DebugCmdClass::MaybeModal,
         // ソート設定はラジオのカスタムモーダル（debug-server から選択操作できない）。
@@ -954,6 +956,10 @@ impl MainWindow {
             }
             Command::OpenSettings => {
                 self.open_settings()?;
+                return Ok(());
+            }
+            Command::KeyBindsDialog => {
+                self.keybinds_dialog();
                 return Ok(());
             }
             Command::MaximizeLeft => {
@@ -4060,6 +4066,19 @@ impl MainWindow {
         }
         self.key_sink.hwnd().SetFocus();
         Ok(())
+    }
+
+    /// 現在の実効キー割り当ての一覧を読み取り専用で表示する。
+    fn keybinds_dialog(&self) {
+        let rows: Vec<String> = self
+            .keymap
+            .borrow()
+            .to_string_map()
+            .iter()
+            .map(|(k, v)| format!("{k:<18} {v}"))
+            .collect();
+        let _ = dialog::list_box(&self.wnd, "キー割り当て", &rows, 0);
+        self.key_sink.hwnd().SetFocus();
     }
 
     /// 新しい設定をライブ反映する（配色・フォント・レイアウト寸法・キーバインド）。
