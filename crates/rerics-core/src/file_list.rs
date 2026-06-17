@@ -105,6 +105,24 @@ pub enum SortType {
     ExtensionExpLike,
 }
 
+impl SortType {
+    /// リテラル引数（`Sort("name")` 等）からソート種別を解釈する。大小無視。
+    /// バリアント名のほか、よく使う別名（size/date/ext 等）も受理する。
+    pub fn from_token(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "name" | "filename" => Some(Self::FileName),
+            "ext" | "extension" => Some(Self::Extension),
+            "size" | "length" => Some(Self::Length),
+            "createtime" | "created" => Some(Self::CreateTime),
+            "date" | "time" | "modified" | "lastwritetime" => Some(Self::LastWriteTime),
+            "attr" | "attribute" => Some(Self::Attribute),
+            "filenameexplike" => Some(Self::FileNameExpLike),
+            "extensionexplike" => Some(Self::ExtensionExpLike),
+            _ => None,
+        }
+    }
+}
+
 /// 2エントリをソート種別で比較する（reverse なし）。親優先・dir 優先は呼び出し側で先に判定済み。
 fn compare_kind(a: &FileItem, b: &FileItem, sort: SortType) -> std::cmp::Ordering {
     use std::cmp::Ordering;
@@ -966,6 +984,16 @@ fn ext_with_dot(name: &str) -> String {
 mod tests {
     use super::*;
     use std::cmp::Ordering;
+
+    #[test]
+    fn sort_type_from_token() {
+        assert_eq!(SortType::from_token("name"), Some(SortType::FileName));
+        assert_eq!(SortType::from_token("FileName"), Some(SortType::FileName));
+        assert_eq!(SortType::from_token("ext"), Some(SortType::Extension));
+        assert_eq!(SortType::from_token("size"), Some(SortType::Length));
+        assert_eq!(SortType::from_token(" Date "), Some(SortType::LastWriteTime));
+        assert_eq!(SortType::from_token("bogus"), None);
+    }
 
     fn file(name: &str) -> FileItem {
         FileItem::bare(name.to_owned(), false)

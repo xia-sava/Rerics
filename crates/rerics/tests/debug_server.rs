@@ -354,6 +354,38 @@ fn debug_server_smoke() {
     assert!(pc.contains("\"cursor\""), "resolved_colors should list palette: {pc}");
 }
 
+/// `/command` の body 引数（JSON 文字列配列）が受理され、引数を見ないコマンドでは
+/// 無害に無視されること、不正な body は 400 になることを確認する（引数基盤の配線検証）。
+#[test]
+fn command_accepts_json_array_args() {
+    let server = Server::start(&["a.txt", "b.txt", "c.txt"], "");
+
+    // 引数を取らない CursorDown に引数を付けても従来どおり動く（無視される）。
+    let (st, _) = server
+        .req("POST", "/command/CursorDown", r#"["ignored"]"#)
+        .expect("CursorDown with args");
+    assert_eq!(st, 200, "command with JSON array body should be accepted");
+    let c = server
+        .req("GET", "/state/panes/left/cursor", "")
+        .expect("cursor")
+        .1;
+    assert_eq!(c.trim(), "1", "cursor should still advance with args present");
+
+    // 配列でない body は 400。
+    let bad = server
+        .req("POST", "/command/CursorDown", "\"notarray\"")
+        .expect("bad body")
+        .0;
+    assert_eq!(bad, 400, "non-array JSON body should be 400");
+
+    // 文字列でない要素を含む配列も 400。
+    let bad2 = server
+        .req("POST", "/command/CursorDown", "[1, 2]")
+        .expect("bad elem")
+        .0;
+    assert_eq!(bad2, 400, "non-string args should be 400");
+}
+
 /// 書庫への追加（非衝突＝無言 append）と、同名衝突→「再構築して置換」の配線を検証する。
 /// 観測はすべて `/state` 経由（右ペインは zip の中＝反映が見える）。
 #[test]
@@ -620,6 +652,118 @@ fn nav_change_directory_dialog() {
     server.req("POST", "/modal/key/enter", "").unwrap();
     let back = poll(&server, "/state/panes/left/location", |b| b.trim() == sbx_json);
     assert_eq!(back.trim(), sbx_json, "typing a path should navigate there");
+}
+
+/// 引数マクロ版 `ChangeDirectory("<I:…>")`：`<I:>` が入力モーダルを開き、打った値で移動する
+/// ことを確認する（引数基盤の段階2＝マクロ展開の実証）。
+#[test]
+fn nav_change_directory_macro_input() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx_json = server
+        .req("GET", "/state/panes/left/location", "")
+        .unwrap()
+        .1
+        .trim()
+        .to_string();
+    let sbx_raw = sbx_json.trim_matches('"').replace("\\\\", "\\");
+
+    server.req("POST", "/command/ToParent", "").unwrap();
+    let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx_json);
+    assert_ne!(parent.trim(), sbx_json, "ToParent should leave the sandbox");
+
+    // body の引数に入力マクロを渡す＝実行直前に入力モーダルが開く。
+    server
+        .req("POST", "/command/ChangeDirectory", r#"["<I:移動先>"]"#)
+        .unwrap();
+    let modal = wait_modal(&server);
+    assert!(
+        modal.contains("\"has_input\":true"),
+        "<I:> macro should open a text-input modal: {modal}"
+    );
+
+    server.req("POST", "/modal/text", &sbx_raw).unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    let back = poll(&server, "/state/panes/left/location", |b| b.trim() == sbx_json);
+    assert_eq!(back.trim(), sbx_json, "input from <I:> macro should navigate there");
+}
+
+/// 引数マクロ版 `ChangeDirectory` で入力をキャンセルすると、原作準拠で無音中止（移動しない）。
+#[test]
+fn nav_change_directory_macro_cancel_is_silent() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx_json = server
+        .req("GET", "/state/panes/left/location", "")
+        .unwrap()
+        .1
+        .trim()
+        .to_string();
+
+    server.req("POST", "/command/ToParent", "").unwrap();
+    let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx_json);
+
+    server
+        .req("POST", "/command/ChangeDirectory", r#"["<I:移動先>"]"#)
+        .unwrap();
+    wait_modal(&server);
+    // Esc でキャンセル＝モーダルが閉じて、場所は変わらない。
+    server.req("POST", "/modal/key/esc", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    let after = server
+        .req("GET", "/state/panes/left/location", "")
+        .unwrap()
+        .1;
+    assert_eq!(after.trim(), parent.trim(), "cancel should not navigate (silent abort)");
+}
+
+/// リテラル引数版 `Sort("size")` がソート種別を切り替える（段階3＝リテラル引数コマンド）。
+#[test]
+fn sort_command_changes_sort_type() {
+    let server = Server::start(&["a.txt", "b.txt"], "");
+    // 既定は名前順。
+    let before = server.req("GET", "/state/panes/left/sort/type", "").unwrap().1;
+    assert_eq!(before.trim(), "\"FileName\"", "default sort should be FileName");
+
+    server.req("POST", "/command/Sort", r#"["size"]"#).unwrap();
+    let after = server.req("GET", "/state/panes/left/sort/type", "").unwrap().1;
+    assert_eq!(after.trim(), "\"Length\"", "Sort(\"size\") should switch to Length");
+}
+
+/// `SetCursorPosition("c.txt")` がカーソルを指定名のファイルへ移す。
+#[test]
+fn set_cursor_position_jumps_to_named_file() {
+    let server = Server::start(&["a.txt", "b.txt", "c.txt"], "");
+    server
+        .req("POST", "/command/SetCursorPosition", r#"["c.txt"]"#)
+        .unwrap();
+    let cur = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    let cur = cur.trim();
+    let name = server
+        .req("GET", &format!("/state/panes/left/items/{cur}/name"), "")
+        .unwrap()
+        .1;
+    assert_eq!(name.trim(), "\"c.txt\"", "cursor should land on c.txt");
+}
+
+/// `ChangeDrive("X:")` がアクティブペインを指定ドライブのルートへ移す。
+/// サンドボックスがどのドライブにあっても動くよう、現在地のドライブ文字を使う。
+#[test]
+fn change_drive_navigates_to_root() {
+    let server = Server::start(&["a.txt"], "");
+    let loc = server.req("GET", "/state/panes/left/location", "").unwrap().1;
+    let loc_raw = loc.trim().trim_matches('"').replace("\\\\", "\\");
+    let drive = &loc_raw[..1];
+
+    server
+        .req("POST", "/command/ChangeDrive", &format!(r#"["{drive}:"]"#))
+        .unwrap();
+    let after = poll(&server, "/state/panes/left/location", |b| {
+        b.trim().trim_matches('"').replace("\\\\", "\\") != loc_raw
+    });
+    let after_raw = after.trim().trim_matches('"').replace("\\\\", "\\");
+    assert!(
+        after_raw.starts_with(&format!("{drive}:")) && after_raw.len() <= 3,
+        "ChangeDrive should land on the drive root, got {after_raw}"
+    );
 }
 
 /// RegisterPath で現在地を登録し、JumpDialog でそこへ戻る。

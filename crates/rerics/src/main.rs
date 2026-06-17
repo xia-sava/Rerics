@@ -41,8 +41,9 @@ use tab_bar::TabBar;
 use task::{ArchiveOutcome, ChannelHost, OpKind, TaskControl, TaskEntry, WorkerEvent};
 use viewer::ViewerView;
 use rerics_core::{
-    Column, Command, Config, FileListState, KeyChord, KeyMap, Location, LogLevel, MediaKind, Pane,
-    SortType, WindowState, data_dir, messages, open_archive,
+    Column, Command, Config, FileListState, Invocation, KeyChord, KeyMap, Location, LogLevel,
+    MacroAbort, MacroCtx, MacroHost, MediaKind, Pane, SortType, WindowState, data_dir, expand_macros,
+    messages, open_archive,
 };
 use winsafe::{self as w, co, gui, prelude::*};
 
@@ -100,8 +101,8 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         ViewFile => DebugCmdClass::MaybeModal,
         // 履歴ダイアログは読取モーダル（リスト選択）を開く（書込みではない）。
         PathHistoryDialog => DebugCmdClass::MaybeModal,
-        // ディレクトリ移動ダイアログは入力モーダルを開く（移動は書込みではない）。
-        ChangeDirectoryDialog => DebugCmdClass::MaybeModal,
+        // ディレクトリ移動は入力/フォルダ選択マクロでモーダルを開き得る（移動は書込みではない）。
+        ChangeDirectory | ChangeDirectoryDialog => DebugCmdClass::MaybeModal,
         // ドライブ選択はリスト選択モーダルを開く（移動は書込みではない）。
         ChangeDriveDialog => DebugCmdClass::MaybeModal,
         // ジャンプ（リスト選択）・登録（ラベル入力）はモーダルを開く。登録は config.toml を
@@ -233,6 +234,33 @@ struct TabSnapshot {
     left_state: FileListState,
     right_state: FileListState,
     active_right: bool,
+}
+
+/// マクロのダイアログ系（`<I:>`/`<FOLDERDIALOG>`）を GUI で供給するホスト。
+struct DialogMacroHost<'a> {
+    app: &'a MainWindow,
+}
+
+impl MacroHost for DialogMacroHost<'_> {
+    fn prompt(&self, title: &str) -> Option<String> {
+        let message = if title.is_empty() { "値を入力して下さい。" } else { title };
+        dialog::input_box(&self.app.wnd, "入力", message, "", dialog::InputMode::Plain)
+    }
+
+    fn choose_folder(&self, title: &str) -> Option<String> {
+        shell::choose_folder(self.app.wnd.hwnd().ptr(), title)
+            .map(|p| p.to_string_lossy().into_owned())
+    }
+
+    fn choose_open_file(&self, title: &str) -> Option<String> {
+        shell::choose_file(self.app.wnd.hwnd().ptr(), title, false)
+            .map(|p| p.to_string_lossy().into_owned())
+    }
+
+    fn choose_save_file(&self, title: &str) -> Option<String> {
+        shell::choose_file(self.app.wnd.hwnd().ptr(), title, true)
+            .map(|p| p.to_string_lossy().into_owned())
+    }
 }
 
 impl MainWindow {
@@ -438,7 +466,7 @@ impl MainWindow {
             let this = self.clone();
             self.wnd.on().wm_command_acc_menu(id, move || {
                 let is_left = !this.active_right.get();
-                this.exec(is_left, cmd)?;
+                this.exec(is_left, &Invocation::bare(cmd))?;
                 Ok(())
             });
         }
@@ -621,7 +649,8 @@ impl MainWindow {
         Ok(())
     }
 
-    fn exec(&self, is_left: bool, cmd: Command) -> w::AnyResult<()> {
+    fn exec(&self, is_left: bool, inv: &Invocation) -> w::AnyResult<()> {
+        let cmd = inv.command;
         let view = self.view(is_left);
         // 書庫の読込中はキー入力を抑止し、Esc（ClearAll）と「親へ戻る」（ToParent・既定 BS）を
         // 展開中止に割り当てる。デカい書庫にうっかり潜った時、咄嗟の「出る」操作で抜けられる。
@@ -631,6 +660,15 @@ impl MainWindow {
             }
             return Ok(());
         }
+        // 引数があれば実行直前にマクロを展開する。入力/選択のキャンセルは無音で実行中止。
+        let args = if inv.args.is_empty() {
+            Vec::new()
+        } else {
+            match self.expand_args(is_left, &inv.args) {
+                Ok(a) => a,
+                Err(MacroAbort) => return Ok(()),
+            }
+        };
         let state = view.state();
         let pr = view.page_rows();
         match cmd {
@@ -662,6 +700,14 @@ impl MainWindow {
                 let c = s.cursor as isize;
                 s.set_cursor(c + pr as isize, pr);
             }
+            Command::SetCursorPosition => {
+                if let Some(name) = args.first() {
+                    let mut s = state.borrow_mut();
+                    if let Some(idx) = s.items.iter().position(|it| it.name == *name) {
+                        s.set_cursor(idx as isize, pr);
+                    }
+                }
+            }
             Command::EnterDir => {
                 let cursor = state.borrow().cursor;
                 self.activate(is_left, cursor)?;
@@ -685,6 +731,14 @@ impl MainWindow {
             }
             Command::PathHistoryDialog => {
                 self.path_history_dialog(is_left)?;
+                return Ok(());
+            }
+            Command::ChangeDirectory => {
+                self.change_directory(is_left, args.first().map(String::as_str))?;
+                return Ok(());
+            }
+            Command::ChangeDrive => {
+                self.change_drive_to(is_left, args.first().map(String::as_str))?;
                 return Ok(());
             }
             Command::ChangeDirectoryDialog => {
@@ -761,6 +815,11 @@ impl MainWindow {
             Command::SortByExtension => self.sort_active(is_left, SortType::Extension, false),
             Command::SortBySize => self.sort_active(is_left, SortType::Length, false),
             Command::SortByDate => self.sort_active(is_left, SortType::LastWriteTime, false),
+            Command::Sort => {
+                if let Some(t) = args.first().and_then(|s| SortType::from_token(s)) {
+                    self.sort_active(is_left, t, false);
+                }
+            }
             Command::SortReverseToggle => {
                 let t = state.borrow().sort_type;
                 self.sort_active(is_left, t, true);
@@ -961,6 +1020,21 @@ impl MainWindow {
         }
         view.refresh()?;
         self.update_selected_info(is_left);
+        Ok(())
+    }
+
+    /// アクティブペインを指定ドライブのルートへ移す（引数版 `ChangeDrive("C:")`）。
+    /// 引数は `C` / `C:` / `C:\` のいずれでも可。空や不正は何もしない。
+    fn change_drive_to(&self, is_left: bool, drive: Option<&str>) -> w::AnyResult<()> {
+        let Some(d) = drive.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Ok(());
+        };
+        let Some(letter) = d.chars().next().filter(|c| c.is_ascii_alphabetic()) else {
+            return Ok(());
+        };
+        let root = format!("{}:\\", letter.to_ascii_uppercase());
+        *self.pane(is_left).borrow_mut() = Pane::open(&root);
+        self.reload_side(is_left)?;
         Ok(())
     }
 
@@ -1237,10 +1311,10 @@ impl MainWindow {
             let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
             let shift = w::GetAsyncKeyState(co::VK::SHIFT);
             let chord = KeyChord::new(p.vkey_code.raw(), ctrl, shift, p.has_alt_key);
-            let resolved = this.keymap.borrow().resolve(&chord);
-            if let Some(cmd) = resolved {
+            let resolved = this.keymap.borrow().resolve_inv(&chord).cloned();
+            if let Some(inv) = resolved {
                 let is_left = !this.active_right.get();
-                let _ = this.exec(is_left, cmd);
+                let _ = this.exec(is_left, &inv);
             }
             Ok(())
         });
@@ -1860,7 +1934,9 @@ impl MainWindow {
                     };
                     let _ = tx.send(r);
                 }
-                debug_server::Request::Command { name } => self.debug_dispatch_command(&name, tx),
+                debug_server::Request::Command { name, args } => {
+                    self.debug_dispatch_command(&name, args, tx)
+                }
                 debug_server::Request::ViewKey { action } => {
                     let _ = tx.send(self.debug_view_key(&action));
                 }
@@ -1886,17 +1962,23 @@ impl MainWindow {
     /// `POST /command/<Name>` の振り分け。非モーダルは実行後 state を返す。モーダルを開くコマンドは
     /// 先に応答を返してから exec（ネストループでブロック）。未対応コマンドは弾く。
     #[cfg(feature = "debug-server")]
-    fn debug_dispatch_command(&self, name: &str, tx: Sender<debug_server::Response>) {
+    fn debug_dispatch_command(
+        &self,
+        name: &str,
+        args: Vec<String>,
+        tx: Sender<debug_server::Response>,
+    ) {
         let Some(cmd) = Command::from_token(name) else {
             let _ = tx.send(debug_server::Response::BadRequest(format!(
                 "unknown command: {name}"
             )));
             return;
         };
+        let inv = Invocation::new(cmd, args);
         let is_left = !self.active_right.get();
         match debug_command_class(cmd) {
             DebugCmdClass::NonModal => {
-                let r = match self.exec(is_left, cmd) {
+                let r = match self.exec(is_left, &inv) {
                     Ok(()) => debug_server::Response::Json(self.debug_state_value().to_string()),
                     Err(e) => debug_server::Response::Error(format!("exec error: {e}")),
                 };
@@ -1909,7 +1991,7 @@ impl MainWindow {
                 let _ = tx.send(debug_server::Response::Json(
                     "{\"maybe_modal\":true}".to_string(),
                 ));
-                let _ = self.exec(is_left, cmd);
+                let _ = self.exec(is_left, &inv);
             }
             DebugCmdClass::ModalWrite => {
                 if !self.debug.allow_write {
@@ -1922,7 +2004,7 @@ impl MainWindow {
                 let _ = tx.send(debug_server::Response::Json(
                     "{\"modal_opening\":true}".to_string(),
                 ));
-                let _ = self.exec(is_left, cmd);
+                let _ = self.exec(is_left, &inv);
             }
             DebugCmdClass::Unsupported => {
                 let _ = tx.send(debug_server::Response::BadRequest(format!(
@@ -4525,6 +4607,39 @@ impl MainWindow {
     }
 
     /// パスを入力してそこへ移動する。移動できなければエラーログ。
+    /// 指定パスへ移動する（引数版 `ChangeDirectory("path")`）。空や移動失敗はログのみ。
+    /// パスはマクロ展開済み（`<I:>`/`<FOLDERDIALOG>` 等は呼び出し側で解決される）。
+    fn change_directory(&self, is_left: bool, target: Option<&str>) -> w::AnyResult<()> {
+        let Some(input) = target.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Ok(());
+        };
+        let loc = Location::parse(input);
+        if self.pane(is_left).borrow_mut().navigate(loc) {
+            self.reload_side(is_left)?;
+        } else {
+            self.log.error(&format!("移動できません: {input}"));
+        }
+        Ok(())
+    }
+
+    /// 引数列のマクロを展開する。文字列置換（`<C>`/`<O>`/`<P>`）に加え、ダイアログ系
+    /// （`<I:>`/`<FOLDERDIALOG>`）は GUI ホスト越しにモーダルを開く。キャンセルは [`MacroAbort`]。
+    fn expand_args(&self, is_left: bool, args: &[String]) -> Result<Vec<String>, MacroAbort> {
+        let current = self.pane(is_left).borrow().loc_display();
+        let opposite = self.pane(!is_left).borrow().loc_display();
+        let cursor_path = {
+            let st = self.view(is_left).state();
+            let s = st.borrow();
+            match s.items.get(s.cursor) {
+                Some(it) if !it.is_parent => format!("{}/{}", current, it.name),
+                _ => String::new(),
+            }
+        };
+        let host = DialogMacroHost { app: self };
+        let ctx = MacroCtx { current, opposite, cursor_path, host: &host };
+        expand_macros(args, &ctx)
+    }
+
     fn change_directory_dialog(&self, is_left: bool) -> w::AnyResult<()> {
         let current = self.pane(is_left).borrow().loc_display();
         let Some(input) = dialog::input_box(
