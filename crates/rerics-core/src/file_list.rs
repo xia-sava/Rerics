@@ -91,6 +91,41 @@ fn split_base_ext(name: &str, is_dir: bool) -> (String, String) {
     }
 }
 
+/// 名前変換メニュー（原作 frmRename）の種別。`apply` で名前へ変換を適用する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NameCase {
+    /// 変換しない。
+    #[default]
+    None,
+    /// 名前全体を大文字に。
+    Upper,
+    /// 名前全体を小文字に。
+    Lower,
+    /// 拡張子だけ大文字に（主部は保つ）。
+    ExtUpper,
+    /// 拡張子だけ小文字に（主部は保つ）。
+    ExtLower,
+}
+
+impl NameCase {
+    /// `name` に変換を適用した新しい名前を返す。`is_dir` のときは拡張子なし扱い。
+    pub fn apply(self, name: &str, is_dir: bool) -> String {
+        match self {
+            NameCase::None => name.to_owned(),
+            NameCase::Upper => name.to_uppercase(),
+            NameCase::Lower => name.to_lowercase(),
+            NameCase::ExtUpper => {
+                let (base, ext) = split_base_ext(name, is_dir);
+                format!("{base}{}", ext.to_uppercase())
+            }
+            NameCase::ExtLower => {
+                let (base, ext) = split_base_ext(name, is_dir);
+                format!("{base}{}", ext.to_lowercase())
+            }
+        }
+    }
+}
+
 /// ソート種別。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum SortType {
@@ -1052,6 +1087,20 @@ mod tests {
         assert_eq!(split_base_ext("a.tar.gz", false), ("a.tar".to_owned(), ".gz".to_owned()));
         assert_eq!(split_base_ext("noext", false), ("noext".to_owned(), String::new()));
         assert_eq!(split_base_ext("dir.name", true), ("dir.name".to_owned(), String::new()));
+    }
+
+    #[test]
+    fn name_case_apply() {
+        assert_eq!(NameCase::None.apply("Foo.Txt", false), "Foo.Txt");
+        assert_eq!(NameCase::Upper.apply("Foo.Txt", false), "FOO.TXT");
+        assert_eq!(NameCase::Lower.apply("Foo.Txt", false), "foo.txt");
+        assert_eq!(NameCase::ExtUpper.apply("Foo.Txt", false), "Foo.TXT");
+        assert_eq!(NameCase::ExtLower.apply("Foo.Txt", false), "Foo.txt");
+        // 拡張子なし・dir は Ext 変換で主部不変。
+        assert_eq!(NameCase::ExtUpper.apply("noext", false), "noext");
+        assert_eq!(NameCase::ExtLower.apply("My.Dir", true), "My.Dir");
+        // 全体変換は dir でも効く。
+        assert_eq!(NameCase::Upper.apply("My.Dir", true), "MY.DIR");
     }
 
     #[test]
