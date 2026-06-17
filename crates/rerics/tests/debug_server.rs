@@ -715,6 +715,57 @@ fn nav_change_directory_macro_cancel_is_silent() {
     assert_eq!(after.trim(), parent.trim(), "cancel should not navigate (silent abort)");
 }
 
+/// リテラル引数版 `Sort("size")` がソート種別を切り替える（段階3＝リテラル引数コマンド）。
+#[test]
+fn sort_command_changes_sort_type() {
+    let server = Server::start(&["a.txt", "b.txt"], "");
+    // 既定は名前順。
+    let before = server.req("GET", "/state/panes/left/sort/type", "").unwrap().1;
+    assert_eq!(before.trim(), "\"FileName\"", "default sort should be FileName");
+
+    server.req("POST", "/command/Sort", r#"["size"]"#).unwrap();
+    let after = server.req("GET", "/state/panes/left/sort/type", "").unwrap().1;
+    assert_eq!(after.trim(), "\"Length\"", "Sort(\"size\") should switch to Length");
+}
+
+/// `SetCursorPosition("c.txt")` がカーソルを指定名のファイルへ移す。
+#[test]
+fn set_cursor_position_jumps_to_named_file() {
+    let server = Server::start(&["a.txt", "b.txt", "c.txt"], "");
+    server
+        .req("POST", "/command/SetCursorPosition", r#"["c.txt"]"#)
+        .unwrap();
+    let cur = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    let cur = cur.trim();
+    let name = server
+        .req("GET", &format!("/state/panes/left/items/{cur}/name"), "")
+        .unwrap()
+        .1;
+    assert_eq!(name.trim(), "\"c.txt\"", "cursor should land on c.txt");
+}
+
+/// `ChangeDrive("X:")` がアクティブペインを指定ドライブのルートへ移す。
+/// サンドボックスがどのドライブにあっても動くよう、現在地のドライブ文字を使う。
+#[test]
+fn change_drive_navigates_to_root() {
+    let server = Server::start(&["a.txt"], "");
+    let loc = server.req("GET", "/state/panes/left/location", "").unwrap().1;
+    let loc_raw = loc.trim().trim_matches('"').replace("\\\\", "\\");
+    let drive = &loc_raw[..1];
+
+    server
+        .req("POST", "/command/ChangeDrive", &format!(r#"["{drive}:"]"#))
+        .unwrap();
+    let after = poll(&server, "/state/panes/left/location", |b| {
+        b.trim().trim_matches('"').replace("\\\\", "\\") != loc_raw
+    });
+    let after_raw = after.trim().trim_matches('"').replace("\\\\", "\\");
+    assert!(
+        after_raw.starts_with(&format!("{drive}:")) && after_raw.len() <= 3,
+        "ChangeDrive should land on the drive root, got {after_raw}"
+    );
+}
+
 /// RegisterPath で現在地を登録し、JumpDialog でそこへ戻る。
 #[test]
 fn nav_register_and_jump() {

@@ -690,6 +690,14 @@ impl MainWindow {
                 let c = s.cursor as isize;
                 s.set_cursor(c + pr as isize, pr);
             }
+            Command::SetCursorPosition => {
+                if let Some(name) = args.first() {
+                    let mut s = state.borrow_mut();
+                    if let Some(idx) = s.items.iter().position(|it| it.name == *name) {
+                        s.set_cursor(idx as isize, pr);
+                    }
+                }
+            }
             Command::EnterDir => {
                 let cursor = state.borrow().cursor;
                 self.activate(is_left, cursor)?;
@@ -717,6 +725,10 @@ impl MainWindow {
             }
             Command::ChangeDirectory => {
                 self.change_directory(is_left, args.first().map(String::as_str))?;
+                return Ok(());
+            }
+            Command::ChangeDrive => {
+                self.change_drive_to(is_left, args.first().map(String::as_str))?;
                 return Ok(());
             }
             Command::ChangeDirectoryDialog => {
@@ -793,6 +805,11 @@ impl MainWindow {
             Command::SortByExtension => self.sort_active(is_left, SortType::Extension, false),
             Command::SortBySize => self.sort_active(is_left, SortType::Length, false),
             Command::SortByDate => self.sort_active(is_left, SortType::LastWriteTime, false),
+            Command::Sort => {
+                if let Some(t) = args.first().and_then(|s| SortType::from_token(s)) {
+                    self.sort_active(is_left, t, false);
+                }
+            }
             Command::SortReverseToggle => {
                 let t = state.borrow().sort_type;
                 self.sort_active(is_left, t, true);
@@ -993,6 +1010,21 @@ impl MainWindow {
         }
         view.refresh()?;
         self.update_selected_info(is_left);
+        Ok(())
+    }
+
+    /// アクティブペインを指定ドライブのルートへ移す（引数版 `ChangeDrive("C:")`）。
+    /// 引数は `C` / `C:` / `C:\` のいずれでも可。空や不正は何もしない。
+    fn change_drive_to(&self, is_left: bool, drive: Option<&str>) -> w::AnyResult<()> {
+        let Some(d) = drive.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Ok(());
+        };
+        let Some(letter) = d.chars().next().filter(|c| c.is_ascii_alphabetic()) else {
+            return Ok(());
+        };
+        let root = format!("{}:\\", letter.to_ascii_uppercase());
+        *self.pane(is_left).borrow_mut() = Pane::open(&root);
+        self.reload_side(is_left)?;
         Ok(())
     }
 
