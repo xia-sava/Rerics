@@ -1,7 +1,7 @@
 //! ファイル属性（読取専用/隠し/システム/アーカイブ）と更新日時の読み書き。
 //! 名前変更ダイアログの属性・日時変更で使う。
 //!
-//! 日時の文字列表現は `YYYY-MM-DD HH:MM:SS`（ローカル時刻）で統一する。
+//! 日時の文字列表現は `YYYY/MM/DD HH:MM:SS`（ローカル時刻）で統一する。
 
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -18,9 +18,9 @@ pub struct FileAttrs {
 }
 
 /// 日時文字列の書式（ローカル時刻）。
-const TIME_FMT: &str = "%Y-%m-%d %H:%M:%S";
+const TIME_FMT: &str = "%Y/%m/%d %H:%M:%S";
 
-/// `SystemTime` をローカル時刻の `YYYY-MM-DD HH:MM:SS` に整形する。範囲外は空文字。
+/// `SystemTime` をローカル時刻の `YYYY/MM/DD HH:MM:SS` に整形する。範囲外は空文字。
 pub fn format_local(t: SystemTime) -> String {
     let secs = match t.duration_since(SystemTime::UNIX_EPOCH) {
         Ok(d) => d.as_secs() as i64,
@@ -32,7 +32,7 @@ pub fn format_local(t: SystemTime) -> String {
     }
 }
 
-/// ローカル時刻の `YYYY-MM-DD HH:MM:SS` を `SystemTime` に解釈する。解釈できなければ `None`。
+/// ローカル時刻の `YYYY/MM/DD HH:MM:SS` を `SystemTime` に解釈する。解釈できなければ `None`。
 pub fn parse_local(s: &str) -> Option<SystemTime> {
     let naive = chrono::NaiveDateTime::parse_from_str(s.trim(), TIME_FMT).ok()?;
     let dt = Local.from_local_datetime(&naive).single()?;
@@ -46,6 +46,34 @@ pub fn parse_local(s: &str) -> Option<SystemTime> {
 /// path の更新日時を読む。取れなければ `None`。
 pub fn modified_time(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).ok()?.modified().ok()
+}
+
+/// path の作成日時を読む。取れなければ `None`。
+pub fn created_time(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).ok()?.created().ok()
+}
+
+/// `t` をローカル時刻で同日の 00:00:00 に丸めた `SystemTime` を返す（日時クイック設定の
+/// 「00:00:00」用）。範囲外などで丸められなければ `t` をそのまま返す。
+pub fn floor_to_local_midnight(t: SystemTime) -> SystemTime {
+    let secs = match t.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(d) => d.as_secs() as i64,
+        Err(_) => return t,
+    };
+    let Some(dt) = Local.timestamp_opt(secs, 0).single() else {
+        return t;
+    };
+    let Some(midnight) = dt.date_naive().and_hms_opt(0, 0, 0) else {
+        return t;
+    };
+    let Some(local) = Local.from_local_datetime(&midnight).single() else {
+        return t;
+    };
+    let s = local.timestamp();
+    if s < 0 {
+        return t;
+    }
+    SystemTime::UNIX_EPOCH + Duration::from_secs(s as u64)
 }
 
 #[cfg(windows)]
@@ -118,6 +146,22 @@ pub fn write_attrs(path: &Path, attrs: FileAttrs) -> std::io::Result<()> {
 /// path の更新日時を設定する。読取専用・ディレクトリでも通る（属性書込み権で開く）。
 #[cfg(windows)]
 pub fn set_modified_time(path: &Path, t: SystemTime) -> std::io::Result<()> {
+    win_set_times(path, None, Some(t))
+}
+
+/// path の作成日時を設定する。読取専用・ディレクトリでも通る（属性書込み権で開く）。
+#[cfg(windows)]
+pub fn set_created_time(path: &Path, t: SystemTime) -> std::io::Result<()> {
+    win_set_times(path, Some(t), None)
+}
+
+/// 作成日時・更新日時を SetFileTime で設定する（`None` の欄は据え置き）。
+#[cfg(windows)]
+fn win_set_times(
+    path: &Path,
+    creation: Option<SystemTime>,
+    write: Option<SystemTime>,
+) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
 
@@ -155,12 +199,18 @@ pub fn set_modified_time(path: &Path, t: SystemTime) -> std::io::Result<()> {
         fn CloseHandle(handle: isize) -> i32;
     }
 
-    let secs = match t.duration_since(SystemTime::UNIX_EPOCH) {
-        Ok(d) => d.as_secs(),
-        Err(_) => return Err(std::io::Error::other("時刻が UNIX エポックより前です")),
+    let to_ft = |t: SystemTime| -> std::io::Result<FileTime> {
+        let secs = match t.duration_since(SystemTime::UNIX_EPOCH) {
+            Ok(d) => d.as_secs(),
+            Err(_) => return Err(std::io::Error::other("時刻が UNIX エポックより前です")),
+        };
+        let intervals = (secs + EPOCH_DIFF_SECS) * 10_000_000;
+        Ok(FileTime { low: intervals as u32, high: (intervals >> 32) as u32 })
     };
-    let intervals = (secs + EPOCH_DIFF_SECS) * 10_000_000;
-    let ft = FileTime { low: intervals as u32, high: (intervals >> 32) as u32 };
+    let cft = creation.map(to_ft).transpose()?;
+    let wft = write.map(to_ft).transpose()?;
+    let cptr = cft.as_ref().map_or(ptr::null(), |f| f as *const FileTime);
+    let wptr = wft.as_ref().map_or(ptr::null(), |f| f as *const FileTime);
 
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
     let h = unsafe {
@@ -177,7 +227,7 @@ pub fn set_modified_time(path: &Path, t: SystemTime) -> std::io::Result<()> {
     if h == INVALID_HANDLE {
         return Err(std::io::Error::last_os_error());
     }
-    let ok = unsafe { SetFileTime(h, ptr::null(), ptr::null(), &ft) };
+    let ok = unsafe { SetFileTime(h, cptr, ptr::null(), wptr) };
     unsafe {
         CloseHandle(h);
     }
@@ -207,6 +257,12 @@ pub fn set_modified_time(path: &Path, t: SystemTime) -> std::io::Result<()> {
     f.set_modified(t)
 }
 
+/// 非 Windows では作成日時の設定はできない。
+#[cfg(not(windows))]
+pub fn set_created_time(_path: &Path, _t: SystemTime) -> std::io::Result<()> {
+    Err(std::io::Error::other("作成日時の設定は未対応です"))
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
@@ -234,8 +290,8 @@ mod tests {
     fn modified_time_round_trip() {
         let p = temp_path("time.txt");
         std::fs::write(&p, b"x").unwrap();
-        // 2021-06-15 12:34:56 ローカル。
-        let target = parse_local("2021-06-15 12:34:56").unwrap();
+        // 2021/06/15 12:34:56 ローカル。
+        let target = parse_local("2021/06/15 12:34:56").unwrap();
         set_modified_time(&p, target).unwrap();
         let got = modified_time(&p).unwrap();
         let a = got.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
@@ -245,10 +301,32 @@ mod tests {
     }
 
     #[test]
+    fn created_time_round_trip() {
+        let p = temp_path("ctime.txt");
+        std::fs::write(&p, b"x").unwrap();
+        let target = parse_local("2019/03/01 08:09:10").unwrap();
+        set_created_time(&p, target).unwrap();
+        let got = created_time(&p).unwrap();
+        let a = got.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+        let b = target.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+        assert_eq!(a, b, "作成日時が往復で一致する");
+        std::fs::remove_file(&p).unwrap();
+    }
+
+    #[test]
     fn time_format_parse_round_trip() {
-        let s = "2023-12-31 23:59:00";
+        let s = "2023/12/31 23:59:00";
         let t = parse_local(s).unwrap();
         assert_eq!(format_local(t), s);
         assert!(parse_local("not a time").is_none());
+    }
+
+    #[test]
+    fn floor_to_local_midnight_zeroes_time() {
+        let t = parse_local("2021/06/15 12:34:56").unwrap();
+        assert_eq!(format_local(floor_to_local_midnight(t)), "2021/06/15 00:00:00");
+        // すでに真夜中ならそのまま。
+        let m = parse_local("2021/06/15 00:00:00").unwrap();
+        assert_eq!(format_local(floor_to_local_midnight(m)), "2021/06/15 00:00:00");
     }
 }

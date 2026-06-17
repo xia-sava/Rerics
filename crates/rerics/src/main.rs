@@ -4350,20 +4350,26 @@ impl MainWindow {
         }
         let dir = self.pane(is_left).borrow().path().to_path_buf();
 
-        let (single, attrs, modified) = if targets.len() == 1 {
+        let (single, attrs, modified, created) = if targets.len() == 1 {
             let p = dir.join(&targets[0]);
             (
                 Some(targets[0].clone()),
                 rerics_core::read_attrs(&p).unwrap_or_default(),
                 rerics_core::modified_time(&p),
+                rerics_core::created_time(&p),
             )
         } else {
-            (None, rerics_core::FileAttrs::default(), None)
+            (None, rerics_core::FileAttrs::default(), None, None)
         };
 
-        let Some(res) =
-            dialog::rename_box(&self.wnd, single.as_deref(), targets.len(), attrs, modified)
-        else {
+        let Some(res) = dialog::rename_box(
+            &self.wnd,
+            single.as_deref(),
+            targets.len(),
+            attrs,
+            modified,
+            created,
+        ) else {
             return Ok(());
         };
 
@@ -4394,9 +4400,9 @@ impl MainWindow {
         let mut errors = 0usize;
         let mut changed = 0usize;
         let touch_attrs = res.attrs.iter().any(|a| a.is_some());
-        if touch_attrs || res.modified.is_some() {
+        if touch_attrs || res.modified.is_some() || res.created.is_some() {
             for p in &paths {
-                match self.apply_meta(p, &res.attrs, res.modified) {
+                match self.apply_meta(p, &res.attrs, res.modified, res.created) {
                     Ok(true) => changed += 1,
                     Ok(false) => {}
                     Err(e) => {
@@ -4438,10 +4444,15 @@ impl MainWindow {
         path: &std::path::Path,
         attrs: &[Option<bool>; 4],
         modified: Option<std::time::SystemTime>,
+        created: Option<std::time::SystemTime>,
     ) -> std::io::Result<bool> {
         let mut did = false;
         if let Some(t) = modified {
             rerics_core::set_modified_time(path, t)?;
+            did = true;
+        }
+        if let Some(t) = created {
+            rerics_core::set_created_time(path, t)?;
             did = true;
         }
         if attrs.iter().any(|a| a.is_some()) {
