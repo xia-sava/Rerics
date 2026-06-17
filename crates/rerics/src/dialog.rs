@@ -528,21 +528,33 @@ pub fn message_box(
 
     #[cfg(feature = "debug-server")]
     let (reg_title, reg_prompt, reg_wnd) = (title.to_string(), message.to_string(), wnd.clone());
-    if let Some(first) = buttons.first().cloned() {
-        wnd.on().wm_create(move |_| {
+    let first_btn = buttons.first().cloned();
+    let checkbox_k = checkbox.clone();
+    let wnd_create = wnd.clone();
+    wnd.on().wm_create(move |_| {
+        if let Some(first) = &first_btn {
             first.hwnd().SetFocus();
-            #[cfg(feature = "debug-server")]
-            crate::debug_server::modal_registry::push(
-                "message",
-                &reg_title,
-                &reg_prompt,
-                reg_wnd.hwnd().ptr() as isize,
-                false,
-                reg_buttons.clone(),
-            );
-            Ok(0)
-        });
-    }
+        }
+        #[cfg(feature = "debug-server")]
+        crate::debug_server::modal_registry::push(
+            "message",
+            &reg_title,
+            &reg_prompt,
+            reg_wnd.hwnd().ptr() as isize,
+            false,
+            reg_buttons.clone(),
+        );
+        // Shift 押下中だけ「すべてに適用」を自動チェックする（Shift＋はい/いいえで全適用＝conflict_box と同じ Shift トグル）。
+        if let Some(cb) = &checkbox_k {
+            let cb_k = cb.clone();
+            keyhook::push(wnd_create.hwnd(), move |vk, down| {
+                if vk == 0x10 {
+                    cb_k.set_check(down);
+                }
+            });
+        }
+        Ok(0)
+    });
 
     if let Some(idi) = style.icon() {
         if let Ok(mut guard) = w::HINSTANCE::NULL.LoadIcon(w::IdIdiStr::Idi(idi)) {
@@ -569,6 +581,9 @@ pub fn message_box(
     }
 
     let _ = wnd.show_modal(parent);
+    if has_all {
+        keyhook::pop();
+    }
     #[cfg(feature = "debug-server")]
     crate::debug_server::modal_registry::pop();
     let _ = buttons;
