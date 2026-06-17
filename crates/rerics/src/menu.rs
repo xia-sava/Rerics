@@ -48,6 +48,8 @@ const SORT_ITEMS: &[Item] = &[
     on("日付順(&D)", Command::SortByDate),
     SEP,
     on("昇順／降順を反転(&R)", Command::SortReverseToggle),
+    SEP,
+    on("ソート設定(&T)...", Command::SortDialog),
 ];
 
 const MENUS: &[MenuDef] = &[
