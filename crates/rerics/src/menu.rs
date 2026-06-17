@@ -8,10 +8,16 @@ use std::collections::HashMap;
 use rerics_core::Command;
 use winsafe::{self as w, co};
 
-/// メニュー項目。`label == "-"` はセパレータ、`cmd == None` は未対応（グレーアウト）。
-struct Item {
-    label: &'static str,
-    cmd: Option<Command>,
+/// メニュー項目。
+enum Item {
+    /// 実行可能（有効）な項目：ラベルと対応コマンド。
+    Cmd(&'static str, Command),
+    /// 未対応（グレーアウトで掲示のみ）。
+    Off(&'static str),
+    /// セパレータ。
+    Sep,
+    /// サブメニュー：ラベルと子項目列。
+    Sub(&'static str, &'static [Item]),
 }
 
 /// 1つのトップレベルメニューとその項目列。
@@ -20,15 +26,29 @@ struct MenuDef {
     items: &'static [Item],
 }
 
-const SEP: Item = Item { label: "-", cmd: None };
+const SEP: Item = Item::Sep;
 
 const fn on(label: &'static str, cmd: Command) -> Item {
-    Item { label, cmd: Some(cmd) }
+    Item::Cmd(label, cmd)
 }
 
 const fn off(label: &'static str) -> Item {
-    Item { label, cmd: None }
+    Item::Off(label)
 }
+
+const fn sub(label: &'static str, items: &'static [Item]) -> Item {
+    Item::Sub(label, items)
+}
+
+/// 表示>ソートのサブメニュー（並べ替え種別＋昇降反転）。
+const SORT_ITEMS: &[Item] = &[
+    on("名前順(&N)", Command::SortByName),
+    on("拡張子順(&E)", Command::SortByExtension),
+    on("サイズ順(&S)", Command::SortBySize),
+    on("日付順(&D)", Command::SortByDate),
+    SEP,
+    on("昇順／降順を反転(&R)", Command::SortReverseToggle),
+];
 
 const MENUS: &[MenuDef] = &[
     MenuDef {
@@ -64,11 +84,11 @@ const MENUS: &[MenuDef] = &[
     MenuDef {
         label: "表示(&V)",
         items: &[
-            off("ドライブリスト(&D)"),
-            off("ソート(&S)"),
+            on("ドライブリスト(&D)", Command::ChangeDriveDialog),
+            sub("ソート(&S)", SORT_ITEMS),
             on("パスマスク(&P)", Command::PathMask),
-            off("登録ディレクトリ(&R)"),
-            off("ディレクトリ履歴(&H)"),
+            on("登録ディレクトリ(&R)", Command::JumpDialog),
+            on("ディレクトリ履歴(&H)", Command::PathHistoryDialog),
             off("キーバインドリスト"),
             off("ログ表示切替"),
             off("サムネイル表示切替"),
@@ -130,24 +150,43 @@ pub fn build() -> w::SysResult<(w::HMENU, HashMap<u16, Command>)> {
     let mut map = HashMap::new();
     let mut next = MENU_ID_BASE;
     for md in MENUS {
-        let popup = w::HMENU::CreatePopupMenu()?;
-        for item in md.items {
-            if item.label == "-" {
-                popup.AppendMenu(co::MF::SEPARATOR, w::IdMenu::None, w::BmpPtrStr::None)?;
-            } else if let Some(cmd) = item.cmd {
-                let id = next;
-                next += 1;
-                map.insert(id, cmd);
-                popup.AppendMenu(co::MF::STRING, w::IdMenu::Id(id), w::BmpPtrStr::from_str(item.label))?;
-            } else {
-                popup.AppendMenu(
-                    co::MF::STRING | co::MF::GRAYED,
-                    w::IdMenu::None,
-                    w::BmpPtrStr::from_str(item.label),
-                )?;
-            }
-        }
+        let popup = build_popup(md.items, &mut map, &mut next)?;
         bar.AppendMenu(co::MF::POPUP, w::IdMenu::Menu(&popup), w::BmpPtrStr::from_str(md.label))?;
     }
     Ok((bar, map))
+}
+
+/// 項目列から1つのポップアップを組む（サブメニューは再帰）。有効項目には ID を採番して
+/// `map` に `ID → Command` を登録する。
+fn build_popup(
+    items: &[Item],
+    map: &mut HashMap<u16, Command>,
+    next: &mut u16,
+) -> w::SysResult<w::HMENU> {
+    let popup = w::HMENU::CreatePopupMenu()?;
+    for item in items {
+        match item {
+            Item::Sep => {
+                popup.AppendMenu(co::MF::SEPARATOR, w::IdMenu::None, w::BmpPtrStr::None)?;
+            }
+            Item::Cmd(label, cmd) => {
+                let id = *next;
+                *next += 1;
+                map.insert(id, *cmd);
+                popup.AppendMenu(co::MF::STRING, w::IdMenu::Id(id), w::BmpPtrStr::from_str(label))?;
+            }
+            Item::Off(label) => {
+                popup.AppendMenu(
+                    co::MF::STRING | co::MF::GRAYED,
+                    w::IdMenu::None,
+                    w::BmpPtrStr::from_str(label),
+                )?;
+            }
+            Item::Sub(label, sub_items) => {
+                let sub = build_popup(sub_items, map, next)?;
+                popup.AppendMenu(co::MF::POPUP, w::IdMenu::Menu(&sub), w::BmpPtrStr::from_str(label))?;
+            }
+        }
+    }
+    Ok(popup)
 }
