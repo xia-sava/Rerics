@@ -9,7 +9,9 @@ use std::rc::Rc;
 
 use std::time::SystemTime;
 
-use rerics_core::{ConflictResolution, FileAttrs, SortType, format_local, parse_local};
+use rerics_core::{
+    ConflictResolution, FileAttrs, SortType, floor_to_local_midnight, format_local, parse_local,
+};
 use winsafe::{self as w, co, gui, prelude::*};
 
 #[allow(non_snake_case)]
@@ -1061,11 +1063,39 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
 
 /// 名前変更ダイアログの結果。`name` は単一時の変更後名（複数一括は `None`）、
 /// `attrs` は RO/隠し/システム/アーカイブの各設定（`Some` で設定・`None` で据え置き）、
-/// `modified` は更新日時（`Some` で設定・`None` で据え置き）。
+/// `modified`/`created` は更新日時・作成日時（`Some` で設定・`None` で据え置き）。
 pub struct RenameResult {
     pub name: Option<String>,
     pub attrs: [Option<bool>; 4],
     pub modified: Option<SystemTime>,
+    pub created: Option<SystemTime>,
+}
+
+/// 日時欄の横の「...」ボタンに、原作の日時クイック設定メニュー（現在時刻／00:00:00）を
+/// 配線する。選んだ値を `edit` に書き込む。`TrackPopupMenu` 自身がモーダルループを回す
+/// ので、`TPM::RETURNCMD` で選択コマンドを同期取得する。
+fn quick_time_menu(btn: &gui::Button, edit: &gui::Edit) {
+    let edit = edit.clone();
+    let btnf = btn.clone();
+    btn.on().bn_clicked(move || {
+        let mut menu = w::HMENU::CreatePopupMenu()?;
+        menu.AppendMenu(co::MF::STRING, w::IdMenu::Id(1), w::BmpPtrStr::from_str("現在時刻"))?;
+        menu.AppendMenu(co::MF::STRING, w::IdMenu::Id(2), w::BmpPtrStr::from_str("00:00:00"))?;
+        let rc = btnf.hwnd().GetWindowRect()?;
+        let chosen = menu.TrackPopupMenu(
+            co::TPM::RETURNCMD | co::TPM::LEFTALIGN | co::TPM::TOPALIGN,
+            w::POINT::with(rc.left, rc.bottom),
+            btnf.hwnd(),
+        )?;
+        let now = SystemTime::now();
+        match chosen {
+            Some(1) => edit.set_text(&format_local(now))?,
+            Some(2) => edit.set_text(&format_local(floor_to_local_midnight(now)))?,
+            _ => {}
+        }
+        menu.DestroyMenu()?;
+        Ok(())
+    });
 }
 
 /// チェックボックスの状態を「設定する/しない/据え置き」に読み替える。
@@ -1086,15 +1116,10 @@ pub fn rename_box(
     count: usize,
     attrs: FileAttrs,
     modified: Option<SystemTime>,
+    created: Option<SystemTime>,
 ) -> Option<RenameResult> {
     let is_single = single.is_some();
-    let wnd = gui::WindowModal::new(gui::WindowModalOpts {
-        title: "名前と属性の変更",
-        size: gui::dpi(360, 340),
-        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
-        process_dlg_msgs: true,
-        ..Default::default()
-    });
+    let wnd = modal_window("名前の変更", 360, 340);
 
     let name_edit = if let Some(name) = single {
         let _ = gui::Label::new(
@@ -1121,7 +1146,7 @@ pub fn rename_box(
         let _ = gui::Label::new(
             &wnd,
             gui::LabelOpts {
-                text: &format!("{count} 個の項目に属性／更新日時を適用します。", count = count),
+                text: &format!("{count} 個の項目に属性／日時を適用します。", count = count),
                 position: gui::dpi(16, 16),
                 size: gui::dpi(328, 18),
                 ..Default::default()
@@ -1166,23 +1191,75 @@ pub fn rename_box(
     let _ = gui::Label::new(
         &wnd,
         gui::LabelOpts {
-            text: "更新日時 (YYYY-MM-DD HH:MM:SS・空欄=変更しない)",
-            position: gui::dpi(16, 172),
+            text: "日付（YYYY/MM/DD HH:MM:SS・空欄=変更しない）",
+            position: gui::dpi(16, 168),
             size: gui::dpi(328, 18),
             ..Default::default()
         },
     );
-    let time_text = match (is_single, modified) {
+    // 単一時は現在値でプリフィル、複数一括は空欄（＝据え置き）。更新日付が上・作成日時が下。
+    let pre = |t: Option<SystemTime>| match (is_single, t) {
         (true, Some(t)) => format_local(t),
         _ => String::new(),
     };
-    let time_edit = gui::Edit::new(
+    let _ = gui::Label::new(
+        &wnd,
+        gui::LabelOpts {
+            text: "更新日付(&U)",
+            position: gui::dpi(16, 193),
+            size: gui::dpi(76, 18),
+            ..Default::default()
+        },
+    );
+    let mtime_edit = gui::Edit::new(
         &wnd,
         gui::EditOpts {
-            text: &time_text,
+            text: &pre(modified),
             control_style: co::ES::AUTOHSCROLL,
-            position: gui::dpi(24, 194),
-            width: gui::dpi_x(240),
+            position: gui::dpi(96, 190),
+            width: gui::dpi_x(212),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+    let mtime_btn = gui::Button::new(
+        &wnd,
+        gui::ButtonOpts {
+            text: "...",
+            ctrl_id: 10,
+            position: gui::dpi(312, 190),
+            width: gui::dpi_x(26),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+    let _ = gui::Label::new(
+        &wnd,
+        gui::LabelOpts {
+            text: "作成日時(&C)",
+            position: gui::dpi(16, 221),
+            size: gui::dpi(76, 18),
+            ..Default::default()
+        },
+    );
+    let ctime_edit = gui::Edit::new(
+        &wnd,
+        gui::EditOpts {
+            text: &pre(created),
+            control_style: co::ES::AUTOHSCROLL,
+            position: gui::dpi(96, 218),
+            width: gui::dpi_x(212),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+    let ctime_btn = gui::Button::new(
+        &wnd,
+        gui::ButtonOpts {
+            text: "...",
+            ctrl_id: 11,
+            position: gui::dpi(312, 218),
+            width: gui::dpi_x(26),
             height: gui::dpi_y(22),
             ..Default::default()
         },
@@ -1212,32 +1289,37 @@ pub fn rename_box(
         },
     );
 
+    quick_time_menu(&mtime_btn, &mtime_edit);
+    quick_time_menu(&ctime_btn, &ctime_edit);
+
     let result: Rc<RefCell<Option<RenameResult>>> = Rc::new(RefCell::new(None));
 
-    #[cfg(feature = "debug-server")]
-    let reg_wnd = wnd.clone();
-    {
-        let wf = wnd.clone();
-        wnd.on().wm_create(move |_| {
-            focus_initial(wf.hwnd());
-            #[cfg(feature = "debug-server")]
-            crate::debug_server::modal_registry::push(
-                "rename",
-                "名前と属性の変更",
-                "名前/属性/更新日時の変更",
-                reg_wnd.hwnd().ptr() as isize,
-                true,
-                vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
-            );
-            Ok(0)
-        });
-    }
+    // 名前 Edit の初期キャレットは末尾（選択なし）に置く＝従来どおりの手触り。
+    // arm_modal は focus_initial の後に on_create を呼ぶので、ここで設定すれば残る。
+    let name_caret = name_edit.clone();
+    arm_modal(
+        &wnd,
+        "rename",
+        "名前の変更",
+        "名前/属性/日時の変更",
+        true,
+        vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
+        move |_| {
+            if let Some(e) = &name_caret {
+                if let Ok(t) = e.text() {
+                    let end = t.encode_utf16().count() as i32;
+                    e.set_selection(end, end);
+                }
+            }
+        },
+    );
     {
         let result = result.clone();
         let wnd2 = wnd.clone();
         let checks = checks.clone();
         let name_edit = name_edit.clone();
-        let time_edit = time_edit.clone();
+        let mtime_edit = mtime_edit.clone();
+        let ctime_edit = ctime_edit.clone();
         ok.on().bn_clicked(move || {
             let name = name_edit.as_ref().and_then(|e| e.text().ok()).map(|s| s.trim().to_owned());
             let attrs = [
@@ -1246,11 +1328,15 @@ pub fn rename_box(
                 cb_tristate(&checks[2]),
                 cb_tristate(&checks[3]),
             ];
-            let modified = time_edit.text().ok().and_then(|s| {
-                let s = s.trim();
-                if s.is_empty() { None } else { parse_local(s) }
-            });
-            *result.borrow_mut() = Some(RenameResult { name, attrs, modified });
+            let parse_time = |e: &gui::Edit| {
+                e.text().ok().and_then(|s| {
+                    let s = s.trim();
+                    if s.is_empty() { None } else { parse_local(s) }
+                })
+            };
+            let modified = parse_time(&mtime_edit);
+            let created = parse_time(&ctime_edit);
+            *result.borrow_mut() = Some(RenameResult { name, attrs, modified, created });
             wnd2.close();
             Ok(())
         });
@@ -1264,9 +1350,8 @@ pub fn rename_box(
     }
 
     let _ = wnd.show_modal(parent);
-    #[cfg(feature = "debug-server")]
-    crate::debug_server::modal_registry::pop();
-    let _ = (ok, cancel, checks, name_edit, time_edit);
+    disarm_modal();
+    let _ = (ok, cancel, checks, name_edit, mtime_edit, ctime_edit, mtime_btn, ctime_btn);
     result.borrow_mut().take()
 }
 
