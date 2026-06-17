@@ -4243,45 +4243,142 @@ impl MainWindow {
         if self.pane(is_left).borrow().is_archive() {
             return self.rename_in_archive(is_left);
         }
-        let view = self.view(is_left);
-        let old = {
-            let state = view.state();
+        // 対象＝選択（無ければカーソル）。1件なら名前編集つき単一、複数なら属性/日時の一括。
+        let targets: Vec<String> = {
+            let state = self.view(is_left).state();
             let s = state.borrow();
-            match s.items.get(s.cursor) {
-                Some(it) if !it.is_parent => it.name.clone(),
-                _ => return Ok(()),
+            let selected: Vec<String> = s
+                .items
+                .iter()
+                .filter(|it| it.selected && !it.is_parent)
+                .map(|it| it.name.clone())
+                .collect();
+            if selected.is_empty() {
+                match s.items.get(s.cursor) {
+                    Some(it) if !it.is_parent => vec![it.name.clone()],
+                    _ => Vec::new(),
+                }
+            } else {
+                selected
             }
         };
-        let new = dialog::input_box(
-            &self.wnd,
-            "名前の変更",
-            "新しい名前を入力して下さい。",
-            &old,
-            dialog::InputMode::Plain,
-        );
-        let Some(new) = new else {
-            return Ok(());
-        };
-        let new = new.trim();
-        if new.is_empty() || new == old {
+        if targets.is_empty() {
             return Ok(());
         }
         let dir = self.pane(is_left).borrow().path().to_path_buf();
-        if let Err(e) = std::fs::rename(dir.join(&old), dir.join(new)) {
-            let line = messages::rename_failure(&old, &e.to_string());
-            self.log.error(&line);
-            dialog::message_box(&self.wnd, "名前の変更", &line, dialog::MessageStyle::Error);
+
+        let (single, attrs, modified) = if targets.len() == 1 {
+            let p = dir.join(&targets[0]);
+            (
+                Some(targets[0].clone()),
+                rerics_core::read_attrs(&p).unwrap_or_default(),
+                rerics_core::modified_time(&p),
+            )
+        } else {
+            (None, rerics_core::FileAttrs::default(), None)
+        };
+
+        let Some(res) =
+            dialog::rename_box(&self.wnd, single.as_deref(), targets.len(), attrs, modified)
+        else {
             return Ok(());
+        };
+
+        // 単一は名前変更を先に処理し、以降の属性/日時は新パスへ適用する。
+        let mut paths: Vec<std::path::PathBuf> = targets.iter().map(|n| dir.join(n)).collect();
+        let mut cursor_name = single.clone();
+        if let (Some(old), Some(new)) = (single.as_ref(), res.name.as_ref()) {
+            let new = new.trim();
+            if !new.is_empty() && new != old.as_str() {
+                if let Err(e) = std::fs::rename(dir.join(old), dir.join(new)) {
+                    let line = messages::rename_failure(old, &e.to_string());
+                    self.log.error(&line);
+                    dialog::message_box(
+                        &self.wnd,
+                        "名前の変更",
+                        &line,
+                        dialog::MessageStyle::Error,
+                    );
+                    return Ok(());
+                }
+                self.log.normal(&messages::rename(old, new));
+                paths = vec![dir.join(new)];
+                cursor_name = Some(new.to_owned());
+            }
         }
-        self.log.normal(&messages::rename(&old, new));
+
+        // 属性・更新日時の適用（複数なら据え置き＝None のフィールドは触らない）。
+        let mut errors = 0usize;
+        let mut changed = 0usize;
+        let touch_attrs = res.attrs.iter().any(|a| a.is_some());
+        if touch_attrs || res.modified.is_some() {
+            for p in &paths {
+                match self.apply_meta(p, &res.attrs, res.modified) {
+                    Ok(true) => changed += 1,
+                    Ok(false) => {}
+                    Err(e) => {
+                        errors += 1;
+                        self.log.error(&format!(
+                            "属性/日時の変更に失敗: {} ({})",
+                            p.display(),
+                            e
+                        ));
+                    }
+                }
+            }
+            if changed > 0 {
+                self.log.normal(&format!("{changed} 件の属性／更新日時を変更しました。"));
+            }
+            if errors > 0 {
+                dialog::message_box(
+                    &self.wnd,
+                    "名前と属性の変更",
+                    &format!("{errors} 件の属性／更新日時の変更に失敗しました（ログ参照）。"),
+                    dialog::MessageStyle::Warning,
+                );
+            }
+        }
+
         self.reload_side(is_left)?;
-        let pr = self.view(is_left).page_rows();
-        self.view(is_left)
-            .state()
-            .borrow_mut()
-            .set_cursor_position(new, pr);
+        if let Some(n) = cursor_name {
+            let pr = self.view(is_left).page_rows();
+            self.view(is_left).state().borrow_mut().set_cursor_position(&n, pr);
+        }
         self.view(is_left).refresh()?;
         Ok(())
+    }
+
+    /// 1ファイルへ属性（据え置き＝None は触らない）と更新日時を適用する。
+    /// 何か変更したら `Ok(true)`、変更対象が無ければ `Ok(false)`。
+    fn apply_meta(
+        &self,
+        path: &std::path::Path,
+        attrs: &[Option<bool>; 4],
+        modified: Option<std::time::SystemTime>,
+    ) -> std::io::Result<bool> {
+        let mut did = false;
+        if let Some(t) = modified {
+            rerics_core::set_modified_time(path, t)?;
+            did = true;
+        }
+        if attrs.iter().any(|a| a.is_some()) {
+            let mut cur = rerics_core::read_attrs(path).unwrap_or_default();
+            if let Some(v) = attrs[0] {
+                cur.readonly = v;
+            }
+            if let Some(v) = attrs[1] {
+                cur.hidden = v;
+            }
+            if let Some(v) = attrs[2] {
+                cur.system = v;
+            }
+            if let Some(v) = attrs[3] {
+                cur.archive = v;
+            }
+            rerics_core::write_attrs(path, cur)?;
+            did = true;
+        }
+        Ok(did)
     }
 
     /// アクティブペインの選択（無ければカーソル）を確認ダイアログ付きで削除する。

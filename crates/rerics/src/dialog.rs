@@ -7,7 +7,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use rerics_core::{ConflictResolution, SortType};
+use std::time::SystemTime;
+
+use rerics_core::{ConflictResolution, FileAttrs, SortType, format_local, parse_local};
 use winsafe::{self as w, co, gui, prelude::*};
 
 #[allow(non_snake_case)]
@@ -829,6 +831,217 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
     let _ = (ok, cancel);
     let r = *result.borrow();
     r
+}
+
+/// 名前変更ダイアログの結果。`name` は単一時の変更後名（複数一括は `None`）、
+/// `attrs` は RO/隠し/システム/アーカイブの各設定（`Some` で設定・`None` で据え置き）、
+/// `modified` は更新日時（`Some` で設定・`None` で据え置き）。
+pub struct RenameResult {
+    pub name: Option<String>,
+    pub attrs: [Option<bool>; 4],
+    pub modified: Option<SystemTime>,
+}
+
+/// チェックボックスの状態を「設定する/しない/据え置き」に読み替える。
+fn cb_tristate(cb: &gui::CheckBox) -> Option<bool> {
+    match cb.state() {
+        co::BST::CHECKED => Some(true),
+        co::BST::UNCHECKED => Some(false),
+        _ => None,
+    }
+}
+
+/// 名前・属性・更新日時の変更ダイアログ。`single` が `Some` なら単一対象（名前編集可・
+/// 属性とチェックは現在値で初期化）、`None` なら `count` 件への一括（名前なし・属性は
+/// 据え置き＝中間状態で初期化）。OK なら [`RenameResult`]、中止/Esc なら `None`。
+pub fn rename_box(
+    parent: &impl GuiParent,
+    single: Option<&str>,
+    count: usize,
+    attrs: FileAttrs,
+    modified: Option<SystemTime>,
+) -> Option<RenameResult> {
+    let is_single = single.is_some();
+    let wnd = gui::WindowModal::new(gui::WindowModalOpts {
+        title: "名前と属性の変更",
+        size: gui::dpi(360, 340),
+        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
+        process_dlg_msgs: true,
+        ..Default::default()
+    });
+
+    let name_edit = if let Some(name) = single {
+        let _ = gui::Label::new(
+            &wnd,
+            gui::LabelOpts {
+                text: "名前(&N)",
+                position: gui::dpi(16, 16),
+                size: gui::dpi(80, 18),
+                ..Default::default()
+            },
+        );
+        Some(gui::Edit::new(
+            &wnd,
+            gui::EditOpts {
+                text: name,
+                control_style: co::ES::AUTOHSCROLL,
+                position: gui::dpi(96, 14),
+                width: gui::dpi_x(248),
+                height: gui::dpi_y(22),
+                ..Default::default()
+            },
+        ))
+    } else {
+        let _ = gui::Label::new(
+            &wnd,
+            gui::LabelOpts {
+                text: &format!("{count} 個の項目に属性／更新日時を適用します。", count = count),
+                position: gui::dpi(16, 16),
+                size: gui::dpi(328, 18),
+                ..Default::default()
+            },
+        );
+        None
+    };
+
+    // 属性チェック群。単一は2状態（現在値で初期化）、一括は3状態（中間＝据え置き）。
+    let style = if is_single { co::BS::AUTOCHECKBOX } else { co::BS::AUTO3STATE };
+    let init = |on: bool| {
+        if is_single {
+            if on { co::BST::CHECKED } else { co::BST::UNCHECKED }
+        } else {
+            co::BST::INDETERMINATE
+        }
+    };
+    let labels = [
+        ("読み取り専用(&R)", attrs.readonly),
+        ("隠し(&H)", attrs.hidden),
+        ("システム(&S)", attrs.system),
+        ("アーカイブ(&A)", attrs.archive),
+    ];
+    let checks: Vec<gui::CheckBox> = labels
+        .iter()
+        .enumerate()
+        .map(|(i, (label, on))| {
+            gui::CheckBox::new(
+                &wnd,
+                gui::CheckBoxOpts {
+                    text: label,
+                    control_style: style,
+                    check_state: init(*on),
+                    position: gui::dpi(24, 56 + i as i32 * 26),
+                    size: gui::dpi(300, 22),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
+
+    let _ = gui::Label::new(
+        &wnd,
+        gui::LabelOpts {
+            text: "更新日時 (YYYY-MM-DD HH:MM:SS・空欄=変更しない)",
+            position: gui::dpi(16, 172),
+            size: gui::dpi(328, 18),
+            ..Default::default()
+        },
+    );
+    let time_text = match (is_single, modified) {
+        (true, Some(t)) => format_local(t),
+        _ => String::new(),
+    };
+    let time_edit = gui::Edit::new(
+        &wnd,
+        gui::EditOpts {
+            text: &time_text,
+            control_style: co::ES::AUTOHSCROLL,
+            position: gui::dpi(24, 194),
+            width: gui::dpi_x(240),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+
+    let ok = gui::Button::new(
+        &wnd,
+        gui::ButtonOpts {
+            text: "OK",
+            control_style: co::BS::DEFPUSHBUTTON,
+            ctrl_id: 1,
+            position: gui::dpi(172, 290),
+            width: gui::dpi_x(80),
+            height: gui::dpi_y(26),
+            ..Default::default()
+        },
+    );
+    let cancel = gui::Button::new(
+        &wnd,
+        gui::ButtonOpts {
+            text: "キャンセル",
+            ctrl_id: 2,
+            position: gui::dpi(260, 290),
+            width: gui::dpi_x(84),
+            height: gui::dpi_y(26),
+            ..Default::default()
+        },
+    );
+
+    let result: Rc<RefCell<Option<RenameResult>>> = Rc::new(RefCell::new(None));
+
+    #[cfg(feature = "debug-server")]
+    let reg_wnd = wnd.clone();
+    {
+        let ok = ok.clone();
+        wnd.on().wm_create(move |_| {
+            ok.hwnd().SetFocus();
+            #[cfg(feature = "debug-server")]
+            crate::debug_server::modal_registry::push(
+                "rename",
+                "名前と属性の変更",
+                "名前/属性/更新日時の変更",
+                reg_wnd.hwnd().ptr() as isize,
+                true,
+                vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
+            );
+            Ok(0)
+        });
+    }
+    {
+        let result = result.clone();
+        let wnd2 = wnd.clone();
+        let checks = checks.clone();
+        let name_edit = name_edit.clone();
+        let time_edit = time_edit.clone();
+        ok.on().bn_clicked(move || {
+            let name = name_edit.as_ref().and_then(|e| e.text().ok()).map(|s| s.trim().to_owned());
+            let attrs = [
+                cb_tristate(&checks[0]),
+                cb_tristate(&checks[1]),
+                cb_tristate(&checks[2]),
+                cb_tristate(&checks[3]),
+            ];
+            let modified = time_edit.text().ok().and_then(|s| {
+                let s = s.trim();
+                if s.is_empty() { None } else { parse_local(s) }
+            });
+            *result.borrow_mut() = Some(RenameResult { name, attrs, modified });
+            wnd2.close();
+            Ok(())
+        });
+    }
+    {
+        let wnd2 = wnd.clone();
+        cancel.on().bn_clicked(move || {
+            wnd2.close();
+            Ok(())
+        });
+    }
+
+    let _ = wnd.show_modal(parent);
+    #[cfg(feature = "debug-server")]
+    crate::debug_server::modal_registry::pop();
+    let _ = (ok, cancel, checks, name_edit, time_edit);
+    result.borrow_mut().take()
 }
 
 /// 一覧から1つ選ぶモーダル。OK・ダブルクリック・Enter で選択 index を、中止/Esc で

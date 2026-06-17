@@ -561,6 +561,24 @@ fn archive_rename() {
     assert!(r2.contains("\"name\":\"b.txt\""), "b.txt must remain after failed rename: {r2}");
 }
 
+/// 非書庫の Rename は名前/属性/更新日時の専用モーダルを開く。debug-server からは
+/// チェック値を操作できないので、開いて OK で閉じても対象が壊れない（デッドロックしない）
+/// ことだけを担保する。属性/日時の適用ロジック自体は core 側でテスト済み。
+#[test]
+fn rename_meta_dialog_opens_and_closes() {
+    let server = Server::start_writable(&["a.txt"]);
+    // items は [.., a.txt]。CursorDown×1 で a.txt。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/Rename", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"rename\""), "should open rename meta modal: {modal}");
+    // 既定値のまま OK（名前据え置き＝改名なし）。
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    let items = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert!(items.contains("\"name\":\"a.txt\""), "a.txt should still exist: {items}");
+}
+
 /// ToRoot＝カレントのドライブルートへ移動する。
 #[test]
 fn nav_to_root() {
