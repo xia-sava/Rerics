@@ -3814,79 +3814,164 @@ impl MainWindow {
             self.log.warn("書庫内では連番リネームは未対応です。");
             return Ok(());
         }
-        let names = self.selected_or_cursor_names(is_left);
-        if names.is_empty() {
+        // テンプレート展開は元名の主部/拡張子分割に dir 判定が要るので (名前, dir か) で集める。
+        let items: Vec<(String, bool)> = {
+            let state = self.view(is_left).state();
+            let s = state.borrow();
+            let sel: Vec<(String, bool)> = s
+                .items
+                .iter()
+                .filter(|it| it.selected && !it.is_parent)
+                .map(|it| (it.name.clone(), it.is_dir))
+                .collect();
+            if sel.is_empty() {
+                match s.items.get(s.cursor) {
+                    Some(it) if !it.is_parent => vec![(it.name.clone(), it.is_dir)],
+                    _ => Vec::new(),
+                }
+            } else {
+                sel
+            }
+        };
+        if items.is_empty() {
             self.log.error(&messages::not_selected_error());
             return Ok(());
         }
+        let names: Vec<String> = items.iter().map(|(n, _)| n.clone()).collect();
         let dir = self.pane(is_left).borrow().path().to_path_buf();
+
+        // 命名規則テンプレートのプリセット（先頭＝既定）。原作 frmRenameSeq の cboFileName と同じ。
+        const PRESETS: &[&str] = &[
+            "File<No:0000>.ext",
+            "<F:r><F:e>",
+            "<F:r>_<No><F:e>",
+            "<F:r>_<No:0000><F:e>",
+        ];
 
         let wnd = gui::WindowModal::new(gui::WindowModalOpts {
             title: "連番リネーム",
-            size: gui::dpi(420, 220),
+            size: gui::dpi(444, 268),
             style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
             process_dlg_msgs: true,
             ..Default::default()
         });
-        let _lp = gui::Label::new(&wnd, gui::LabelOpts {
-            text: "プレフィックス:",
-            position: gui::dpi(12, 14),
+        let _lf = gui::Label::new(&wnd, gui::LabelOpts {
+            text: "命名規則(&F):",
+            position: gui::dpi(12, 15),
+            size: gui::dpi(80, 16),
+            ..Default::default()
+        });
+        // テンプレートは編集可能コンボ（プリセット選択＋自由入力）。先頭プリセットを初期選択。
+        let template = gui::ComboBox::new(&wnd, gui::ComboBoxOpts {
+            control_style: co::CBS::DROPDOWN,
+            position: gui::dpi(96, 12),
+            width: gui::dpi_x(336),
+            items: PRESETS,
+            selected_item: Some(0),
+            ..Default::default()
+        });
+        // マクロ凡例。
+        for (x, y, text) in [
+            (14, 40, "<F:r> … 元の主部"),
+            (14, 58, "<F:e> … 元の拡張子"),
+            (234, 40, "<No> … 連番"),
+            (234, 58, "<No:0000> … 0 で桁数指定"),
+        ] {
+            let _ = gui::Label::new(&wnd, gui::LabelOpts {
+                text,
+                position: gui::dpi(x, y),
+                size: gui::dpi(210, 16),
+                ..Default::default()
+            });
+        }
+
+        let _lb = gui::Label::new(&wnd, gui::LabelOpts {
+            text: "ファイル名主部(&B)",
+            position: gui::dpi(14, 84),
+            size: gui::dpi(140, 16),
+            ..Default::default()
+        });
+        let base_case = gui::RadioGroup::new(
+            &wnd,
+            &["命名規則通り", "大文字", "小文字", "先頭大文字"]
+                .iter()
+                .enumerate()
+                .map(|(i, label)| gui::RadioButtonOpts {
+                    text: label,
+                    position: gui::dpi(20, 104 + i as i32 * 22),
+                    size: gui::dpi(130, 20),
+                    selected: i == 0,
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>(),
+        );
+        let _le = gui::Label::new(&wnd, gui::LabelOpts {
+            text: "拡張子(&E)",
+            position: gui::dpi(170, 84),
+            size: gui::dpi(140, 16),
+            ..Default::default()
+        });
+        let ext_case = gui::RadioGroup::new(
+            &wnd,
+            &["命名規則通り", "大文字", "小文字", "先頭大文字"]
+                .iter()
+                .enumerate()
+                .map(|(i, label)| gui::RadioButtonOpts {
+                    text: label,
+                    position: gui::dpi(176, 104 + i as i32 * 22),
+                    size: gui::dpi(130, 20),
+                    selected: i == 0,
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>(),
+        );
+
+        let _ln = gui::Label::new(&wnd, gui::LabelOpts {
+            text: "連番(<No>)",
+            position: gui::dpi(322, 84),
             size: gui::dpi(110, 16),
             ..Default::default()
         });
-        // prefix は最初に作る（debug-server の入力欄ターゲットが先頭の Edit のため）。
-        let prefix = gui::Edit::new(&wnd, gui::EditOpts {
-            control_style: co::ES::AUTOHSCROLL,
-            position: gui::dpi(126, 12),
-            width: gui::dpi_x(280),
-            height: gui::dpi_y(22),
-            ..Default::default()
-        });
         let _ls = gui::Label::new(&wnd, gui::LabelOpts {
-            text: "開始番号:",
-            position: gui::dpi(12, 44),
+            text: "開始番号",
+            position: gui::dpi(322, 106),
             size: gui::dpi(110, 16),
             ..Default::default()
         });
         let start = gui::Edit::new(&wnd, gui::EditOpts {
             text: "1",
-            control_style: co::ES::AUTOHSCROLL,
-            position: gui::dpi(126, 42),
-            width: gui::dpi_x(80),
+            control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
+            position: gui::dpi(322, 124),
+            width: gui::dpi_x(70),
             height: gui::dpi_y(22),
             ..Default::default()
         });
-        let _ld = gui::Label::new(&wnd, gui::LabelOpts {
-            text: "桁数:",
-            position: gui::dpi(220, 44),
-            size: gui::dpi(50, 16),
+        let _li = gui::Label::new(&wnd, gui::LabelOpts {
+            text: "増分",
+            position: gui::dpi(322, 152),
+            size: gui::dpi(110, 16),
             ..Default::default()
         });
-        let digits = gui::Edit::new(&wnd, gui::EditOpts {
-            text: "3",
-            control_style: co::ES::AUTOHSCROLL,
-            position: gui::dpi(272, 42),
-            width: gui::dpi_x(60),
+        let step = gui::Edit::new(&wnd, gui::EditOpts {
+            text: "1",
+            control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
+            position: gui::dpi(322, 170),
+            width: gui::dpi_x(70),
             height: gui::dpi_y(22),
             ..Default::default()
         });
-        let keep = gui::CheckBox::new(&wnd, gui::CheckBoxOpts {
-            text: "元の拡張子を残す(&E)",
-            position: gui::dpi(126, 74),
-            size: gui::dpi(220, 18),
-            ..Default::default()
-        });
+
         let preview = gui::Label::new(&wnd, gui::LabelOpts {
             text: "",
-            position: gui::dpi(12, 104),
-            size: gui::dpi(394, 40),
+            position: gui::dpi(14, 200),
+            size: gui::dpi(418, 18),
             ..Default::default()
         });
         let ok = gui::Button::new(&wnd, gui::ButtonOpts {
             text: "OK",
             control_style: co::BS::DEFPUSHBUTTON,
             ctrl_id: 1,
-            position: gui::dpi(232, 156),
+            position: gui::dpi(256, 230),
             width: gui::dpi_x(80),
             height: gui::dpi_y(26),
             ..Default::default()
@@ -3894,25 +3979,39 @@ impl MainWindow {
         let cancel = gui::Button::new(&wnd, gui::ButtonOpts {
             text: "中止(&S)",
             ctrl_id: 2,
-            position: gui::dpi(320, 156),
+            position: gui::dpi(344, 230),
             width: gui::dpi_x(86),
             height: gui::dpi_y(26),
             ..Default::default()
         });
 
-        // プレビュー更新（フィールド変化のたびに先頭・末尾の変換例を出す）。
-        let update: std::rc::Rc<dyn Fn()> = {
-            let prefix = prefix.clone();
+        // 入力を読み取り (テンプレ, 開始, 刻み, 主部変換, 拡張子変換) にまとめる。
+        // 開始はパース不可で 0、刻みは 0/不可なら 1（1以上にクランプ）。
+        let read_params = {
+            let template = template.clone();
             let start = start.clone();
-            let digits = digits.clone();
-            let keep = keep.clone();
+            let step = step.clone();
+            let base_case = base_case.clone();
+            let ext_case = ext_case.clone();
+            move || {
+                let t = template.hwnd().GetWindowText().unwrap_or_default();
+                let s = start.text().unwrap_or_default().trim().parse::<u64>().unwrap_or(0);
+                let st = step.text().unwrap_or_default().trim().parse::<u64>().unwrap_or(1).max(1);
+                let bc = rerics_core::SeqCase::from_index(base_case.selected_index().unwrap_or(0) as usize);
+                let ec = rerics_core::SeqCase::from_index(ext_case.selected_index().unwrap_or(0) as usize);
+                (t, s, st, bc, ec)
+            }
+        };
+
+        // プレビュー更新（入力変化のたびに先頭・末尾の変換例を出す）。
+        let update: std::rc::Rc<dyn Fn()> = {
+            let read_params = read_params.clone();
             let preview = preview.clone();
+            let items = items.clone();
             let names = names.clone();
             std::rc::Rc::new(move || {
-                let p = prefix.text().unwrap_or_default();
-                let s = start.text().unwrap_or_default().trim().parse::<u64>().unwrap_or(1);
-                let d = digits.text().unwrap_or_default().trim().parse::<usize>().unwrap_or(3);
-                let news = rerics_core::sequence_names(&names, &p, s, d, keep.is_checked());
+                let (t, s, st, bc, ec) = read_params();
+                let news = rerics_core::sequence_rename(&items, &t, s, st, bc, ec);
                 let text = match (names.first(), news.first()) {
                     (Some(o1), Some(n1)) if names.len() > 1 => format!(
                         "例: {o1} → {n1}  …  {} → {}",
@@ -3925,7 +4024,7 @@ impl MainWindow {
                 let _ = preview.hwnd().SetWindowText(&text);
             })
         };
-        for ed in [&prefix, &start, &digits] {
+        for ed in [&start, &step] {
             let u = update.clone();
             ed.on().en_change(move || {
                 u();
@@ -3934,7 +4033,26 @@ impl MainWindow {
         }
         {
             let u = update.clone();
-            keep.on().bn_clicked(move || {
+            template.on().cbn_edit_change(move || {
+                u();
+                Ok(())
+            });
+        }
+        {
+            // プリセット選択時はコンボのテキストを選択値へ同期してから更新する。
+            let u = update.clone();
+            let tmpl = template.clone();
+            template.on().cbn_sel_change(move || {
+                if let Ok(Some(t)) = tmpl.items().selected_text() {
+                    let _ = tmpl.hwnd().SetWindowText(&t);
+                }
+                u();
+                Ok(())
+            });
+        }
+        for grp in [&base_case, &ext_case] {
+            let u = update.clone();
+            grp.on().bn_clicked(move || {
                 u();
                 Ok(())
             });
@@ -3943,20 +4061,18 @@ impl MainWindow {
         #[cfg(feature = "debug-server")]
         let reg_wnd = wnd.clone();
         {
-            let prefix = prefix.clone();
-            let keep = keep.clone();
+            let template = template.clone();
             let update = update.clone();
             wnd.on().wm_create(move |_| {
-                keep.set_check(true);
                 update();
-                prefix.hwnd().SetFocus();
+                template.hwnd().SetFocus();
                 #[cfg(feature = "debug-server")]
                 crate::debug_server::modal_registry::push(
                     "rename_seq",
                     "連番リネーム",
                     "",
                     reg_wnd.hwnd().ptr() as isize,
-                    true,
+                    false,
                     vec![("OK".to_string(), 1u16), ("中止(&S)".to_string(), 2u16)],
                 );
                 Ok(0)
@@ -3966,17 +4082,17 @@ impl MainWindow {
         {
             let this = self.clone();
             let wnd2 = wnd.clone();
-            let prefix = prefix.clone();
-            let start = start.clone();
-            let digits = digits.clone();
-            let keep = keep.clone();
+            let read_params = read_params.clone();
+            let items = items.clone();
             let names = names.clone();
             let dir = dir.clone();
             ok.on().bn_clicked(move || {
-                let p = prefix.text().unwrap_or_default();
-                let s = start.text().unwrap_or_default().trim().parse::<u64>().unwrap_or(1);
-                let d = digits.text().unwrap_or_default().trim().parse::<usize>().unwrap_or(3);
-                let news = rerics_core::sequence_names(&names, &p, s, d, keep.is_checked());
+                let (t, s, st, bc, ec) = read_params();
+                // 空テンプレは何もしない（ダイアログは閉じない）。
+                if t.trim().is_empty() {
+                    return Ok(());
+                }
+                let news = rerics_core::sequence_rename(&items, &t, s, st, bc, ec);
                 this.apply_sequence_rename(is_left, &dir, &names, &news);
                 wnd2.close();
                 Ok(())
@@ -3993,7 +4109,7 @@ impl MainWindow {
         let _ = wnd.show_modal(&self.wnd);
         #[cfg(feature = "debug-server")]
         crate::debug_server::modal_registry::pop();
-        let _ = (prefix, start, digits, keep, preview, ok, cancel);
+        let _ = (template, start, step, base_case, ext_case, preview, ok, cancel);
         Ok(())
     }
 

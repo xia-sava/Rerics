@@ -994,9 +994,9 @@ fn info_directory_information() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
-/// RenameSequenceDialog＝選択を連番にリネームする（プレフィックス＋0詰め＋拡張子保持）。
+/// RenameSequenceDialog＝既定テンプレート（File<No:0000>.ext）で選択を連番リネームする。
 #[test]
-fn rename_sequence_with_prefix() {
+fn rename_sequence_template_default() {
     let server = Server::start_writable(&["a.txt", "b.txt"]);
     // a.txt(1) と b.txt(2) をマークする（Space＝MarkToggle はマーク後に下へ）。
     server.req("POST", "/command/CursorDown", "").unwrap();
@@ -1007,15 +1007,35 @@ fn rename_sequence_with_prefix() {
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"rename_seq\""), "should open rename_seq modal: {modal}");
 
-    // プレフィックスを "img" に（先頭の Edit）。開始番号 1・桁 3・拡張子保持は既定。
-    server.req("POST", "/modal/text", "img").unwrap();
+    // 既定テンプレ＝File<No:0000>.ext・開始1・刻み1・変換なし。そのまま OK。
     server.req("POST", "/modal/command/ok", "").unwrap();
 
-    let items = poll(&server, "/state/panes/left/items", |b| b.contains("img001.txt"));
-    assert!(items.contains("\"name\":\"img001.txt\""), "a.txt -> img001.txt: {items}");
-    assert!(items.contains("\"name\":\"img002.txt\""), "b.txt -> img002.txt: {items}");
+    let items = poll(&server, "/state/panes/left/items", |b| b.contains("File0001.ext"));
+    assert!(items.contains("\"name\":\"File0001.ext\""), "a.txt -> File0001.ext: {items}");
+    assert!(items.contains("\"name\":\"File0002.ext\""), "b.txt -> File0002.ext: {items}");
     assert!(!items.contains("\"name\":\"a.txt\""), "old a.txt should be gone: {items}");
     assert!(!items.contains("\"name\":\"b.txt\""), "old b.txt should be gone: {items}");
+}
+
+/// 主部の大小変換ラジオ（小文字）が適用される＝File0001.ext → file0001.ext。
+/// 初期フォーカス＝テンプレコンボ。Tab で主部ラジオ群へ移り、↓↓で「小文字」を選ぶ。
+#[test]
+fn rename_sequence_base_lowercase() {
+    let server = Server::start_writable(&["a.txt", "b.txt"]);
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/MarkToggle", "").unwrap();
+    server.req("POST", "/command/MarkToggle", "").unwrap();
+
+    server.req("POST", "/command/RenameSequenceDialog", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/key/tab", "").unwrap();
+    server.req("POST", "/modal/key/down", "").unwrap();
+    server.req("POST", "/modal/key/down", "").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+
+    let items = poll(&server, "/state/panes/left/items", |b| b.contains("file0001.ext"));
+    assert!(items.contains("\"name\":\"file0001.ext\""), "主部小文字 a.txt -> file0001.ext: {items}");
+    assert!(items.contains("\"name\":\"file0002.ext\""), "主部小文字 b.txt -> file0002.ext: {items}");
 }
 
 /// SendToRecycled＝確認の上ゴミ箱へ送る（ファイルが一覧から消える）。

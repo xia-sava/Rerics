@@ -984,34 +984,127 @@ pub fn find_match(
     None
 }
 
-/// 連番リネームの新名を生成する。各 `names[i]` を `{prefix}{番号:0digits}{元拡張子?}`
-/// に変換する。`start` から連番、`digits` 桁で0詰め、`keep_ext` なら元の拡張子
-/// （先頭ドットつき）を残す。GUI から独立した純関数（プレビューと実行で共用）。
-pub fn sequence_names(
-    names: &[String],
-    prefix: &str,
+/// 連番リネームの主部・拡張子それぞれに掛ける大文字小文字変換（原作 frmRenameSeq の4択）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SeqCase {
+    /// 命名規則通り（変換しない）。
+    #[default]
+    None,
+    /// 大文字。
+    Upper,
+    /// 小文字。
+    Lower,
+    /// 先頭大文字（残りは小文字）。
+    Capitalize,
+}
+
+impl SeqCase {
+    /// ラジオ選択 index（0=命名規則通り/1=大文字/2=小文字/3=先頭大文字）から作る。
+    pub fn from_index(i: usize) -> Self {
+        match i {
+            1 => SeqCase::Upper,
+            2 => SeqCase::Lower,
+            3 => SeqCase::Capitalize,
+            _ => SeqCase::None,
+        }
+    }
+
+    /// 主部（拡張子なし）へ適用する。
+    fn apply_base(self, s: &str) -> String {
+        match self {
+            SeqCase::None => s.to_owned(),
+            SeqCase::Upper => s.to_uppercase(),
+            SeqCase::Lower => s.to_lowercase(),
+            SeqCase::Capitalize => capitalize(s),
+        }
+    }
+
+    /// 拡張子（先頭ドットつき・空もあり）へ適用する。ドットは保ったまま中身を変換する。
+    fn apply_ext(self, s: &str) -> String {
+        match self {
+            SeqCase::None => s.to_owned(),
+            SeqCase::Upper => s.to_uppercase(),
+            SeqCase::Lower => s.to_lowercase(),
+            SeqCase::Capitalize => match s.strip_prefix('.') {
+                Some(rest) => format!(".{}", capitalize(rest)),
+                None => capitalize(s),
+            },
+        }
+    }
+}
+
+/// 先頭1文字を大文字、残りを小文字にする。
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+        None => String::new(),
+    }
+}
+
+/// 連番リネームの命名規則テンプレートを解釈し、新しい名前を生成する純関数
+/// （プレビューと実行で共用）。トークンは `<F:r>`=元主部・`<F:e>`=元拡張子（ドット込み）・
+/// `<No>`=連番・`<No:0000>`=`0` の個数で桁数を指定したゼロ埋め連番。連番は `start` から
+/// `step` 刻み。展開後の名前を主部/拡張子へ再分割し、それぞれに変換を適用して再結合する。
+/// 各 `items[i]` は `(名前, ディレクトリか)`。
+pub fn sequence_rename(
+    items: &[(String, bool)],
+    template: &str,
     start: u64,
-    digits: usize,
-    keep_ext: bool,
+    step: u64,
+    base_case: SeqCase,
+    ext_case: SeqCase,
 ) -> Vec<String> {
-    let width = digits.max(1);
-    names
+    items
         .iter()
         .enumerate()
-        .map(|(i, name)| {
-            let num = start + i as u64;
-            let ext = if keep_ext { ext_with_dot(name) } else { String::new() };
-            format!("{prefix}{num:0width$}{ext}")
+        .map(|(i, (name, is_dir))| {
+            let no = start + i as u64 * step;
+            let (obase, oext) = split_base_ext(name, *is_dir);
+            let expanded = expand_seq_template(template, &obase, &oext, no);
+            let (base, ext) = split_base_ext(&expanded, *is_dir);
+            format!("{}{}", base_case.apply_base(&base), ext_case.apply_ext(&ext))
         })
         .collect()
 }
 
-/// ファイル名から拡張子を先頭ドットつきで取り出す（"a.txt"→".txt"・".bashrc"や
-/// 拡張子なしは ""）。最後のドット以降を拡張子とみなす。
-fn ext_with_dot(name: &str) -> String {
-    match name.rsplit_once('.') {
-        Some((base, ext)) if !base.is_empty() => format!(".{ext}"),
-        _ => String::new(),
+/// テンプレート1件分を展開する。未知の `<...>` はそのまま残し、閉じない `<` は文字として扱う。
+fn expand_seq_template(template: &str, base: &str, ext: &str, no: u64) -> String {
+    let chars: Vec<char> = template.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '<' {
+            if let Some(rel) = chars[i + 1..].iter().position(|&c| c == '>') {
+                let token: String = chars[i + 1..i + 1 + rel].iter().collect();
+                out.push_str(&expand_seq_token(&token, base, ext, no));
+                i += rel + 2;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// `<...>` 内の1トークンを値へ。`F:r`→主部・`F:e`→拡張子・`F`→元の名前・`No`/`No:fmt`→連番。
+fn expand_seq_token(token: &str, base: &str, ext: &str, no: u64) -> String {
+    let (name, arg) = match token.split_once(':') {
+        Some((n, a)) => (n, Some(a)),
+        None => (token, None),
+    };
+    match name.to_ascii_uppercase().as_str() {
+        "F" => match arg.map(str::to_ascii_uppercase) {
+            Some(a) if a.contains('E') => ext.to_owned(),
+            Some(a) if a.contains('R') => base.to_owned(),
+            _ => format!("{base}{ext}"),
+        },
+        "NO" => {
+            let width = arg.map_or(0, |a| a.chars().filter(|&c| c == '0').count());
+            format!("{no:0width$}")
+        }
+        _ => format!("<{token}>"),
     }
 }
 
@@ -1064,14 +1157,59 @@ mod tests {
     }
 
     #[test]
-    fn sequence_names_pads_keeps_or_drops_ext() {
-        let names = vec!["a.txt".to_owned(), "b.jpg".to_owned(), "noext".to_owned()];
-        // 拡張子を保持。
-        let out = sequence_names(&names, "img", 1, 3, true);
-        assert_eq!(out, vec!["img001.txt", "img002.jpg", "img003"]);
-        // 拡張子を残さず・桁上がりも 0 詰め幅で。
-        let out2 = sequence_names(&names, "p", 9, 2, false);
-        assert_eq!(out2, vec!["p09", "p10", "p11"]);
+    fn sequence_rename_expands_template() {
+        let items = vec![
+            ("Photo.JPG".to_owned(), false),
+            ("note.txt".to_owned(), false),
+            ("noext".to_owned(), false),
+        ];
+        // <F:r>_<No:0000><F:e>＝主部＋_＋4桁連番＋元拡張子（変換なし）。
+        let out =
+            sequence_rename(&items, "<F:r>_<No:0000><F:e>", 1, 1, SeqCase::None, SeqCase::None);
+        assert_eq!(out, vec!["Photo_0001.JPG", "note_0002.txt", "noext_0003"]);
+        // 固定主部＋3桁連番＋リテラル拡張子。開始0・刻み5。
+        let out2 = sequence_rename(&items, "File<No:000>.dat", 0, 5, SeqCase::None, SeqCase::None);
+        assert_eq!(out2, vec!["File000.dat", "File005.dat", "File010.dat"]);
+        // <No>（桁指定なし）はゼロ埋めしない。<F:e> が無ければ拡張子は付かない。
+        let out3 = sequence_rename(&items[..1], "<F:r>-<No>", 8, 1, SeqCase::None, SeqCase::None);
+        assert_eq!(out3, vec!["Photo-8"]);
+    }
+
+    #[test]
+    fn sequence_rename_applies_case() {
+        let jpg = vec![("Photo.JPG".to_owned(), false)];
+        assert_eq!(
+            sequence_rename(&jpg, "<F:r><F:e>", 1, 1, SeqCase::Lower, SeqCase::Lower),
+            vec!["photo.jpg"]
+        );
+        assert_eq!(
+            sequence_rename(&jpg, "<F:r><F:e>", 1, 1, SeqCase::Upper, SeqCase::Upper),
+            vec!["PHOTO.JPG"]
+        );
+        // 先頭大文字＝主部は先頭1字 upper＋残り lower、拡張子はドット維持＋先頭 upper＋残り lower。
+        let cap = sequence_rename(
+            &[("hELLo.HTML".to_owned(), false)],
+            "<F:r><F:e>",
+            1,
+            1,
+            SeqCase::Capitalize,
+            SeqCase::Capitalize,
+        );
+        assert_eq!(cap, vec!["Hello.Html"]);
+    }
+
+    #[test]
+    fn sequence_rename_directory_has_no_ext() {
+        // ディレクトリは拡張子なし扱い＝全体が主部、<F:e> は空。
+        let dir = vec![("my.folder".to_owned(), true)];
+        assert_eq!(
+            sequence_rename(&dir, "<F:r>_<No>", 1, 1, SeqCase::Upper, SeqCase::None),
+            vec!["MY.FOLDER_1"]
+        );
+        assert_eq!(
+            sequence_rename(&dir, "<F:r><F:e>", 1, 1, SeqCase::None, SeqCase::None),
+            vec!["my.folder"]
+        );
     }
 
     fn state_with(n: usize) -> FileListState {
