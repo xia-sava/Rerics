@@ -41,8 +41,8 @@ use tab_bar::TabBar;
 use task::{ArchiveOutcome, ChannelHost, OpKind, TaskControl, TaskEntry, WorkerEvent};
 use viewer::ViewerView;
 use rerics_core::{
-    Column, Command, Config, FileListState, KeyChord, KeyMap, Location, LogLevel, MediaKind, Pane,
-    SortType, WindowState, data_dir, messages, open_archive,
+    Column, Command, Config, FileListState, Invocation, KeyChord, KeyMap, Location, LogLevel,
+    MediaKind, Pane, SortType, WindowState, data_dir, messages, open_archive,
 };
 use winsafe::{self as w, co, gui, prelude::*};
 
@@ -438,7 +438,7 @@ impl MainWindow {
             let this = self.clone();
             self.wnd.on().wm_command_acc_menu(id, move || {
                 let is_left = !this.active_right.get();
-                this.exec(is_left, cmd)?;
+                this.exec(is_left, &Invocation::bare(cmd))?;
                 Ok(())
             });
         }
@@ -621,7 +621,8 @@ impl MainWindow {
         Ok(())
     }
 
-    fn exec(&self, is_left: bool, cmd: Command) -> w::AnyResult<()> {
+    fn exec(&self, is_left: bool, inv: &Invocation) -> w::AnyResult<()> {
+        let cmd = inv.command;
         let view = self.view(is_left);
         // 書庫の読込中はキー入力を抑止し、Esc（ClearAll）と「親へ戻る」（ToParent・既定 BS）を
         // 展開中止に割り当てる。デカい書庫にうっかり潜った時、咄嗟の「出る」操作で抜けられる。
@@ -1237,10 +1238,10 @@ impl MainWindow {
             let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
             let shift = w::GetAsyncKeyState(co::VK::SHIFT);
             let chord = KeyChord::new(p.vkey_code.raw(), ctrl, shift, p.has_alt_key);
-            let resolved = this.keymap.borrow().resolve(&chord);
-            if let Some(cmd) = resolved {
+            let resolved = this.keymap.borrow().resolve_inv(&chord).cloned();
+            if let Some(inv) = resolved {
                 let is_left = !this.active_right.get();
-                let _ = this.exec(is_left, cmd);
+                let _ = this.exec(is_left, &inv);
             }
             Ok(())
         });
@@ -1860,7 +1861,9 @@ impl MainWindow {
                     };
                     let _ = tx.send(r);
                 }
-                debug_server::Request::Command { name } => self.debug_dispatch_command(&name, tx),
+                debug_server::Request::Command { name, args } => {
+                    self.debug_dispatch_command(&name, args, tx)
+                }
                 debug_server::Request::ViewKey { action } => {
                     let _ = tx.send(self.debug_view_key(&action));
                 }
@@ -1886,17 +1889,23 @@ impl MainWindow {
     /// `POST /command/<Name>` の振り分け。非モーダルは実行後 state を返す。モーダルを開くコマンドは
     /// 先に応答を返してから exec（ネストループでブロック）。未対応コマンドは弾く。
     #[cfg(feature = "debug-server")]
-    fn debug_dispatch_command(&self, name: &str, tx: Sender<debug_server::Response>) {
+    fn debug_dispatch_command(
+        &self,
+        name: &str,
+        args: Vec<String>,
+        tx: Sender<debug_server::Response>,
+    ) {
         let Some(cmd) = Command::from_token(name) else {
             let _ = tx.send(debug_server::Response::BadRequest(format!(
                 "unknown command: {name}"
             )));
             return;
         };
+        let inv = Invocation::new(cmd, args);
         let is_left = !self.active_right.get();
         match debug_command_class(cmd) {
             DebugCmdClass::NonModal => {
-                let r = match self.exec(is_left, cmd) {
+                let r = match self.exec(is_left, &inv) {
                     Ok(()) => debug_server::Response::Json(self.debug_state_value().to_string()),
                     Err(e) => debug_server::Response::Error(format!("exec error: {e}")),
                 };
@@ -1909,7 +1918,7 @@ impl MainWindow {
                 let _ = tx.send(debug_server::Response::Json(
                     "{\"maybe_modal\":true}".to_string(),
                 ));
-                let _ = self.exec(is_left, cmd);
+                let _ = self.exec(is_left, &inv);
             }
             DebugCmdClass::ModalWrite => {
                 if !self.debug.allow_write {
@@ -1922,7 +1931,7 @@ impl MainWindow {
                 let _ = tx.send(debug_server::Response::Json(
                     "{\"modal_opening\":true}".to_string(),
                 ));
-                let _ = self.exec(is_left, cmd);
+                let _ = self.exec(is_left, &inv);
             }
             DebugCmdClass::Unsupported => {
                 let _ = tx.send(debug_server::Response::BadRequest(format!(

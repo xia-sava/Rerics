@@ -354,6 +354,38 @@ fn debug_server_smoke() {
     assert!(pc.contains("\"cursor\""), "resolved_colors should list palette: {pc}");
 }
 
+/// `/command` の body 引数（JSON 文字列配列）が受理され、引数を見ないコマンドでは
+/// 無害に無視されること、不正な body は 400 になることを確認する（引数基盤の配線検証）。
+#[test]
+fn command_accepts_json_array_args() {
+    let server = Server::start(&["a.txt", "b.txt", "c.txt"], "");
+
+    // 引数を取らない CursorDown に引数を付けても従来どおり動く（無視される）。
+    let (st, _) = server
+        .req("POST", "/command/CursorDown", r#"["ignored"]"#)
+        .expect("CursorDown with args");
+    assert_eq!(st, 200, "command with JSON array body should be accepted");
+    let c = server
+        .req("GET", "/state/panes/left/cursor", "")
+        .expect("cursor")
+        .1;
+    assert_eq!(c.trim(), "1", "cursor should still advance with args present");
+
+    // 配列でない body は 400。
+    let bad = server
+        .req("POST", "/command/CursorDown", "\"notarray\"")
+        .expect("bad body")
+        .0;
+    assert_eq!(bad, 400, "non-array JSON body should be 400");
+
+    // 文字列でない要素を含む配列も 400。
+    let bad2 = server
+        .req("POST", "/command/CursorDown", "[1, 2]")
+        .expect("bad elem")
+        .0;
+    assert_eq!(bad2, 400, "non-string args should be 400");
+}
+
 /// 書庫への追加（非衝突＝無言 append）と、同名衝突→「再構築して置換」の配線を検証する。
 /// 観測はすべて `/state` 経由（右ペインは zip の中＝反映が見える）。
 #[test]

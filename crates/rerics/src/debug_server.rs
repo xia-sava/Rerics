@@ -111,7 +111,8 @@ pub enum Request {
     /// `GET /presentation[/<pointer>]`：解決済みの外見情報（色/フォント/レイアウト寸法）。
     Presentation { pointer: String },
     /// `POST /command/<Name>`：`Command` をアクティブ側ペインに実行（非モーダルのみ）。
-    Command { name: String },
+    /// body が JSON 文字列配列（例 `["D:"]`）なら引数として渡す。空 body は引数なし。
+    Command { name: String, args: Vec<String> },
     /// `POST /view/key/<action>`：重ね表示中ビューアの操作（next/prev/close）。
     ViewKey { action: String },
     /// `GET /snapshot[/<spec>]`：画面 PNG。`spec` は ""（全体）・名前付き要素・
@@ -241,7 +242,19 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
         }
         tiny_http::Method::Post => {
             if let Some(name) = path.strip_prefix("/command/") {
-                Some(Request::Command { name: name.trim_end_matches('/').to_string() })
+                let mut body = String::new();
+                let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);
+                match parse_command_args(&body) {
+                    Ok(args) => Some(Request::Command {
+                        name: name.trim_end_matches('/').to_string(),
+                        args,
+                    }),
+                    Err(msg) => {
+                        let _ = req
+                            .respond(tiny_http::Response::from_string(msg).with_status_code(400));
+                        return;
+                    }
+                }
             } else if let Some(action) = path.strip_prefix("/view/key/") {
                 Some(Request::ViewKey { action: action.trim_end_matches('/').to_string() })
             } else if let Some(key) = path.strip_prefix("/modal/key/") {
@@ -298,6 +311,26 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
             );
         }
     }
+}
+
+/// `POST /command/<Name>` の body を引数列に解釈する。空（空白のみ）＝引数なし。
+/// 非空なら JSON 文字列配列（例 `["D:", "foo"]`）を要求する。
+fn parse_command_args(body: &str) -> Result<Vec<String>, String> {
+    if body.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let val: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| format!("command body must be a JSON array of strings: {e}"))?;
+    let arr = val
+        .as_array()
+        .ok_or_else(|| "command body must be a JSON array of strings".to_string())?;
+    arr.iter()
+        .map(|v| {
+            v.as_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| "command args must all be strings".to_string())
+        })
+        .collect()
 }
 
 fn json_response(body: String) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {

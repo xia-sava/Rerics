@@ -257,6 +257,109 @@ impl Command {
     }
 }
 
+/// 「コマンド＋引数」一回分の呼び出し。キーバインド・メニュー・スクリプトの共通入口。
+///
+/// 引数なしコマンドは `args` が空。引数文字列はマクロ展開前の生の値（`<I:…>` 等を含み得る）で、
+/// 実行直前に展開する。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Invocation {
+    pub command: Command,
+    pub args: Vec<String>,
+}
+
+impl Invocation {
+    /// 引数なしの呼び出し。
+    pub fn bare(command: Command) -> Self {
+        Self { command, args: Vec::new() }
+    }
+
+    /// 引数つきの呼び出し。
+    pub fn new(command: Command, args: Vec<String>) -> Self {
+        Self { command, args }
+    }
+
+    /// 設定トークンを解釈する。`Name`（引数なし）と `Name("a", "b")`（引数つき）に対応。
+    /// 引数はダブルクォート区切り・`\"`/`\\` エスケープ可。解釈できなければ `None`。
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim();
+        match s.find('(') {
+            None => Some(Self::bare(Command::from_token(s)?)),
+            Some(open) => {
+                if !s.ends_with(')') {
+                    return None;
+                }
+                let command = Command::from_token(s[..open].trim())?;
+                let args = parse_arg_list(&s[open + 1..s.len() - 1])?;
+                Some(Self { command, args })
+            }
+        }
+    }
+
+    /// 設定トークンへ変換する。引数なしは `Name`（＝従来表記・後方互換）、ありは `Name("a", "b")`。
+    pub fn to_token_string(&self) -> String {
+        let name = self.command.as_token();
+        if self.args.is_empty() {
+            return name.to_owned();
+        }
+        let quoted: Vec<String> = self
+            .args
+            .iter()
+            .map(|a| format!("\"{}\"", a.replace('\\', "\\\\").replace('"', "\\\"")))
+            .collect();
+        format!("{}({})", name, quoted.join(", "))
+    }
+}
+
+impl From<Command> for Invocation {
+    fn from(command: Command) -> Self {
+        Self::bare(command)
+    }
+}
+
+/// `"a", "b"` 形式（括弧の中身）をダブルクォート区切りの引数列に分解する。
+/// 空（空白のみ）なら空配列。文法に合わなければ `None`。
+fn parse_arg_list(s: &str) -> Option<Vec<String>> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut args = Vec::new();
+    let mut chars = s.chars().peekable();
+    loop {
+        while chars.peek().is_some_and(|c| c.is_whitespace()) {
+            chars.next();
+        }
+        if chars.next()? != '"' {
+            return None;
+        }
+        let mut buf = String::new();
+        loop {
+            match chars.next()? {
+                '\\' => match chars.next()? {
+                    '"' => buf.push('"'),
+                    '\\' => buf.push('\\'),
+                    other => {
+                        buf.push('\\');
+                        buf.push(other);
+                    }
+                },
+                '"' => break,
+                c => buf.push(c),
+            }
+        }
+        args.push(buf);
+        while chars.peek().is_some_and(|c| c.is_whitespace()) {
+            chars.next();
+        }
+        match chars.next() {
+            None => break,
+            Some(',') => continue,
+            Some(_) => return None,
+        }
+    }
+    Some(args)
+}
+
 /// 特殊キーの VK ⇔ トークン名の対応表。英数字は別途生成する。
 const KEY_NAMES: &[(u16, &str)] = &[
     (vk::BACK, "BackSpace"),
@@ -375,7 +478,7 @@ impl KeyChord {
 /// [`KeyMap::default`] がデフォルトバインド一式、[`KeyMap::new`] が空のマップを返す。
 #[derive(Debug, Clone)]
 pub struct KeyMap {
-    map: HashMap<KeyChord, Command>,
+    map: HashMap<KeyChord, Invocation>,
 }
 
 impl Default for KeyMap {
@@ -465,8 +568,15 @@ impl KeyMap {
         Self { map: HashMap::new() }
     }
 
+    /// 引数なしコマンドを割り当てる（既定マップ記述用の簡易版）。
     pub fn bind(&mut self, chord: KeyChord, cmd: Command) -> &mut Self {
-        self.map.insert(chord, cmd);
+        self.map.insert(chord, Invocation::bare(cmd));
+        self
+    }
+
+    /// 引数つきの呼び出しを割り当てる。
+    pub fn bind_inv(&mut self, chord: KeyChord, inv: Invocation) -> &mut Self {
+        self.map.insert(chord, inv);
         self
     }
 
@@ -474,28 +584,34 @@ impl KeyMap {
         self.map.remove(chord);
     }
 
+    /// 割り当てられたコマンドだけを返す（引数は見ない簡易問い合わせ・テスト/内観用）。
     pub fn resolve(&self, chord: &KeyChord) -> Option<Command> {
-        self.map.get(chord).copied()
+        self.map.get(chord).map(|inv| inv.command)
     }
 
-    /// トークン文字列のマップ（チョード→コマンド）からキーマップを組む。
+    /// 割り当てられた呼び出し（コマンド＋引数）を返す。実行配線はこちらを使う。
+    pub fn resolve_inv(&self, chord: &KeyChord) -> Option<&Invocation> {
+        self.map.get(chord)
+    }
+
+    /// トークン文字列のマップ（チョード→呼び出し）からキーマップを組む。
     /// 解釈できない行は無視する。
     pub fn from_string_map(map: &BTreeMap<String, String>) -> Self {
         let mut m = Self::new();
         for (k, v) in map {
-            if let (Some(chord), Some(cmd)) = (KeyChord::parse(k), Command::from_token(v)) {
-                m.bind(chord, cmd);
+            if let (Some(chord), Some(inv)) = (KeyChord::parse(k), Invocation::parse(v)) {
+                m.bind_inv(chord, inv);
             }
         }
         m
     }
 
-    /// トークン文字列のマップ（チョード→コマンド）へ変換する。
+    /// トークン文字列のマップ（チョード→呼び出し）へ変換する。
     pub fn to_string_map(&self) -> BTreeMap<String, String> {
         let mut out = BTreeMap::new();
-        for (chord, cmd) in &self.map {
+        for (chord, inv) in &self.map {
             if let Some(tok) = chord.to_token() {
-                out.insert(tok, cmd.as_token().to_owned());
+                out.insert(tok, inv.to_token_string());
             }
         }
         out
@@ -674,6 +790,69 @@ mod tests {
         let back = KeyMap::from_string_map(&sm);
         assert_eq!(back.to_string_map(), sm);
         assert_eq!(back.resolve(&KeyChord::key(vk::DOWN)), Some(Command::CursorDown));
+    }
+
+    #[test]
+    fn invocation_parse_bare_and_args() {
+        // 引数なしは従来トークンと同義。
+        assert_eq!(Invocation::parse("CursorDown"), Some(Invocation::bare(Command::CursorDown)));
+        // 余分な空白も許容。
+        assert_eq!(Invocation::parse("  Reload  "), Some(Invocation::bare(Command::Reload)));
+        // 引数つき。
+        assert_eq!(
+            Invocation::parse(r#"ChangeDirectoryDialog("D:")"#),
+            Some(Invocation::new(Command::ChangeDirectoryDialog, vec!["D:".into()]))
+        );
+        // 複数引数・引数間の空白。
+        assert_eq!(
+            Invocation::parse(r#"NewTab("a" ,  "b")"#),
+            Some(Invocation::new(Command::NewTab, vec!["a".into(), "b".into()]))
+        );
+        // 空括弧は引数なし。
+        assert_eq!(Invocation::parse("Reload()"), Some(Invocation::bare(Command::Reload)));
+        // エスケープ（\" と \\）。
+        assert_eq!(
+            Invocation::parse(r#"Reload("say \"hi\"\\")"#),
+            Some(Invocation::new(Command::Reload, vec!["say \"hi\"\\".into()]))
+        );
+    }
+
+    #[test]
+    fn invocation_parse_rejects_malformed() {
+        assert!(Invocation::parse("Bogus").is_none()); // 未知コマンド
+        assert!(Invocation::parse("Reload(\"a\"").is_none()); // 閉じ括弧なし
+        assert!(Invocation::parse("Reload(a)").is_none()); // クォートなし引数
+        assert!(Invocation::parse("Reload(\"a\" \"b\")").is_none()); // カンマなし
+    }
+
+    #[test]
+    fn invocation_token_roundtrip() {
+        for s in [
+            "CursorDown",
+            r#"ChangeDirectoryDialog("D:")"#,
+            r#"NewTab("a", "b")"#,
+            r#"Reload("say \"hi\"\\")"#,
+        ] {
+            let inv = Invocation::parse(s).unwrap();
+            assert_eq!(inv.to_token_string(), s);
+            assert_eq!(Invocation::parse(&inv.to_token_string()), Some(inv));
+        }
+    }
+
+    #[test]
+    fn keymap_keeps_args_through_string_map() {
+        let mut m = KeyMap::new();
+        m.bind_inv(
+            KeyChord::key(vk::F4),
+            Invocation::new(Command::ChangeDirectoryDialog, vec!["D:".into()]),
+        );
+        let sm = m.to_string_map();
+        assert_eq!(sm.get("F4").map(String::as_str), Some(r#"ChangeDirectoryDialog("D:")"#));
+        let back = KeyMap::from_string_map(&sm);
+        assert_eq!(
+            back.resolve_inv(&KeyChord::key(vk::F4)),
+            Some(&Invocation::new(Command::ChangeDirectoryDialog, vec!["D:".into()]))
+        );
     }
 
     #[test]
