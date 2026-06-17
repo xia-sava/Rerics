@@ -842,3 +842,46 @@ fn reload_keeps_cursor_on_same_file() {
     let after = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
     assert_eq!(after.trim(), "2", "リロード後もカーソルは b.txt に留まるべき（先頭へ戻らない）");
 }
+
+/// CursorOpposite はアクティブペインを反対側へトグルする。
+#[test]
+fn cursor_opposite_toggles_active_pane() {
+    let server = Server::start(&["a.txt"], "");
+    let a0 = server.req("GET", "/state/active_pane", "").unwrap().1;
+    assert!(a0.contains("left"), "初期は左アクティブ: {a0}");
+    server.req("POST", "/command/CursorOpposite", "").unwrap();
+    let a1 = poll(&server, "/state/active_pane", |b| b.contains("right"));
+    assert!(a1.contains("right"), "CursorOpposite で右へ: {a1}");
+    server.req("POST", "/command/CursorOpposite", "").unwrap();
+    let a2 = poll(&server, "/state/active_pane", |b| b.contains("left"));
+    assert!(a2.contains("left"), "もう一度で左へ戻る: {a2}");
+}
+
+/// SelectFile はカーソル位置を（トグルでなく）マークし、カーソルを1つ下げる。
+#[test]
+fn select_file_marks_current_and_advances() {
+    let server = Server::start(&["alpha.txt", "beta.txt"], "");
+    // .. → alpha(index 1) へ。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/SelectFile", "").unwrap();
+    // カーソルは beta(index 2) へ進む。
+    let cur = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
+    assert_eq!(cur.trim(), "2", "SelectFile 後はカーソルが1つ下へ");
+    // alpha(index 1) がマークされている（JSON Pointer の配列添字で直接取る）。
+    let m = server.req("GET", "/state/panes/left/items/1/marked", "").unwrap().1;
+    assert_eq!(m.trim(), "true", "alpha.txt(index 1) がマークされているはず");
+}
+
+/// Refresh / Nop は副作用なし（200 を返し状態を変えない）。
+#[test]
+fn refresh_and_nop_are_noops() {
+    let server = Server::start(&["a.txt", "b.txt"], "");
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    let before = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    let r = server.req("POST", "/command/Refresh", "").expect("Refresh").0;
+    assert_eq!(r, 200, "Refresh は 200");
+    let n = server.req("POST", "/command/Nop", "").expect("Nop").0;
+    assert_eq!(n, 200, "Nop は 200");
+    let after = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(before.trim(), after.trim(), "Refresh/Nop でカーソルは不変");
+}

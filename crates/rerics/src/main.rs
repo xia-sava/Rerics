@@ -542,33 +542,39 @@ impl MainWindow {
         self.wnd.on().wm_destroy(move || {
             this.shutdown.store(true, Ordering::Relaxed);
             Self::clear_archive_temp();
-            this.save_active();
-            let window = window_state::capture(&this.wnd.hwnd());
-            let tabs: Vec<rerics_core::TabState> = this
-                .tabs
-                .borrow()
-                .iter()
-                .map(|t| rerics_core::TabState {
-                    left: t.left_path.clone(),
-                    right: t.right_path.clone(),
-                    active_right: t.active_right,
-                    sort_left: t.left_state.sort_type,
-                    sort_left_reverse: t.left_state.sort_reverse,
-                    sort_right: t.right_state.sort_type,
-                    sort_right_reverse: t.right_state.sort_reverse,
-                })
-                .collect();
-            let state = rerics_core::State {
-                window,
-                tabs,
-                active_tab: this.active.get(),
-                split_ratio: this.split_ratio.get(),
-            };
-            if let Err(e) = state.save() {
-                eprintln!("状態の保存に失敗: {}", e);
-            }
+            this.save_session_state();
             Ok(())
         });
+    }
+
+    /// 現在のタブ群・ウィンドウ位置・分割比を state.toml へ保存する。
+    /// 終了時（wm_destroy）と再起動時（Restart）の両方から呼ぶ。
+    fn save_session_state(&self) {
+        self.save_active();
+        let window = window_state::capture(&self.wnd.hwnd());
+        let tabs: Vec<rerics_core::TabState> = self
+            .tabs
+            .borrow()
+            .iter()
+            .map(|t| rerics_core::TabState {
+                left: t.left_path.clone(),
+                right: t.right_path.clone(),
+                active_right: t.active_right,
+                sort_left: t.left_state.sort_type,
+                sort_left_reverse: t.left_state.sort_reverse,
+                sort_right: t.right_state.sort_type,
+                sort_right_reverse: t.right_state.sort_reverse,
+            })
+            .collect();
+        let state = rerics_core::State {
+            window,
+            tabs,
+            active_tab: self.active.get(),
+            split_ratio: self.split_ratio.get(),
+        };
+        if let Err(e) = state.save() {
+            eprintln!("状態の保存に失敗: {}", e);
+        }
     }
 
     fn wire_pane(&self, is_left: bool) {
@@ -721,6 +727,13 @@ impl MainWindow {
                 let mut s = state.borrow_mut();
                 let c = s.cursor;
                 s.reverse_file(c, pr);
+                let c = s.cursor as isize;
+                s.set_cursor(c + 1, pr);
+            }
+            Command::SelectFile => {
+                let mut s = state.borrow_mut();
+                let c = s.cursor;
+                s.select_file(c, pr);
                 let c = s.cursor as isize;
                 s.set_cursor(c + 1, pr);
             }
@@ -902,7 +915,46 @@ impl MainWindow {
                 self.border_reset()?;
                 return Ok(());
             }
-            Command::Quit => {
+            Command::CursorOpposite => {
+                // 反対ペイン（現アクティブでない側）へフォーカスを移す。
+                self.view(self.active_right.get()).hwnd().SetFocus();
+                return Ok(());
+            }
+            Command::Refresh => {
+                self.view(true).refresh()?;
+                self.view(false).refresh()?;
+                return Ok(());
+            }
+            Command::Nop => {
+                return Ok(());
+            }
+            Command::MaximizeCurrent => {
+                if self.active_right.get() {
+                    self.maximize_right(false)?;
+                } else {
+                    self.maximize_left(false)?;
+                }
+                return Ok(());
+            }
+            Command::MaximizeWindow => {
+                self.wnd.hwnd().ShowWindow(co::SW::SHOWMAXIMIZED);
+                return Ok(());
+            }
+            Command::MinimizeWindow => {
+                self.wnd.hwnd().ShowWindow(co::SW::MINIMIZE);
+                return Ok(());
+            }
+            Command::Restart => {
+                // 現セッションを保存してから同じ exe を起動し直し、自分は終了する。
+                self.save_session_state();
+                if let Ok(exe) = std::env::current_exe() {
+                    let args: Vec<String> = std::env::args().skip(1).collect();
+                    let _ = std::process::Command::new(exe).args(&args).spawn();
+                }
+                self.wnd.hwnd().DestroyWindow()?;
+                return Ok(());
+            }
+            Command::ApplicationExit | Command::End | Command::Quit => {
                 self.wnd.hwnd().DestroyWindow()?;
                 return Ok(());
             }
