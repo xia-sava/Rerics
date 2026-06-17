@@ -2170,21 +2170,36 @@ impl MainWindow {
         let Some(modal) = self.debug_modal_hwnd() else {
             return debug_server::Response::BadRequest("no modal open".into());
         };
-        let vk: u16 = match key.to_ascii_lowercase().as_str() {
+        let lk = key.to_ascii_lowercase();
+        let vk: u16 = match lk.as_str() {
             "enter" | "return" => 0x0D,
             "esc" | "escape" => 0x1B,
             "tab" => 0x09,
-            "y" => 0x59,
-            "n" => 0x4E,
+            "shift" => 0x10,
+            "space" => 0x20,
+            "left" => 0x25,
+            "up" => 0x26,
+            "right" => 0x27,
+            "down" => 0x28,
+            "home" => 0x24,
+            "end" => 0x23,
+            s if s.len() == 1 && s.as_bytes()[0].is_ascii_alphabetic() => {
+                s.as_bytes()[0].to_ascii_uppercase() as u16
+            }
+            s if s.len() == 1 && s.as_bytes()[0].is_ascii_digit() => s.as_bytes()[0] as u16,
             _ => return debug_server::Response::BadRequest(format!("unknown modal key: {key}")),
         };
+        // 実キー入力はフォーカス中の子へ届く。IsDialogMessage の矢印グループ移動は
+        // 子宛メッセージでないと発動しないため、フォーカス中の窓へ送る（無ければモーダルへ）。
+        let focus = w::HWND::GetFocus();
+        let target = focus.as_ref().unwrap_or(&modal);
         unsafe {
-            let _ = modal.PostMessage(w::msg::WndMsg {
+            let _ = target.PostMessage(w::msg::WndMsg {
                 msg_id: co::WM::KEYDOWN,
                 wparam: vk as usize,
                 lparam: 0,
             });
-            let _ = modal.PostMessage(w::msg::WndMsg {
+            let _ = target.PostMessage(w::msg::WndMsg {
                 msg_id: co::WM::from_raw(0x0101), // WM_KEYUP
                 wparam: vk as usize,
                 lparam: 0,
