@@ -1294,6 +1294,9 @@ pub fn rename_box(
 
     let result: Rc<RefCell<Option<RenameResult>>> = Rc::new(RefCell::new(None));
 
+    // 名前 Edit の初期キャレットは末尾（選択なし）に置く＝従来どおりの手触り。
+    // arm_modal は focus_initial の後に on_create を呼ぶので、ここで設定すれば残る。
+    let name_caret = name_edit.clone();
     arm_modal(
         &wnd,
         "rename",
@@ -1301,7 +1304,14 @@ pub fn rename_box(
         "名前/属性/日時の変更",
         true,
         vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
-        |_| {},
+        move |_| {
+            if let Some(e) = &name_caret {
+                if let Ok(t) = e.text() {
+                    let end = t.encode_utf16().count() as i32;
+                    e.set_selection(end, end);
+                }
+            }
+        },
     );
     {
         let result = result.clone();
