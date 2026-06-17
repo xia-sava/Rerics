@@ -133,6 +133,16 @@ pub enum Command {
     BorderLeft,
     BorderRight,
     BorderReset,
+    CursorOpposite,
+    SelectFile,
+    Refresh,
+    Nop,
+    MaximizeCurrent,
+    MaximizeWindow,
+    MinimizeWindow,
+    ApplicationExit,
+    End,
+    Restart,
     Quit,
 }
 
@@ -210,6 +220,16 @@ impl Command {
             (BorderLeft, "BorderLeft"),
             (BorderRight, "BorderRight"),
             (BorderReset, "BorderReset"),
+            (CursorOpposite, "CursorOpposite"),
+            (SelectFile, "SelectFile"),
+            (Refresh, "Refresh"),
+            (Nop, "Nop"),
+            (MaximizeCurrent, "MaximizeCurrent"),
+            (MaximizeWindow, "MaximizeWindow"),
+            (MinimizeWindow, "MinimizeWindow"),
+            (ApplicationExit, "ApplicationExit"),
+            (End, "End"),
+            (Restart, "Restart"),
             (Quit, "Quit"),
         ]
     };
@@ -426,6 +446,10 @@ impl Default for KeyMap {
         m.bind(KeyChord::key(vk::F5), Reload);
         m.bind(KeyChord::new(vk::F1, false, true, false), OpenSettings);
         m.bind(KeyChord::key(vk::Q), Quit);
+        m.bind(KeyChord::new(vk::Q, false, true, false), Restart);
+        // ウィンドウ操作（原作: Alt+PageUp=最大化 / Alt+PageDown=最小化）。
+        m.bind(KeyChord::new(vk::PRIOR, false, false, true), MaximizeWindow);
+        m.bind(KeyChord::new(vk::NEXT, false, false, true), MinimizeWindow);
         // タブ（原作 Dock 相当・xia GlobalKeyBinds 準拠）。
         m.bind(KeyChord::new(vk::TAB, true, false, false), PageNext);
         m.bind(KeyChord::new(vk::TAB, true, true, false), PagePrevious);
