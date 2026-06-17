@@ -42,10 +42,7 @@ const DI_NORMAL: u32 = 0x0003;
 /// 合成キーでも発火する**ので headless で検証できる。Shift 連動グレーアウト等のカスタム挙動の土台。
 /// 観測はスタックで持ち（モーダルはネストし得る）、最前面の観測のみを呼ぶ。
 ///
-/// **検証済（2026-06-17）**：sort モーダルで `/modal/key/shift`・`/modal/key/z` を送ると観測が
-/// vk=16/90 を受け取ることを headless で確認。実配線（conflict_box の Shift 連動）は Phase 4。
-/// それまで未使用。
-#[allow(dead_code)]
+/// conflict_box（同名衝突）の Shift 連動で使用。実キー・PostMessage 合成キー双方で発火する。
 pub mod keyhook {
     use std::cell::RefCell;
     use std::ffi::c_void;
@@ -141,7 +138,9 @@ pub fn modal_window(title: &str, w: i32, h: i32) -> gui::WindowModal {
 }
 
 /// モーダルの標準 `wm_create` 配線を仕込む：初期フォーカス（[`focus_initial`]）＋
-/// （debug-server 時）`modal_registry` 登録。各ダイアログは内容コントロール作成後に呼ぶ。
+/// （debug-server 時）`modal_registry` 登録＋ダイアログ固有の作成時処理 `on_create`。
+/// `on_create` には親 `HWND` が渡る（子コントロール作成済み＝[`keyhook::push`] や
+/// 初期の有効/無効設定をここで行う）。固有処理が要らなければ `|_| {}` を渡す。
 /// `buttons` は (ラベル, ctrl_id) の列（OK=1・Cancel=2 等）。
 pub fn arm_modal(
     wnd: &gui::WindowModal,
@@ -150,6 +149,7 @@ pub fn arm_modal(
     reg_prompt: &str,
     has_input: bool,
     buttons: Vec<(String, u16)>,
+    on_create: impl Fn(&w::HWND) + 'static,
 ) {
     let wf = wnd.clone();
     #[cfg(feature = "debug-server")]
@@ -167,6 +167,7 @@ pub fn arm_modal(
             reg.3,
             reg.4.clone(),
         );
+        on_create(wf.hwnd());
         Ok(0)
     });
 }
@@ -609,13 +610,7 @@ pub fn input_box(
 /// 在るとき、解決方法（最新ならコピー/上書き/強制上書き/名前変更/スキップ）と
 /// 「すべてに適用」を尋ねる。OK でラジオ選択＋チェック状態を、中止/Esc で `Cancel` を返す。
 pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution, bool) {
-    let wnd = gui::WindowModal::new(gui::WindowModalOpts {
-        title: "同名ファイルの処理",
-        size: gui::dpi(380, 250),
-        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
-        process_dlg_msgs: true,
-        ..Default::default()
-    });
+    let wnd = modal_window("同名ファイルの処理", 380, 250);
 
     let _label = gui::Label::new(
         &wnd,
@@ -679,7 +674,7 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
     let all = gui::CheckBox::new(
         &wnd,
         gui::CheckBoxOpts {
-            text: "すべてに適用(&A)",
+            text: "すべてに適用(SHIFT)",
             position: gui::dpi(16, 166),
             size: gui::dpi(220, 18),
             ..Default::default()
@@ -713,23 +708,65 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
 
     let result = Rc::new(RefCell::new((ConflictResolution::Cancel, false)));
 
-    #[cfg(feature = "debug-server")]
-    let (reg_prompt, reg_wnd) = (name.to_string(), wnd.clone());
+    // 「すべてに適用」中は改名ラジオを無効化（改名＋全適用は排他＝原作）。改名 Edit は
+    // 「名前を変更してコピー」選択中かつ全適用未チェックのときだけ有効。
+    let refresh: Rc<dyn Fn()> = {
+        let radios = radios.clone();
+        let rename = rename.clone();
+        let all = all.clone();
+        Rc::new(move || {
+            let all_checked = all.is_checked();
+            let rename_sel = radios.selected_index() == Some(3);
+            radios[3].hwnd().EnableWindow(!all_checked);
+            rename.hwnd().EnableWindow(rename_sel && !all_checked);
+        })
+    };
     {
-        let wf = wnd.clone();
-        wnd.on().wm_create(move |_| {
-            focus_initial(wf.hwnd());
-            #[cfg(feature = "debug-server")]
-            crate::debug_server::modal_registry::push(
-                "conflict",
-                "同名ファイルの処理",
-                &reg_prompt,
-                reg_wnd.hwnd().ptr() as isize,
-                true,
-                vec![("OK".to_string(), 1u16), ("中止(&S)".to_string(), 2u16)],
-            );
-            Ok(0)
+        let refresh = refresh.clone();
+        radios.on().bn_clicked(move || {
+            refresh();
+            Ok(())
         });
+    }
+    {
+        let refresh = refresh.clone();
+        all.on().bn_clicked(move || {
+            refresh();
+            Ok(())
+        });
+    }
+
+    {
+        // 作成時：初期の有効/無効を反映し、Shift 連動の keyhook を張る。
+        let all_k = all.clone();
+        let rename_k = rename.clone();
+        let refresh_c = refresh.clone();
+        arm_modal(
+            &wnd,
+            "conflict",
+            "同名ファイルの処理",
+            name,
+            true,
+            vec![("OK".to_string(), 1u16), ("中止(&S)".to_string(), 2u16)],
+            move |hwnd| {
+                refresh_c();
+                let all_k = all_k.clone();
+                let rename_k = rename_k.clone();
+                let refresh_k = refresh_c.clone();
+                // 原作 frmCopyOption：Shift 押下中だけ「すべてに適用」を自動チェック。
+                // 改名 Edit 入力中は Shift を無視する。
+                keyhook::push(hwnd, move |vk, down| {
+                    if vk != 0x10 {
+                        return;
+                    }
+                    if w::HWND::GetFocus().map(|f| f.ptr()) == Some(rename_k.hwnd().ptr()) {
+                        return;
+                    }
+                    all_k.set_check(down);
+                    refresh_k();
+                });
+            },
+        );
     }
 
     {
@@ -761,8 +798,8 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
     }
 
     let _ = wnd.show_modal(parent);
-    #[cfg(feature = "debug-server")]
-    crate::debug_server::modal_registry::pop();
+    keyhook::pop();
+    disarm_modal();
     let _ = (ok, cancel);
     let r = result.borrow().clone();
     r
@@ -988,6 +1025,7 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
         "ソートの種別と昇降",
         false,
         vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
+        |_| {},
     );
     {
         let result = result.clone();
