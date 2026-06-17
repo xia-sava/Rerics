@@ -251,6 +251,16 @@ impl MacroHost for DialogMacroHost<'_> {
         shell::choose_folder(self.app.wnd.hwnd().ptr(), title)
             .map(|p| p.to_string_lossy().into_owned())
     }
+
+    fn choose_open_file(&self, title: &str) -> Option<String> {
+        shell::choose_file(self.app.wnd.hwnd().ptr(), title, false)
+            .map(|p| p.to_string_lossy().into_owned())
+    }
+
+    fn choose_save_file(&self, title: &str) -> Option<String> {
+        shell::choose_file(self.app.wnd.hwnd().ptr(), title, true)
+            .map(|p| p.to_string_lossy().into_owned())
+    }
 }
 
 impl MainWindow {

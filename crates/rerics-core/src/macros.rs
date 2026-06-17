@@ -1,7 +1,8 @@
 //! コマンド引数の実行時マクロ展開（`<...>`）。UI 非依存。
 //!
 //! 引数文字列に埋め込まれた `<C>`（現在パス）・`<O>`（反対パス）・`<P>`（カーソルのフルパス）等の
-//! 文字列置換と、`<I:…>`（入力）・`<FOLDERDIALOG[:…]>`（フォルダ選択）のダイアログ系を展開する。
+//! 文字列置換と、`<I:…>`（入力）・`<FOLDERDIALOG[:…]>`（フォルダ選択）・`<OPENDIALOG[:…]>`
+//! （ファイルを開く）・`<SAVEDIALOG[:…]>`（保存先）のダイアログ系を展開する。
 //! ダイアログ系は GUI 依存なので [`MacroHost`] 越しに GUI 層が供給する。
 
 /// マクロ展開の中止（入力/選択のキャンセル）。呼び出し側は無音で実行を取りやめる。
@@ -14,6 +15,10 @@ pub trait MacroHost {
     fn prompt(&self, title: &str) -> Option<String>;
     /// フォルダ選択ダイアログを開く。`title` は見出し（空なら既定見出し）。キャンセルは `None`。
     fn choose_folder(&self, title: &str) -> Option<String>;
+    /// ファイルを開くダイアログ（`<OPENDIALOG>`）。キャンセルは `None`。
+    fn choose_open_file(&self, title: &str) -> Option<String>;
+    /// ファイル保存ダイアログ（`<SAVEDIALOG>`）。キャンセルは `None`。
+    fn choose_save_file(&self, title: &str) -> Option<String>;
 }
 
 /// マクロ展開の文脈。文字列置換に使う値と、GUI ホストを保持する。
@@ -64,6 +69,8 @@ fn expand_token(token: &str, ctx: &MacroCtx) -> Result<String, MacroAbort> {
         "P" => Ok(ctx.cursor_path.clone()),
         "I" => ctx.host.prompt(arg).ok_or(MacroAbort),
         "FOLDERDIALOG" => ctx.host.choose_folder(arg).ok_or(MacroAbort),
+        "OPENDIALOG" => ctx.host.choose_open_file(arg).ok_or(MacroAbort),
+        "SAVEDIALOG" => ctx.host.choose_save_file(arg).ok_or(MacroAbort),
         _ => Ok(format!("<{token}>")),
     }
 }
@@ -72,10 +79,13 @@ fn expand_token(token: &str, ctx: &MacroCtx) -> Result<String, MacroAbort> {
 mod tests {
     use super::*;
 
-    /// テスト用ホスト：prompt/choose_folder の戻り値を固定する（None でキャンセル）。
+    /// テスト用ホスト：各ダイアログの戻り値を固定する（None でキャンセル）。
+    #[derive(Default)]
     struct FakeHost {
         prompt: Option<String>,
         folder: Option<String>,
+        open: Option<String>,
+        save: Option<String>,
     }
     impl MacroHost for FakeHost {
         fn prompt(&self, _title: &str) -> Option<String> {
@@ -83,6 +93,12 @@ mod tests {
         }
         fn choose_folder(&self, _title: &str) -> Option<String> {
             self.folder.clone()
+        }
+        fn choose_open_file(&self, _title: &str) -> Option<String> {
+            self.open.clone()
+        }
+        fn choose_save_file(&self, _title: &str) -> Option<String> {
+            self.save.clone()
         }
     }
 
@@ -97,7 +113,7 @@ mod tests {
 
     #[test]
     fn expands_path_substitutions() {
-        let host = FakeHost { prompt: None, folder: None };
+        let host = FakeHost::default();
         let c = ctx(&host);
         assert_eq!(expand_one("<C>", &c), Ok("C:/cur".into()));
         assert_eq!(expand_one("<O>", &c), Ok("D:/opp".into()));
@@ -110,25 +126,37 @@ mod tests {
 
     #[test]
     fn input_macro_uses_host_and_aborts_on_cancel() {
-        let host = FakeHost { prompt: Some("typed".into()), folder: None };
+        let host = FakeHost { prompt: Some("typed".into()), ..Default::default() };
         assert_eq!(expand_one("<I:タイトル>", &ctx(&host)), Ok("typed".into()));
 
-        let host = FakeHost { prompt: None, folder: None };
+        let host = FakeHost::default();
         assert_eq!(expand_one("<I>", &ctx(&host)), Err(MacroAbort));
     }
 
     #[test]
     fn folder_macro_uses_host_and_aborts_on_cancel() {
-        let host = FakeHost { prompt: None, folder: Some("E:/picked".into()) };
+        let host = FakeHost { folder: Some("E:/picked".into()), ..Default::default() };
         assert_eq!(expand_one("<FOLDERDIALOG>", &ctx(&host)), Ok("E:/picked".into()));
 
-        let host = FakeHost { prompt: None, folder: None };
+        let host = FakeHost::default();
         assert_eq!(expand_one("<FOLDERDIALOG:選択>", &ctx(&host)), Err(MacroAbort));
     }
 
     #[test]
+    fn open_and_save_macros_use_host_and_abort_on_cancel() {
+        let host = FakeHost { open: Some("C:/in.txt".into()), ..Default::default() };
+        assert_eq!(expand_one("<OPENDIALOG>", &ctx(&host)), Ok("C:/in.txt".into()));
+        let host = FakeHost { save: Some("C:/out.txt".into()), ..Default::default() };
+        assert_eq!(expand_one("<SAVEDIALOG:保存先>", &ctx(&host)), Ok("C:/out.txt".into()));
+        // キャンセルは中止。
+        let host = FakeHost::default();
+        assert_eq!(expand_one("<OPENDIALOG>", &ctx(&host)), Err(MacroAbort));
+        assert_eq!(expand_one("<SAVEDIALOG>", &ctx(&host)), Err(MacroAbort));
+    }
+
+    #[test]
     fn unknown_macro_and_unclosed_bracket_left_literal() {
-        let host = FakeHost { prompt: None, folder: None };
+        let host = FakeHost::default();
         let c = ctx(&host);
         assert_eq!(expand_one("<BOGUS>", &c), Ok("<BOGUS>".into()));
         assert_eq!(expand_one("a < b", &c), Ok("a < b".into()));
@@ -137,12 +165,12 @@ mod tests {
 
     #[test]
     fn expand_macros_over_list_aborts_whole() {
-        let host = FakeHost { prompt: None, folder: None };
+        let host = FakeHost::default();
         let c = ctx(&host);
         // 1つでもキャンセルされたら全体が中止。
         assert_eq!(expand_macros(&["<C>".into(), "<I>".into()], &c), Err(MacroAbort));
         // 全部成功なら展開済み列。
-        let host = FakeHost { prompt: Some("x".into()), folder: None };
+        let host = FakeHost { prompt: Some("x".into()), ..Default::default() };
         let c = ctx(&host);
         assert_eq!(
             expand_macros(&["<C>".into(), "<I>".into()], &c),
