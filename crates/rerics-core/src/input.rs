@@ -76,6 +76,7 @@ pub enum Command {
     HistoryBack,
     HistoryForward,
     PathHistoryDialog,
+    ChangeDirectory,
     ChangeDirectoryDialog,
     ChangeDriveDialog,
     JumpDialog,
@@ -163,6 +164,7 @@ impl Command {
             (HistoryBack, "HistoryBack"),
             (HistoryForward, "HistoryForward"),
             (PathHistoryDialog, "PathHistoryDialog"),
+            (ChangeDirectory, "ChangeDirectory"),
             (ChangeDirectoryDialog, "ChangeDirectoryDialog"),
             (ChangeDriveDialog, "ChangeDriveDialog"),
             (JumpDialog, "JumpDialog"),
@@ -504,7 +506,14 @@ impl Default for KeyMap {
         m.bind(KeyChord::new(vk::RIGHT, false, false, true), HistoryForward);
         m.bind(KeyChord::key(vk::LEFT), FocusLeft);
         m.bind(KeyChord::key(vk::RIGHT), FocusRight);
-        m.bind(KeyChord::key(vk::F4), ChangeDirectoryDialog);
+        m.bind_inv(
+            KeyChord::key(vk::F4),
+            Invocation::new(ChangeDirectory, vec!["<I:ディレクトリの入力>".into()]),
+        );
+        m.bind_inv(
+            KeyChord::new(vk::F4, false, true, false),
+            Invocation::new(ChangeDirectory, vec!["<FOLDERDIALOG:ディレクトリの選択>".into()]),
+        );
         m.bind(KeyChord::key(vk::J), JumpDialog);
         // 選択（原作: Space=ReverseFile / A=ReverseAllFile・Shift+A=ReverseAll・Ctrl+A=SelectAll / Home=ClearAll）。
         m.bind(KeyChord::key(vk::SPACE), MarkToggle);
@@ -664,7 +673,16 @@ mod tests {
             m.resolve(&KeyChord::new(vk::RIGHT, false, false, true)),
             Some(Command::HistoryForward)
         );
-        assert_eq!(m.resolve(&KeyChord::key(vk::F4)), Some(Command::ChangeDirectoryDialog));
+        // F4＝入力マクロつき ChangeDirectory・Shift+F4＝フォルダ選択マクロつき。
+        assert_eq!(m.resolve(&KeyChord::key(vk::F4)), Some(Command::ChangeDirectory));
+        assert_eq!(
+            m.resolve_inv(&KeyChord::key(vk::F4)),
+            Some(&Invocation::new(Command::ChangeDirectory, vec!["<I:ディレクトリの入力>".into()]))
+        );
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::F4, false, true, false)),
+            Some(Command::ChangeDirectory)
+        );
         assert_eq!(m.resolve(&KeyChord::key(vk::J)), Some(Command::JumpDialog));
         assert_eq!(m.resolve(&KeyChord::key(vk::F)), Some(Command::IncrementalSearchDialog));
         assert_eq!(m.resolve(&KeyChord::key(vk::I)), Some(Command::DirectoryInformation));

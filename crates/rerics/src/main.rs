@@ -42,7 +42,8 @@ use task::{ArchiveOutcome, ChannelHost, OpKind, TaskControl, TaskEntry, WorkerEv
 use viewer::ViewerView;
 use rerics_core::{
     Column, Command, Config, FileListState, Invocation, KeyChord, KeyMap, Location, LogLevel,
-    MediaKind, Pane, SortType, WindowState, data_dir, messages, open_archive,
+    MacroAbort, MacroCtx, MacroHost, MediaKind, Pane, SortType, WindowState, data_dir, expand_macros,
+    messages, open_archive,
 };
 use winsafe::{self as w, co, gui, prelude::*};
 
@@ -100,8 +101,8 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         ViewFile => DebugCmdClass::MaybeModal,
         // 履歴ダイアログは読取モーダル（リスト選択）を開く（書込みではない）。
         PathHistoryDialog => DebugCmdClass::MaybeModal,
-        // ディレクトリ移動ダイアログは入力モーダルを開く（移動は書込みではない）。
-        ChangeDirectoryDialog => DebugCmdClass::MaybeModal,
+        // ディレクトリ移動は入力/フォルダ選択マクロでモーダルを開き得る（移動は書込みではない）。
+        ChangeDirectory | ChangeDirectoryDialog => DebugCmdClass::MaybeModal,
         // ドライブ選択はリスト選択モーダルを開く（移動は書込みではない）。
         ChangeDriveDialog => DebugCmdClass::MaybeModal,
         // ジャンプ（リスト選択）・登録（ラベル入力）はモーダルを開く。登録は config.toml を
@@ -233,6 +234,23 @@ struct TabSnapshot {
     left_state: FileListState,
     right_state: FileListState,
     active_right: bool,
+}
+
+/// マクロのダイアログ系（`<I:>`/`<FOLDERDIALOG>`）を GUI で供給するホスト。
+struct DialogMacroHost<'a> {
+    app: &'a MainWindow,
+}
+
+impl MacroHost for DialogMacroHost<'_> {
+    fn prompt(&self, title: &str) -> Option<String> {
+        let message = if title.is_empty() { "値を入力して下さい。" } else { title };
+        dialog::input_box(&self.app.wnd, "入力", message, "", dialog::InputMode::Plain)
+    }
+
+    fn choose_folder(&self, title: &str) -> Option<String> {
+        shell::choose_folder(self.app.wnd.hwnd().ptr(), title)
+            .map(|p| p.to_string_lossy().into_owned())
+    }
 }
 
 impl MainWindow {
@@ -632,6 +650,15 @@ impl MainWindow {
             }
             return Ok(());
         }
+        // 引数があれば実行直前にマクロを展開する。入力/選択のキャンセルは無音で実行中止。
+        let args = if inv.args.is_empty() {
+            Vec::new()
+        } else {
+            match self.expand_args(is_left, &inv.args) {
+                Ok(a) => a,
+                Err(MacroAbort) => return Ok(()),
+            }
+        };
         let state = view.state();
         let pr = view.page_rows();
         match cmd {
@@ -686,6 +713,10 @@ impl MainWindow {
             }
             Command::PathHistoryDialog => {
                 self.path_history_dialog(is_left)?;
+                return Ok(());
+            }
+            Command::ChangeDirectory => {
+                self.change_directory(is_left, args.first().map(String::as_str))?;
                 return Ok(());
             }
             Command::ChangeDirectoryDialog => {
@@ -4534,6 +4565,39 @@ impl MainWindow {
     }
 
     /// パスを入力してそこへ移動する。移動できなければエラーログ。
+    /// 指定パスへ移動する（引数版 `ChangeDirectory("path")`）。空や移動失敗はログのみ。
+    /// パスはマクロ展開済み（`<I:>`/`<FOLDERDIALOG>` 等は呼び出し側で解決される）。
+    fn change_directory(&self, is_left: bool, target: Option<&str>) -> w::AnyResult<()> {
+        let Some(input) = target.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Ok(());
+        };
+        let loc = Location::parse(input);
+        if self.pane(is_left).borrow_mut().navigate(loc) {
+            self.reload_side(is_left)?;
+        } else {
+            self.log.error(&format!("移動できません: {input}"));
+        }
+        Ok(())
+    }
+
+    /// 引数列のマクロを展開する。文字列置換（`<C>`/`<O>`/`<P>`）に加え、ダイアログ系
+    /// （`<I:>`/`<FOLDERDIALOG>`）は GUI ホスト越しにモーダルを開く。キャンセルは [`MacroAbort`]。
+    fn expand_args(&self, is_left: bool, args: &[String]) -> Result<Vec<String>, MacroAbort> {
+        let current = self.pane(is_left).borrow().loc_display();
+        let opposite = self.pane(!is_left).borrow().loc_display();
+        let cursor_path = {
+            let st = self.view(is_left).state();
+            let s = st.borrow();
+            match s.items.get(s.cursor) {
+                Some(it) if !it.is_parent => format!("{}/{}", current, it.name),
+                _ => String::new(),
+            }
+        };
+        let host = DialogMacroHost { app: self };
+        let ctx = MacroCtx { current, opposite, cursor_path, host: &host };
+        expand_macros(args, &ctx)
+    }
+
     fn change_directory_dialog(&self, is_left: bool) -> w::AnyResult<()> {
         let current = self.pane(is_left).borrow().loc_display();
         let Some(input) = dialog::input_box(

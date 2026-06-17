@@ -213,6 +213,39 @@ pub fn clip_paste_files(owner: &w::HWND) -> Result<(Vec<PathBuf>, bool), String>
     Ok((paths, move_it))
 }
 
+/// フォルダ選択ダイアログ（COM `IFileOpenDialog`＋`FOS_PICKFOLDERS`）を開き、選んだパスを返す。
+/// キャンセル/失敗は `None`。`owner` はモーダルの親窓の生ハンドル。
+pub fn choose_folder(owner: *mut c_void, title: &str) -> Option<PathBuf> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+        CoTaskMemFree,
+    };
+    use windows::Win32::UI::Shell::{
+        FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH,
+    };
+    use windows::core::PCWSTR;
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let dlg: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let opts = dlg.GetOptions().ok()?;
+        dlg.SetOptions(opts | FOS_PICKFOLDERS).ok()?;
+        if !title.is_empty() {
+            let t: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+            let _ = dlg.SetTitle(PCWSTR(t.as_ptr()));
+        }
+        // キャンセルは Err（ERROR_CANCELLED）→ None。
+        dlg.Show(Some(HWND(owner))).ok()?;
+        let item = dlg.GetResult().ok()?;
+        let pw = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let s = pw.to_string().ok();
+        CoTaskMemFree(Some(pw.0 as *const c_void));
+        s.map(PathBuf::from)
+    }
+}
+
 /// `target` を指すショートカット（.lnk）を `lnk` に作る（COM `IShellLink`）。
 pub fn create_shortcut(target: &Path, lnk: &Path) -> Result<(), String> {
     use windows::Win32::System::Com::{
