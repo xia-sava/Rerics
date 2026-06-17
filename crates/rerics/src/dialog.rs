@@ -795,10 +795,21 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
 
     let result: Rc<RefCell<Option<(SortType, bool)>>> = Rc::new(RefCell::new(None));
 
+    #[cfg(feature = "debug-server")]
+    let reg_wnd = wnd.clone();
     {
         let ok = ok.clone();
         wnd.on().wm_create(move |_| {
             ok.hwnd().SetFocus();
+            #[cfg(feature = "debug-server")]
+            crate::debug_server::modal_registry::push(
+                "sort",
+                "ソート設定",
+                "ソートの種別と昇降",
+                reg_wnd.hwnd().ptr() as isize,
+                false,
+                vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
+            );
             Ok(0)
         });
     }
@@ -828,6 +839,8 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
     }
 
     let _ = wnd.show_modal(parent);
+    #[cfg(feature = "debug-server")]
+    crate::debug_server::modal_registry::pop();
     let _ = (ok, cancel);
     let r = *result.borrow();
     r

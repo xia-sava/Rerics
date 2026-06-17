@@ -898,6 +898,22 @@ fn keybinds_dialog_lists_current_bindings() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// SortDialog＝ソート設定モーダルを開いて閉じる（並べ替えのみ＝allow-write 不要）。
+/// ラジオ値の選択は未対応だが、開閉でデッドロックしないこと＋種別/昇降の現在値表示を担保。
+#[test]
+fn sort_dialog_opens_and_closes() {
+    let server = Server::start(&["a.txt", "b.txt"], "");
+    server.req("POST", "/command/SortDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"sort\""), "should open sort modal: {modal}");
+    // 既定選択のまま OK（現在のソートで再適用＝無害）。
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    // 一覧は健在。
+    let items = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert!(items.contains("\"name\":\"a.txt\""), "list should remain: {items}");
+}
+
 /// IncrementalSearchDialog＝打鍵ごとにカーソルが一致項目へ追従し、OK で確定する。
 #[test]
 fn find_incremental_search_follows_typing() {

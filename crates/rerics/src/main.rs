@@ -113,9 +113,10 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         KeyBindsDialog => DebugCmdClass::MaybeModal,
         // インクリメンタルサーチは入力モーダル（打鍵追従でカーソル移動・読取のみ）。
         IncrementalSearchDialog => DebugCmdClass::MaybeModal,
-        // ソート設定はラジオのカスタムモーダル（debug-server から選択操作できない）。
-        // ソートのロジック自体は引数コマンド Sort(type) で駆動・検証できる。
-        SortDialog => DebugCmdClass::Unsupported,
+        // ソート設定はモーダルを開く（並べ替えのみ＝書込みではない）。modal_registry に登録
+        // 済みなので開いて OK/Cancel で閉じられる（ラジオ値そのものの選択は未対応＝種別変更の
+        // ロジックは引数コマンド Sort(type) でも駆動・検証できる）。
+        SortDialog => DebugCmdClass::MaybeModal,
         OpenSettings | OpenTaskManager => DebugCmdClass::Unsupported,
         _ => DebugCmdClass::NonModal,
     }
