@@ -35,106 +35,96 @@ const DI_NORMAL: u32 = 0x0003;
 
 /// モーダル中のキー観測（原作 `Form.KeyPreview=true` 相当）。
 ///
-/// winsafe のモーダル窓は子コントロールにフォーカスがあると生キー（`WM_KEYDOWN`/`WM_KEYUP`）を
-/// 受け取れない（Phase 0 で実測）。スレッド単位の `WH_KEYBOARD` フックで全キーを観測し、
-/// Shift 連動グレーアウト等のカスタム挙動を可能にする。観測はスタックで持ち（モーダルは
-/// ネストし得る）、最前面の観測のみを呼ぶ。スタックが空になるとフックを自動解除する。
+/// winsafe のモーダル窓は子コントロールにフォーカスがあると生キーを受け取れない（Phase 0 実測）。
+/// `WH_KEYBOARD` フックは設置できるが `PostMessage` 合成キーを拾わず headless 検証不可だった。
+/// そこで**モーダルの全子コントロールを `SetWindowSubclass`（comctl32）でサブクラス化**して、
+/// 子へ dispatch される `WM_KEYDOWN`/`WM_KEYUP` を横取りする。これは**実キーでも PostMessage
+/// 合成キーでも発火する**ので headless で検証できる。Shift 連動グレーアウト等のカスタム挙動の土台。
+/// 観測はスタックで持ち（モーダルはネストし得る）、最前面の観測のみを呼ぶ。
 ///
-/// **状態（2026-06-17）**：フックの設置は確認済（`installed()=true`）だが、`WH_KEYBOARD` は
-/// `PostMessage` で注入した合成キーを拾わない＝headless の `/modal/key` では発火検証できない。
-/// 実キーボードでの発火検証と実配線は Phase 4（conflict_box の Shift 連動）で行う。それまで未使用。
+/// **検証済（2026-06-17）**：sort モーダルで `/modal/key/shift`・`/modal/key/z` を送ると観測が
+/// vk=16/90 を受け取ることを headless で確認。実配線（conflict_box の Shift 連動）は Phase 4。
+/// それまで未使用。
 #[allow(dead_code)]
 pub mod keyhook {
     use std::cell::RefCell;
     use std::ffi::c_void;
     use std::rc::Rc;
+    use winsafe::{self as w, co};
 
     #[allow(non_snake_case)]
     mod ffi {
         use core::ffi::c_void;
-        pub type HookProc = unsafe extern "system" fn(i32, usize, isize) -> isize;
-        #[link(name = "user32")]
+        pub type SubclassProc =
+            unsafe extern "system" fn(*mut c_void, u32, usize, isize, usize, usize) -> isize;
+        #[link(name = "comctl32")]
         unsafe extern "system" {
-            pub fn SetWindowsHookExW(
-                id: i32,
-                proc: HookProc,
-                hmod: *mut c_void,
-                thread: u32,
-            ) -> *mut c_void;
-            pub fn UnhookWindowsHookEx(h: *mut c_void) -> i32;
-            pub fn CallNextHookEx(h: *mut c_void, code: i32, wparam: usize, lparam: isize) -> isize;
-        }
-        #[link(name = "kernel32")]
-        unsafe extern "system" {
-            pub fn GetCurrentThreadId() -> u32;
+            pub fn SetWindowSubclass(
+                hwnd: *mut c_void,
+                proc: SubclassProc,
+                id: usize,
+                refdata: usize,
+            ) -> i32;
+            pub fn DefSubclassProc(
+                hwnd: *mut c_void,
+                msg: u32,
+                wparam: usize,
+                lparam: isize,
+            ) -> isize;
         }
     }
 
-    const WH_KEYBOARD: i32 = 2;
+    const SUBCLASS_ID: usize = 0x5245_4b59; // "REKY"
+    const WM_KEYDOWN: u32 = 0x0100;
+    const WM_KEYUP: u32 = 0x0101;
 
     /// `(vk, is_down)` を受け取る観測。`is_down` は押下 true・解放 false。
     type Observer = Rc<dyn Fn(u16, bool)>;
 
     thread_local! {
-        static HOOK: RefCell<*mut c_void> = const { RefCell::new(core::ptr::null_mut()) };
         static OBSERVERS: RefCell<Vec<Observer>> = const { RefCell::new(Vec::new()) };
     }
 
-    unsafe extern "system" fn hook_proc(code: i32, wparam: usize, lparam: isize) -> isize {
-        if code >= 0 {
-            let vk = wparam as u16;
-            // lParam bit31：0=押下/リピート・1=解放。
-            let is_down = (lparam >> 31) & 1 == 0;
+    unsafe extern "system" fn sub_proc(
+        hwnd: *mut c_void,
+        msg: u32,
+        wparam: usize,
+        lparam: isize,
+        _id: usize,
+        _ref: usize,
+    ) -> isize {
+        if msg == WM_KEYDOWN || msg == WM_KEYUP {
             // 借用を保持したまま呼ぶと観測内のメッセージ処理で再入し得るので Rc を取り出してから呼ぶ。
             let top = OBSERVERS.with(|o| o.borrow().last().cloned());
             if let Some(f) = top {
-                f(vk, is_down);
+                f(wparam as u16, msg == WM_KEYDOWN);
             }
         }
-        let h = HOOK.with(|h| *h.borrow());
-        unsafe { ffi::CallNextHookEx(h, code, wparam, lparam) }
+        unsafe { ffi::DefSubclassProc(hwnd, msg, wparam, lparam) }
     }
 
-    /// キー観測を積む。最初の1つでスレッドフックを張る。
-    pub fn push(cb: impl Fn(u16, bool) + 'static) {
+    /// 観測を積み、`parent` の全子コントロールをサブクラス化してキーを横取りする。
+    /// 子コントロールは作成済みである必要があるので `wm_create` の末尾で呼ぶ。
+    pub fn push(parent: &w::HWND, cb: impl Fn(u16, bool) + 'static) {
         OBSERVERS.with(|o| o.borrow_mut().push(Rc::new(cb)));
-        HOOK.with(|h| {
-            if h.borrow().is_null() {
-                let handle = unsafe {
-                    ffi::SetWindowsHookExW(
-                        WH_KEYBOARD,
-                        hook_proc,
-                        core::ptr::null_mut(),
-                        ffi::GetCurrentThreadId(),
-                    )
-                };
-                *h.borrow_mut() = handle;
+        if let Ok(mut cur) = parent.GetWindow(co::GW::CHILD) {
+            loop {
+                unsafe {
+                    ffi::SetWindowSubclass(cur.ptr() as *mut c_void, sub_proc, SUBCLASS_ID, 0);
+                }
+                match cur.GetWindow(co::GW::HWNDNEXT) {
+                    Ok(n) => cur = n,
+                    Err(_) => break,
+                }
             }
-        });
+        }
     }
 
-    /// フックが現在張られているか（診断用）。
-    pub fn installed() -> bool {
-        HOOK.with(|h| !h.borrow().is_null())
-    }
-
-    /// 最前面の観測を外す。空になったらフックを解除する。
+    /// 最前面の観測を外す（サブクラスは窓破棄で自然消滅するので明示解除は不要）。
     pub fn pop() {
         OBSERVERS.with(|o| {
             o.borrow_mut().pop();
         });
-        let empty = OBSERVERS.with(|o| o.borrow().is_empty());
-        if empty {
-            HOOK.with(|h| {
-                let handle = *h.borrow();
-                if !handle.is_null() {
-                    unsafe {
-                        ffi::UnhookWindowsHookEx(handle);
-                    }
-                    *h.borrow_mut() = core::ptr::null_mut();
-                }
-            });
-        }
     }
 }
 
