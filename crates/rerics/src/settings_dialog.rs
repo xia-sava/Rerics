@@ -1,9 +1,10 @@
-//! 設定ダイアログ。左ナビ（外観・配色・レイアウト・キー）と常時表示のライブプレビューを
-//! 並べた master-detail 構成。
+//! 設定ダイアログ。左ナビ（外観・配色・レイアウト・キー）と、右側に常時表示する
+//! 「ミニ全体窓」プレビューを並べた 3 カラムの master-detail 構成。
 //!
-//! `show` がモーダルを表示し、OK なら編集後の [`Config`] を返す。返した設定は呼び出し側で
-//! ライブ反映＋差分保存される。編集中の値は [`Shared`] に集約し、配色・フォントの変更は
-//! その場でプレビューへ反映する。レイアウト・テーマ・フォントは OK 時に widget から確定する。
+//! 編集中の値はすべて [`Shared`] へ即時反映し、配色・フォント・レイアウト寸法・テーマの
+//! 変更はその場でプレビューへ反映する（ライブプレビュー）。`OK`／`適用` で現在の [`Config`]
+//! を `on_apply` コールバックへ渡し（呼び出し側がライブ反映＋差分保存する）、`適用` は閉じずに
+//! 継続、`OK` は閉じる。`キャンセル` は最後の `適用` 以降の編集を破棄して閉じる。
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -144,7 +145,149 @@ impl Shared {
     }
 }
 
-/// 配色・フォントの効きをその場で見せるライブプレビュー（ミニ・ファイル一覧＋ミニ・ログ）。
+/// タブバー（上端・全幅）を縮小描画する。
+fn draw_tabs(dc: &w::HDC, x: i32, y: i32, w: i32, h: i32, fh: i32, c: &Colors) -> w::AnyResult<()> {
+    if w <= 0 || h <= 0 {
+        return Ok(());
+    }
+    fill(dc, x, y, x + w, y + h, c.background2)?;
+    let tw = gui::dpi_x(96);
+    let pad = gui::dpi_x(4);
+    let top = y + gui::dpi_y(2);
+    let tabs: [(&str, bool); 2] = [("1 C:\\src", true), ("2 D:\\backup", false)];
+    let mut tx = x + pad;
+    for (text, active) in tabs {
+        if tx + tw > x + w {
+            break;
+        }
+        fill(dc, tx, top, tx + tw, y + h, if active { c.background } else { c.background2 })?;
+        frame(dc, tx, top, tx + tw, y + h, c.file_normal)?;
+        dc.SetTextColor(to_colorref(if active { c.file_normal } else { c.directory }))?;
+        if h - gui::dpi_y(2) >= fh {
+            dc.TextOut(tx + pad, top + ((y + h - top) - fh) / 2, text)?;
+        }
+        tx += tw + pad;
+    }
+    Ok(())
+}
+
+/// 1 ペイン（パスバー・ファイルリスト・スクロールバー・ステータスバー）を縮小描画する。
+#[allow(clippy::too_many_arguments)]
+fn draw_pane(
+    dc: &w::HDC,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    bar_h: i32,
+    bar_gap: i32,
+    status_h: i32,
+    sb_w: i32,
+    fh: i32,
+    c: &Colors,
+) -> w::AnyResult<()> {
+    if w <= 0 || h <= 0 {
+        return Ok(());
+    }
+    let pad = gui::dpi_y(2);
+    let left = x + gui::dpi_x(4);
+
+    // パスバー。
+    if bar_h > 0 {
+        fill(dc, x, y, x + w, y + bar_h, c.background)?;
+        dc.SetTextColor(to_colorref(c.file_normal))?;
+        if bar_h >= fh {
+            dc.TextOut(left, y + (bar_h - fh) / 2, "C:\\Users\\xia\\src")?;
+        }
+    }
+
+    // ファイルリスト（パスバーの下・ステータスバーの上）。
+    let list_y = y + bar_h + bar_gap;
+    let status_y = (y + h - status_h).max(list_y);
+    let list_b = status_y;
+    fill(dc, x, list_y, x + w, list_b, c.background)?;
+
+    // スクロールバー（右端）。
+    let list_r = if sb_w > 0 && w > sb_w {
+        let tr = x + w - sb_w;
+        fill(dc, tr, list_y, x + w, list_b, c.background2)?;
+        let th = ((list_b - list_y) / 3).max(1);
+        fill(dc, tr, list_y, x + w, (list_y + th).min(list_b), c.cursor)?;
+        tr
+    } else {
+        x + w
+    };
+
+    // 行（色割り当てとカーソル／選択の見え方を一通り示す）。
+    let row_h = fh + pad * 2;
+    let rows: [(&str, Rgb, Deco); 6] = [
+        ("src", c.directory, Deco::Plain),
+        ("readme.md", c.file_normal, Deco::Cursor),
+        ("LICENSE", c.readonly, Deco::Plain),
+        ("pagefile.sys", c.system, Deco::Plain),
+        (".gitignore", c.hidden, Deco::Plain),
+        ("archive.zip", c.selected_file, Deco::Selected),
+    ];
+    let mut ry = list_y;
+    for (name, color, deco) in rows {
+        if ry + row_h > list_b {
+            break;
+        }
+        match deco {
+            Deco::Selected => {
+                fill(dc, x, ry, list_r, ry + row_h, c.selected_file_bg)?;
+                dc.SetTextColor(to_colorref(c.selected_file))?;
+            }
+            _ => {
+                dc.SetTextColor(to_colorref(color))?;
+            }
+        }
+        dc.TextOut(left, ry + pad, name)?;
+        if matches!(deco, Deco::Cursor) {
+            frame(dc, x, ry, list_r, ry + row_h, c.cursor)?;
+        }
+        ry += row_h;
+    }
+
+    // ステータスバー。
+    if status_h > 0 {
+        fill(dc, x, status_y, x + w, y + h, c.background2)?;
+        dc.SetTextColor(to_colorref(c.file_normal))?;
+        if status_h >= fh {
+            dc.TextOut(left, status_y + (status_h - fh) / 2, "6 個  1 選択")?;
+        }
+    }
+    Ok(())
+}
+
+/// ミニ・ログ（下端・全幅）を縮小描画する。
+fn draw_log(dc: &w::HDC, x: i32, y: i32, w: i32, h: i32, fh: i32, c: &Colors) -> w::AnyResult<()> {
+    if w <= 0 || h <= 0 {
+        return Ok(());
+    }
+    fill(dc, x, y, x + w, y + h, c.log_background)?;
+    let pad = gui::dpi_y(2);
+    let left = x + gui::dpi_x(4);
+    let row_h = fh + pad;
+    let logs: [(&str, Rgb); 4] = [
+        ("コピーを開始します", c.log_normal),
+        ("3 個のファイルを選択しました", c.log_info),
+        ("空き容量が少なくなっています", c.log_warning),
+        ("アクセスが拒否されました", c.log_error),
+    ];
+    let mut ly = y + pad;
+    for (text, color) in logs {
+        if ly + row_h > y + h {
+            break;
+        }
+        dc.SetTextColor(to_colorref(color))?;
+        dc.TextOut(left, ly, text)?;
+        ly += row_h;
+    }
+    Ok(())
+}
+
+/// 設定の効きをその場で見せるライブプレビュー（実レイアウトを縮小した「ミニ全体窓」）。
 #[derive(Clone)]
 struct Preview {
     wnd: gui::WindowControl,
@@ -211,76 +354,51 @@ impl Preview {
         }
     }
 
+    /// 実レイアウト（`layout.rs` / `pane_view.rs`）と同じ式で寸法を割り付けた縮小窓を描く。
     fn render(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
-        let (family, size) = {
+        if cw <= 0 || ch <= 0 {
+            return Ok(());
+        }
+        let (family, fsize, lay) = {
             let cfg = self.shared.cfg.borrow();
-            (cfg.font.family.clone(), cfg.font.size)
+            (cfg.font.family.clone(), cfg.font.size, cfg.layout.clone())
         };
-        let font = list_font(&family, size)?;
+        let colors = self.shared.target_colors();
+
+        let font = list_font(&family, fsize)?;
         let _fsel = dc.SelectObject(&*font)?;
         let fh = dc.GetTextMetrics().map(|tm| tm.tmHeight).unwrap_or(16);
         dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
 
-        let colors = self.shared.target_colors();
-        let pad = gui::dpi_y(3);
-        let left = gui::dpi_x(8);
-        let row_h = fh + pad * 2;
+        let m = gui::dpi_x(lay.margin);
+        let my = gui::dpi_y(lay.margin);
+        let splitter_w = gui::dpi_x(lay.splitter_width);
+        let tab_h = gui::dpi_y(lay.tab_height);
+        let log_h = gui::dpi_y(lay.log_height);
+        let log_gap = gui::dpi_y(lay.log_gap);
+        let bar_h = gui::dpi_y(lay.bar_height);
+        let bar_gap = gui::dpi_y(lay.bar_gap);
+        let status_h = gui::dpi_y(lay.status_bar_height);
+        let sb_w = gui::dpi_x(lay.scrollbar_width);
 
-        // 下部にミニ・ログ（4 行）を確保し、残りをファイル一覧にあてる。
-        let log_h = row_h * 4 + pad * 2;
-        let file_bottom = (ch - log_h).max(row_h);
+        let bars_y = tab_h;
+        let log_y = (ch - my - log_h).max(bars_y);
+        let pane_top = bars_y;
+        let pane_h = (log_y - log_gap - pane_top).max(0);
 
-        fill(dc, 0, 0, cw, file_bottom, colors.background)?;
+        let panes_total = (cw - m * 2 - splitter_w).max(0);
+        let left_w = panes_total / 2;
+        let right_w = panes_total - left_w;
+        let left_x = m;
+        let right_x = m + left_w + splitter_w;
+        let log_w = cw - m * 2;
 
-        // ヘッダ行。
-        fill(dc, 0, 0, cw, row_h, colors.background2)?;
-        dc.SetTextColor(to_colorref(colors.file_normal))?;
-        dc.TextOut(left, pad, "名前                                更新日時              サイズ")?;
-
-        // データ行。色割り当てとカーソル／選択の見え方を一通り示す。
-        let rows: [(&str, Rgb, Deco); 6] = [
-            ("src", colors.directory, Deco::Plain),
-            ("readme.md", colors.file_normal, Deco::Cursor),
-            ("LICENSE", colors.readonly, Deco::Plain),
-            ("pagefile.sys", colors.system, Deco::Plain),
-            (".gitignore", colors.hidden, Deco::Plain),
-            ("archive.zip", colors.selected_file, Deco::Selected),
-        ];
-        let mut y = row_h;
-        for (name, color, deco) in rows {
-            if y + row_h > file_bottom {
-                break;
-            }
-            match deco {
-                Deco::Selected => {
-                    fill(dc, 0, y, cw, y + row_h, colors.selected_file_bg)?;
-                    dc.SetTextColor(to_colorref(colors.selected_file))?;
-                }
-                _ => {
-                    dc.SetTextColor(to_colorref(color))?;
-                }
-            }
-            dc.TextOut(left, y + pad, name)?;
-            if matches!(deco, Deco::Cursor) {
-                frame(dc, 0, y, cw, y + row_h, colors.cursor)?;
-            }
-            y += row_h;
-        }
-
-        // ミニ・ログ。
-        fill(dc, 0, file_bottom, cw, ch, colors.log_background)?;
-        let logs: [(&str, Rgb); 4] = [
-            ("コピーを開始します", colors.log_normal),
-            ("3 個のファイルを選択しました", colors.log_info),
-            ("空き容量が少なくなっています", colors.log_warning),
-            ("アクセスが拒否されました", colors.log_error),
-        ];
-        let mut ly = file_bottom + pad;
-        for (text, color) in logs {
-            dc.SetTextColor(to_colorref(color))?;
-            dc.TextOut(left, ly, text)?;
-            ly += row_h;
-        }
+        // 余白・溝・スプリッタの地色。残りの矩形を上から punch していく。
+        fill(dc, 0, 0, cw, ch, colors.background2)?;
+        draw_tabs(dc, 0, 0, cw, tab_h, fh, &colors)?;
+        draw_pane(dc, left_x, pane_top, left_w, pane_h, bar_h, bar_gap, status_h, sb_w, fh, &colors)?;
+        draw_pane(dc, right_x, pane_top, right_w, pane_h, bar_h, bar_gap, status_h, sb_w, fh, &colors)?;
+        draw_log(dc, left_x, log_y, log_w, log_h, fh, &colors)?;
         Ok(())
     }
 }
@@ -317,7 +435,7 @@ impl SwatchList {
             shared,
             preview,
             sel: Rc::new(Cell::new(0)),
-            row_h: Rc::new(Cell::new(gui::dpi_y(22))),
+            row_h: Rc::new(Cell::new(gui::dpi_y(24))),
         };
         let this = me.clone();
         me.wnd.on().wm_paint(move || this.on_paint());
@@ -357,14 +475,7 @@ impl SwatchList {
 
     fn on_click(&self, pt: w::POINT) {
         let rh = self.row_h.get().max(1);
-        let Ok(rc) = self.hwnd().GetClientRect() else {
-            return;
-        };
-        let col_w = ((rc.right - rc.left) / 2).max(1);
-        let rows_per_col = (COLOR_FIELDS.len() as i32 + 1) / 2;
-        let col = (pt.x / col_w).clamp(0, 1);
-        let row = pt.y / rh;
-        let idx = (col * rows_per_col + row) as usize;
+        let idx = (pt.y / rh) as usize;
         if idx < COLOR_FIELDS.len() {
             self.sel.set(idx);
             self.refresh();
@@ -450,26 +561,21 @@ impl SwatchList {
 
         let colors = self.shared.target_colors();
         let sel = self.sel.get();
-        let sw_w = gui::dpi_x(30);
+        let sw_w = gui::dpi_x(34);
         let sw_pad = gui::dpi_y(3);
 
-        // 15 項目を 2 列に振り分けて全色を収める。
-        let col_w = cw / 2;
-        let rows_per_col = (COLOR_FIELDS.len() as i32 + 1) / 2;
+        // 15 項目を 1 列に縦並び（フル高で全色を収める）。
         for (i, (label, get, _)) in COLOR_FIELDS.iter().enumerate() {
-            let col = i as i32 / rows_per_col;
-            let row = i as i32 % rows_per_col;
-            let x0 = col * col_w;
-            let y = row * row_h;
+            let y = i as i32 * row_h;
             let selected = i == sel;
             if selected {
                 let hl_brush = w::HBRUSH::CreateSolidBrush(hl)?;
-                dc.FillRect(w::RECT { left: x0, top: y, right: x0 + col_w, bottom: y + row_h }, &hl_brush)?;
+                dc.FillRect(w::RECT { left: 0, top: y, right: cw, bottom: y + row_h }, &hl_brush)?;
             }
 
             // 実色のスウォッチ（枠付き）。
             let c = get(&colors);
-            let sx = x0 + left;
+            let sx = left;
             let sy = y + sw_pad;
             let sb = y + row_h - sw_pad;
             frame(dc, sx, sy, sx + sw_w, sb, frame_col)?;
@@ -493,6 +599,8 @@ fn make_pane(parent: &(impl GuiParent + 'static), pos: (i32, i32), size: (i32, i
             size,
             class_bg_brush: gui::Brush::Color(co::COLOR::BTNFACE),
             style: co::WS::CHILD | co::WS::VISIBLE | co::WS::CLIPCHILDREN | co::WS::CLIPSIBLINGS,
+            // Tab キーが pane 内の子コントロール（Edit 等）へ降りられるようにする。
+            ex_style: co::WS_EX::CONTROLPARENT,
             ..Default::default()
         },
     )
@@ -510,157 +618,145 @@ fn label(parent: &(impl GuiParent + 'static), text: &str, x: i32, y: i32, cx: i3
     );
 }
 
-/// 「外観」ページ（テーマ・フォント）。
-#[derive(Clone)]
-struct AppearancePane {
-    theme: gui::RadioGroup,
-    font_family: gui::Edit,
-    font_size: gui::Edit,
-}
-
-impl AppearancePane {
-    fn new(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &Preview) -> Self {
-        let cfg = shared.cfg.borrow();
-        label(parent, "配色テーマ", 16, 14, 120);
-        let theme = gui::RadioGroup::new(
-            parent,
-            &[
-                gui::RadioButtonOpts {
-                    text: "ダーク(&D)",
-                    position: gui::dpi(28, 38),
-                    size: gui::dpi(180, 20),
-                    selected: cfg.theme == Theme::Dark,
-                    ..Default::default()
-                },
-                gui::RadioButtonOpts {
-                    text: "ライト(&L)",
-                    position: gui::dpi(28, 62),
-                    size: gui::dpi(180, 20),
-                    selected: cfg.theme == Theme::Light,
-                    ..Default::default()
-                },
-                gui::RadioButtonOpts {
-                    text: "システムに従う(&S)",
-                    position: gui::dpi(28, 86),
-                    size: gui::dpi(220, 20),
-                    selected: cfg.theme == Theme::System,
-                    ..Default::default()
-                },
-            ],
-        );
-
-        label(parent, "フォント名", 16, 134, 90);
-        let font_family = gui::Edit::new(
-            parent,
-            gui::EditOpts {
-                text: &cfg.font.family,
-                control_style: co::ES::AUTOHSCROLL,
-                position: gui::dpi(112, 132),
-                width: gui::dpi_x(240),
-                height: gui::dpi_y(22),
+/// 「外観」ページ（テーマ・フォント）を構築する。すべての編集を即 `Shared` へ反映する。
+/// イベントは親 window 側に保持されるため、生成したコントロールは保持しなくてよい。
+fn build_appearance(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &Preview) {
+    let cfg = shared.cfg.borrow();
+    label(parent, "配色テーマ", 16, 14, 120);
+    let theme = gui::RadioGroup::new(
+        parent,
+        &[
+            gui::RadioButtonOpts {
+                text: "ダーク(&D)",
+                position: gui::dpi(28, 38),
+                size: gui::dpi(180, 20),
+                selected: cfg.theme == Theme::Dark,
                 ..Default::default()
             },
-        );
-        label(parent, "フォントサイズ", 16, 166, 90);
-        let font_size = gui::Edit::new(
-            parent,
-            gui::EditOpts {
-                text: &cfg.font.size.to_string(),
-                control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
-                position: gui::dpi(112, 164),
-                width: gui::dpi_x(60),
-                height: gui::dpi_y(22),
+            gui::RadioButtonOpts {
+                text: "ライト(&L)",
+                position: gui::dpi(28, 62),
+                size: gui::dpi(180, 20),
+                selected: cfg.theme == Theme::Light,
                 ..Default::default()
             },
-        );
-        label(parent, "（フォントはプレビューに反映されます）", 16, 196, 320);
-        drop(cfg);
+            gui::RadioButtonOpts {
+                text: "システムに従う(&S)",
+                position: gui::dpi(28, 86),
+                size: gui::dpi(220, 20),
+                selected: cfg.theme == Theme::System,
+                ..Default::default()
+            },
+        ],
+    );
 
-        // フォント編集はその場でプレビューへ反映する。
-        {
-            let shared = shared.clone();
-            let preview = preview.clone();
-            let edit = font_family.clone();
-            font_family.on().en_change(move || {
-                if let Ok(f) = edit.text() {
-                    let f = f.trim();
-                    if !f.is_empty() {
-                        shared.cfg.borrow_mut().font.family = f.to_owned();
-                        preview.refresh();
-                    }
+    label(parent, "フォント名", 16, 134, 90);
+    let font_family = gui::Edit::new(
+        parent,
+        gui::EditOpts {
+            text: &cfg.font.family,
+            control_style: co::ES::AUTOHSCROLL,
+            position: gui::dpi(112, 132),
+            width: gui::dpi_x(240),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+    label(parent, "フォントサイズ", 16, 166, 90);
+    let font_size = gui::Edit::new(
+        parent,
+        gui::EditOpts {
+            text: &cfg.font.size.to_string(),
+            control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
+            position: gui::dpi(112, 164),
+            width: gui::dpi_x(60),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+    label(parent, "（フォントはプレビューに反映されます）", 16, 196, 320);
+    drop(cfg);
+
+    // テーマ選択を即反映する（プレビューの配色は右の「プレビュー表示」で切り替える）。
+    {
+        let shared = shared.clone();
+        let theme2 = theme.clone();
+        theme.on().bn_clicked(move || {
+            shared.cfg.borrow_mut().theme = match theme2.selected_index() {
+                Some(0) => Theme::Dark,
+                Some(1) => Theme::Light,
+                _ => Theme::System,
+            };
+            Ok(())
+        });
+    }
+
+    // フォント編集はその場でプレビューへ反映する。
+    {
+        let shared = shared.clone();
+        let preview = preview.clone();
+        let edit = font_family.clone();
+        font_family.on().en_change(move || {
+            if let Ok(f) = edit.text() {
+                let f = f.trim();
+                if !f.is_empty() {
+                    shared.cfg.borrow_mut().font.family = f.to_owned();
+                    preview.refresh();
                 }
-                Ok(())
-            });
-        }
-        {
-            let shared = shared.clone();
-            let preview = preview.clone();
-            let edit = font_size.clone();
-            font_size.on().en_change(move || {
-                let cur = shared.cfg.borrow().font.size;
-                let size = parse_or(&edit, cur).clamp(6, 72);
-                shared.cfg.borrow_mut().font.size = size;
-                preview.refresh();
-                Ok(())
-            });
-        }
-
-        Self { theme, font_family, font_size }
-    }
-
-    fn collect(&self, cfg: &mut Config) {
-        cfg.theme = match self.theme.selected_index() {
-            Some(0) => Theme::Dark,
-            Some(1) => Theme::Light,
-            _ => Theme::System,
-        };
-        if let Ok(f) = self.font_family.text() {
-            let f = f.trim();
-            if !f.is_empty() {
-                cfg.font.family = f.to_owned();
             }
-        }
-        cfg.font.size = parse_or(&self.font_size, cfg.font.size).clamp(6, 72);
+            Ok(())
+        });
+    }
+    {
+        let shared = shared.clone();
+        let preview = preview.clone();
+        let edit = font_size.clone();
+        font_size.on().en_change(move || {
+            let cur = shared.cfg.borrow().font.size;
+            let size = parse_or(&edit, cur).clamp(6, 72);
+            shared.cfg.borrow_mut().font.size = size;
+            preview.refresh();
+            Ok(())
+        });
     }
 }
 
-/// 「レイアウト」ページ（寸法を数値で編集）。
-#[derive(Clone)]
-struct LayoutPane {
-    edits: Vec<gui::Edit>,
-}
-
-impl LayoutPane {
-    fn new(parent: &gui::WindowControl, shared: &Rc<Shared>) -> Self {
-        let cfg = shared.cfg.borrow();
-        let mut edits = Vec::with_capacity(LAYOUT_FIELDS.len());
-        for (i, (lbl, get, _)) in LAYOUT_FIELDS.iter().enumerate() {
-            let col = (i / 6) as i32;
-            let row = (i % 6) as i32;
-            let x = 16 + col * 232;
-            let y = 16 + row * 34;
-            label(parent, lbl, x, y + 2, 130);
-            let edit = gui::Edit::new(
-                parent,
-                gui::EditOpts {
-                    text: &get(&cfg.layout).to_string(),
-                    control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
-                    position: gui::dpi(x + 134, y),
-                    width: gui::dpi_x(60),
-                    height: gui::dpi_y(22),
-                    ..Default::default()
-                },
-            );
-            edits.push(edit);
-        }
-        Self { edits }
+/// 「レイアウト」ページ（寸法を数値で編集）を構築する。各 Edit を即 `Shared` へ反映する。
+fn build_layout(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &Preview) {
+    let cfg = shared.cfg.borrow();
+    let mut edits = Vec::with_capacity(LAYOUT_FIELDS.len());
+    for (i, (lbl, get, _)) in LAYOUT_FIELDS.iter().enumerate() {
+        let y = 12 + i as i32 * 34;
+        label(parent, lbl, 16, y + 2, 150);
+        let edit = gui::Edit::new(
+            parent,
+            gui::EditOpts {
+                text: &get(&cfg.layout).to_string(),
+                control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
+                position: gui::dpi(170, y),
+                width: gui::dpi_x(64),
+                height: gui::dpi_y(22),
+                ..Default::default()
+            },
+        );
+        edits.push(edit);
     }
+    drop(cfg);
 
-    fn collect(&self, cfg: &mut Config) {
-        for (edit, (_, get, set)) in self.edits.iter().zip(LAYOUT_FIELDS) {
-            let cur = get(&cfg.layout);
-            set(&mut cfg.layout, parse_or(edit, cur).max(0));
-        }
+    // 各寸法の編集を即プレビューへ反映する。
+    for (edit, (_, get, set)) in edits.iter().zip(LAYOUT_FIELDS) {
+        let shared = shared.clone();
+        let preview = preview.clone();
+        let edit2 = edit.clone();
+        let get = *get;
+        let set = *set;
+        edit.on().en_change(move || {
+            let cur = get(&shared.cfg.borrow().layout);
+            let v = parse_or(&edit2, cur).max(0);
+            set(&mut shared.cfg.borrow_mut().layout, v);
+            preview.refresh();
+            Ok(())
+        });
     }
 }
 
@@ -673,12 +769,12 @@ struct KeysPane {
 
 impl KeysPane {
     fn new(parent: &gui::WindowControl, shared: &Rc<Shared>) -> Self {
-        label(parent, "現在のキー割り当て（変更は config.toml で行います）", 16, 12, 460);
+        label(parent, "現在のキー割り当て（変更は config.toml で行います）", 16, 12, 330);
         let list = gui::ListBox::new(
             parent,
             gui::ListBoxOpts {
                 position: gui::dpi(16, 36),
-                size: gui::dpi(452, 232),
+                size: gui::dpi(330, 500),
                 ..Default::default()
             },
         );
@@ -698,11 +794,12 @@ impl KeysPane {
     }
 }
 
-/// 設定ダイアログを表示し、OK なら編集後の設定を返す。キャンセルなら `None`。
-pub fn show(parent: &impl GuiParent, current: &Config) -> Option<Config> {
+/// 設定ダイアログを表示する。`OK`／`適用` で確定した [`Config`] を `on_apply` へ渡す
+/// （`適用` は閉じずに継続、`OK` は閉じる。`キャンセル` は破棄して閉じる）。
+pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config) + 'static) {
     let wnd = gui::WindowModal::new(gui::WindowModalOpts {
         title: "設定",
-        size: gui::dpi(680, 600),
+        size: gui::dpi(960, 620),
         style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE | co::WS::SYSMENU,
         process_dlg_msgs: true,
         ..Default::default()
@@ -713,19 +810,19 @@ pub fn show(parent: &impl GuiParent, current: &Config) -> Option<Config> {
         target_dark: Cell::new(current.resolved == ResolvedTheme::Dark),
     });
 
-    // 左ナビ。
+    // 左カラム：ナビ。
     let nav = gui::ListBox::new(
         &wnd,
         gui::ListBoxOpts {
             position: gui::dpi(12, 12),
-            size: gui::dpi(140, 548),
+            size: gui::dpi(120, 544),
             ..Default::default()
         },
     );
 
-    // 右側：セクション pane（同じ矩形に重ねて show/hide で切替）。
-    let pane_pos = gui::dpi(164, 12);
-    let pane_size = gui::dpi(504, 252);
+    // 中央カラム：セクション pane（同じ矩形に重ねて show/hide で切替）。
+    let pane_pos = gui::dpi(144, 12);
+    let pane_size = gui::dpi(360, 544);
     let pane_appearance = make_pane(&wnd, pane_pos, pane_size);
     let pane_colors = make_pane(&wnd, pane_pos, pane_size);
     let pane_layout = make_pane(&wnd, pane_pos, pane_size);
@@ -737,42 +834,42 @@ pub fn show(parent: &impl GuiParent, current: &Config) -> Option<Config> {
         pane_keys.clone(),
     ];
 
-    // プレビュー（右下・常時表示）と、その対象テーマ切替。
-    label(&wnd, "プレビュー", 164, 272, 80);
+    // 右カラム：プレビュー（フル高・常時表示）と、その表示テーマ切替。
+    label(&wnd, "プレビュー", 516, 14, 80);
     let target = gui::RadioGroup::new(
         &wnd,
         &[
             gui::RadioButtonOpts {
                 text: "ダーク",
-                position: gui::dpi(248, 270),
+                position: gui::dpi(600, 12),
                 size: gui::dpi(72, 20),
                 selected: shared.target_dark.get(),
                 ..Default::default()
             },
             gui::RadioButtonOpts {
                 text: "ライト",
-                position: gui::dpi(324, 270),
+                position: gui::dpi(674, 12),
                 size: gui::dpi(72, 20),
                 selected: !shared.target_dark.get(),
                 ..Default::default()
             },
         ],
     );
-    let preview = Preview::new(&wnd, gui::dpi(164, 296), gui::dpi(504, 264), shared.clone());
+    let preview = Preview::new(&wnd, gui::dpi(516, 40), gui::dpi(432, 516), shared.clone());
 
     // 各 pane の中身。
-    let appearance = AppearancePane::new(&pane_appearance, &shared, &preview);
-    let layout = LayoutPane::new(&pane_layout, &shared);
+    build_appearance(&pane_appearance, &shared, &preview);
+    build_layout(&pane_layout, &shared, &preview);
     let keys = KeysPane::new(&pane_keys, &shared);
 
-    // 配色 pane：スウォッチ一覧（2 列・横いっぱい）＋上段の操作ボタン。
-    label(&pane_colors, "色をダブルクリックで変更", 8, 12, 270);
+    // 配色 pane：操作ボタン（上段）＋スウォッチ一覧（フル高・1 列）。
+    label(&pane_colors, "色をダブルクリックで変更", 8, 14, 200);
     let change = gui::Button::new(
         &pane_colors,
         gui::ButtonOpts {
             text: "変更(&C)...",
-            position: gui::dpi(290, 6),
-            width: gui::dpi_x(96),
+            position: gui::dpi(8, 36),
+            width: gui::dpi_x(110),
             height: gui::dpi_y(28),
             ..Default::default()
         },
@@ -781,21 +878,22 @@ pub fn show(parent: &impl GuiParent, current: &Config) -> Option<Config> {
         &pane_colors,
         gui::ButtonOpts {
             text: "既定に戻す(&R)",
-            position: gui::dpi(392, 6),
-            width: gui::dpi_x(108),
+            position: gui::dpi(126, 36),
+            width: gui::dpi_x(130),
             height: gui::dpi_y(28),
             ..Default::default()
         },
     );
-    let swatch = SwatchList::new(&pane_colors, gui::dpi(8, 40), gui::dpi(488, 204), shared.clone(), preview.clone());
+    let swatch = SwatchList::new(&pane_colors, gui::dpi(8, 72), gui::dpi(344, 466), shared.clone(), preview.clone());
 
+    // 下段：OK / キャンセル / 適用。
     let ok = gui::Button::new(
         &wnd,
         gui::ButtonOpts {
             text: "OK",
             control_style: co::BS::DEFPUSHBUTTON,
             ctrl_id: 1,
-            position: gui::dpi(474, 564),
+            position: gui::dpi(658, 578),
             width: gui::dpi_x(90),
             height: gui::dpi_y(28),
             ..Default::default()
@@ -806,14 +904,25 @@ pub fn show(parent: &impl GuiParent, current: &Config) -> Option<Config> {
         gui::ButtonOpts {
             text: "キャンセル",
             ctrl_id: 2,
-            position: gui::dpi(572, 564),
+            position: gui::dpi(756, 578),
             width: gui::dpi_x(94),
             height: gui::dpi_y(28),
             ..Default::default()
         },
     );
+    let apply = gui::Button::new(
+        &wnd,
+        gui::ButtonOpts {
+            text: "適用(&A)",
+            ctrl_id: 3,
+            position: gui::dpi(858, 578),
+            width: gui::dpi_x(90),
+            height: gui::dpi_y(28),
+            ..Default::default()
+        },
+    );
 
-    let result: Rc<RefCell<Option<Config>>> = Rc::new(RefCell::new(None));
+    let on_apply = Rc::new(on_apply);
 
     // window 生成後：ナビ流し込み・初期表示 pane・各リスト初期化。
     {
@@ -838,7 +947,11 @@ pub fn show(parent: &impl GuiParent, current: &Config) -> Option<Config> {
                 "",
                 reg_wnd.hwnd().ptr() as isize,
                 false,
-                vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
+                vec![
+                    ("OK".to_string(), 1u16),
+                    ("キャンセル".to_string(), 2u16),
+                    ("適用".to_string(), 3u16),
+                ],
             );
             Ok(0)
         });
@@ -859,13 +972,14 @@ pub fn show(parent: &impl GuiParent, current: &Config) -> Option<Config> {
         });
     }
 
-    // プレビュー対象テーマの切替（配色編集対象も連動）。
-    for i in 0..target.count() {
+    // プレビュー表示テーマの切替（配色編集対象も連動）。
+    {
         let shared = shared.clone();
         let preview = preview.clone();
         let swatch = swatch.clone();
-        target[i].on().bn_clicked(move || {
-            shared.target_dark.set(i == 0);
+        let target2 = target.clone();
+        target.on().bn_clicked(move || {
+            shared.target_dark.set(target2.selected_index() == Some(0));
             swatch.refresh();
             preview.refresh();
             Ok(())
@@ -888,22 +1002,27 @@ pub fn show(parent: &impl GuiParent, current: &Config) -> Option<Config> {
         });
     }
 
-    // OK：widget から確定値を集めて返す（配色は shared 上で編集済み）。
+    // 適用：閉じずに現在の設定を反映する。
     {
-        let result = result.clone();
-        let wnd2 = wnd.clone();
+        let on_apply = on_apply.clone();
         let shared = shared.clone();
-        let appearance = appearance.clone();
-        let layout = layout.clone();
+        apply.on().bn_clicked(move || {
+            on_apply(&shared.cfg.borrow());
+            Ok(())
+        });
+    }
+    // OK：反映して閉じる。
+    {
+        let on_apply = on_apply.clone();
+        let shared = shared.clone();
+        let wnd2 = wnd.clone();
         ok.on().bn_clicked(move || {
-            let mut cfg = shared.cfg.borrow().clone();
-            appearance.collect(&mut cfg);
-            layout.collect(&mut cfg);
-            *result.borrow_mut() = Some(cfg);
+            on_apply(&shared.cfg.borrow());
             wnd2.close();
             Ok(())
         });
     }
+    // キャンセル：破棄して閉じる（実反映は適用／OK 時のみなので revert 不要）。
     {
         let wnd2 = wnd.clone();
         cancel.on().bn_clicked(move || {
@@ -915,7 +1034,5 @@ pub fn show(parent: &impl GuiParent, current: &Config) -> Option<Config> {
     let _ = wnd.show_modal(parent);
     #[cfg(feature = "debug-server")]
     crate::debug_server::modal_registry::pop();
-    let _ = (nav, panes, swatch, change, reset, target, keys, ok, cancel);
-    let r = result.borrow().clone();
-    r
+    let _ = (nav, panes, swatch, change, reset, target, keys, ok, cancel, apply);
 }

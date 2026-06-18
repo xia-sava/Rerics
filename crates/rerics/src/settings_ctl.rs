@@ -12,15 +12,17 @@ impl MainWindow {
         let mut current = self.config.borrow().clone();
         current.resolve_theme(system_is_light());
         self.in_dialog.set(true);
-        let edited = settings_dialog::show(&self.wnd, &current);
-        self.in_dialog.set(false);
-        if let Some(mut new) = edited {
+        let me = self.clone();
+        settings_dialog::show(&self.wnd, &current, move |new| {
+            let mut new = new.clone();
             new.resolve_theme(system_is_light());
-            self.apply_config(new)?;
-            if let Err(e) = self.config.borrow().save() {
-                self.log.error(&format!("設定の保存に失敗: {}", e));
+            if let Err(e) = me.apply_config(new) {
+                me.log.error(&format!("設定の適用に失敗: {}", e));
+            } else if let Err(e) = me.config.borrow().save() {
+                me.log.error(&format!("設定の保存に失敗: {}", e));
             }
-        }
+        });
+        self.in_dialog.set(false);
         self.key_sink.hwnd().SetFocus();
         Ok(())
     }
