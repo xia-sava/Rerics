@@ -1,6 +1,6 @@
     use super::*;
     use crate::LogLevel;
-    use crate::archive::{ArchiveBackend, ArchiveEntry};
+    use crate::archive::ArchiveEntry;
     use std::cell::RefCell;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
