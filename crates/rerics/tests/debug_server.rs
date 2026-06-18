@@ -1192,3 +1192,53 @@ fn refresh_and_nop_are_noops() {
     let after = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
     assert_eq!(before.trim(), after.trim(), "Refresh/Nop でカーソルは不変");
 }
+
+/// 生バイトで HTTP 応答を読む（PNG 等のバイナリ用。`req` は UTF-8 前提でバイナリを落とす）。
+fn req_bytes(port: u16, method: &str, path: &str) -> Option<(u16, Vec<u8>)> {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    s.set_read_timeout(Some(Duration::from_secs(8))).ok();
+    let head = format!(
+        "{method} {path} HTTP/1.0\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    s.write_all(head.as_bytes()).ok()?;
+    let mut resp = Vec::new();
+    s.read_to_end(&mut resp).ok()?;
+    let sep = resp.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let line_end = resp.windows(2).position(|w| w == b"\r\n")?;
+    let status: u16 = std::str::from_utf8(&resp[..line_end])
+        .ok()?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()?;
+    Some((status, resp[sep + 4..].to_vec()))
+}
+
+/// 設定ダイアログ＝独自モーダルだが modal_registry に登録済み。OpenSettings で開き、
+/// 自前描画（プレビュー/スウォッチ）を含む窓を /snapshot/modal が PrintWindow で撮れ、
+/// ナビをキーで動かしても /modal/command/cancel で閉じられる（デッドロックしない）。
+#[test]
+fn settings_dialog_opens_snapshots_and_closes() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"settings\""), "設定モーダルが開くはず: {modal}");
+
+    // 自前描画コントロールを含むモーダルが PNG として撮れる（WM_PRINTCLIENT 応答の担保）。
+    let (st, png) = req_bytes(server.port, "GET", "/snapshot/modal").expect("snapshot/modal");
+    assert_eq!(st, 200, "/snapshot/modal は 200");
+    assert!(
+        png.starts_with(&[0x89, b'P', b'N', b'G']),
+        "PNG 署名で始まるはず ({} bytes)",
+        png.len()
+    );
+    assert!(png.len() > 1000, "PNG が空でないはず: {} bytes", png.len());
+
+    // ナビ ListBox（開いた直後にフォーカス）を下キーで配色ペインへ。状態 JSON が返り壊れない。
+    let down = server.req("POST", "/modal/key/down", "").expect("modal key down").0;
+    assert_eq!(down, 200, "/modal/key/down は状態を返す");
+
+    // キャンセルで閉じる（ブロックしない）。
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}

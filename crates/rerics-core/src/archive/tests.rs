@@ -1,4 +1,4 @@
-    use super::zip_be::{ZipBackend, ZipWriter};
+    use super::zip_be::ZipBackend;
     use super::sevenz::SevenZBackend;
     #[cfg(feature = "rar")]
     use super::rar::RarBackend;
