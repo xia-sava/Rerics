@@ -18,9 +18,13 @@ description: Rerics の GUI を headless のデバッグ制御サーバ（--debu
    **何も実行されない**（カーソルも動かずマークも付かない）。必ず `curl -X POST`。観測系
    `/state`・`/presentation`・`/snapshot` は GET でよい。
 2. **feature 付き / 無し build は同じ `target/debug/rerics.exe` を奪い合う**。`./tools/dev.sh build`
-   （feature 無し）や `dev.sh test` を挟むと debug-server が**消える**。検証前は必ず
-   `./tools/dev.sh build --features debug-server`。**検証が終わったら `./tools/dev.sh build`（plain）で
-   実行用 exe に戻す**（戻し忘れると本番起動でサーバが生きたまま）。
+   （feature 無し）や `dev.sh test` を挟むと debug-server が**消える**。しかもこの上書きは
+   **検証フローの外**（並行する別作業の plain ビルド／テスト、ユーザの手元ビルド等）でもいつでも起き得る。
+   **「session 中に一度ビルドしたから以後も feature 版のまま」と仮定してはいけない**——起動の直前に毎回
+   ビルド状態を確認し、必要なら再ビルドする（迷ったら `./tools/dev.sh build --features debug-server` を
+   無条件で打ち直してから起動するのが安全）。**feature 無しの exe を起動すると、feature ゲートのフラグ
+   （`--headless` 等）が黙って無視され、非表示のはずが実 GUI 窓が画面に出る**（headless 検証のつもりが窓が飛ぶ）。
+   **検証が終わったら `./tools/dev.sh build`（plain）で実行用 exe に戻す**（戻し忘れると本番起動でサーバが生きたまま）。
 3. **停止は `netstat -ano`→`taskkill //PID`**。`/command/Quit` で正常終了すると **state.toml に現在地が
    保存**され次回起動の初期状態が変わる（＝テスト汚染）。`taskkill //F //IM rerics.exe` でも可だが、
    並列起動時はポートから PID を引いて個別に落とす（下記）。
@@ -117,7 +121,8 @@ rm -rf "$D"
   `list_left` と `list_right` を2枚撮って並べる。先に `FocusLeft`/`FocusRight` で意図した側をアクティブにする。
 - **一瞬の状態（スピナー等）を撮る**：`/snapshot/pane_<side>` を ~150ms 間隔で 20〜30 連写し、PNG サイズ差
   （ほぼ黒の読込画面＝小・一覧＝大）で該当フレームを特定すると速い。
-- 実画面の地の証拠が要るときだけ `tools/ui.ps1`（フラッシュあり）。ユーザ作業中なら一声かける。
+- 実画面の地の証拠が要るとき、または **debug-server で撮れないモーダル**を撮るときは `tools/ui.ps1`
+  （フラッシュあり・`-Foreground` で別窓対応／詳細は下記レシピ）。ユーザ作業中なら一声かける。
 
 ## モーダルの自動操作（MaybeModal とデッドロック回避）
 
@@ -126,10 +131,14 @@ rm -rf "$D"
   後続の `/modal/*` を捌けず**完全デッドロック**。
 - **対処（実装済）**：モーダルを開き得るコマンドは `DebugCmdClass`（main.rs）で **exec 前に応答**を返す。
   書込み系＝`ModalWrite`（要 allow_write）、読取だがモーダルを開き得る `ViewFile` 等＝`MaybeModal`（allow_write 不要）。
-- **手順例（暗号化 zip のパスワード入力まで自動化できる）**：
-  `POST /command/ViewFile`（即 `{"maybe_modal":true}` 応答）→ `GET /state/modal`（入力ボックスが見える）→
-  `POST /modal/text`（body=値）→ `POST /modal/key/enter` → `GET /state/active_view` が `"text"` に →
-  `GET /snapshot/full` で内容確認。リスト選択モーダルは `POST /modal/select/<n>`。
+- **撮れる／撮れないの境目**：`/state/modal`・`/modal/*`・`/snapshot/modal` で観測・操作・撮影できるのは
+  **`modal_registry`（debug_server.rs）に push 登録され、かつ開くコマンドが `MaybeModal`／`ModalWrite`** の
+  モーダルだけ（`dialog::` 系はこの両方を満たす）。winsafe の `show_modal` を registry 登録せず回すダイアログは
+  `DebugCmdClass::Unsupported` で、debug-server からは**起動も観測もできない**＝**実窓キャプチャが唯一の手段**（下記レシピ）。
+- **手順例（入力欄つきモーダルを値設定→確定まで自動化）**：
+  `POST /command/<Name>`（即 `{"maybe_modal":true}` 応答）→ `GET /state/modal`（入力ボックスが見える）→
+  `POST /modal/text`（body=値）→ `POST /modal/key/enter` → `GET /state` で結果を確認。
+  リスト選択モーダルは `POST /modal/select/<n>`。
 
 ## 個別レシピ
 
@@ -143,11 +152,22 @@ rm -rf "$D"
 `theme=System` は OS 依存で片方しか見えない。検証中だけ隔離 `config.toml` に `theme="dark"` / `theme="light"` を
 書いて各起動でスクショ（本番 config.toml は通常空なので、隔離 dir 側に書けば復元不要）。F5=Reload は無害。
 
-### 設定ダイアログ（タブ切替はマウス必須）
-`gui::Tab` のページはモーダルの子（タブコントロールの兄弟）で **Ctrl+Tab/PageDown が効かない**。タブ切替は
-マウスクリックのみ。窓は `EnumWindows`+`GetWindowText`(Unicode) で探す（`FindWindow` は ANSI 既定で日本語タイトル
-"設定" を引けない）。`GetClientRect`→`ClientToScreen`→`SetCursorPos`→`mouse_event` でタブ行（y≒16）をクリック。
-ラジオはニーモニック（Alt+L でライト等）が確実。OK=Enter・Cancel=Esc。検証後は隔離 config.toml を空に戻す。
+### debug-server で撮れないモーダルを実窓キャプチャする
+registry 非登録の `Unsupported` モーダル（winsafe `show_modal` 系）は debug-server で観測・撮影できないので、
+実ウィンドウを出して `tools/ui.ps1 -Foreground` で前面に出た別窓を直接撮る（ユーザ作業中なら一声）。手順は汎用:
+
+1. メイン窓を `--headless` でなく**通常起動**（`Start-Process target/debug/rerics.exe`）。
+2. `-Keys` でモーダルを開くトリガを送る（`%`＝Alt でメニューのニーモニックを順に押す）。
+3. 開いた窓のフォーカス済みコントロールは `-PostKeys`（矢印・Tab 等）で動かす（リストや項目の移動）。
+4. `-Foreground` で前面窓を撮る（`GetForegroundWindow` 基準＝別窓が前面なら `EnumWindows` 探索は不要）。
+5. `-Close` で Esc 閉じ＋メイン窓最小化（作業画面に残さない）。
+
+```pwsh
+pwsh -File tools/ui.ps1 -Keys "<開くキー>" -PostKeys "<移動キー>" -Foreground -Close   # → target/shot.png を Read で目視
+```
+
+ラジオ等はニーモニック（`%`＋文字）、OK=Enter・Cancel=Esc。テーマ別に撮るなら隔離 config.toml に `theme` を
+書いて起動を分ける（上記「テーマ両方を撮る」と同じ）。検証後は隔離 config.toml を空に戻す。
 
 ## e2e テストの書き方（3パターン・spawn 無しが基本）
 
