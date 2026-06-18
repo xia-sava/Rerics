@@ -126,7 +126,10 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         // 済みなので開いて OK/Cancel で閉じられる（ラジオ値そのものの選択は未対応＝種別変更の
         // ロジックは引数コマンド Sort(type) でも駆動・検証できる）。
         SortDialog => DebugCmdClass::MaybeModal,
-        OpenSettings | OpenTaskManager => DebugCmdClass::Unsupported,
+        // 設定は modal_registry に登録済み＝開いて /snapshot/modal で撮れ、/modal/* で
+        // ナビ移動・OK/Cancel まで駆動できる（配色変更そのものは Config 経由で別途検証）。
+        OpenSettings => DebugCmdClass::MaybeModal,
+        OpenTaskManager => DebugCmdClass::Unsupported,
         _ => DebugCmdClass::NonModal,
     }
 }

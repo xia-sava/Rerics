@@ -11,6 +11,10 @@ use std::rc::Rc;
 use rerics_core::{Colors, Config, Layout, Rgb, ResolvedTheme, Theme};
 use winsafe::{self as w, co, gui, msg::lb, prelude::*};
 
+/// 自前描画コントロールをオフスクリーン DC へ描かせるメッセージ。`PrintWindow`
+/// （デバッグ制御サーバの `/snapshot/modal`）が子ごとに送るので、これに応答しないと黒く写る。
+const WM_PRINTCLIENT: u32 = 0x0318;
+
 /// 配色テーブルの行ラベルと、`Colors` の各色への get/set（表示順）。
 #[allow(clippy::type_complexity)]
 const COLOR_FIELDS: &[(&str, fn(&Colors) -> Rgb, fn(&mut Colors, Rgb))] = &[
@@ -161,6 +165,11 @@ impl Preview {
         let me = Self { wnd, shared };
         let this = me.clone();
         me.wnd.on().wm_paint(move || this.on_paint());
+        let this = me.clone();
+        me.wnd.on().wm(unsafe { co::WM::from_raw(WM_PRINTCLIENT) }, move |p| {
+            this.on_print(p.wparam);
+            Ok(0)
+        });
         me
     }
 
@@ -192,6 +201,14 @@ impl Preview {
             co::ROP::SRCCOPY,
         )?;
         Ok(())
+    }
+
+    /// `WM_PRINTCLIENT`：与えられた DC へ直接描く（オフスクリーン捕捉用）。
+    fn on_print(&self, hdc_ptr: usize) {
+        let hdc = unsafe { w::HDC::from_ptr(hdc_ptr as *mut std::ffi::c_void) };
+        if let Ok(rc) = self.hwnd().GetClientRect() {
+            let _ = self.render(&hdc, rc.right - rc.left, rc.bottom - rc.top);
+        }
     }
 
     fn render(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
@@ -314,6 +331,11 @@ impl SwatchList {
             this.edit_selected();
             Ok(())
         });
+        let this = me.clone();
+        me.wnd.on().wm(unsafe { co::WM::from_raw(WM_PRINTCLIENT) }, move |p| {
+            this.on_print(p.wparam);
+            Ok(0)
+        });
         me
     }
 
@@ -323,6 +345,14 @@ impl SwatchList {
 
     fn refresh(&self) {
         let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    /// `WM_PRINTCLIENT`：与えられた DC へ直接描く（オフスクリーン捕捉用）。
+    fn on_print(&self, hdc_ptr: usize) {
+        let hdc = unsafe { w::HDC::from_ptr(hdc_ptr as *mut std::ffi::c_void) };
+        if let Ok(rc) = self.hwnd().GetClientRect() {
+            let _ = self.render(&hdc, rc.right - rc.left, rc.bottom - rc.top);
+        }
     }
 
     fn on_click(&self, pt: w::POINT) {
@@ -790,6 +820,8 @@ pub fn show(parent: &impl GuiParent, current: &Config) -> Option<Config> {
         let nav = nav.clone();
         let panes = panes.clone();
         let keys = keys.clone();
+        #[cfg(feature = "debug-server")]
+        let reg_wnd = wnd.clone();
         wnd.on().wm_create(move |_| {
             let _ = nav.items().add(SECTIONS);
             unsafe {
@@ -799,6 +831,15 @@ pub fn show(parent: &impl GuiParent, current: &Config) -> Option<Config> {
                 p.hwnd().ShowWindow(if i == 0 { co::SW::SHOW } else { co::SW::HIDE });
             }
             keys.populate();
+            #[cfg(feature = "debug-server")]
+            crate::debug_server::modal_registry::push(
+                "settings",
+                "設定",
+                "",
+                reg_wnd.hwnd().ptr() as isize,
+                false,
+                vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
+            );
             Ok(0)
         });
     }
@@ -872,6 +913,8 @@ pub fn show(parent: &impl GuiParent, current: &Config) -> Option<Config> {
     }
 
     let _ = wnd.show_modal(parent);
+    #[cfg(feature = "debug-server")]
+    crate::debug_server::modal_registry::pop();
     let _ = (nav, panes, swatch, change, reset, target, keys, ok, cancel);
     let r = result.borrow().clone();
     r
