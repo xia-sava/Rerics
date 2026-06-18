@@ -1,0 +1,1226 @@
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use winsafe::{self as w, co, gui, prelude::*};
+use rerics_core::{LogLevel, messages};
+use crate::task::{ChannelHost, OpKind, TaskControl, WorkerEvent};
+use crate::{MainWindow, dialog, shell, short_desc};
+
+impl MainWindow {
+    /// 入力ダイアログで名前を尋ね、アクティブペインの現在パス直下にディレクトリを作る。
+    /// 作成後は一覧を更新し、新ディレクトリへカーソルを移す。
+    pub(crate) fn make_directory(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            return self.make_directory_in_archive(is_left);
+        }
+        let name = self.input_with_history(
+            "ディレクトリの作成",
+            &messages::directory_name_question(),
+            "新しいディレクトリ",
+            "mkdir",
+        );
+        let Some(name) = name else {
+            return Ok(());
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(());
+        }
+        let dir = self.pane(is_left).borrow().path().join(name);
+        if let Err(e) = std::fs::create_dir(&dir) {
+            let line = messages::create_directory_failure(name, &e.to_string());
+            self.log.error(&line);
+            dialog::message_box(&self.wnd, "ディレクトリの作成", &line, dialog::MessageStyle::Error);
+            return Ok(());
+        }
+        self.log.normal(&messages::create_directory(name));
+        self.reload_side(is_left)?;
+        let view = self.view(is_left);
+        let pr = view.page_rows();
+        view.state().borrow_mut().set_cursor_position(name, pr);
+        view.refresh()?;
+        Ok(())
+    }
+
+    /// 新規ファイルを作る。入力されたファイル名で空ファイルを作成する。
+    /// 既存ファイルは上書きしない。
+    pub(crate) fn create_file(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.block_if_archive(is_left, "ファイルの作成") {
+            return Ok(());
+        }
+        let name = self.input_with_history(
+            "新規ファイルの作成",
+            "ファイル名を入力して下さい。",
+            "",
+            "createfile",
+        );
+        let Some(name) = name else {
+            return Ok(());
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(());
+        }
+        let path = self.pane(is_left).borrow().path().join(name);
+        if path.exists() {
+            let msg = messages::all_ready_exists(name);
+            dialog::message_box(&self.wnd, "新規ファイルの作成", &msg, dialog::MessageStyle::Error);
+            return Ok(());
+        }
+        let made = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map(|_| ());
+        if let Err(e) = made {
+            let msg = if e.kind() == std::io::ErrorKind::AlreadyExists {
+                messages::all_ready_exists(name)
+            } else {
+                format!("{e}")
+            };
+            dialog::message_box(&self.wnd, "新規ファイルの作成", &msg, dialog::MessageStyle::Error);
+            return Ok(());
+        }
+        self.reload_side(is_left)?;
+        let view = self.view(is_left);
+        let pr = view.page_rows();
+        view.state().borrow_mut().set_cursor_position(name, pr);
+        view.refresh()?;
+        Ok(())
+    }
+
+    /// アクティブペインの選択項目を新しい zip に圧縮する（実FS のみ）。出力名を尋ね、
+    /// アクティブペインの直下に作る。既存名は上書き確認する。
+    pub(crate) fn compress(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.block_if_archive(is_left, "圧縮") {
+            return Ok(());
+        }
+        let names = self.selected_or_cursor_names(is_left);
+        if names.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        // 既定名：単一選択ならその名 + .zip、複数なら親ディレクトリ名 + .zip。
+        let dir = self.pane(is_left).borrow().path().to_path_buf();
+        let default_name = if names.len() == 1 {
+            format!("{}.zip", names[0])
+        } else {
+            let base = dir
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "archive".to_owned());
+            format!("{base}.zip")
+        };
+        let name = self.input_with_history(
+            "圧縮",
+            "圧縮ファイル名を入力して下さい。",
+            &default_name,
+            "compress",
+        );
+        let Some(name) = name else {
+            return Ok(());
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(());
+        }
+        let dst_zip = dir.join(name);
+        if dst_zip.exists() {
+            let r = dialog::message_box(
+                &self.wnd,
+                "圧縮",
+                &messages::all_ready_exists(name),
+                dialog::MessageStyle::YesNo,
+            );
+            if r != dialog::MessageResult::Yes {
+                return Ok(());
+            }
+        }
+        self.start_compress(dir, names, dst_zip)
+    }
+
+    /// メニュー「解凍」からの取り出し。アクティブが書庫なら反対の実ペインへ展開する。
+    pub(crate) fn extract_menu(&self, is_left: bool) -> w::AnyResult<()> {
+        if !self.pane(is_left).borrow().is_archive() {
+            self.log.warn("カレントが書庫ではありません");
+            return Ok(());
+        }
+        self.extract_from_archive(is_left)
+    }
+
+    /// 圧縮作成をワーカースレッドで起動する。完了で出力先（＝src と同じ dir）を再読込する。
+    pub(crate) fn start_compress(
+        &self,
+        dir: PathBuf,
+        names: Vec<String>,
+        dst_zip: PathBuf,
+    ) -> w::AnyResult<()> {
+        let control = Arc::new(TaskControl::new());
+        let host = ChannelHost::new(
+            self.task_tx.clone(),
+            self.shutdown.clone(),
+            control.clone(),
+            self.progress_seq.clone(),
+        );
+        let id = self.next_id();
+        let desc = format!("{} -> {}", short_desc(&names), dst_zip.display());
+        self.register_task(id, "圧縮", desc, control)?;
+        let src_dir = dir.clone();
+        std::thread::spawn(move || {
+            rerics_core::run_compress(&host, &src_dir, &names, &dst_zip);
+            let _ = host.tx.send(WorkerEvent::Done {
+                id,
+                kind: OpKind::Copy,
+                src_dir: src_dir.clone(),
+                dst_dir: src_dir,
+            });
+        });
+        Ok(())
+    }
+
+    /// アクティブペインの選択（無ければカーソル）を反対側ペインへコピー/移動する。
+    pub(crate) fn copy_or_move(&self, is_left: bool, move_it: bool) -> w::AnyResult<()> {
+        let src_is_archive = self.pane(is_left).borrow().is_archive();
+        let dst_is_archive = self.pane(!is_left).borrow().is_archive();
+
+        // src が書庫＝取り出し（展開コピー）。移動は元（書庫）を消せないので未対応でスルー。
+        if src_is_archive {
+            if move_it {
+                self.log.warn("書庫からの移動は未対応です");
+                return Ok(());
+            }
+            if dst_is_archive {
+                self.log.warn("書庫から書庫への取り出しは未対応です");
+                return Ok(());
+            }
+            return self.extract_from_archive(is_left);
+        }
+        // dst が書庫＝実FS から書庫への追加（コピー）／移動（追加後に元を削除）。
+        if dst_is_archive {
+            return self.add_to_archive(is_left, move_it);
+        }
+
+        let names = self.selected_or_cursor_names(is_left);
+        if names.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        let src_dir = self.pane(is_left).borrow().path().to_path_buf();
+        let dst_dir = self.pane(!is_left).borrow().path().to_path_buf();
+        self.start_copy(src_dir, dst_dir, names, move_it)
+    }
+
+    /// 選択中（無ければカーソル位置）の項目名を集める。`..` は除外する。
+    pub(crate) fn selected_or_cursor_names(&self, is_left: bool) -> Vec<String> {
+        let state = self.view(is_left).state();
+        let s = state.borrow();
+        let selected: Vec<String> = s
+            .items
+            .iter()
+            .filter(|it| it.selected && !it.is_parent)
+            .map(|it| it.name.clone())
+            .collect();
+        if selected.is_empty() {
+            match s.items.get(s.cursor) {
+                Some(it) if !it.is_parent => vec![it.name.clone()],
+                _ => Vec::new(),
+            }
+        } else {
+            selected
+        }
+    }
+
+    /// 書庫からの取り出しをワーカースレッドで起動する。ワーカ内で書庫を開いて
+    /// `run_extract` を回し、完了で dst ペインを再読込させる。
+    pub(crate) fn start_extract(
+        &self,
+        archive: PathBuf,
+        inner: String,
+        names: Vec<String>,
+        dst_dir: PathBuf,
+    ) -> w::AnyResult<()> {
+        let control = Arc::new(TaskControl::new());
+        let host = ChannelHost::new(
+            self.task_tx.clone(),
+            self.shutdown.clone(),
+            control.clone(),
+            self.progress_seq.clone(),
+        );
+        let id = self.next_id();
+        let desc = format!("{} -> {}", short_desc(&names), dst_dir.display());
+        self.register_task(id, "取り出し", desc, control)?;
+        let dst_done = dst_dir.clone();
+        std::thread::spawn(move || {
+            match rerics_core::open_archive(&archive) {
+                Ok(backend) => match backend.list() {
+                    Ok(entries) => {
+                        rerics_core::run_extract(&host, backend.as_ref(), &entries, &inner, &names, &dst_dir);
+                    }
+                    Err(e) => {
+                        let _ = host.tx.send(WorkerEvent::Log {
+                            level: LogLevel::Error,
+                            text: format!("書庫の読取に失敗しました: {}", e),
+                        });
+                    }
+                },
+                Err(e) => {
+                    let _ = host.tx.send(WorkerEvent::Log {
+                        level: LogLevel::Error,
+                        text: format!("書庫を開けません: {}", e),
+                    });
+                }
+            }
+            // src は書庫（実パス無し＝空）として渡す。dst（実FS）が再読込される。
+            let _ = host.tx.send(WorkerEvent::Done {
+                id,
+                kind: OpKind::Copy,
+                src_dir: PathBuf::new(),
+                dst_dir: dst_done,
+            });
+        });
+        Ok(())
+    }
+
+    /// コピー/移動をワーカースレッドで起動する。完了は `wm_timer` 経由で取り込む。
+    pub(crate) fn start_copy(
+        &self,
+        src_dir: PathBuf,
+        dst_dir: PathBuf,
+        names: Vec<String>,
+        move_it: bool,
+    ) -> w::AnyResult<()> {
+        let control = Arc::new(TaskControl::new());
+        let host = ChannelHost::new(
+            self.task_tx.clone(),
+            self.shutdown.clone(),
+            control.clone(),
+            self.progress_seq.clone(),
+        );
+        let kind = if move_it { OpKind::Move } else { OpKind::Copy };
+        let id = self.next_id();
+        let text = if move_it { "移動" } else { "コピー" };
+        let desc = format!("{} -> {}", short_desc(&names), dst_dir.display());
+        self.register_task(id, text, desc, control)?;
+        std::thread::spawn(move || {
+            rerics_core::run_copy(&host, &src_dir, &dst_dir, &names, move_it);
+            let _ = host.tx.send(WorkerEvent::Done { id, kind, src_dir, dst_dir });
+        });
+        Ok(())
+    }
+
+    /// カーソル位置の項目を入力ダイアログでリネームする。完了後は新名へカーソルを移す。
+    pub(crate) fn rename(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            return self.rename_in_archive(is_left);
+        }
+        // 対象＝選択（無ければカーソル）。1件なら名前編集つき単一、複数なら属性/日時/名前変換の一括。
+        // 名前変換のため (名前, ディレクトリか) を持つ。
+        let targets: Vec<(String, bool)> = {
+            let state = self.view(is_left).state();
+            let s = state.borrow();
+            let selected: Vec<(String, bool)> = s
+                .items
+                .iter()
+                .filter(|it| it.selected && !it.is_parent)
+                .map(|it| (it.name.clone(), it.is_dir))
+                .collect();
+            if selected.is_empty() {
+                match s.items.get(s.cursor) {
+                    Some(it) if !it.is_parent => vec![(it.name.clone(), it.is_dir)],
+                    _ => Vec::new(),
+                }
+            } else {
+                selected
+            }
+        };
+        if targets.is_empty() {
+            return Ok(());
+        }
+        let dir = self.pane(is_left).borrow().path().to_path_buf();
+
+        let (single, single_is_dir, attrs, modified, created) = if targets.len() == 1 {
+            let (name, is_dir) = &targets[0];
+            let p = dir.join(name);
+            (
+                Some(name.clone()),
+                *is_dir,
+                rerics_core::read_attrs(&p).unwrap_or_default(),
+                rerics_core::modified_time(&p),
+                rerics_core::created_time(&p),
+            )
+        } else {
+            (None, false, rerics_core::FileAttrs::default(), None, None)
+        };
+
+        let Some(res) = dialog::rename_box(
+            &self.wnd,
+            single.as_deref(),
+            single_is_dir,
+            targets.len(),
+            attrs,
+            modified,
+            created,
+        ) else {
+            return Ok(());
+        };
+
+        // 名前変更を先に処理し、以降の属性/日時は新パスへ適用する。
+        let mut paths: Vec<std::path::PathBuf> = targets.iter().map(|(n, _)| dir.join(n)).collect();
+        let mut cursor_name = single.clone();
+        if let (Some(old), Some(new)) = (single.as_ref(), res.name.as_ref()) {
+            let new = new.trim();
+            if !new.is_empty() && new != old.as_str() {
+                if let Err(e) = std::fs::rename(dir.join(old), dir.join(new)) {
+                    let line = messages::rename_failure(old, &e.to_string());
+                    self.log.error(&line);
+                    dialog::message_box(
+                        &self.wnd,
+                        "名前の変更",
+                        &line,
+                        dialog::MessageStyle::Error,
+                    );
+                    return Ok(());
+                }
+                self.log.normal(&messages::rename(old, new));
+                paths = vec![dir.join(new)];
+                cursor_name = Some(new.to_owned());
+            }
+        }
+
+        // 複数一括の名前変換（大文字/小文字・拡張子）。各ファイルへ適用して新パスへ差し替える。
+        if single.is_none() && res.name_case != rerics_core::NameCase::None {
+            let mut new_paths = Vec::with_capacity(targets.len());
+            let mut rename_errors = 0usize;
+            for (name, is_dir) in &targets {
+                let new_name = res.name_case.apply(name, *is_dir);
+                if new_name == *name {
+                    new_paths.push(dir.join(name));
+                    continue;
+                }
+                match std::fs::rename(dir.join(name), dir.join(&new_name)) {
+                    Ok(()) => {
+                        self.log.normal(&messages::rename(name, &new_name));
+                        new_paths.push(dir.join(&new_name));
+                    }
+                    Err(e) => {
+                        rename_errors += 1;
+                        self.log.error(&messages::rename_failure(name, &e.to_string()));
+                        new_paths.push(dir.join(name));
+                    }
+                }
+            }
+            paths = new_paths;
+            if rename_errors > 0 {
+                dialog::message_box(
+                    &self.wnd,
+                    "名前の変更",
+                    &format!("{rename_errors} 件の名前変更に失敗しました（ログ参照）。"),
+                    dialog::MessageStyle::Warning,
+                );
+            }
+        }
+
+        // 属性・更新日時の適用（複数なら据え置き＝None のフィールドは触らない）。
+        let mut errors = 0usize;
+        let mut changed = 0usize;
+        let touch_attrs = res.attrs.iter().any(|a| a.is_some());
+        if touch_attrs || res.modified.is_some() || res.created.is_some() {
+            for p in &paths {
+                match self.apply_meta(p, &res.attrs, res.modified, res.created) {
+                    Ok(true) => changed += 1,
+                    Ok(false) => {}
+                    Err(e) => {
+                        errors += 1;
+                        self.log.error(&format!(
+                            "属性/日時の変更に失敗: {} ({})",
+                            p.display(),
+                            e
+                        ));
+                    }
+                }
+            }
+            if changed > 0 {
+                self.log.normal(&format!("{changed} 件の属性／更新日時を変更しました。"));
+            }
+            if errors > 0 {
+                dialog::message_box(
+                    &self.wnd,
+                    "名前の変更",
+                    &format!("{errors} 件の属性／更新日時の変更に失敗しました（ログ参照）。"),
+                    dialog::MessageStyle::Warning,
+                );
+            }
+        }
+
+        // サブディレクトリ再帰適用（単一ディレクトリ時のみ）。属性・日時を独立に配下へ。
+        if single_is_dir && (res.sub_attr || res.sub_time) {
+            let sub_attrs = if res.sub_attr { res.attrs } else { [None; 4] };
+            let sub_modified = if res.sub_time { res.modified } else { None };
+            let sub_created = if res.sub_time { res.created } else { None };
+            let mut descendants = Vec::new();
+            Self::collect_descendants(&paths[0], &mut descendants);
+            let mut sub_changed = 0usize;
+            let mut sub_errors = 0usize;
+            for p in &descendants {
+                match self.apply_meta(p, &sub_attrs, sub_modified, sub_created) {
+                    Ok(true) => sub_changed += 1,
+                    Ok(false) => {}
+                    Err(e) => {
+                        sub_errors += 1;
+                        self.log.error(&format!("配下の属性/日時の変更に失敗: {} ({})", p.display(), e));
+                    }
+                }
+            }
+            if sub_changed > 0 {
+                self.log.normal(&format!("配下 {sub_changed} 件の属性／日時を変更しました。"));
+            }
+            if sub_errors > 0 {
+                dialog::message_box(
+                    &self.wnd,
+                    "名前の変更",
+                    &format!("配下 {sub_errors} 件の変更に失敗しました（ログ参照）。"),
+                    dialog::MessageStyle::Warning,
+                );
+            }
+        }
+
+        self.reload_side(is_left)?;
+        if let Some(n) = cursor_name {
+            let pr = self.view(is_left).page_rows();
+            self.view(is_left).state().borrow_mut().set_cursor_position(&n, pr);
+        }
+        self.view(is_left).refresh()?;
+        Ok(())
+    }
+
+    /// `root` 配下の全エントリ（ファイル・ディレクトリ）を再帰収集する。シンボリックリンク
+    /// 等の reparse は辿らない（`file_type().is_dir()` は付け替え先を辿らないため自然に除外）。
+    pub(crate) fn collect_descendants(root: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = std::fs::read_dir(root) else {
+            return;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            out.push(path.clone());
+            if is_dir {
+                Self::collect_descendants(&path, out);
+            }
+        }
+    }
+
+    /// 1ファイルへ属性（据え置き＝None は触らない）と更新日時を適用する。
+    /// 何か変更したら `Ok(true)`、変更対象が無ければ `Ok(false)`。
+    pub(crate) fn apply_meta(
+        &self,
+        path: &std::path::Path,
+        attrs: &[Option<bool>; 4],
+        modified: Option<std::time::SystemTime>,
+        created: Option<std::time::SystemTime>,
+    ) -> std::io::Result<bool> {
+        let mut did = false;
+        if let Some(t) = modified {
+            rerics_core::set_modified_time(path, t)?;
+            did = true;
+        }
+        if let Some(t) = created {
+            rerics_core::set_created_time(path, t)?;
+            did = true;
+        }
+        if attrs.iter().any(|a| a.is_some()) {
+            let mut cur = rerics_core::read_attrs(path).unwrap_or_default();
+            if let Some(v) = attrs[0] {
+                cur.readonly = v;
+            }
+            if let Some(v) = attrs[1] {
+                cur.hidden = v;
+            }
+            if let Some(v) = attrs[2] {
+                cur.system = v;
+            }
+            if let Some(v) = attrs[3] {
+                cur.archive = v;
+            }
+            rerics_core::write_attrs(path, cur)?;
+            did = true;
+        }
+        Ok(did)
+    }
+
+    /// アクティブペインの選択（無ければカーソル）を確認ダイアログ付きで削除する。
+    pub(crate) fn delete(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            return self.delete_in_archive(is_left);
+        }
+        let names: Vec<String> = {
+            let state = self.view(is_left).state();
+            let s = state.borrow();
+            let selected: Vec<String> = s
+                .items
+                .iter()
+                .filter(|it| it.selected && !it.is_parent)
+                .map(|it| it.name.clone())
+                .collect();
+            if selected.is_empty() {
+                match s.items.get(s.cursor) {
+                    Some(it) if !it.is_parent => vec![it.name.clone()],
+                    _ => Vec::new(),
+                }
+            } else {
+                selected
+            }
+        };
+        if names.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        let short = if names.len() > 1 {
+            format!("{}他", names[0])
+        } else {
+            names[0].clone()
+        };
+        let ans = dialog::message_box(
+            &self.wnd,
+            "削除",
+            &messages::delete_question(&short),
+            dialog::MessageStyle::YesNo,
+        );
+        if ans != dialog::MessageResult::Yes {
+            return Ok(());
+        }
+        let dir = self.pane(is_left).borrow().path().to_path_buf();
+        self.start_delete(dir, names)
+    }
+
+    /// 選択（無ければカーソル）をゴミ箱へ送る（確認ダイアログ付き・実FSのみ・同期）。
+    pub(crate) fn send_to_recycled(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内ではゴミ箱送りは未対応です。");
+            return Ok(());
+        }
+        let names = self.selected_or_cursor_names(is_left);
+        if names.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        let short = if names.len() > 1 {
+            format!("{}他", names[0])
+        } else {
+            names[0].clone()
+        };
+        let ans = dialog::message_box(
+            &self.wnd,
+            "ゴミ箱へ送る",
+            &format!("{short}をゴミ箱へ送りますか？"),
+            dialog::MessageStyle::YesNo,
+        );
+        if ans != dialog::MessageResult::Yes {
+            return Ok(());
+        }
+        let dir = self.pane(is_left).borrow().path().to_path_buf();
+        let paths: Vec<PathBuf> = names.iter().map(|n| dir.join(n)).collect();
+        match shell::send_to_recycle(&paths) {
+            Ok(()) => self.log.normal(&format!("ゴミ箱へ送りました: {} 件", names.len())),
+            Err(e) => self.log.error(&format!("ゴミ箱送りに失敗しました: {e}")),
+        }
+        self.reload_side(is_left)?;
+        Ok(())
+    }
+
+    /// 選択（無ければカーソル）の各項目を指すショートカット（.lnk）を同じ場所に作る。
+    pub(crate) fn create_shortcut(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内ではショートカット作成は未対応です。");
+            return Ok(());
+        }
+        let names = self.selected_or_cursor_names(is_left);
+        if names.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        let dir = self.pane(is_left).borrow().path().to_path_buf();
+        let mut ok = 0usize;
+        for name in &names {
+            let target = dir.join(name);
+            let lnk = dir.join(format!("{name}.lnk"));
+            match shell::create_shortcut(&target, &lnk) {
+                Ok(()) => ok += 1,
+                Err(e) => self.log.error(&format!("ショートカット作成に失敗しました（{name}）：{e}")),
+            }
+        }
+        if ok > 0 {
+            self.log.normal(&format!("ショートカットを作成しました: {ok} 件"));
+        }
+        self.reload_side(is_left)?;
+        Ok(())
+    }
+
+    /// 選択（無ければカーソル）のパスをクリップボードへ載せる（`move_it`＝切り取り）。
+    pub(crate) fn clip_copy(&self, is_left: bool, move_it: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内ではクリップボード操作は未対応です。");
+            return Ok(());
+        }
+        let names = self.selected_or_cursor_names(is_left);
+        if names.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        let dir = self.pane(is_left).borrow().path().to_path_buf();
+        let paths: Vec<PathBuf> = names.iter().map(|n| dir.join(n)).collect();
+        match shell::clip_copy_files(self.wnd.hwnd(), &paths, move_it) {
+            Ok(()) => {
+                let verb = if move_it { "切り取り" } else { "コピー" };
+                self.log.normal(&format!("クリップボードへ{verb}: {} 件", names.len()));
+            }
+            Err(e) => self.log.error(&format!("クリップボード操作に失敗しました: {e}")),
+        }
+        Ok(())
+    }
+
+    /// クリップボードのファイルを現在地へ貼り付ける（コピー/移動はクリップボードの指定に従う）。
+    pub(crate) fn clip_paste(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内へは貼り付けできません。");
+            return Ok(());
+        }
+        let (paths, move_it) = match shell::clip_paste_files(self.wnd.hwnd()) {
+            Ok(v) => v,
+            Err(e) => {
+                self.log.info(&e);
+                return Ok(());
+            }
+        };
+        // 親ディレクトリごとにまとめて run_copy する（複数フォルダ由来でも壊れない）。
+        let mut groups: std::collections::BTreeMap<PathBuf, Vec<String>> = Default::default();
+        for p in &paths {
+            if let (Some(par), Some(nm)) = (p.parent(), p.file_name()) {
+                groups
+                    .entry(par.to_path_buf())
+                    .or_default()
+                    .push(nm.to_string_lossy().into_owned());
+            }
+        }
+        if groups.is_empty() {
+            return Ok(());
+        }
+        let dst = self.pane(is_left).borrow().path().to_path_buf();
+        self.start_clip_paste(dst, groups.into_iter().collect(), move_it)
+    }
+
+    pub(crate) fn start_clip_paste(
+        &self,
+        dst: PathBuf,
+        groups: Vec<(PathBuf, Vec<String>)>,
+        move_it: bool,
+    ) -> w::AnyResult<()> {
+        let control = Arc::new(TaskControl::new());
+        let host = ChannelHost::new(
+            self.task_tx.clone(),
+            self.shutdown.clone(),
+            control.clone(),
+            self.progress_seq.clone(),
+        );
+        let id = self.next_id();
+        let total: usize = groups.iter().map(|(_, n)| n.len()).sum();
+        let text = if move_it { "貼り付け(移動)" } else { "貼り付け(コピー)" };
+        self.register_task(id, text, format!("{total} 件"), control)?;
+        let dst2 = dst.clone();
+        std::thread::spawn(move || {
+            for (src, names) in groups {
+                rerics_core::run_copy(&host, &src, &dst2, &names, move_it);
+            }
+            let kind = if move_it { OpKind::Move } else { OpKind::Copy };
+            let _ = host.tx.send(WorkerEvent::Done {
+                id,
+                kind,
+                src_dir: dst2.clone(),
+                dst_dir: dst2,
+            });
+        });
+        Ok(())
+    }
+
+    /// カーソル上のファイルを設定エディタ（config の editor）で開く（外部プロセス・実FSのみ）。
+    pub(crate) fn edit(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内のファイルは編集起動に未対応です。");
+            return Ok(());
+        }
+        let name = {
+            let view = self.view(is_left);
+            let state = view.state();
+            let s = state.borrow();
+            match s.items.get(s.cursor) {
+                Some(it) if !it.is_parent && !it.is_dir => it.name.clone(),
+                _ => return Ok(()),
+            }
+        };
+        let path = self.pane(is_left).borrow().path().join(&name);
+        let editor = self.config.borrow().editor.clone();
+        if editor.trim().is_empty() {
+            self.log.warn("エディタが設定されていません（config の editor）。");
+            return Ok(());
+        }
+        match shell::launch_editor(&editor, &path) {
+            Ok(()) => self.log.normal(&format!("編集: {name}")),
+            Err(e) => self.log.error(&e),
+        }
+        Ok(())
+    }
+
+    /// 連番リネームダイアログ。プレフィックス・開始番号・桁数・拡張子保持を入力し、
+    /// プレビューしながら OK で一括リネームする（実FSのみ・選択/カーソル対象）。
+    pub(crate) fn rename_sequence_dialog(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内では連番リネームは未対応です。");
+            return Ok(());
+        }
+        // テンプレート展開は元名の主部/拡張子分割に dir 判定が要るので (名前, dir か) で集める。
+        let items: Vec<(String, bool)> = {
+            let state = self.view(is_left).state();
+            let s = state.borrow();
+            let sel: Vec<(String, bool)> = s
+                .items
+                .iter()
+                .filter(|it| it.selected && !it.is_parent)
+                .map(|it| (it.name.clone(), it.is_dir))
+                .collect();
+            if sel.is_empty() {
+                match s.items.get(s.cursor) {
+                    Some(it) if !it.is_parent => vec![(it.name.clone(), it.is_dir)],
+                    _ => Vec::new(),
+                }
+            } else {
+                sel
+            }
+        };
+        if items.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        let names: Vec<String> = items.iter().map(|(n, _)| n.clone()).collect();
+        let dir = self.pane(is_left).borrow().path().to_path_buf();
+
+        // 命名規則テンプレートのプリセット（先頭＝既定）。原作 frmRenameSeq の cboFileName と同じ。
+        const PRESETS: &[&str] = &[
+            "File<No:0000>.ext",
+            "<F:r><F:e>",
+            "<F:r>_<No><F:e>",
+            "<F:r>_<No:0000><F:e>",
+        ];
+
+        let wnd = gui::WindowModal::new(gui::WindowModalOpts {
+            title: "連番リネーム",
+            size: gui::dpi(444, 268),
+            style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
+            process_dlg_msgs: true,
+            ..Default::default()
+        });
+        let _lf = gui::Label::new(&wnd, gui::LabelOpts {
+            text: "命名規則(&F):",
+            position: gui::dpi(12, 15),
+            size: gui::dpi(80, 16),
+            ..Default::default()
+        });
+        // テンプレートは編集可能コンボ（プリセット選択＋自由入力）。先頭プリセットを初期選択。
+        let template = gui::ComboBox::new(&wnd, gui::ComboBoxOpts {
+            control_style: co::CBS::DROPDOWN,
+            position: gui::dpi(96, 12),
+            width: gui::dpi_x(336),
+            items: PRESETS,
+            selected_item: Some(0),
+            ..Default::default()
+        });
+        // マクロ凡例。
+        for (x, y, text) in [
+            (14, 40, "<F:r> … 元の主部"),
+            (14, 58, "<F:e> … 元の拡張子"),
+            (234, 40, "<No> … 連番"),
+            (234, 58, "<No:0000> … 0 で桁数指定"),
+        ] {
+            let _ = gui::Label::new(&wnd, gui::LabelOpts {
+                text,
+                position: gui::dpi(x, y),
+                size: gui::dpi(210, 16),
+                ..Default::default()
+            });
+        }
+
+        let _lb = gui::Label::new(&wnd, gui::LabelOpts {
+            text: "ファイル名主部(&B)",
+            position: gui::dpi(14, 84),
+            size: gui::dpi(140, 16),
+            ..Default::default()
+        });
+        let base_case = gui::RadioGroup::new(
+            &wnd,
+            &["命名規則通り", "大文字", "小文字", "先頭大文字"]
+                .iter()
+                .enumerate()
+                .map(|(i, label)| gui::RadioButtonOpts {
+                    text: label,
+                    position: gui::dpi(20, 104 + i as i32 * 22),
+                    size: gui::dpi(130, 20),
+                    selected: i == 0,
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>(),
+        );
+        let _le = gui::Label::new(&wnd, gui::LabelOpts {
+            text: "拡張子(&E)",
+            position: gui::dpi(170, 84),
+            size: gui::dpi(140, 16),
+            ..Default::default()
+        });
+        let ext_case = gui::RadioGroup::new(
+            &wnd,
+            &["命名規則通り", "大文字", "小文字", "先頭大文字"]
+                .iter()
+                .enumerate()
+                .map(|(i, label)| gui::RadioButtonOpts {
+                    text: label,
+                    position: gui::dpi(176, 104 + i as i32 * 22),
+                    size: gui::dpi(130, 20),
+                    selected: i == 0,
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>(),
+        );
+
+        let _ln = gui::Label::new(&wnd, gui::LabelOpts {
+            text: "連番(<No>)",
+            position: gui::dpi(322, 84),
+            size: gui::dpi(110, 16),
+            ..Default::default()
+        });
+        let _ls = gui::Label::new(&wnd, gui::LabelOpts {
+            text: "開始番号",
+            position: gui::dpi(322, 106),
+            size: gui::dpi(110, 16),
+            ..Default::default()
+        });
+        let start = gui::Edit::new(&wnd, gui::EditOpts {
+            text: "1",
+            control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
+            position: gui::dpi(322, 124),
+            width: gui::dpi_x(70),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        });
+        let _li = gui::Label::new(&wnd, gui::LabelOpts {
+            text: "増分",
+            position: gui::dpi(322, 152),
+            size: gui::dpi(110, 16),
+            ..Default::default()
+        });
+        let step = gui::Edit::new(&wnd, gui::EditOpts {
+            text: "1",
+            control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
+            position: gui::dpi(322, 170),
+            width: gui::dpi_x(70),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        });
+
+        let preview = gui::Label::new(&wnd, gui::LabelOpts {
+            text: "",
+            position: gui::dpi(14, 200),
+            size: gui::dpi(418, 18),
+            ..Default::default()
+        });
+        let ok = gui::Button::new(&wnd, gui::ButtonOpts {
+            text: "OK",
+            control_style: co::BS::DEFPUSHBUTTON,
+            ctrl_id: 1,
+            position: gui::dpi(256, 230),
+            width: gui::dpi_x(80),
+            height: gui::dpi_y(26),
+            ..Default::default()
+        });
+        let cancel = gui::Button::new(&wnd, gui::ButtonOpts {
+            text: "中止(&S)",
+            ctrl_id: 2,
+            position: gui::dpi(344, 230),
+            width: gui::dpi_x(86),
+            height: gui::dpi_y(26),
+            ..Default::default()
+        });
+
+        // 入力を読み取り (テンプレ, 開始, 刻み, 主部変換, 拡張子変換) にまとめる。
+        // 開始はパース不可で 0、刻みは 0/不可なら 1（1以上にクランプ）。
+        let read_params = {
+            let template = template.clone();
+            let start = start.clone();
+            let step = step.clone();
+            let base_case = base_case.clone();
+            let ext_case = ext_case.clone();
+            move || {
+                let t = template.hwnd().GetWindowText().unwrap_or_default();
+                let s = start.text().unwrap_or_default().trim().parse::<u64>().unwrap_or(0);
+                let st = step.text().unwrap_or_default().trim().parse::<u64>().unwrap_or(1).max(1);
+                let bc = rerics_core::SeqCase::from_index(base_case.selected_index().unwrap_or(0) as usize);
+                let ec = rerics_core::SeqCase::from_index(ext_case.selected_index().unwrap_or(0) as usize);
+                (t, s, st, bc, ec)
+            }
+        };
+
+        // プレビュー更新（入力変化のたびに先頭・末尾の変換例を出す）。
+        let update: std::rc::Rc<dyn Fn()> = {
+            let read_params = read_params.clone();
+            let preview = preview.clone();
+            let items = items.clone();
+            let names = names.clone();
+            std::rc::Rc::new(move || {
+                let (t, s, st, bc, ec) = read_params();
+                let news = rerics_core::sequence_rename(&items, &t, s, st, bc, ec);
+                let text = match (names.first(), news.first()) {
+                    (Some(o1), Some(n1)) if names.len() > 1 => format!(
+                        "例: {o1} → {n1}  …  {} → {}",
+                        names.last().unwrap(),
+                        news.last().unwrap()
+                    ),
+                    (Some(o1), Some(n1)) => format!("例: {o1} → {n1}"),
+                    _ => String::new(),
+                };
+                let _ = preview.hwnd().SetWindowText(&text);
+            })
+        };
+        for ed in [&start, &step] {
+            let u = update.clone();
+            ed.on().en_change(move || {
+                u();
+                Ok(())
+            });
+        }
+        {
+            let u = update.clone();
+            template.on().cbn_edit_change(move || {
+                u();
+                Ok(())
+            });
+        }
+        {
+            // プリセット選択時はコンボのテキストを選択値へ同期してから更新する。
+            let u = update.clone();
+            let tmpl = template.clone();
+            template.on().cbn_sel_change(move || {
+                if let Ok(Some(t)) = tmpl.items().selected_text() {
+                    let _ = tmpl.hwnd().SetWindowText(&t);
+                }
+                u();
+                Ok(())
+            });
+        }
+        for grp in [&base_case, &ext_case] {
+            let u = update.clone();
+            grp.on().bn_clicked(move || {
+                u();
+                Ok(())
+            });
+        }
+
+        #[cfg(feature = "debug-server")]
+        let reg_wnd = wnd.clone();
+        {
+            let template = template.clone();
+            let update = update.clone();
+            wnd.on().wm_create(move |_| {
+                update();
+                template.hwnd().SetFocus();
+                #[cfg(feature = "debug-server")]
+                crate::debug_server::modal_registry::push(
+                    "rename_seq",
+                    "連番リネーム",
+                    "",
+                    reg_wnd.hwnd().ptr() as isize,
+                    false,
+                    vec![("OK".to_string(), 1u16), ("中止(&S)".to_string(), 2u16)],
+                );
+                Ok(0)
+            });
+        }
+
+        {
+            let this = self.clone();
+            let wnd2 = wnd.clone();
+            let read_params = read_params.clone();
+            let items = items.clone();
+            let names = names.clone();
+            let dir = dir.clone();
+            ok.on().bn_clicked(move || {
+                let (t, s, st, bc, ec) = read_params();
+                // 空テンプレは何もしない（ダイアログは閉じない）。
+                if t.trim().is_empty() {
+                    return Ok(());
+                }
+                let news = rerics_core::sequence_rename(&items, &t, s, st, bc, ec);
+                this.apply_sequence_rename(is_left, &dir, &names, &news);
+                wnd2.close();
+                Ok(())
+            });
+        }
+        {
+            let wnd2 = wnd.clone();
+            cancel.on().bn_clicked(move || {
+                wnd2.close();
+                Ok(())
+            });
+        }
+
+        let _ = wnd.show_modal(&self.wnd);
+        #[cfg(feature = "debug-server")]
+        crate::debug_server::modal_registry::pop();
+        let _ = (template, start, step, base_case, ext_case, preview, ok, cancel);
+        Ok(())
+    }
+
+    /// 連番リネームの実行：集合内の入れ替えでも壊れないよう一時名を経由する二段階改名。
+    /// 新名の重複・集合外の既存ファイルとの衝突は中止する。
+    pub(crate) fn apply_sequence_rename(&self, is_left: bool, dir: &Path, olds: &[String], news: &[String]) {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for n in news {
+            if !seen.insert(n.as_str()) {
+                self.log.error(&format!("連番リネーム中止：新しい名前が重複します（{n}）"));
+                return;
+            }
+        }
+        let old_set: HashSet<&str> = olds.iter().map(String::as_str).collect();
+        for n in news {
+            if !old_set.contains(n.as_str()) && dir.join(n).exists() {
+                self.log.error(&format!("連番リネーム中止：既存ファイルと衝突します（{n}）"));
+                return;
+            }
+        }
+        let mut tmps = Vec::new();
+        for (i, old) in olds.iter().enumerate() {
+            let tmp = format!("{old}.rerics-seq-{i}");
+            if let Err(e) = std::fs::rename(dir.join(old), dir.join(&tmp)) {
+                self.log.error(&format!("リネーム失敗（{old}）：{e}"));
+                let _ = self.reload_side(is_left);
+                return;
+            }
+            tmps.push(tmp);
+        }
+        for (tmp, new) in tmps.iter().zip(news.iter()) {
+            if let Err(e) = std::fs::rename(dir.join(tmp), dir.join(new)) {
+                self.log.error(&format!("リネーム失敗（→{new}）：{e}"));
+            }
+        }
+        self.log.normal(&format!("連番リネーム: {} 件", news.len()));
+        let _ = self.reload_side(is_left);
+    }
+
+    pub(crate) fn start_delete(&self, dir: PathBuf, names: Vec<String>) -> w::AnyResult<()> {
+        let control = Arc::new(TaskControl::new());
+        let host = ChannelHost::new(
+            self.task_tx.clone(),
+            self.shutdown.clone(),
+            control.clone(),
+            self.progress_seq.clone(),
+        );
+        let id = self.next_id();
+        self.register_task(id, "削除", short_desc(&names), control)?;
+        std::thread::spawn(move || {
+            rerics_core::run_delete(&host, &dir, &names);
+            let _ = host.tx.send(WorkerEvent::Done {
+                id,
+                kind: OpKind::Delete,
+                src_dir: dir.clone(),
+                dst_dir: dir,
+            });
+        });
+        Ok(())
+    }
+
+    /// 削除をワーカースレッドで起動する。
+    /// カーソル/選択のディスク使用量を再帰計算する（実FSのみ・別スレッド）。完了は
+    /// `DirInfoDone` で受け、結果をダイアログ＋ログに出す。
+    pub(crate) fn directory_information(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内では使用量計算は未対応です。");
+            return Ok(());
+        }
+        let names = self.selected_or_cursor_names(is_left);
+        if names.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        let dir = self.pane(is_left).borrow().path().to_path_buf();
+        self.start_dir_info(dir, names)
+    }
+
+    pub(crate) fn start_dir_info(&self, dir: PathBuf, names: Vec<String>) -> w::AnyResult<()> {
+        let control = Arc::new(TaskControl::new());
+        let host = ChannelHost::new(
+            self.task_tx.clone(),
+            self.shutdown.clone(),
+            control.clone(),
+            self.progress_seq.clone(),
+        );
+        let id = self.next_id();
+        let label = short_desc(&names);
+        self.register_task(id, "情報", label.clone(), control)?;
+        std::thread::spawn(move || {
+            let info = rerics_core::run_calc_size(&host, &dir, &names);
+            let _ = host.tx.send(WorkerEvent::DirInfoDone {
+                id,
+                label,
+                bytes: info.bytes,
+                files: info.files,
+                dirs: info.dirs,
+            });
+        });
+        Ok(())
+    }
+
+    /// カーソル項目の Windows シェルのプロパティシートを開く（実FSのみ・モードレス）。
+    pub(crate) fn property_dialog(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内ではプロパティ表示に未対応です。");
+            return Ok(());
+        }
+        let name = {
+            let view = self.view(is_left);
+            let state = view.state();
+            let s = state.borrow();
+            match s.items.get(s.cursor) {
+                Some(it) if !it.is_parent => it.name.clone(),
+                _ => return Ok(()),
+            }
+        };
+        let path = self.pane(is_left).borrow().path().join(&name);
+        if let Err(e) = shell::show_properties(self.wnd.hwnd(), &path) {
+            self.log.error(&e);
+        }
+        Ok(())
+    }
+
+    /// 履歴つき入力ダイアログ。用途キー `key` の履歴（新しい順）を候補に出し、
+    /// 確定した値を履歴へ追記して保存する。`history.toml` に永続。
+    pub(crate) fn input_with_history(
+        &self,
+        title: &str,
+        message: &str,
+        value: &str,
+        key: &str,
+    ) -> Option<String> {
+        let mut hist = rerics_core::InputHistory::load();
+        let items = hist.get(key);
+        let refs: Vec<&str> = items.iter().map(String::as_str).collect();
+        let result = dialog::input_box_full(
+            &self.wnd,
+            title,
+            message,
+            value,
+            dialog::InputMode::Plain,
+            dialog::InputSelect::AsIs,
+            Some(&refs),
+        );
+        if let Some(v) = &result {
+            hist.add(key, v);
+            let _ = hist.save();
+        }
+        result
+    }
+}
