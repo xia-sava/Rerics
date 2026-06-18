@@ -282,6 +282,16 @@ impl MacroHost for DialogMacroHost<'_> {
     }
 }
 
+/// ペイン再読込時にカーソルをどこへ置くか。
+enum ReloadCursor {
+    /// 常に先頭へ（在席再読込：マスク変更・ファイル操作後など）。
+    Reset,
+    /// 再読込前のカーソル下ファイル名へ戻し、スクロール位置も維持する（F5）。
+    Keep,
+    /// 移動先パスで以前覚えたカーソル位置へ戻す。無ければ先頭（ディレクトリ移動）。
+    Recall,
+}
+
 impl MainWindow {
     #[cfg_attr(not(feature = "debug-server"), allow(unused_variables))]
     fn new(debug_port: Option<u16>, debug_allow_write: bool, debug_headless: bool) -> Self {
@@ -795,8 +805,8 @@ impl MainWindow {
                 state.borrow_mut().clear_all();
             }
             Command::Reload => {
-                self.reload_side_impl(true, true)?;
-                self.reload_side_impl(false, true)?;
+                self.reload_side_impl(true, ReloadCursor::Keep)?;
+                self.reload_side_impl(false, ReloadCursor::Keep)?;
                 return Ok(());
             }
             Command::SortByName => self.sort_active(is_left, SortType::FileName, false),
@@ -882,14 +892,16 @@ impl MainWindow {
             }
             Command::OppositeToCurrent => {
                 let loc = self.pane(is_left).borrow().loc().clone();
+                self.remember_cursor_for_nav(!is_left);
                 self.pane(!is_left).borrow_mut().set_loc(loc);
-                self.reload_side(!is_left)?;
+                self.reload_side_navigated(!is_left)?;
                 return Ok(());
             }
             Command::CurrentToOpposite => {
                 let loc = self.pane(!is_left).borrow().loc().clone();
+                self.remember_cursor_for_nav(is_left);
                 self.pane(is_left).borrow_mut().set_loc(loc);
-                self.reload_side(is_left)?;
+                self.reload_side_navigated(is_left)?;
                 return Ok(());
             }
             Command::Rename => {
@@ -1082,25 +1094,43 @@ impl MainWindow {
         if is_left { &self.left_pane } else { &self.right_pane }
     }
 
+    /// ディレクトリ移動の直前に呼ぶ。現在カーソル下のファイル名を Pane に覚えさせ、
+    /// 同じパスへ戻った時に [`reload_side_navigated`] がそこへカーソルを復元できるようにする。
+    fn remember_cursor_for_nav(&self, is_left: bool) {
+        let name = {
+            let st = self.view(is_left).state();
+            let s = st.borrow();
+            s.items.get(s.cursor).map(|it| it.name.clone())
+        };
+        if let Some(name) = name {
+            self.pane(is_left).borrow_mut().remember_cursor(&name);
+        }
+    }
+
     /// ペインの現在パスを読み直して State へ反映し、パスバーを更新する。
     ///
     /// 対象が「未展開の非ランダムアクセス書庫」なら、ここで一括展開を非同期に開始し
     /// （スピナー表示）、一覧反映は展開完了イベントに委ねて早期 return する。
     fn reload_side(&self, is_left: bool) -> w::AnyResult<()> {
-        self.reload_side_impl(is_left, false)
+        self.reload_side_impl(is_left, ReloadCursor::Reset)
     }
 
-    /// ペインを再読込する。`keep_cursor` が真なら再読込前のカーソル下ファイル名とスクロール位置を
-    /// 退避し、同名ファイルがあればそこへカーソルを戻す（無ければ元の index 付近へ）。F5 リロード用。
-    /// ディレクトリ移動など他経路は false で常に先頭へ。
-    fn reload_side_impl(&self, is_left: bool, keep_cursor: bool) -> w::AnyResult<()> {
+    /// ディレクトリ移動後の再読込。移動先パスで以前覚えたカーソル位置を復元する。
+    fn reload_side_navigated(&self, is_left: bool) -> w::AnyResult<()> {
+        self.reload_side_impl(is_left, ReloadCursor::Recall)
+    }
+
+    /// ペインを再読込する。`mode` でカーソルの行き先を決める：`Keep`＝再読込前のカーソル下
+    /// ファイル名へ戻す（無ければ元 index 付近・F5 用）、`Recall`＝移動先パスで以前覚えた
+    /// カーソル位置へ戻す（無ければ先頭・ディレクトリ移動用）、`Reset`＝常に先頭（在席再読込）。
+    fn reload_side_impl(&self, is_left: bool, mode: ReloadCursor) -> w::AnyResult<()> {
         if self.maybe_start_archive_extract(is_left)? {
             return Ok(());
         }
         let view = self.view(is_left);
         view.clear_loading();
-        // 再読込前のカーソル位置（同名復元用）とスクロール位置を退避する。
-        let (keep_name, keep_scroll, keep_idx) = if keep_cursor {
+        // F5（Keep）のときだけ、再読込前のカーソル下ファイル名とスクロール位置を退避する。
+        let (keep_name, keep_scroll, keep_idx) = if matches!(mode, ReloadCursor::Keep) {
             let st = view.state();
             let s = st.borrow();
             (s.items.get(s.cursor).map(|it| it.name.clone()), s.scroll_top, s.cursor)
@@ -1116,6 +1146,15 @@ impl MainWindow {
             None => items,
         };
         let path = self.pane(is_left).borrow().loc_display();
+        // ディレクトリ移動（Recall）のときだけ、このパスで覚えたカーソル位置を引く。
+        let recalled = if matches!(mode, ReloadCursor::Recall) {
+            self.pane(is_left)
+                .borrow()
+                .recalled_cursor(&path)
+                .map(str::to_owned)
+        } else {
+            None
+        };
         let pr = view.page_rows();
         {
             let state = view.state();
@@ -1124,18 +1163,30 @@ impl MainWindow {
             let sort = s.sort_type;
             let reverse = s.sort_reverse;
             s.sort(sort, reverse);
-            if keep_cursor {
-                let found = keep_name
-                    .as_deref()
-                    .map(|n| s.set_cursor_position(n, pr))
-                    .unwrap_or(false);
-                if !found {
-                    s.set_cursor(keep_idx as isize, pr);
+            match mode {
+                ReloadCursor::Keep => {
+                    let found = keep_name
+                        .as_deref()
+                        .map(|n| s.set_cursor_position(n, pr))
+                        .unwrap_or(false);
+                    if !found {
+                        s.set_cursor(keep_idx as isize, pr);
+                    }
+                    // スクロール位置を復元（カーソルが画面内に収まる限り見た目を維持）。
+                    s.set_scroll_top(keep_scroll as isize, pr);
                 }
-                // スクロール位置を復元（カーソルが画面内に収まる限り見た目を維持）。
-                s.set_scroll_top(keep_scroll as isize, pr);
-            } else {
-                s.set_cursor(0, pr);
+                ReloadCursor::Recall => {
+                    let found = recalled
+                        .as_deref()
+                        .map(|n| s.set_cursor_position(n, pr))
+                        .unwrap_or(false);
+                    if !found {
+                        s.set_cursor(0, pr);
+                    }
+                }
+                ReloadCursor::Reset => {
+                    s.set_cursor(0, pr);
+                }
             }
         }
         self.bar(is_left).set_path(&path);

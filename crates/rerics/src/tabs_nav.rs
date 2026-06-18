@@ -92,12 +92,14 @@ impl MainWindow {
 
     /// 左右ペインの現在地を入れ替える（書庫内同士でも成立する）。
     pub(crate) fn swap_paths(&self) -> w::AnyResult<()> {
+        self.remember_cursor_for_nav(true);
+        self.remember_cursor_for_nav(false);
         let l = self.left_pane.borrow().loc().clone();
         let r = self.right_pane.borrow().loc().clone();
         self.left_pane.borrow_mut().set_loc(r);
         self.right_pane.borrow_mut().set_loc(l);
-        self.reload_side(true)?;
-        self.reload_side(false)?;
+        self.reload_side_navigated(true)?;
+        self.reload_side_navigated(false)?;
         Ok(())
     }
 
@@ -115,14 +117,16 @@ impl MainWindow {
         if is_parent {
             return self.to_parent(is_left);
         }
+        // ディレクトリ/書庫へ潜る前に、今のカーソル位置を覚えておく（再訪時に復元）。
+        self.remember_cursor_for_nav(is_left);
         if is_dir {
             if self.pane(is_left).borrow_mut().enter(&name, is_dir) {
-                self.reload_side(is_left)?;
+                self.reload_side_navigated(is_left)?;
             }
         } else {
             // 書庫ファイルなら潜る（zip 等）。
             if self.pane(is_left).borrow_mut().enter(&name, is_dir) {
-                self.reload_side(is_left)?;
+                self.reload_side_navigated(is_left)?;
                 return Ok(());
             }
             // 開く対象の実パスを得る（書庫内は一時展開してから関連付け起動）。
@@ -156,11 +160,12 @@ impl MainWindow {
 
     /// 親ディレクトリへ移動し、元ディレクトリ名にカーソルを置きセンタリングする。
     pub(crate) fn to_parent(&self, is_left: bool) -> w::AnyResult<()> {
+        self.remember_cursor_for_nav(is_left);
         let prev = self.pane(is_left).borrow_mut().to_parent();
         let Some(prev_name) = prev else {
             return Ok(());
         };
-        self.reload_side(is_left)?;
+        self.reload_side_navigated(is_left)?;
         let view = self.view(is_left);
         let pr = view.page_rows();
         {
@@ -183,20 +188,22 @@ impl MainWindow {
         let Some(root) = root else {
             return Ok(());
         };
+        self.remember_cursor_for_nav(is_left);
         if self.pane(is_left).borrow_mut().navigate(root) {
-            self.reload_side(is_left)?;
+            self.reload_side_navigated(is_left)?;
         }
         Ok(())
     }
 
     /// パス移動履歴を前後する（`forward`=進む / それ以外=戻る）。移動できたら再読込。
     pub(crate) fn history_move(&self, is_left: bool, forward: bool) -> w::AnyResult<()> {
+        self.remember_cursor_for_nav(is_left);
         let moved = {
             let mut p = self.pane(is_left).borrow_mut();
             if forward { p.go_forward() } else { p.go_back() }
         };
         if moved {
-            self.reload_side(is_left)?;
+            self.reload_side_navigated(is_left)?;
         }
         Ok(())
     }
@@ -215,8 +222,9 @@ impl MainWindow {
             return Ok(());
         };
         let loc = Location::parse(&disp);
+        self.remember_cursor_for_nav(is_left);
         if self.pane(is_left).borrow_mut().navigate(loc) {
-            self.reload_side(is_left)?;
+            self.reload_side_navigated(is_left)?;
         }
         Ok(())
     }
@@ -229,8 +237,9 @@ impl MainWindow {
             return Ok(());
         };
         let loc = Location::parse(input);
+        self.remember_cursor_for_nav(is_left);
         if self.pane(is_left).borrow_mut().navigate(loc) {
-            self.reload_side(is_left)?;
+            self.reload_side_navigated(is_left)?;
         } else {
             self.log.error(&format!("移動できません: {input}"));
         }
@@ -249,8 +258,9 @@ impl MainWindow {
             return Ok(());
         }
         let loc = Location::parse(input);
+        self.remember_cursor_for_nav(is_left);
         if self.pane(is_left).borrow_mut().navigate(loc) {
-            self.reload_side(is_left)?;
+            self.reload_side_navigated(is_left)?;
         } else {
             let line = format!("移動できません: {input}");
             self.log.error(&line);
@@ -277,8 +287,9 @@ impl MainWindow {
             .unwrap_or(0) as isize;
         let n = roots.len() as isize;
         let next = &roots[((idx + delta).rem_euclid(n)) as usize];
+        self.remember_cursor_for_nav(is_left);
         *self.pane(is_left).borrow_mut() = Pane::open(next);
-        self.reload_side(is_left)?;
+        self.reload_side_navigated(is_left)?;
         Ok(())
     }
 
@@ -292,8 +303,9 @@ impl MainWindow {
             return Ok(());
         };
         let root = format!("{}:\\", letter.to_ascii_uppercase());
+        self.remember_cursor_for_nav(is_left);
         *self.pane(is_left).borrow_mut() = Pane::open(&root);
-        self.reload_side(is_left)?;
+        self.reload_side_navigated(is_left)?;
         Ok(())
     }
 
@@ -327,12 +339,13 @@ impl MainWindow {
         let Some(root) = roots.get(idx) else {
             return Ok(());
         };
+        self.remember_cursor_for_nav(is_left);
         if self
             .pane(is_left)
             .borrow_mut()
             .navigate(Location::Real(PathBuf::from(root)))
         {
-            self.reload_side(is_left)?;
+            self.reload_side_navigated(is_left)?;
         }
         Ok(())
     }
@@ -361,8 +374,9 @@ impl MainWindow {
             return Ok(());
         };
         let loc = Location::parse(path);
+        self.remember_cursor_for_nav(is_left);
         if self.pane(is_left).borrow_mut().navigate(loc) {
-            self.reload_side(is_left)?;
+            self.reload_side_navigated(is_left)?;
         } else {
             self.log.error(&format!("移動できません: {path}"));
         }
