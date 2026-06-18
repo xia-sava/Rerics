@@ -63,6 +63,9 @@ pub struct Pane {
     back: Vec<Location>,
     /// 進む履歴（戻った後にだけ積まれる。新しい移動で破棄）。
     forward: Vec<Location>,
+    /// パス表示文字列 → そのディレクトリで最後にカーソルがあったファイル名。
+    /// ディレクトリへ再び入った時にカーソル位置を復元する（セッション内のみ保持）。
+    cursor_memory: std::collections::HashMap<String, String>,
 }
 
 /// 移動履歴の上限（これを超えると古い方から捨てる）。
@@ -77,6 +80,7 @@ impl Pane {
             loc: Location::Real(abs),
             back: Vec::new(),
             forward: Vec::new(),
+            cursor_memory: std::collections::HashMap::new(),
         }
     }
 
@@ -87,6 +91,7 @@ impl Pane {
             loc: Location::parse(display),
             back: Vec::new(),
             forward: Vec::new(),
+            cursor_memory: std::collections::HashMap::new(),
         }
     }
 
@@ -194,6 +199,20 @@ impl Pane {
         false
     }
 
+    /// 現在地で離れる時のカーソルファイル名を覚える（移動の直前に呼ぶ）。
+    /// 空名・親（".."）は記録しない。
+    pub fn remember_cursor(&mut self, filename: &str) {
+        if filename.is_empty() || filename == ".." {
+            return;
+        }
+        self.cursor_memory.insert(self.loc.loc_display(), filename.to_owned());
+    }
+
+    /// 指定パス表示に対して覚えているカーソルファイル名を返す（無ければ None）。
+    pub fn recalled_cursor(&self, path_display: &str) -> Option<&str> {
+        self.cursor_memory.get(path_display).map(|s| s.as_str())
+    }
+
     /// 移動履歴（新しい順・重複除去）を表示文字列で返す。同じ場所を何度往復しても
     /// 各場所は最後に訪れた1件だけ出す（原作 移動履歴＝MyPathHistory と同じ）。
     /// 先頭が直前の現在地。現在地そのものは含めない。
@@ -295,5 +314,19 @@ mod tests {
         assert!(p.go_back()); // -> crates
         assert!(p.go_back()); // -> rc(開始)
         assert!(!p.go_back(), "これ以上は戻れない");
+    }
+
+    #[test]
+    fn pane_cursor_memory_remembers_and_recalls() {
+        let mut p = Pane::open(env!("CARGO_MANIFEST_DIR"));
+        let here = p.loc_display();
+        p.remember_cursor("Cargo.toml");
+        assert_eq!(p.recalled_cursor(&here), Some("Cargo.toml"));
+        // 空名・親（".."）は記録しない（既存の記憶を上書きしない）。
+        p.remember_cursor("");
+        p.remember_cursor("..");
+        assert_eq!(p.recalled_cursor(&here), Some("Cargo.toml"));
+        // 未知パスは None。
+        assert_eq!(p.recalled_cursor("Z:\\nope"), None);
     }
 }
