@@ -78,6 +78,69 @@ fn choose_color(owner: &w::HWND, initial: Rgb) -> Rgb {
     }
 }
 
+// winsafe 0.0.27 にフォント選択コモンダイアログのラッパが無いため、comdlg32 を直接呼ぶ。
+// （comdlg32 は winsafe の `ChooseColor` で既にリンクされている。）
+const CF_SCREENFONTS: u32 = 0x0000_0001;
+const CF_INITTOLOGFONTSTRUCT: u32 = 0x0000_0040;
+const CF_FORCEFONTEXIST: u32 = 0x0001_0000;
+
+/// [`CHOOSEFONTW`](https://learn.microsoft.com/en-us/windows/win32/api/commdlg/ns-commdlg-choosefontw)。
+#[repr(C)]
+struct ChooseFontStruct {
+    l_struct_size: u32,
+    hwnd_owner: *mut std::ffi::c_void,
+    hdc: *mut std::ffi::c_void,
+    lp_log_font: *mut w::LOGFONT,
+    i_point_size: i32,
+    flags: u32,
+    rgb_colors: u32,
+    l_cust_data: isize,
+    lpfn_hook: *mut std::ffi::c_void,
+    lp_template_name: *const u16,
+    h_instance: *mut std::ffi::c_void,
+    lpsz_style: *mut u16,
+    n_font_type: u16,
+    ___missing_alignment: u16,
+    n_size_min: i32,
+    n_size_max: i32,
+}
+
+#[link(name = "comdlg32")]
+unsafe extern "system" {
+    fn ChooseFontW(lpcf: *mut ChooseFontStruct) -> i32;
+}
+
+/// フォント選択コモンダイアログを開く。OK なら選んだ（フォント名, 論理 px サイズ）、
+/// キャンセルなら `None`。サイズは `list_font` と同じ `dpi_y` スケールの逆算で論理 px へ戻す。
+fn choose_font(owner: &w::HWND, family: &str, size: i32) -> Option<(String, i32)> {
+    let mut lf = w::LOGFONT::new_face(-gui::dpi_y(size), family);
+    lf.lfCharSet = co::CHARSET::DEFAULT;
+    let mut cf = ChooseFontStruct {
+        l_struct_size: std::mem::size_of::<ChooseFontStruct>() as u32,
+        hwnd_owner: owner.ptr(),
+        hdc: std::ptr::null_mut(),
+        lp_log_font: &mut lf,
+        i_point_size: 0,
+        flags: CF_SCREENFONTS | CF_INITTOLOGFONTSTRUCT | CF_FORCEFONTEXIST,
+        rgb_colors: 0,
+        l_cust_data: 0,
+        lpfn_hook: std::ptr::null_mut(),
+        lp_template_name: std::ptr::null(),
+        h_instance: std::ptr::null_mut(),
+        lpsz_style: std::ptr::null_mut(),
+        n_font_type: 0,
+        ___missing_alignment: 0,
+        n_size_min: 0,
+        n_size_max: 0,
+    };
+    if unsafe { ChooseFontW(&mut cf) } == 0 {
+        return None;
+    }
+    let scale = gui::dpi_y(96).max(1);
+    let new_size = ((lf.lfHeight.unsigned_abs() as i64 * 96) / scale as i64) as i32;
+    Some((lf.lfFaceName(), new_size.clamp(6, 72)))
+}
+
 /// Edit の整数値を取り出す。空・解釈不能なら `cur` を返す。
 fn parse_or(edit: &gui::Edit, cur: i32) -> i32 {
     edit.text()
@@ -674,7 +737,17 @@ fn build_appearance(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &
             ..Default::default()
         },
     );
-    label(parent, "（フォントはプレビューに反映されます）", 16, 196, 320);
+    let font_btn = gui::Button::new(
+        parent,
+        gui::ButtonOpts {
+            text: "フォント選択(&F)...",
+            position: gui::dpi(112, 196),
+            width: gui::dpi_x(150),
+            height: gui::dpi_y(26),
+            ..Default::default()
+        },
+    );
+    label(parent, "（フォント・サイズはプレビューに反映されます）", 16, 232, 340);
     drop(cfg);
 
     // テーマ選択を即反映する（プレビューの配色は右の「プレビュー表示」で切り替える）。
@@ -716,6 +789,25 @@ fn build_appearance(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &
             let size = parse_or(&edit, cur).clamp(6, 72);
             shared.cfg.borrow_mut().font.size = size;
             preview.refresh();
+            Ok(())
+        });
+    }
+
+    // フォント選択ダイアログ。選んだ値を Edit へ書き戻すと en_change が cfg・プレビューへ反映する。
+    {
+        let shared = shared.clone();
+        let ff = font_family.clone();
+        let fs = font_size.clone();
+        let btn = font_btn.clone();
+        font_btn.on().bn_clicked(move || {
+            let (family, size) = {
+                let cfg = shared.cfg.borrow();
+                (cfg.font.family.clone(), cfg.font.size)
+            };
+            if let Some((new_family, new_size)) = choose_font(btn.hwnd(), &family, size) {
+                let _ = ff.hwnd().SetWindowText(&new_family);
+                let _ = fs.hwnd().SetWindowText(&new_size.to_string());
+            }
             Ok(())
         });
     }
