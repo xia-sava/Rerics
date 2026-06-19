@@ -1055,7 +1055,7 @@ impl RegisteredPane {
             parent,
             gui::ListViewOpts {
                 position: gui::dpi(8, 30),
-                size: gui::dpi(344, 248),
+                size: gui::dpi(760, 248),
                 control_style: co::LVS::REPORT
                     | co::LVS::NOSORTHEADER
                     | co::LVS::SHOWSELALWAYS
@@ -1070,7 +1070,7 @@ impl RegisteredPane {
             parent,
             gui::EditOpts {
                 position: gui::dpi(72, 290),
-                width: gui::dpi_x(272),
+                width: gui::dpi_x(660),
                 height: gui::dpi_y(22),
                 ..Default::default()
             },
@@ -1080,7 +1080,7 @@ impl RegisteredPane {
             parent,
             gui::EditOpts {
                 position: gui::dpi(72, 318),
-                width: gui::dpi_x(206),
+                width: gui::dpi_x(588),
                 height: gui::dpi_y(22),
                 ..Default::default()
             },
@@ -1089,8 +1089,8 @@ impl RegisteredPane {
             parent,
             gui::ButtonOpts {
                 text: "参照...",
-                position: gui::dpi(284, 317),
-                width: gui::dpi_x(60),
+                position: gui::dpi(668, 317),
+                width: gui::dpi_x(64),
                 height: gui::dpi_y(24),
                 ..Default::default()
             },
@@ -1335,7 +1335,7 @@ impl RegisteredPane {
     /// 窓生成後に列を作り、一覧を流し込む（生成前の add は無効化されるため）。
     /// 先頭行を初期選択する（空なら select は無効化されるだけ）。
     fn populate(&self) {
-        for (head, width) in [("", 40), ("名前", 120), ("場所", 166)] {
+        for (head, width) in [("", 44), ("名前", 200), ("場所", 500)] {
             let _ = self.list.cols().add(head, gui::dpi_x(width));
         }
         (self.rebuild)(Some(0));
@@ -1351,12 +1351,12 @@ struct KeysPane {
 
 impl KeysPane {
     fn new(parent: &gui::WindowControl, shared: &Rc<Shared>) -> Self {
-        label(parent, "現在のキー割り当て（変更は config.toml で行います）", 16, 12, 330);
+        label(parent, "現在のキー割り当て（変更は config.toml で行います）", 16, 12, 400);
         let list = gui::ListBox::new(
             parent,
             gui::ListBoxOpts {
                 position: gui::dpi(16, 36),
-                size: gui::dpi(330, 500),
+                size: gui::dpi(760, 500),
                 ..Default::default()
             },
         );
@@ -1405,14 +1405,16 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     // 中央カラム：セクション pane（同じ矩形に重ねて show/hide で切替）。番号は nav の data と対応。
     let pane_pos = gui::dpi(172, 12);
     let pane_size = gui::dpi(360, 544);
+    // 外観ページ（0..=2）はプレビューと並ぶので狭く、それ以外はプレビューを出さないので
+    // その領域までフル幅にする（プレビューは「外観のときだけ出す」専用機能）。
+    let pane_wide = gui::dpi(776, 544);
     let pane_appearance = make_pane(&wnd, pane_pos, pane_size); // 0
     let pane_colors = make_pane(&wnd, pane_pos, pane_size); // 1
     let pane_layout = make_pane(&wnd, pane_pos, pane_size); // 2
-    let pane_cursor = make_pane(&wnd, pane_pos, pane_size); // 3
-    let pane_registered = make_pane(&wnd, pane_pos, pane_size); // 4
-    let pane_keys = make_pane(&wnd, pane_pos, pane_size); // 5
-    // ビューアページはプレビューを出さないので、その領域までフル幅に広げる。
-    let pane_image = make_pane(&wnd, pane_pos, gui::dpi(776, 544)); // 6
+    let pane_cursor = make_pane(&wnd, pane_pos, pane_wide); // 3
+    let pane_registered = make_pane(&wnd, pane_pos, pane_wide); // 4
+    let pane_keys = make_pane(&wnd, pane_pos, pane_wide); // 5
+    let pane_image = make_pane(&wnd, pane_pos, pane_wide); // 6
     let panes = vec![
         pane_appearance.clone(),
         pane_colors.clone(),
@@ -1515,7 +1517,8 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         #[cfg(feature = "debug-server")]
         let reg_wnd = wnd.clone();
         wnd.on().wm_create(move |_| {
-            // ツリー構築：外観(テーマ・フォント/配色/レイアウト)・動作(カーソル)・キー。data＝pane 番号。
+            // ツリー構築：外観(テーマ・フォント/配色/レイアウト)・動作(カーソル/ビューア)・
+            // 登録(登録ディレクトリ)・キー。data＝pane 番号。外観のみ右にプレビューを出す。
             if let Ok(appearance) = nav.items().add_root("外観", None, 0) {
                 let _ = appearance.add_child("テーマ・フォント", None, 0);
                 let _ = appearance.add_child("配色", None, 1);
@@ -1524,9 +1527,12 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
             }
             if let Ok(behavior) = nav.items().add_root("動作", None, 3) {
                 let _ = behavior.add_child("カーソル", None, 3);
-                let _ = behavior.add_child("登録ディレクトリ", None, 4);
                 let _ = behavior.add_child("ビューア", None, 6);
                 let _ = behavior.expand(true);
+            }
+            if let Ok(register) = nav.items().add_root("登録", None, 4) {
+                let _ = register.add_child("登録ディレクトリ", None, 4);
+                let _ = register.expand(true);
             }
             let _ = nav.items().add_root("キー", None, 5);
             // 先頭ルート（外観＝pane 0）を初期選択（tvn_sel_changed が pane／プレビューを整える）。
