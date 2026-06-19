@@ -842,7 +842,15 @@ impl MainWindow {
     pub(crate) fn scroll_under_cursor(&self, distance: i16, coords: w::POINT) -> w::AnyResult<()> {
         match self.active_view.get() {
             ActiveView::Text => return self.viewer.scroll_by_wheel(distance),
-            ActiveView::Media => return self.media.on_wheel(distance),
+            ActiveView::Media => {
+                // ホイール動作は設定で切替（既定＝送り・原作准拠／上=前・下=次）。
+                return match self.config.borrow().image.wheel {
+                    rerics_core::WheelAction::Zoom => self.media.on_wheel(distance),
+                    rerics_core::WheelAction::Navigate => {
+                        self.media.navigate(if distance > 0 { -1 } else { 1 })
+                    }
+                };
+            }
             ActiveView::None => {}
         }
         if let Some(hw) = w::HWND::WindowFromPoint(coords) {

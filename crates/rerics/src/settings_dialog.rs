@@ -9,7 +9,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use rerics_core::{Bookmark, Colors, Config, Layout, Rgb, ResolvedTheme, Theme};
+use rerics_core::{Bookmark, Colors, Config, Layout, Rgb, ResolvedTheme, Theme, WheelAction};
 use winsafe::{self as w, co, gui, msg::tvm, prelude::*};
 
 /// 自前描画コントロールをオフスクリーン DC へ描かせるメッセージ。`PrintWindow`
@@ -961,6 +961,43 @@ fn build_cursor(parent: &gui::WindowControl, shared: &Rc<Shared>) {
     }
 }
 
+/// 「画像ビューア」ページ（マウスホイールの動作）を構築する。編集は即 `Shared` へ反映する。
+fn build_image(parent: &gui::WindowControl, shared: &Rc<Shared>) {
+    let wheel = shared.cfg.borrow().image.wheel;
+    label(parent, "マウスホイールの動作", 16, 16, 200);
+    let group = gui::RadioGroup::new(
+        parent,
+        &[
+            gui::RadioButtonOpts {
+                text: "前後の画像へ送る(&N)",
+                position: gui::dpi(28, 42),
+                size: gui::dpi(280, 20),
+                selected: wheel == WheelAction::Navigate,
+                ..Default::default()
+            },
+            gui::RadioButtonOpts {
+                text: "拡大／縮小する(&Z)",
+                position: gui::dpi(28, 66),
+                size: gui::dpi(280, 20),
+                selected: wheel == WheelAction::Zoom,
+                ..Default::default()
+            },
+        ],
+    );
+    label(parent, "（送り：ホイール上＝前の画像・下＝次の画像。ズームは + / - キーでも行えます）", 16, 100, 360);
+    {
+        let shared = shared.clone();
+        let group2 = group.clone();
+        group.on().bn_clicked(move || {
+            shared.cfg.borrow_mut().image.wheel = match group2.selected_index() {
+                Some(1) => WheelAction::Zoom,
+                _ => WheelAction::Navigate,
+            };
+            Ok(())
+        });
+    }
+}
+
 /// ショートカット入力を先頭1文字へ丸める（空白のみ/空は空文字）。
 fn normalize_shortcut(raw: &str) -> String {
     raw.trim().chars().next().map(|c| c.to_string()).unwrap_or_default()
@@ -1353,6 +1390,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     let pane_cursor = make_pane(&wnd, pane_pos, pane_size); // 3
     let pane_registered = make_pane(&wnd, pane_pos, pane_size); // 4
     let pane_keys = make_pane(&wnd, pane_pos, pane_size); // 5
+    let pane_image = make_pane(&wnd, pane_pos, pane_size); // 6
     let panes = vec![
         pane_appearance.clone(),
         pane_colors.clone(),
@@ -1360,6 +1398,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         pane_cursor.clone(),
         pane_registered.clone(),
         pane_keys.clone(),
+        pane_image.clone(),
     ];
 
     // 右カラム：プレビュー（外観カテゴリ選択中だけ表示）。表示テーマは「配色テーマ」に追従する
@@ -1379,6 +1418,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     build_appearance(&pane_appearance, &shared, &preview);
     build_layout(&pane_layout, &shared, &preview);
     build_cursor(&pane_cursor, &shared);
+    build_image(&pane_image, &shared);
     let registered = RegisteredPane::new(&pane_registered, &shared);
     let keys = KeysPane::new(&pane_keys, &shared);
 
@@ -1463,6 +1503,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
             if let Ok(behavior) = nav.items().add_root("動作", None, 3) {
                 let _ = behavior.add_child("カーソル", None, 3);
                 let _ = behavior.add_child("登録ディレクトリ", None, 4);
+                let _ = behavior.add_child("画像ビューア", None, 6);
                 let _ = behavior.expand(true);
             }
             let _ = nav.items().add_root("キー", None, 5);

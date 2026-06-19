@@ -203,6 +203,31 @@ impl Default for CursorSettings {
     }
 }
 
+/// 画像ビューアのマウスホイール動作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WheelAction {
+    /// 前後の画像へ送る（原作既定）。ホイール上＝前・下＝次。
+    #[default]
+    Navigate,
+    /// 拡大／縮小する。ホイール上＝拡大・下＝縮小。
+    Zoom,
+}
+
+/// 画像ビューアの設定。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImageSettings {
+    /// マウスホイールの動作（既定＝送り・原作准拠）。
+    pub wheel: WheelAction,
+}
+
+impl Default for ImageSettings {
+    fn default() -> Self {
+        Self { wheel: WheelAction::Navigate }
+    }
+}
+
 /// アプリ全体の設定。デフォルトは埋め込み `default.toml`、ユーザ `config.toml` は
 /// デフォルトとの差分のみを記録し、適用時に再帰マージする。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,6 +246,8 @@ pub struct Config {
     pub editor: String,
     /// カーソル位置記憶の設定。
     pub cursor: CursorSettings,
+    /// 画像ビューアの設定。
+    pub image: ImageSettings,
     /// 起動時に解決した実テーマ。ファイルには保存しない（`resolve_theme` で設定）。
     #[serde(skip)]
     pub resolved: ResolvedTheme,
@@ -238,6 +265,7 @@ impl Default for Config {
             bookmarks: Vec::new(),
             editor: "notepad.exe".to_owned(),
             cursor: CursorSettings::default(),
+            image: ImageSettings::default(),
             resolved: ResolvedTheme::default(),
         }
     }
