@@ -320,7 +320,7 @@ impl ViewerView {
     }
 
     fn setup_events(&self) {
-        self.wnd.on().wm(co::WM::MOUSEACTIVATE, |_| Ok(3));
+        crate::winutil::passive_focus(&self.wnd);
 
         let this = self.clone();
         self.wnd.on().wm_paint(move || this.on_paint());

@@ -51,8 +51,7 @@ impl PaneView {
                 ..Default::default()
             },
         );
-        // クリックされてもフォーカスを奪わない（キー入力はキーシンクへ集約する）。
-        container.on().wm(co::WM::MOUSEACTIVATE, |_| Ok(3));
+        crate::winutil::passive_focus(&container);
         let bar = PathBarView::new(
             &container,
             gui::dpi(0, 0),

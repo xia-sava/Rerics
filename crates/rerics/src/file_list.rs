@@ -381,8 +381,7 @@ impl FileListView {
     }
 
     fn setup_events(&self) {
-        // クリックされてもフォーカスを奪わない（キー入力はキーシンクへ集約する）。
-        self.wnd.on().wm(co::WM::MOUSEACTIVATE, |_| Ok(3));
+        crate::winutil::passive_focus(&self.wnd);
 
         let this = self.clone();
         self.wnd.on().wm_get_dlg_code(move |_| {

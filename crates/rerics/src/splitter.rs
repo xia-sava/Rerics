@@ -1,6 +1,6 @@
 //! 左右ペイン間の境界線（スプリッタ）。ドラッグで分割比を変える細い縦バー。
 //!
-//! キーフォーカスは持たない（`MA_NOACTIVATE`）。ドラッグ中はマウスをキャプチャして、
+//! キーフォーカスは持たない（前面時は `MA_NOACTIVATE`）。ドラッグ中はマウスをキャプチャして、
 //! カーソルのスクリーン座標→親クライアント座標に変換した「スプリッタの希望左端」を
 //! コールバックへ渡す。比率の算出・レイアウト反映は呼び出し側（MainWindow）が行う。
 
@@ -63,8 +63,7 @@ impl SplitterView {
     }
 
     fn setup_events(&self) {
-        // クリックでフォーカスを奪わない（キー入力はキーシンクへ集約）。
-        self.wnd.on().wm(co::WM::MOUSEACTIVATE, |_| Ok(3));
+        crate::winutil::passive_focus(&self.wnd);
 
         let this = self.clone();
         self.wnd.on().wm_paint(move || this.on_paint());

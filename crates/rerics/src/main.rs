@@ -22,6 +22,7 @@ mod task_manager;
 mod video;
 mod viewer;
 mod window_state;
+mod winutil;
 mod archive_ctl;
 mod fileops;
 mod layout;
