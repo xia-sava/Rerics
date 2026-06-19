@@ -24,12 +24,27 @@
 .PARAMETER Close
   撮影後に Esc を送って前面窓を閉じ、メイン窓を最小化する（作業画面に残さない）。
 
+.PARAMETER MouseAt
+  マウス操作の座標を "x,y" で指定（対象ウィンドウ左上からのピクセル相対）。
+  -MouseClick / -MouseWheel と併用する。
+
+.PARAMETER MouseClick
+  MouseAt の位置でクリックする。"left" / "right" / "double"。
+  右クリックでコンテキストメニューを出す等。Keys 送出より前に実行する。
+
+.PARAMETER MouseWheel
+  MouseAt の位置でホイールを回す（ノッチ数・正=奥/上方向）。0 で無効。
+
 .EXAMPLE
   pwsh -File tools/ui.ps1                         # 撮るだけ -> target/shot.png
   pwsh -File tools/ui.ps1 -Keys "{DOWN}{ENTER}"   # キー送出してから撮る
   pwsh -File tools/ui.ps1 -Keys "%{F4}" -NoShot   # Alt+F4 だけ送る（撮らない）
   pwsh -File tools/ui.ps1 -Keys "%xs" -PostKeys "{DOWN}" -Foreground -Close
                                                   # メニュー等で別窓を開き→前面窓を撮り→閉じる
+  pwsh -File tools/ui.ps1 -MouseAt "400,300" -MouseClick right -Foreground
+                                                  # 右クリックでメニューを出し前面窓を撮る
+  pwsh -File tools/ui.ps1 -MouseAt "400,300" -MouseClick right -Keys "{DOWN}{DOWN}{ENTER}"
+                                                  # 右クリック→メニューをキーで辿って選択
 #>
 param(
     [string]$Process = "rerics",
@@ -41,6 +56,9 @@ param(
     [switch]$NoFront,
     [switch]$NoMinimize,
     [switch]$Close,
+    [string]$MouseAt = "",
+    [string]$MouseClick = "",
+    [int]$MouseWheel = 0,
     [int]$DelayMs = 300
 )
 
@@ -55,10 +73,24 @@ public static class RericsUi {
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+  public const uint MOVE=0x0001, LDOWN=0x0002, LUP=0x0004, RDOWN=0x0008, RUP=0x0010, WHEEL=0x0800;
 }
 "@
 [RericsUi]::SetProcessDPIAware() | Out-Null
+
+# 対象ウィンドウ左上からの相対座標 (x,y) を画面座標に直してカーソルを置く。
+function Move-MouseTo($h, $rel) {
+    $r = New-Object RericsUi+RECT
+    [RericsUi]::GetWindowRect($h, [ref]$r) | Out-Null
+    $parts = $rel.Split(",")
+    $sx = $r.Left + [int]$parts[0]
+    $sy = $r.Top + [int]$parts[1]
+    [RericsUi]::SetCursorPos($sx, $sy) | Out-Null
+    Start-Sleep -Milliseconds 120
+}
 
 $h = (Get-Process -Name $Process -ErrorAction SilentlyContinue |
         Where-Object { $_.MainWindowHandle -ne 0 } |
@@ -71,6 +103,27 @@ if (-not $NoFront) {
     [RericsUi]::ShowWindow($h, 6) | Out-Null   # SW_MINIMIZE
     Start-Sleep -Milliseconds 250
     [RericsUi]::ShowWindow($h, 9) | Out-Null   # SW_RESTORE
+    Start-Sleep -Milliseconds $DelayMs
+}
+
+# マウス操作（Keys 送出より前＝右クリックでメニューを出してからキーで辿る用途）。
+if ($MouseAt -and ($MouseClick -or $MouseWheel -ne 0)) {
+    Move-MouseTo $h $MouseAt
+    switch ($MouseClick.ToLower()) {
+        "left"   { [RericsUi]::mouse_event([RericsUi]::LDOWN,0,0,0,[UIntPtr]::Zero); [RericsUi]::mouse_event([RericsUi]::LUP,0,0,0,[UIntPtr]::Zero) }
+        "right"  { [RericsUi]::mouse_event([RericsUi]::RDOWN,0,0,0,[UIntPtr]::Zero); [RericsUi]::mouse_event([RericsUi]::RUP,0,0,0,[UIntPtr]::Zero) }
+        "double" {
+            [RericsUi]::mouse_event([RericsUi]::LDOWN,0,0,0,[UIntPtr]::Zero); [RericsUi]::mouse_event([RericsUi]::LUP,0,0,0,[UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 60
+            [RericsUi]::mouse_event([RericsUi]::LDOWN,0,0,0,[UIntPtr]::Zero); [RericsUi]::mouse_event([RericsUi]::LUP,0,0,0,[UIntPtr]::Zero)
+        }
+        default  { }
+    }
+    if ($MouseWheel -ne 0) {
+        # WHEEL の mouseData は符号付き扱い。負（下方向）も通せるよう bit パターンで渡す。
+        $wd = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int32]($MouseWheel * 120)), 0)
+        [RericsUi]::mouse_event([RericsUi]::WHEEL, 0, 0, $wd, [UIntPtr]::Zero)
+    }
     Start-Sleep -Milliseconds $DelayMs
 }
 
