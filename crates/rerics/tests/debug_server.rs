@@ -1352,6 +1352,62 @@ fn select_file_marks_current_and_advances() {
     assert_eq!(m.trim(), "true", "alpha.txt(index 1) がマークされているはず");
 }
 
+/// down_after_select=false のとき、MarkToggle はマークするがカーソルを動かさない（#58/#63）。
+#[test]
+fn mark_toggle_respects_down_after_select_off() {
+    let server = Server::start(&["alpha.txt", "beta.txt"], "[cursor]\ndown_after_select = false\n");
+    // .. → alpha(index 1) へ。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/MarkToggle", "").unwrap();
+    // カーソルは alpha(index 1) のまま。
+    let cur = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(cur.trim(), "1", "down_after_select=false ではカーソルは動かない");
+    let m = server.req("GET", "/state/panes/left/items/1/marked", "").unwrap().1;
+    assert_eq!(m.trim(), "true", "alpha.txt はマークされる");
+}
+
+/// Shift+Space=MarkToggle("-1") はマーク反転後にカーソルを1つ上へ動かす（#59）。
+#[test]
+fn shift_space_toggles_and_moves_up() {
+    let server = Server::start(&["alpha.txt", "beta.txt", "gamma.txt"], "");
+    // .. → alpha(1) → beta(2)。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/MarkToggle", r#"["-1"]"#).unwrap();
+    // beta(2) がマークされ、カーソルは alpha(1) へ上がる。
+    let cur = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+    assert_eq!(cur.trim(), "1", "Shift+Space 後はカーソルが1つ上へ");
+    let m = server.req("GET", "/state/panes/left/items/2/marked", "").unwrap().1;
+    assert_eq!(m.trim(), "true", "beta.txt(index 2) がマークされる");
+}
+
+/// Shift+矢印=CursorXxx("select") はアンカーから現在位置までを範囲マークしながら移動する（#60/#208）。
+#[test]
+fn shift_arrow_range_selects() {
+    let server = Server::start(&["a.txt", "b.txt", "c.txt", "d.txt"], "");
+    // .. → a(1)。ここがアンカー。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    // Shift+Down ×2＝a→b→c を範囲マーク。
+    server.req("POST", "/command/CursorDown", r#"["select"]"#).unwrap();
+    server.req("POST", "/command/CursorDown", r#"["select"]"#).unwrap();
+    let cur = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "3");
+    assert_eq!(cur.trim(), "3", "Shift+Down ×2 でカーソルは c(index 3)");
+    for (idx, want) in [(1, "true"), (2, "true"), (3, "true"), (4, "false")] {
+        let m = server
+            .req("GET", &format!("/state/panes/left/items/{idx}/marked"), "")
+            .unwrap()
+            .1;
+        assert_eq!(m.trim(), want, "index {idx} の marked");
+    }
+    // Shift+Up で範囲を縮めると c(3) のマークは落ちる（アンカー a は固定）。
+    server.req("POST", "/command/CursorUp", r#"["select"]"#).unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
+    let m3 = server.req("GET", "/state/panes/left/items/3/marked", "").unwrap().1;
+    assert_eq!(m3.trim(), "false", "範囲外になった c はマーク解除");
+    let m1 = server.req("GET", "/state/panes/left/items/1/marked", "").unwrap().1;
+    assert_eq!(m1.trim(), "true", "アンカー a は依然マーク");
+}
+
 /// Refresh / Nop は副作用なし（200 を返し状態を変えない）。
 #[test]
 fn refresh_and_nop_are_noops() {

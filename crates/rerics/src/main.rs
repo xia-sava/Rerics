@@ -688,30 +688,30 @@ impl MainWindow {
             Command::CursorUp => {
                 let mut s = state.borrow_mut();
                 let c = s.cursor as isize;
-                s.set_cursor(c - 1, pr);
+                s.move_cursor(c - 1, pr, arg_is_select(&args));
             }
             Command::CursorDown => {
                 let mut s = state.borrow_mut();
                 let c = s.cursor as isize;
-                s.set_cursor(c + 1, pr);
+                s.move_cursor(c + 1, pr, arg_is_select(&args));
             }
             Command::CursorTop => {
-                state.borrow_mut().set_cursor(0, pr);
+                state.borrow_mut().move_cursor(0, pr, arg_is_select(&args));
             }
             Command::CursorEnd => {
                 let mut s = state.borrow_mut();
                 let last = s.count() as isize - 1;
-                s.set_cursor(last, pr);
+                s.move_cursor(last, pr, arg_is_select(&args));
             }
             Command::CursorPageUp => {
                 let mut s = state.borrow_mut();
                 let c = s.cursor as isize;
-                s.set_cursor(c - pr as isize, pr);
+                s.move_cursor(c - pr as isize, pr, arg_is_select(&args));
             }
             Command::CursorPageDown => {
                 let mut s = state.borrow_mut();
                 let c = s.cursor as isize;
-                s.set_cursor(c + pr as isize, pr);
+                s.move_cursor(c + pr as isize, pr, arg_is_select(&args));
             }
             Command::SetCursorPosition => {
                 if let Some(name) = args.first() {
@@ -805,33 +805,45 @@ impl MainWindow {
                 return Ok(());
             }
             Command::MarkToggle => {
+                let delta = mark_move_delta(&args, self.config.borrow().cursor.down_after_select);
                 let mut s = state.borrow_mut();
                 let c = s.cursor;
                 s.reverse_file(c, pr);
                 let c = s.cursor as isize;
-                s.set_cursor(c + 1, pr);
+                s.set_cursor(c + delta, pr);
             }
             Command::SelectFile => {
+                let delta = mark_move_delta(&args, self.config.borrow().cursor.down_after_select);
                 let mut s = state.borrow_mut();
                 let c = s.cursor;
                 s.select_file(c, pr);
                 let c = s.cursor as isize;
-                s.set_cursor(c + 1, pr);
+                s.set_cursor(c + delta, pr);
             }
             Command::SelectAll => {
-                state.borrow_mut().select_all(false);
+                let mut s = state.borrow_mut();
+                s.select_all(false);
+                s.select_start = s.cursor;
             }
             Command::SelectAllFile => {
-                state.borrow_mut().select_all(true);
+                let mut s = state.borrow_mut();
+                s.select_all(true);
+                s.select_start = s.cursor;
             }
             Command::ReverseAll => {
-                state.borrow_mut().reverse_all(false);
+                let mut s = state.borrow_mut();
+                s.reverse_all(false);
+                s.select_start = s.cursor;
             }
             Command::ReverseAllFile => {
-                state.borrow_mut().reverse_all(true);
+                let mut s = state.borrow_mut();
+                s.reverse_all(true);
+                s.select_start = s.cursor;
             }
             Command::ClearAll => {
-                state.borrow_mut().clear_all();
+                let mut s = state.borrow_mut();
+                s.clear_all();
+                s.select_start = s.cursor;
             }
             Command::Reload => {
                 self.reload_side_impl(true, ReloadCursor::Keep)?;
@@ -1295,6 +1307,22 @@ fn short_desc(names: &[String]) -> String {
         Some((first, _)) => first.clone(),
         None => String::new(),
     }
+}
+
+/// カーソル移動コマンドの引数が「選択しながら移動」を表すか（select/true/1・大小無視）。
+fn arg_is_select(args: &[String]) -> bool {
+    args.first().is_some_and(|a| {
+        matches!(a.trim().to_ascii_lowercase().as_str(), "select" | "true" | "1")
+    })
+}
+
+/// マーク操作（反転・選択）後のカーソル移動量。引数があればその整数（原作 `ReverseFile(n)` 相当）、
+/// 無ければ `down_after_select` に従い 1（下）か 0（移動なし）。
+fn mark_move_delta(args: &[String], down_after_select: bool) -> isize {
+    if let Some(v) = args.first().and_then(|a| a.trim().parse::<isize>().ok()) {
+        return v;
+    }
+    if down_after_select { 1 } else { 0 }
 }
 
 fn place(hwnd: &w::HWND, x: i32, y: i32, cx: i32, cy: i32) -> w::AnyResult<()> {
