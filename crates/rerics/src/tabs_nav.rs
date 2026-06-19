@@ -240,10 +240,12 @@ impl MainWindow {
         };
         let loc = Location::parse(input);
         self.remember_cursor_for_nav(is_left);
-        if self.pane(is_left).borrow_mut().navigate(loc) {
-            self.reload_side_navigated(is_left)?;
-        } else {
-            self.log.error(&format!("移動できません: {input}"));
+        // navigate_reported の RefMut はこの行で解放してから（reload が同じ pane を再借用するため）
+        // 結果を判定する。match の scrutinee に直接書くと借用が match 末尾まで延命して panic する。
+        let outcome = self.pane(is_left).borrow_mut().navigate_reported(loc);
+        match outcome {
+            Ok(()) => self.reload_side_navigated(is_left)?,
+            Err(e) => self.report_change_directory_error(&e),
         }
         Ok(())
     }
@@ -261,13 +263,20 @@ impl MainWindow {
         }
         let loc = Location::parse(input);
         self.remember_cursor_for_nav(is_left);
-        if self.pane(is_left).borrow_mut().navigate(loc) {
-            self.reload_side_navigated(is_left)?;
-        } else {
-            let line = format!("移動できません: {input}");
-            self.log.error(&line);
+        let outcome = self.pane(is_left).borrow_mut().navigate_reported(loc);
+        match outcome {
+            Ok(()) => self.reload_side_navigated(is_left)?,
+            Err(e) => self.report_change_directory_error(&e),
         }
         Ok(())
+    }
+
+    /// `ChangeDirectory` の失敗をログ＋エラーダイアログで報せる（原作 `NotExistsDirectory` /
+    /// `ChangeDirectoryError` 相当）。存在しない場合と、それ以外（権限不足等）で文言を分ける。
+    fn report_change_directory_error(&self, err: &std::io::Error) {
+        let msg = change_directory_error_message(err);
+        self.log.error(&msg);
+        dialog::message_box(&self.wnd, "ディレクトリ移動", &msg, dialog::MessageStyle::Error);
     }
 
     /// 指定ドライブのルート文字列（`C:\` 形式）へ移す共通口。カーソル履歴が有効なら、
@@ -699,6 +708,16 @@ impl MainWindow {
 
 /// `roots` を `delta`（+1/-1）方向に巡回し、`cur` 以外で最初に `ready` を満たす index を返す。
 /// 他に対象が無ければ（全て未了・ドライブが1つだけ等）None。
+/// `ChangeDirectory` 失敗時のダイアログ文言（原作 `NotExistsDirectory` / `ChangeDirectoryError`）。
+/// 移動先が存在しないなら専用文、それ以外（権限不足・読込エラー等）は原因付きで報せる。
+fn change_directory_error_message(err: &std::io::Error) -> String {
+    if err.kind() == std::io::ErrorKind::NotFound {
+        "ディレクトリが存在しません。".to_owned()
+    } else {
+        format!("ディレクトリが変更出来ません。\n原因：{err}")
+    }
+}
+
 fn next_ready_index(n: usize, cur: usize, delta: isize, ready: impl Fn(usize) -> bool) -> Option<usize> {
     (1..n)
         .map(|step| (cur as isize + delta * step as isize).rem_euclid(n as isize) as usize)
@@ -758,7 +777,18 @@ fn probe_drive_info(root: &str) -> (String, String, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::next_ready_index;
+    use super::{change_directory_error_message, next_ready_index};
+
+    #[test]
+    fn change_directory_error_distinguishes_not_found() {
+        use std::io::{Error, ErrorKind};
+        let not_found = change_directory_error_message(&Error::from(ErrorKind::NotFound));
+        assert_eq!(not_found, "ディレクトリが存在しません。");
+
+        let denied = change_directory_error_message(&Error::new(ErrorKind::PermissionDenied, "アクセスが拒否されました"));
+        assert!(denied.starts_with("ディレクトリが変更出来ません。"));
+        assert!(denied.contains("原因："));
+    }
 
     #[test]
     fn skips_not_ready_in_both_directions() {

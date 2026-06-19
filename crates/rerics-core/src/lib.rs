@@ -169,13 +169,16 @@ impl Pane {
     /// 任意の現在地へ移動する（パス入力・ジャンプ・ドライブ変更・ルート移動の共通口）。
     /// 侵入先が読めることを確認してから確定し、確定できたら履歴に積む。
     pub fn navigate(&mut self, loc: Location) -> bool {
-        if loc.read().is_ok() {
-            self.record_history();
-            self.loc = loc;
-            true
-        } else {
-            false
-        }
+        self.navigate_reported(loc).is_ok()
+    }
+
+    /// [`navigate`](Self::navigate) と同じだが、失敗時は読めなかった理由（io エラー）を返す。
+    /// 「存在しない」と「その他の失敗」でエラーダイアログの文言を切り分けるのに使う。
+    pub fn navigate_reported(&mut self, loc: Location) -> std::io::Result<()> {
+        loc.read()?;
+        self.record_history();
+        self.loc = loc;
+        Ok(())
     }
 
     /// 戻る。読めなくなった履歴は飛ばし、読める所まで遡る。移動できたら `true`。

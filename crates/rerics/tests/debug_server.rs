@@ -691,6 +691,30 @@ fn nav_change_directory_dialog() {
     assert_eq!(back.trim(), sbx_json, "typing a path should navigate there");
 }
 
+/// #70: 存在しないパスを入力すると、ログだけでなくエラーダイアログ（kind=message）が出る。
+#[test]
+fn nav_change_directory_missing_path_shows_error_dialog() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx_json = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+    let sbx_raw = sbx_json.trim_matches('"').replace("\\\\", "\\");
+    let missing = format!("{sbx_raw}\\__no_such_dir__");
+
+    server.req("POST", "/command/ChangeDirectoryDialog", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/text", &missing).unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+
+    // 入力モーダルが閉じた後、存在しないパスのエラーダイアログが開く。
+    let err = poll(&server, "/state/modal", |b| b.contains("\"kind\":\"message\""));
+    assert!(err.contains("ディレクトリが存在しません"), "missing path should raise NotExists dialog: {err}");
+
+    // ダイアログを閉じても現在地は動かない（移動は失敗のまま）。
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    let loc = server.req("GET", "/state/panes/left/location", "").unwrap().1;
+    assert_eq!(loc.trim(), sbx_json, "failed navigation should keep the original location");
+}
+
 /// 入力履歴（D2-1）：ChangeDirectory で打った値が history.toml の "changedir" バケツに永続する。
 /// 入力欄が履歴コンボへ変わっても `/modal/text`（コンボ内 Edit）で打てることも兼ねて確認する。
 #[test]
