@@ -638,6 +638,30 @@ fn nav_history_back_forward() {
     assert_eq!(fwd.trim(), parent, "HistoryForward should go back to the parent");
 }
 
+/// #67: cursor.history=false でも、戻る/進むはカーソルを元の項目へ復元する（原作準拠＝常時復元）。
+#[test]
+fn history_back_restores_cursor_even_with_history_off() {
+    let server = Server::start(&["a.txt", "b.txt", "c.txt"], "[cursor]\nhistory = false\n");
+    let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+
+    // items: [.., a.txt, b.txt, c.txt]。CursorDown×3 で c.txt（index 3）へ。
+    for _ in 0..3 {
+        server.req("POST", "/command/CursorDown", "").unwrap();
+    }
+    let pre = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(pre.trim(), "3", "precondition: cursor should be on c.txt (index 3): {pre}");
+
+    // 親へ移動 → 戻る。
+    server.req("POST", "/command/ToParent", "").unwrap();
+    poll(&server, "/state/panes/left/location", |b| b.trim() != sbx);
+    server.req("POST", "/command/HistoryBack", "").unwrap();
+    poll(&server, "/state/panes/left/location", |b| b.trim() == sbx);
+
+    // cursor.history=false でもカーソルは c.txt（index 3）へ復元される。
+    let restored = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "3");
+    assert_eq!(restored.trim(), "3", "HistoryBack should restore the cursor even with cursor.history off: {restored}");
+}
+
 /// PathHistoryDialog＝訪問ログ（list_box モーダル・新しい順）から選んでジャンプする。
 #[test]
 fn nav_path_history_dialog() {

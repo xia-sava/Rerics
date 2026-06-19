@@ -300,7 +300,11 @@ enum ReloadCursor {
     /// 再読込前のカーソル下ファイル名へ戻し、スクロール位置も維持する（F5）。
     Keep,
     /// 移動先パスで以前覚えたカーソル位置へ戻す。無ければ先頭（ディレクトリ移動）。
+    /// `cursor.history` がオンのときだけ復元する（オフは先頭）。
     Recall,
+    /// 戻る/進む用：`cursor.history` 設定に関係なく、移動先で覚えたカーソル位置へ常に
+    /// 戻す。無ければ先頭（原作 HistoryBack/Forward 準拠＝常時復元）。
+    RecallAlways,
 }
 
 impl MainWindow {
@@ -1120,16 +1124,11 @@ impl MainWindow {
     }
 
     /// ディレクトリ移動の直前に呼ぶ。現在カーソル下のファイル名を Pane に覚えさせ、
-    /// 同じパスへ戻った時に [`reload_side_navigated`] がそこへカーソルを復元できるようにする。
-    /// カーソル位置記憶がオフ（`cursor.history`）なら何もしない。
+    /// 移動の直前に、今いる場所のカーソル位置を覚えておく（同じパスへ戻った時に復元できる）。
+    /// 戻る/進む（#67）は設定に関係なく常時復元するため、記録自体は常に行う。`cursor.history`
+    /// は「通常の再訪・ドライブ移動での復元」を出すかどうかの**読み出し側**ゲートに使う。
     fn remember_cursor_for_nav(&self, is_left: bool) {
-        let (history, limit) = {
-            let cfg = self.config.borrow();
-            (cfg.cursor.history, cfg.cursor.history_count)
-        };
-        if !history {
-            return;
-        }
+        let limit = self.config.borrow().cursor.history_count;
         let name = {
             let st = self.view(is_left).state();
             let s = st.borrow();
@@ -1156,11 +1155,17 @@ impl MainWindow {
         self.reload_side_impl(is_left, ReloadCursor::Recall)
     }
 
-    /// 移動後の再読込だが、パス移動履歴へは記録しない。戻る/進む（履歴の再生）・ペイン
-    /// 入替・左右同期のように「新しい行き先の指定」ではない移動で使う（往復で履歴が
-    /// 増殖するのを防ぐ）。カーソル復元は通常の移動と同じ。
+    /// 移動後の再読込だが、パス移動履歴へは記録しない。ペイン入替・左右同期のように
+    /// 「新しい行き先の指定」ではない移動で使う。カーソル復元は通常の移動と同じ
+    /// （`cursor.history` 連動）。
     fn reload_side_navigated_nolog(&self, is_left: bool) -> w::AnyResult<()> {
         self.reload_side_impl(is_left, ReloadCursor::Recall)
+    }
+
+    /// 戻る/進む用の再読込。パス移動履歴へは記録せず、`cursor.history` 設定に関係なく
+    /// 移動先で覚えたカーソル位置を常に復元する（原作 HistoryBack/Forward 準拠）。
+    fn reload_side_history(&self, is_left: bool) -> w::AnyResult<()> {
+        self.reload_side_impl(is_left, ReloadCursor::RecallAlways)
     }
 
     /// 移動先（そのペインの現在地）をパス移動履歴へ記録する。同一パスは最新へ集約、
@@ -1198,8 +1203,11 @@ impl MainWindow {
             None => items,
         };
         let path = self.pane(is_left).borrow().loc_display();
-        // ディレクトリ移動（Recall）かつ記憶オンのときだけ、このパスで覚えた位置を引く。
-        let recalled = if matches!(mode, ReloadCursor::Recall) && self.config.borrow().cursor.history {
+        // 戻る/進む（RecallAlways）は常に、通常移動（Recall）は記憶オンのときだけ、
+        // このパスで覚えたカーソル位置を引く。
+        let recalled = if matches!(mode, ReloadCursor::RecallAlways)
+            || (matches!(mode, ReloadCursor::Recall) && self.config.borrow().cursor.history)
+        {
             self.pane(is_left)
                 .borrow()
                 .recalled_cursor(&path)
@@ -1227,7 +1235,7 @@ impl MainWindow {
                     // スクロール位置を復元（カーソルが画面内に収まる限り見た目を維持）。
                     s.set_scroll_top(keep_scroll as isize, pr);
                 }
-                ReloadCursor::Recall => {
+                ReloadCursor::Recall | ReloadCursor::RecallAlways => {
                     let found = recalled
                         .as_deref()
                         .map(|n| s.set_cursor_position(n, pr))

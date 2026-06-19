@@ -205,7 +205,7 @@ impl MainWindow {
             if forward { p.go_forward() } else { p.go_back() }
         };
         if moved {
-            self.reload_side_navigated_nolog(is_left)?;
+            self.reload_side_history(is_left)?;
         }
         Ok(())
     }
