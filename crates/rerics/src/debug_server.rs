@@ -34,6 +34,17 @@ pub mod modal_registry {
         pub select: Box<dyn Fn(usize)>,
     }
 
+    /// 複数ページを左ナビで切り替えるモーダル（設定ダイアログ）を観測・操作するフック。
+    /// `select` でページを表に出せるので、各ページを headless でスナップショットできる。
+    pub struct NavHooks {
+        /// ページ名（ページ番号順）。
+        pub pages: Vec<String>,
+        /// 今表に出ているページ番号を読む。
+        pub current: Box<dyn Fn() -> usize>,
+        /// 指定ページ番号を表に出す（左ナビ選択と同じ経路で pane/プレビューを切替える）。
+        pub select: Box<dyn Fn(usize)>,
+    }
+
     /// 1 つの開いているモーダル。`*_ptr` は HWND の生ポインタ（UI スレッド内でのみ有効）。
     pub struct ModalEntry {
         pub kind: &'static str,
@@ -49,6 +60,8 @@ pub mod modal_registry {
         pub selected: usize,
         /// 多列 ListView モーダルのフック（単列 ListBox や非リストなら None）。
         pub list_view: Option<ListViewHooks>,
+        /// 複数ページ（左ナビ）モーダルのフック（設定ダイアログのみ・他は None）。
+        pub nav: Option<NavHooks>,
     }
 
     thread_local! {
@@ -76,6 +89,31 @@ pub mod modal_registry {
                 items: Vec::new(),
                 selected: 0,
                 list_view: None,
+                nav: None,
+            })
+        });
+    }
+
+    /// 複数ページ（左ナビ）モーダルを登録する（設定ダイアログ。`nav` でページを切替える）。
+    pub fn push_nav(
+        kind: &'static str,
+        title: &str,
+        modal_ptr: isize,
+        buttons: Vec<(String, u16)>,
+        nav: NavHooks,
+    ) {
+        STACK.with(|s| {
+            s.borrow_mut().push(ModalEntry {
+                kind,
+                title: title.to_string(),
+                prompt: String::new(),
+                modal_ptr,
+                has_input: false,
+                buttons,
+                items: Vec::new(),
+                selected: 0,
+                list_view: None,
+                nav: Some(nav),
             })
         });
     }
@@ -100,6 +138,7 @@ pub mod modal_registry {
                 items: Vec::new(),
                 selected: 0,
                 list_view: Some(hooks),
+                nav: None,
             })
         });
     }
@@ -124,6 +163,7 @@ pub mod modal_registry {
                 items,
                 selected,
                 list_view: None,
+                nav: None,
             })
         });
     }
@@ -164,6 +204,8 @@ pub enum Request {
     ModalCommand { role: String },
     /// `POST /modal/select/<index>`：リスト選択モーダルの選択行を index にする。
     ModalSelect { index: usize },
+    /// `POST /modal/page/<index>`：複数ページモーダル（設定）の表示ページを index にする。
+    ModalPage { index: usize },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -304,6 +346,11 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                     .parse::<usize>()
                     .ok()
                     .map(|index| Request::ModalSelect { index })
+            } else if let Some(n) = path.strip_prefix("/modal/page/") {
+                n.trim_end_matches('/')
+                    .parse::<usize>()
+                    .ok()
+                    .map(|index| Request::ModalPage { index })
             } else if path == "/modal/text" {
                 let mut value = String::new();
                 let _ = std::io::Read::read_to_string(req.as_reader(), &mut value);

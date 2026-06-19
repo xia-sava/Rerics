@@ -9,7 +9,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use rerics_core::{Colors, Config, Layout, Rgb, ResolvedTheme, Theme};
+use rerics_core::{Bookmark, Colors, Config, Layout, Rgb, ResolvedTheme, Theme};
 use winsafe::{self as w, co, gui, msg::tvm, prelude::*};
 
 /// 自前描画コントロールをオフスクリーン DC へ描かせるメッセージ。`PrintWindow`
@@ -939,6 +939,329 @@ fn build_cursor(parent: &gui::WindowControl, shared: &Rc<Shared>) {
     }
 }
 
+/// ショートカット入力を先頭1文字へ丸める（空白のみ/空は空文字）。
+fn normalize_shortcut(raw: &str) -> String {
+    raw.trim().chars().next().map(|c| c.to_string()).unwrap_or_default()
+}
+
+/// 入力フィールドの現在値から `Bookmark` を組む。ショートカットは先頭1文字に丸める。
+fn fields_to_bookmark(name: &gui::Edit, path: &gui::Edit, sc: &gui::Edit) -> Bookmark {
+    let label = name.text().unwrap_or_default().trim().to_owned();
+    let path = path.text().unwrap_or_default().trim().to_owned();
+    let shortcut = normalize_shortcut(&sc.text().unwrap_or_default());
+    Bookmark { label, path, shortcut }
+}
+
+/// パスの末尾要素（登録名の既定値）。取れなければパスそのもの。
+fn leaf_label(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_owned())
+}
+
+/// 「登録ディレクトリ」ページ。一覧（ショートカット/名前/場所）＋下部の入力欄でインライン編集
+/// （追加/更新/削除/並べ替え/フォルダ参照）。編集は即 `shared.cfg.bookmarks` へ反映する。
+#[derive(Clone)]
+struct RegisteredPane {
+    list: gui::ListView<()>,
+    rebuild: Rc<dyn Fn(Option<usize>)>,
+}
+
+impl RegisteredPane {
+    fn new(parent: &gui::WindowControl, shared: &Rc<Shared>) -> Self {
+        label(parent, "ジャンプ一覧に出す場所。ショートカットは1文字。", 8, 8, 344);
+        let list = gui::ListView::<()>::new(
+            parent,
+            gui::ListViewOpts {
+                position: gui::dpi(8, 30),
+                size: gui::dpi(344, 248),
+                control_style: co::LVS::REPORT
+                    | co::LVS::NOSORTHEADER
+                    | co::LVS::SHOWSELALWAYS
+                    | co::LVS::SINGLESEL,
+                control_ex_style: co::LVS_EX::FULLROWSELECT,
+                ..Default::default()
+            },
+        );
+
+        label(parent, "名前", 8, 292, 56);
+        let name_edit = gui::Edit::new(
+            parent,
+            gui::EditOpts {
+                position: gui::dpi(72, 290),
+                width: gui::dpi_x(272),
+                height: gui::dpi_y(22),
+                ..Default::default()
+            },
+        );
+        label(parent, "場所", 8, 320, 56);
+        let path_edit = gui::Edit::new(
+            parent,
+            gui::EditOpts {
+                position: gui::dpi(72, 318),
+                width: gui::dpi_x(206),
+                height: gui::dpi_y(22),
+                ..Default::default()
+            },
+        );
+        let browse = gui::Button::new(
+            parent,
+            gui::ButtonOpts {
+                text: "参照...",
+                position: gui::dpi(284, 317),
+                width: gui::dpi_x(60),
+                height: gui::dpi_y(24),
+                ..Default::default()
+            },
+        );
+        label(parent, "ショートカット", 8, 348, 78);
+        let sc_edit = gui::Edit::new(
+            parent,
+            gui::EditOpts {
+                position: gui::dpi(90, 346),
+                width: gui::dpi_x(40),
+                height: gui::dpi_y(22),
+                ..Default::default()
+            },
+        );
+
+        let add = gui::Button::new(
+            parent,
+            gui::ButtonOpts {
+                text: "追加(&D)",
+                position: gui::dpi(8, 382),
+                width: gui::dpi_x(64),
+                height: gui::dpi_y(26),
+                ..Default::default()
+            },
+        );
+        let update = gui::Button::new(
+            parent,
+            gui::ButtonOpts {
+                text: "更新(&U)",
+                position: gui::dpi(78, 382),
+                width: gui::dpi_x(64),
+                height: gui::dpi_y(26),
+                ..Default::default()
+            },
+        );
+        let del = gui::Button::new(
+            parent,
+            gui::ButtonOpts {
+                text: "削除(&L)",
+                position: gui::dpi(148, 382),
+                width: gui::dpi_x(64),
+                height: gui::dpi_y(26),
+                ..Default::default()
+            },
+        );
+        let up = gui::Button::new(
+            parent,
+            gui::ButtonOpts {
+                text: "↑",
+                position: gui::dpi(240, 382),
+                width: gui::dpi_x(48),
+                height: gui::dpi_y(26),
+                ..Default::default()
+            },
+        );
+        let down = gui::Button::new(
+            parent,
+            gui::ButtonOpts {
+                text: "↓",
+                position: gui::dpi(296, 382),
+                width: gui::dpi_x(48),
+                height: gui::dpi_y(26),
+                ..Default::default()
+            },
+        );
+
+        // ListView 選択 index（= bookmarks の index）。
+        let selected: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+
+        // bookmarks から一覧を組み直し、指定行を選択し直す。
+        let rebuild: Rc<dyn Fn(Option<usize>)> = Rc::new({
+            let list = list.clone();
+            let shared = shared.clone();
+            let selected = selected.clone();
+            move |sel| {
+                let _ = list.items().delete_all();
+                for b in shared.cfg.borrow().bookmarks.iter() {
+                    let _ = list.items().add(
+                        &[b.shortcut.clone(), b.label.clone(), b.path.clone()],
+                        None,
+                        (),
+                    );
+                }
+                if let Some(i) = sel {
+                    if let Some(it) = list.items().iter().nth(i) {
+                        let _ = it.select(true);
+                        let _ = it.focus();
+                    }
+                }
+                selected.set(sel);
+            }
+        });
+
+        // 行を選んだら、その内容を下の入力欄へ展開する。
+        {
+            let list2 = list.clone();
+            let shared = shared.clone();
+            let ne = name_edit.clone();
+            let pe = path_edit.clone();
+            let se = sc_edit.clone();
+            let selected = selected.clone();
+            list.on().lvn_item_changed(move |_| {
+                if let Some(i) = list2.items().iter().position(|it| it.is_selected()) {
+                    if let Some(b) = shared.cfg.borrow().bookmarks.get(i) {
+                        let _ = ne.set_text(&b.label);
+                        let _ = pe.set_text(&b.path);
+                        let _ = se.set_text(&b.shortcut);
+                    }
+                    selected.set(Some(i));
+                }
+                Ok(())
+            });
+        }
+
+        // 追加：入力欄の内容を新規行として末尾に足す（場所は必須・名前は空ならパス末尾）。
+        {
+            let shared = shared.clone();
+            let rebuild = rebuild.clone();
+            let ne = name_edit.clone();
+            let pe = path_edit.clone();
+            let se = sc_edit.clone();
+            add.on().bn_clicked(move || {
+                let mut b = fields_to_bookmark(&ne, &pe, &se);
+                if b.path.is_empty() {
+                    return Ok(());
+                }
+                if b.label.is_empty() {
+                    b.label = leaf_label(&b.path);
+                }
+                let idx = {
+                    let mut cfg = shared.cfg.borrow_mut();
+                    cfg.bookmarks.push(b);
+                    cfg.bookmarks.len() - 1
+                };
+                rebuild(Some(idx));
+                Ok(())
+            });
+        }
+
+        // 更新：選択行を入力欄の内容で上書きする（場所は必須）。
+        {
+            let shared = shared.clone();
+            let rebuild = rebuild.clone();
+            let selected = selected.clone();
+            let ne = name_edit.clone();
+            let pe = path_edit.clone();
+            let se = sc_edit.clone();
+            update.on().bn_clicked(move || {
+                let Some(i) = selected.get() else { return Ok(()) };
+                let mut b = fields_to_bookmark(&ne, &pe, &se);
+                if b.path.is_empty() {
+                    return Ok(());
+                }
+                if b.label.is_empty() {
+                    b.label = leaf_label(&b.path);
+                }
+                {
+                    let mut cfg = shared.cfg.borrow_mut();
+                    if let Some(slot) = cfg.bookmarks.get_mut(i) {
+                        *slot = b;
+                    }
+                }
+                rebuild(Some(i));
+                Ok(())
+            });
+        }
+
+        // 削除：選択行を消す。直前の行を選び直す。
+        {
+            let shared = shared.clone();
+            let rebuild = rebuild.clone();
+            let selected = selected.clone();
+            del.on().bn_clicked(move || {
+                let Some(i) = selected.get() else { return Ok(()) };
+                let next = {
+                    let mut cfg = shared.cfg.borrow_mut();
+                    if i < cfg.bookmarks.len() {
+                        cfg.bookmarks.remove(i);
+                    }
+                    if cfg.bookmarks.is_empty() {
+                        None
+                    } else {
+                        Some(i.saturating_sub(1).min(cfg.bookmarks.len() - 1))
+                    }
+                };
+                rebuild(next);
+                Ok(())
+            });
+        }
+
+        // ↑/↓：選択行を入れ替えて並べ替える。
+        {
+            let shared = shared.clone();
+            let rebuild = rebuild.clone();
+            let selected = selected.clone();
+            up.on().bn_clicked(move || {
+                let Some(i) = selected.get() else { return Ok(()) };
+                if i == 0 {
+                    return Ok(());
+                }
+                shared.cfg.borrow_mut().bookmarks.swap(i, i - 1);
+                rebuild(Some(i - 1));
+                Ok(())
+            });
+        }
+        {
+            let shared = shared.clone();
+            let rebuild = rebuild.clone();
+            let selected = selected.clone();
+            down.on().bn_clicked(move || {
+                let Some(i) = selected.get() else { return Ok(()) };
+                let len = shared.cfg.borrow().bookmarks.len();
+                if i + 1 >= len {
+                    return Ok(());
+                }
+                shared.cfg.borrow_mut().bookmarks.swap(i, i + 1);
+                rebuild(Some(i + 1));
+                Ok(())
+            });
+        }
+
+        // 参照：フォルダ選択ダイアログで場所を埋める（名前が空なら末尾名を補う）。
+        {
+            let parent_hwnd = parent.hwnd().ptr();
+            let pe = path_edit.clone();
+            let ne = name_edit.clone();
+            browse.on().bn_clicked(move || {
+                if let Some(dir) = crate::shell::choose_folder(parent_hwnd, "登録するフォルダを選択") {
+                    let s = dir.to_string_lossy().into_owned();
+                    let _ = pe.set_text(&s);
+                    if ne.text().unwrap_or_default().trim().is_empty() {
+                        let _ = ne.set_text(&leaf_label(&s));
+                    }
+                }
+                Ok(())
+            });
+        }
+
+        Self { list, rebuild }
+    }
+
+    /// 窓生成後に列を作り、一覧を流し込む（生成前の add は無効化されるため）。
+    /// 先頭行を初期選択する（空なら select は無効化されるだけ）。
+    fn populate(&self) {
+        for (head, width) in [("", 40), ("名前", 120), ("場所", 166)] {
+            let _ = self.list.cols().add(head, gui::dpi_x(width));
+        }
+        (self.rebuild)(Some(0));
+    }
+}
+
 /// 「キー」ページ（割り当ての一覧表示）。
 #[derive(Clone)]
 struct KeysPane {
@@ -1006,12 +1329,14 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     let pane_colors = make_pane(&wnd, pane_pos, pane_size); // 1
     let pane_layout = make_pane(&wnd, pane_pos, pane_size); // 2
     let pane_cursor = make_pane(&wnd, pane_pos, pane_size); // 3
-    let pane_keys = make_pane(&wnd, pane_pos, pane_size); // 4
+    let pane_registered = make_pane(&wnd, pane_pos, pane_size); // 4
+    let pane_keys = make_pane(&wnd, pane_pos, pane_size); // 5
     let panes = vec![
         pane_appearance.clone(),
         pane_colors.clone(),
         pane_layout.clone(),
         pane_cursor.clone(),
+        pane_registered.clone(),
         pane_keys.clone(),
     ];
 
@@ -1032,6 +1357,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     build_appearance(&pane_appearance, &shared, &preview);
     build_layout(&pane_layout, &shared, &preview);
     build_cursor(&pane_cursor, &shared);
+    let registered = RegisteredPane::new(&pane_registered, &shared);
     let keys = KeysPane::new(&pane_keys, &shared);
 
     // 配色 pane：操作ボタン（上段）＋スウォッチ一覧（フル高・1 列）。
@@ -1101,6 +1427,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         let nav = nav.clone();
         let panes = panes.clone();
         let keys = keys.clone();
+        let registered = registered.clone();
         #[cfg(feature = "debug-server")]
         let reg_wnd = wnd.clone();
         wnd.on().wm_create(move |_| {
@@ -1113,9 +1440,10 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
             }
             if let Ok(behavior) = nav.items().add_root("動作", None, 3) {
                 let _ = behavior.add_child("カーソル", None, 3);
+                let _ = behavior.add_child("登録ディレクトリ", None, 4);
                 let _ = behavior.expand(true);
             }
-            let _ = nav.items().add_root("キー", None, 4);
+            let _ = nav.items().add_root("キー", None, 5);
             // 先頭ルート（外観＝pane 0）を初期選択（tvn_sel_changed が pane／プレビューを整える）。
             unsafe {
                 if let Some(first) =
@@ -1129,19 +1457,60 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
             for (i, p) in panes.iter().enumerate() {
                 p.hwnd().ShowWindow(if i == 0 { co::SW::SHOW } else { co::SW::HIDE });
             }
+            registered.populate();
             keys.populate();
             #[cfg(feature = "debug-server")]
-            crate::debug_server::modal_registry::push(
+            crate::debug_server::modal_registry::push_nav(
                 "settings",
                 "設定",
-                "",
                 reg_wnd.hwnd().ptr() as isize,
-                false,
                 vec![
                     ("OK".to_string(), 1u16),
                     ("キャンセル".to_string(), 2u16),
                     ("適用".to_string(), 3u16),
                 ],
+                crate::debug_server::modal_registry::NavHooks {
+                    // ページ番号順（pane 番号と一致）。
+                    pages: ["テーマ・フォント", "配色", "レイアウト", "カーソル", "登録ディレクトリ", "キー"]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                    current: {
+                        let nav = nav.clone();
+                        Box::new(move || {
+                            nav.items().iter_selected().next().map(|it| *it.data().borrow()).unwrap_or(0)
+                        })
+                    },
+                    select: {
+                        let nav = nav.clone();
+                        Box::new(move |idx: usize| {
+                            // pane 番号 idx に対応するツリーノードを選択＝既存の tvn_sel_changed が
+                            // pane／プレビューを切替える。
+                            'outer: for root in nav.items().iter_root() {
+                                if *root.data().borrow() == idx {
+                                    unsafe {
+                                        let _ = nav.hwnd().SendMessage(tvm::SelectItem {
+                                            action: co::TVGN::CARET,
+                                            hitem: root.htreeitem(),
+                                        });
+                                    }
+                                    break;
+                                }
+                                for child in root.iter_children() {
+                                    if *child.data().borrow() == idx {
+                                        unsafe {
+                                            let _ = nav.hwnd().SendMessage(tvm::SelectItem {
+                                                action: co::TVGN::CARET,
+                                                hitem: child.htreeitem(),
+                                            });
+                                        }
+                                        break 'outer;
+                                    }
+                                }
+                            }
+                        })
+                    },
+                },
             );
             Ok(0)
         });
@@ -1216,5 +1585,25 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     let _ = wnd.show_modal(parent);
     #[cfg(feature = "debug-server")]
     crate::debug_server::modal_registry::pop();
-    let _ = (nav, panes, swatch, change, reset, keys, ok, cancel, apply, preview_label);
+    let _ = (nav, panes, swatch, change, reset, keys, registered, ok, cancel, apply, preview_label);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{leaf_label, normalize_shortcut};
+
+    #[test]
+    fn normalize_shortcut_keeps_first_char_only() {
+        assert_eq!(normalize_shortcut("G"), "G");
+        assert_eq!(normalize_shortcut("  d  "), "d"); // 前後空白は除去
+        assert_eq!(normalize_shortcut("GG"), "G"); // 先頭1文字だけ
+        assert_eq!(normalize_shortcut(""), "");
+        assert_eq!(normalize_shortcut("   "), "");
+    }
+
+    #[test]
+    fn leaf_label_uses_path_tail() {
+        assert_eq!(leaf_label("C:\\Users\\me\\Documents"), "Documents");
+        assert_eq!(leaf_label("D:\\work"), "work");
+    }
 }

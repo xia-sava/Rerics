@@ -1003,6 +1003,27 @@ fn jump_dialog_shows_configured_shortcut() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// #71: 設定の「登録ディレクトリ」ページが debug-server から表に出せる（観測可能）。
+/// ページ切替フック（/modal/page）で任意ページを表示でき、スナップショットも撮れる土台。
+#[test]
+fn settings_registered_dirs_page_is_reachable() {
+    let cfg = "[[bookmarks]]\nlabel = \"ルート\"\npath = 'C:\\'\nshortcut = \"C\"\n";
+    let server = Server::start(&["a.txt"], cfg);
+
+    server.req("POST", "/command/OpenSettings", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"settings\""), "settings dialog should open: {modal}");
+    assert!(modal.contains("登録ディレクトリ"), "pages should include the registered-dirs page: {modal}");
+
+    // ページ4（登録ディレクトリ）を表に出す。
+    server.req("POST", "/modal/page/4", "").unwrap();
+    let m2 = poll(&server, "/state/modal", |b| b.contains("\"current_page\":4"));
+    assert!(m2.contains("\"current_page\":4"), "registered-dirs page should be shown: {m2}");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// ChangeDriveDialog＝ドライブ一覧から選んでそのルートへ移動する。
 /// 既定選択は現在ドライブなので、OK で現在ドライブのルートへ移る。
 #[test]
