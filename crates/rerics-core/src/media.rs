@@ -412,6 +412,62 @@ pub fn rgba_to_bgra(rgba: &[u8]) -> Vec<u8> {
     out
 }
 
+/// RGBA バッファを鏡像反転する。`horizontal` が真なら左右反転、偽なら上下反転。
+pub fn flip_rgba(rgba: &[u8], w: u32, h: u32, horizontal: bool) -> Vec<u8> {
+    let (wu, hu) = (w as usize, h as usize);
+    let mut out = vec![0u8; wu * hu * 4];
+    for y in 0..hu {
+        for x in 0..wu {
+            let (sx, sy) = if horizontal {
+                (wu - 1 - x, y)
+            } else {
+                (x, hu - 1 - y)
+            };
+            let s = (sy * wu + sx) * 4;
+            let d = (y * wu + x) * 4;
+            out[d..d + 4].copy_from_slice(&rgba[s..s + 4]);
+        }
+    }
+    out
+}
+
+/// RGBA を CF_DIB 用バイト列へ変換する。クリップボード経由は透過を保てない消費側が多いので、
+/// アルファは白背景へ合成して 24bpp・ボトムアップの DIB にする（どのアプリにも貼れる素直な形）。
+pub fn rgba_to_clipboard_dib(rgba: &[u8], w: u32, h: u32) -> Vec<u8> {
+    let (wu, hu) = (w as usize, h as usize);
+    let stride = (wu * 3 + 3) & !3; // 各行を 4 バイト境界へ
+    let img_size = stride * hu;
+    let mut out = Vec::with_capacity(40 + img_size);
+    // BITMAPINFOHEADER（40 バイト・リトルエンディアン）。
+    out.extend_from_slice(&40u32.to_le_bytes()); // biSize
+    out.extend_from_slice(&(w as i32).to_le_bytes()); // biWidth
+    out.extend_from_slice(&(h as i32).to_le_bytes()); // biHeight（正＝ボトムアップ）
+    out.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
+    out.extend_from_slice(&24u16.to_le_bytes()); // biBitCount
+    out.extend_from_slice(&0u32.to_le_bytes()); // biCompression=BI_RGB
+    out.extend_from_slice(&(img_size as u32).to_le_bytes()); // biSizeImage
+    out.extend_from_slice(&0i32.to_le_bytes()); // biXPelsPerMeter
+    out.extend_from_slice(&0i32.to_le_bytes()); // biYPelsPerMeter
+    out.extend_from_slice(&0u32.to_le_bytes()); // biClrUsed
+    out.extend_from_slice(&0u32.to_le_bytes()); // biClrImportant
+    let mut rows = vec![0u8; img_size];
+    for y in 0..hu {
+        let dst_y = hu - 1 - y; // ボトムアップ
+        let base = dst_y * stride;
+        for x in 0..wu {
+            let s = (y * wu + x) * 4;
+            let a = rgba[s + 3] as u32;
+            let over = |c: u8| -> u8 { ((c as u32 * a + 255 * (255 - a)) / 255) as u8 };
+            let d = base + x * 3;
+            rows[d] = over(rgba[s + 2]); // B
+            rows[d + 1] = over(rgba[s + 1]); // G
+            rows[d + 2] = over(rgba[s]); // R
+        }
+    }
+    out.extend_from_slice(&rows);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -504,6 +560,53 @@ mod tests {
         let rgba = [10u8, 20, 30, 40, 50, 60, 70, 80];
         let bgra = rgba_to_bgra(&rgba);
         assert_eq!(bgra, [30, 20, 10, 40, 70, 60, 50, 80]);
+    }
+
+    #[test]
+    fn flip_mirrors_each_axis() {
+        // 横並び「A B」(2x1)。
+        let a = [255u8, 0, 0, 255];
+        let b = [0u8, 255, 0, 255];
+        let src: Vec<u8> = [a, b].concat();
+        // 左右反転で A と B が入れ替わる。
+        let hf = flip_rgba(&src, 2, 1, true);
+        assert_eq!(&hf[0..4], &b);
+        assert_eq!(&hf[4..8], &a);
+        // 上下反転（1 行なので不変）。
+        let vf = flip_rgba(&src, 2, 1, false);
+        assert_eq!(vf, src);
+        // 縦並び「A / B」(1x2) の上下反転で入れ替わる。
+        let col: Vec<u8> = [a, b].concat();
+        let vf2 = flip_rgba(&col, 1, 2, false);
+        assert_eq!(&vf2[0..4], &b);
+        assert_eq!(&vf2[4..8], &a);
+    }
+
+    #[test]
+    fn clipboard_dib_header_and_padding() {
+        // 1x1 の赤（不透明）。24bpp は 1 行 3 バイト→4 バイトへパディング。
+        let rgba = [200u8, 50, 25, 255];
+        let dib = rgba_to_clipboard_dib(&rgba, 1, 1);
+        assert_eq!(dib.len(), 40 + 4, "ヘッダ40＋パディング後4バイト");
+        assert_eq!(u32::from_le_bytes(dib[0..4].try_into().unwrap()), 40); // biSize
+        assert_eq!(i32::from_le_bytes(dib[4..8].try_into().unwrap()), 1); // biWidth
+        assert_eq!(i32::from_le_bytes(dib[8..12].try_into().unwrap()), 1); // biHeight
+        assert_eq!(u16::from_le_bytes(dib[14..16].try_into().unwrap()), 24); // biBitCount
+        // 画素は BGR 並び。
+        assert_eq!(&dib[40..43], &[25, 50, 200]);
+    }
+
+    #[test]
+    fn clipboard_dib_alpha_over_white() {
+        // 完全透明は白へ。半透明は白とのブレンド。
+        let rgba = [0u8, 0, 0, 0, 0, 0, 0, 128]; // 2x1: 透明 / 半透明の黒
+        let dib = rgba_to_clipboard_dib(&rgba, 2, 1);
+        // 1 行 = 2px*3=6→8 バイト（パディング）。BGR×2＋詰め物2。
+        assert_eq!(dib.len(), 40 + 8);
+        assert_eq!(&dib[40..43], &[255, 255, 255]); // 透明→白
+        // 半透明の黒（a=128）は約 (0*128+255*127)/255≈127。
+        let mid = dib[43];
+        assert!((125..=129).contains(&mid), "got {mid}");
     }
 
     fn encode_anim_gif(frames: &[([u8; 4], u32)]) -> Vec<u8> {

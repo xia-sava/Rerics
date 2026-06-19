@@ -38,8 +38,8 @@ pub use log::{LogLevel, LogLine, LogState};
 pub use macros::{MacroAbort, MacroCtx, MacroHost, expand_macros};
 pub use media::{
     AnimatedImage, Frame, FrameSource, MediaKind, Placement, StillImage, clamp_pan,
-    composite_over_checker, decode_thumbnail, fit_scale, load_image, placement, rgba_to_bgra,
-    rotate_rgba, rotated_dims,
+    composite_over_checker, decode_thumbnail, fit_scale, flip_rgba, load_image, placement,
+    rgba_to_bgra, rgba_to_clipboard_dib, rotate_rgba, rotated_dims,
 };
 pub use operation::{
     ConflictResolution, DeleteWarnChoice, DirInfo, OpSummary, OperationHost, ProgressHandle,

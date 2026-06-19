@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use rerics_core::{
     Colors, Config, FrameSource, MediaKind, Rgb, clamp_pan, composite_over_checker, fit_scale,
-    load_image, placement, rgba_to_bgra, rotate_rgba,
+    flip_rgba, load_image, placement, rgba_to_bgra, rgba_to_clipboard_dib, rotate_rgba,
 };
 
 /// 透過表示の市松 1 マスの画素サイズ。
@@ -68,6 +68,9 @@ struct Inner {
     frame_h: Cell<u32>,
     /// 表示状態。
     rotation: Cell<u32>,
+    /// 鏡像反転（左右／上下）。回転とは独立に保持する。
+    hflip: Cell<bool>,
+    vflip: Cell<bool>,
     scale: Cell<f64>,
     /// フィット（領域に合わせて自動縮小）か、手動ズームか。
     fit: Cell<bool>,
@@ -79,6 +82,8 @@ struct Inner {
     colors: Colors,
     font_family: String,
     font_size: i32,
+    /// 右クリック時に呼ぶコールバック（画面座標）。コンテキストメニュー表示は MainWindow が担う。
+    on_menu: RefCell<Option<Box<dyn Fn(w::POINT)>>>,
 }
 
 /// 画像/動画ビューア表示パネル。
@@ -124,6 +129,8 @@ impl MediaView {
             frame_w: Cell::new(0),
             frame_h: Cell::new(0),
             rotation: Cell::new(0),
+            hflip: Cell::new(false),
+            vflip: Cell::new(false),
             scale: Cell::new(1.0),
             fit: Cell::new(true),
             pan: Cell::new((0.0, 0.0)),
@@ -133,10 +140,16 @@ impl MediaView {
             colors: cfg.active_colors(),
             font_family: cfg.font.family.clone(),
             font_size: cfg.font.size,
+            on_menu: RefCell::new(None),
         });
         let me = Self { wnd, inner };
         me.setup_events();
         me
+    }
+
+    /// 右クリック時のコールバック（コンテキストメニュー表示）を登録する。
+    pub fn on_menu(&self, cb: impl Fn(w::POINT) + 'static) {
+        *self.inner.on_menu.borrow_mut() = Some(Box::new(cb));
     }
 
     pub fn hwnd(&self) -> &w::HWND {
@@ -226,6 +239,8 @@ impl MediaView {
         self.inner.playing.set(false);
         self.inner.seeking.set(false);
         self.inner.rotation.set(0);
+        self.inner.hflip.set(false);
+        self.inner.vflip.set(false);
         self.inner.scale.set(1.0);
         self.inner.fit.set(true);
         self.inner.pan.set((0.0, 0.0));
@@ -331,6 +346,7 @@ impl MediaView {
         }
         let (bw, bh) = (self.inner.base_w.get(), self.inner.base_h.get());
         let (rgba, rw, rh) = rotate_rgba(&base, bw, bh, self.inner.rotation.get());
+        let rgba = self.apply_flips(rgba, rw, rh);
         let mut bgra = rgba_to_bgra(&rgba);
         // 透過画像は市松の上へ焼き込んで不透明化する（描画は通常の blit で済む）。
         if self.inner.has_alpha.get() {
@@ -379,15 +395,74 @@ impl MediaView {
         self.refresh()
     }
 
+    /// 現在の鏡像反転設定を RGBA へ適用する（左右→上下の順）。
+    fn apply_flips(&self, rgba: Vec<u8>, w: u32, h: u32) -> Vec<u8> {
+        let rgba = if self.inner.hflip.get() {
+            flip_rgba(&rgba, w, h, true)
+        } else {
+            rgba
+        };
+        if self.inner.vflip.get() {
+            flip_rgba(&rgba, w, h, false)
+        } else {
+            rgba
+        }
+    }
+
     /// 時計回りに 90 度回転する。
     pub fn rotate(&self) -> w::AnyResult<()> {
+        self.rotate_by(90)
+    }
+
+    /// 反時計回りに 90 度回転する。
+    pub fn rotate_left(&self) -> w::AnyResult<()> {
+        self.rotate_by(270)
+    }
+
+    fn rotate_by(&self, delta: u32) -> w::AnyResult<()> {
         if self.inner.base_rgba.borrow().is_empty() {
             return Ok(());
         }
-        self.inner.rotation.set((self.inner.rotation.get() + 90) % 360);
+        self.inner.rotation.set((self.inner.rotation.get() + delta) % 360);
         self.inner.pan.set((0.0, 0.0));
         self.rebuild_rotated();
         self.refresh()
+    }
+
+    /// 左右反転をトグルする。
+    pub fn flip_horizontal(&self) -> w::AnyResult<()> {
+        if self.inner.base_rgba.borrow().is_empty() {
+            return Ok(());
+        }
+        self.inner.hflip.set(!self.inner.hflip.get());
+        self.rebuild_rotated();
+        self.refresh()
+    }
+
+    /// 上下反転をトグルする。
+    pub fn flip_vertical(&self) -> w::AnyResult<()> {
+        if self.inner.base_rgba.borrow().is_empty() {
+            return Ok(());
+        }
+        self.inner.vflip.set(!self.inner.vflip.get());
+        self.rebuild_rotated();
+        self.refresh()
+    }
+
+    /// 表示中の画像（回転・反転を反映した原寸）をクリップボードへコピーする。
+    pub fn copy_to_clipboard(&self) -> w::AnyResult<()> {
+        let base = self.inner.base_rgba.borrow();
+        if base.is_empty() {
+            return Ok(());
+        }
+        let (bw, bh) = (self.inner.base_w.get(), self.inner.base_h.get());
+        let (rgba, rw, rh) = rotate_rgba(&base, bw, bh, self.inner.rotation.get());
+        let rgba = self.apply_flips(rgba, rw, rh);
+        let dib = rgba_to_clipboard_dib(&rgba, rw, rh);
+        let clip = self.hwnd().OpenClipboard()?;
+        clip.EmptyClipboard()?;
+        clip.SetClipboardData(co::CF::DIB, &dib)?;
+        Ok(())
     }
 
     fn setup_events(&self) {
@@ -403,6 +478,16 @@ impl MediaView {
                 this.show_next(true);
                 this.schedule_timer();
                 this.refresh()?;
+            }
+            Ok(())
+        });
+
+        // 右ボタン：コンテキストメニューを開く（表示は MainWindow が担う）。
+        let this = self.clone();
+        self.wnd.on().wm_r_button_down(move |p| {
+            let screen = this.hwnd().ClientToScreen(p.coords).unwrap_or(p.coords);
+            if let Some(cb) = this.inner.on_menu.borrow().as_ref() {
+                cb(screen);
             }
             Ok(())
         });

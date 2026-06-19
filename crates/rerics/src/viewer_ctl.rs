@@ -251,6 +251,12 @@ impl MainWindow {
             self.viewer.copy_selection()?;
             return Ok(());
         }
+        // Ctrl+A は全選択。
+        if ctrl && vk == vk::A {
+            self.viewer.select_all();
+            self.viewer.refresh()?;
+            return Ok(());
+        }
         match vk {
             vk::ESCAPE | VK_Q | vk::RETURN => self.close_viewer()?,
             vk::UP => self.viewer.scroll_by(-1)?,
@@ -286,16 +292,24 @@ impl MainWindow {
     }
 
     /// ビューア表示中の画像/動画キー操作（固定キー・設定対象外）。
-    pub(crate) fn media_key(&self, vk: u16, _shift: bool) -> w::AnyResult<()> {
+    pub(crate) fn media_key(&self, vk: u16, ctrl: bool, _shift: bool) -> w::AnyResult<()> {
         use rerics_core::vk;
         const VK_Q: u16 = 0x51;
         const VK_R: u16 = 0x52;
+        const VK_L: u16 = 0x4C;
+        const VK_V: u16 = 0x56;
+        const VK_H: u16 = 0x48;
         const VK_0: u16 = 0x30;
         const VK_1: u16 = 0x31;
         const VK_OEM_PLUS: u16 = 0xBB;
         const VK_OEM_MINUS: u16 = 0xBD;
         const VK_ADD: u16 = 0x6B;
         const VK_SUBTRACT: u16 = 0x6D;
+        // Ctrl+C＝表示中の画像をクリップボードへコピー（原作 ImageCopy）。
+        if ctrl && vk == vk::C {
+            self.media.copy_to_clipboard()?;
+            return Ok(());
+        }
         match vk {
             vk::ESCAPE | VK_Q | vk::RETURN => self.close_viewer()?,
             vk::SPACE => self.media.toggle_play()?,
@@ -306,9 +320,137 @@ impl MainWindow {
             VK_0 => self.media.fit_to_window()?,
             VK_1 => self.media.actual_size()?,
             VK_R => self.media.rotate()?,
+            VK_L => self.media.rotate_left()?,
+            VK_V => self.media.flip_horizontal()?, // 左右反転（原作 ImageVerticalFlip）
+            VK_H => self.media.flip_vertical()?,   // 上下反転（原作 ImageHorizonFlip）
             _ => {}
         }
         Ok(())
+    }
+
+    /// 画像ビューアの右クリックメニューを表示し、選んだ操作を実行する（画面座標 `pt`）。
+    /// メニュー構成は暫定（朝レビュー対象）。
+    pub(crate) fn show_media_menu(&self, pt: w::POINT) -> w::AnyResult<()> {
+        const COPY: u16 = 1;
+        const ZOOM_IN: u16 = 2;
+        const ZOOM_OUT: u16 = 3;
+        const FIT: u16 = 4;
+        const ACTUAL: u16 = 5;
+        const ROT_R: u16 = 6;
+        const ROT_L: u16 = 7;
+        const FLIP_H: u16 = 8;
+        const FLIP_V: u16 = 9;
+        const PREV: u16 = 10;
+        const NEXT: u16 = 11;
+        const CLOSE: u16 = 12;
+        let items: &[(u16, &str)] = &[
+            (COPY, "コピー(&C)"),
+            (0, ""),
+            (ZOOM_IN, "ズームイン(&I)"),
+            (ZOOM_OUT, "ズームアウト(&O)"),
+            (FIT, "全体表示(&F)"),
+            (ACTUAL, "原寸(&1)"),
+            (0, ""),
+            (ROT_R, "右回転(&R)"),
+            (ROT_L, "左回転(&L)"),
+            (FLIP_H, "左右反転(&V)"),
+            (FLIP_V, "上下反転(&H)"),
+            (0, ""),
+            (PREV, "前へ(&P)"),
+            (NEXT, "次へ(&N)"),
+            (0, ""),
+            (CLOSE, "閉じる(&X)"),
+        ];
+        let Some(id) = self.popup_menu(items, pt, self.media.hwnd())? else {
+            return Ok(());
+        };
+        match id {
+            COPY => self.media.copy_to_clipboard()?,
+            ZOOM_IN => self.media.zoom_by(1.25)?,
+            ZOOM_OUT => self.media.zoom_by(0.8)?,
+            FIT => self.media.fit_to_window()?,
+            ACTUAL => self.media.actual_size()?,
+            ROT_R => self.media.rotate()?,
+            ROT_L => self.media.rotate_left()?,
+            FLIP_H => self.media.flip_horizontal()?,
+            FLIP_V => self.media.flip_vertical()?,
+            PREV => self.media.navigate(-1)?,
+            NEXT => self.media.navigate(1)?,
+            CLOSE => self.close_viewer()?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// テキストビューアの右クリックメニューを表示し、選んだ操作を実行する（画面座標 `pt`）。
+    /// メニュー構成は暫定（朝レビュー対象）。
+    pub(crate) fn show_text_menu(&self, pt: w::POINT) -> w::AnyResult<()> {
+        const COPY: u16 = 1;
+        const SELECT_ALL: u16 = 2;
+        const SEARCH: u16 = 3;
+        const FIND_NEXT: u16 = 4;
+        const ENCODING: u16 = 5;
+        const MODE: u16 = 6;
+        const CLOSE: u16 = 7;
+        let items: &[(u16, &str)] = &[
+            (COPY, "コピー(&C)"),
+            (SELECT_ALL, "すべて選択(&A)"),
+            (0, ""),
+            (SEARCH, "検索(&F)..."),
+            (FIND_NEXT, "次を検索(&N)"),
+            (0, ""),
+            (ENCODING, "文字コード切替(&E)"),
+            (MODE, "テキスト／バイナリ切替(&B)"),
+            (0, ""),
+            (CLOSE, "閉じる(&X)"),
+        ];
+        let Some(id) = self.popup_menu(items, pt, self.viewer.hwnd())? else {
+            return Ok(());
+        };
+        match id {
+            COPY => self.viewer.copy_selection()?,
+            SELECT_ALL => {
+                self.viewer.select_all();
+                self.viewer.refresh()?;
+            }
+            SEARCH => self.viewer_search()?,
+            FIND_NEXT => self.viewer.find_next(true)?,
+            ENCODING => self.viewer.cycle_encoding(true)?,
+            MODE => self.viewer.toggle_mode()?,
+            CLOSE => self.close_viewer()?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// ポップアップメニューを表示し、選択された項目 ID を返す（キャンセルは None）。
+    /// `items` は `(id, ラベル)`。id=0 はセパレータ。
+    pub(crate) fn popup_menu(
+        &self,
+        items: &[(u16, &str)],
+        pt: w::POINT,
+        owner: &w::HWND,
+    ) -> w::AnyResult<Option<u16>> {
+        let menu = w::HMENU::CreatePopupMenu()?;
+        for (id, label) in items {
+            if *id == 0 {
+                menu.AppendMenu(co::MF::SEPARATOR, w::IdMenu::None, w::BmpPtrStr::None)?;
+            } else {
+                menu.AppendMenu(
+                    co::MF::STRING,
+                    w::IdMenu::Id(*id),
+                    w::BmpPtrStr::from_str(label),
+                )?;
+            }
+        }
+        // フォアグラウンド化しておかないと、メニュー外クリックで閉じない不具合がある。
+        let _ = owner.SetForegroundWindow();
+        let chosen = menu.TrackPopupMenu(
+            co::TPM::RETURNCMD | co::TPM::LEFTALIGN | co::TPM::TOPALIGN,
+            pt,
+            owner,
+        )?;
+        Ok(chosen.map(|id| id as u16))
     }
 
     /// 走行中の書庫プリフェッチスレッドがあれば停止フラグを立てる（次の窓パスで終了する）。
