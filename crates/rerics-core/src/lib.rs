@@ -63,6 +63,10 @@ pub struct Pane {
     back: Vec<Location>,
     /// 進む履歴（戻った後にだけ積まれる。新しい移動で破棄）。
     forward: Vec<Location>,
+    /// （パス表示文字列, そのディレクトリで最後にカーソルがあったファイル名）を
+    /// 新しい順で末尾に持つ。ディレクトリへ再び入った時にカーソル位置を復元する。
+    /// 上限を超えると先頭（古い方）から捨てる（セッション内のみ保持）。
+    cursor_memory: Vec<(String, String)>,
 }
 
 /// 移動履歴の上限（これを超えると古い方から捨てる）。
@@ -77,6 +81,7 @@ impl Pane {
             loc: Location::Real(abs),
             back: Vec::new(),
             forward: Vec::new(),
+            cursor_memory: Vec::new(),
         }
     }
 
@@ -87,6 +92,7 @@ impl Pane {
             loc: Location::parse(display),
             back: Vec::new(),
             forward: Vec::new(),
+            cursor_memory: Vec::new(),
         }
     }
 
@@ -194,6 +200,59 @@ impl Pane {
         false
     }
 
+    /// 現在地を訪問履歴に記録する（移動の直前に呼ぶ）。`filename` はそのディレクトリで
+    /// カーソルがあったファイル名で、先頭（".."）や空は「カーソル無し」として扱う。
+    /// `limit == 0` は記録しない。カーソル無しでも訪れたディレクトリ自体は記録し（ドライブ
+    /// 移動時の前回位置復元に使う）、ただし同じパスに実カーソル名の記録が既にあれば空名で
+    /// 上書きせず最新位置（新しさ）だけ更新する。件数が `limit` を超えたら古い方から捨てる。
+    pub fn remember_cursor(&mut self, filename: &str, limit: usize) {
+        if limit == 0 {
+            return;
+        }
+        let key = self.loc.loc_display();
+        let name = if filename == ".." { "" } else { filename };
+        let resolved = match self.cursor_memory.iter().position(|(k, _)| *k == key) {
+            Some(pos) => {
+                let (_, old) = self.cursor_memory.remove(pos);
+                if name.is_empty() { old } else { name.to_owned() }
+            }
+            None => name.to_owned(),
+        };
+        self.cursor_memory.push((key, resolved));
+        while self.cursor_memory.len() > limit {
+            self.cursor_memory.remove(0);
+        }
+    }
+
+    /// 指定パス表示に対して覚えているカーソルファイル名を返す（カーソル無しの訪問記録や
+    /// 未知パスは None）。
+    pub fn recalled_cursor(&self, path_display: &str) -> Option<&str> {
+        self.cursor_memory
+            .iter()
+            .rev()
+            .find(|(k, _)| k == path_display)
+            .map(|(_, v)| v.as_str())
+            .filter(|v| !v.is_empty())
+    }
+
+    /// 指定ドライブ（`drive` の先頭1文字を大小無視で判定）で最後に居たディレクトリの
+    /// 表示文字列を、カーソル履歴の新しい方から探して返す（無ければ None）。
+    /// ドライブを跨いだ時に「そのドライブで前回居た場所」へ戻すのに使う。
+    pub fn recalled_drive_dir(&self, drive: &str) -> Option<&str> {
+        let letter = drive.chars().next()?.to_ascii_uppercase();
+        if !letter.is_ascii_alphabetic() {
+            return None;
+        }
+        self.cursor_memory
+            .iter()
+            .rev()
+            .find(|(path, _)| {
+                let mut cs = path.chars();
+                matches!((cs.next(), cs.next()), (Some(c), Some(':')) if c.to_ascii_uppercase() == letter)
+            })
+            .map(|(path, _)| path.as_str())
+    }
+
     /// 移動履歴（新しい順・重複除去）を表示文字列で返す。同じ場所を何度往復しても
     /// 各場所は最後に訪れた1件だけ出す（原作 移動履歴＝MyPathHistory と同じ）。
     /// 先頭が直前の現在地。現在地そのものは含めない。
@@ -295,5 +354,81 @@ mod tests {
         assert!(p.go_back()); // -> crates
         assert!(p.go_back()); // -> rc(開始)
         assert!(!p.go_back(), "これ以上は戻れない");
+    }
+
+    #[test]
+    fn pane_cursor_memory_remembers_and_recalls() {
+        let mut p = Pane::open(env!("CARGO_MANIFEST_DIR"));
+        let here = p.loc_display();
+        p.remember_cursor("Cargo.toml", 100);
+        assert_eq!(p.recalled_cursor(&here), Some("Cargo.toml"));
+        // 空名・親（".."）・limit==0 は記録しない（既存の記憶を上書きしない）。
+        p.remember_cursor("", 100);
+        p.remember_cursor("..", 100);
+        p.remember_cursor("other.txt", 0);
+        assert_eq!(p.recalled_cursor(&here), Some("Cargo.toml"));
+        // 未知パスは None。
+        assert_eq!(p.recalled_cursor("Z:\\nope"), None);
+    }
+
+    #[test]
+    fn pane_cursor_memory_evicts_oldest_over_limit() {
+        let mut p = Pane::open(env!("CARGO_MANIFEST_DIR"));
+        let manifest = p.loc_display();
+        p.remember_cursor("a", 2);
+        assert!(p.enter("src", true), "src へ入れる");
+        let src = p.loc_display();
+        p.remember_cursor("b", 2);
+        assert!(p.to_parent().is_some(), "親（manifest）へ戻れる");
+        assert!(p.to_parent().is_some(), "さらに親（crates）へ");
+        let crates = p.loc_display();
+        p.remember_cursor("c", 2);
+        // 上限 2：最も古い manifest が捨てられ、新しい src / crates は残る。
+        assert_eq!(p.recalled_cursor(&manifest), None, "古い記録は破棄される");
+        assert_eq!(p.recalled_cursor(&src), Some("b"));
+        assert_eq!(p.recalled_cursor(&crates), Some("c"));
+    }
+
+    #[test]
+    fn pane_cursor_memory_recalls_last_dir_on_drive() {
+        let mut p = Pane::open(env!("CARGO_MANIFEST_DIR"));
+        let manifest = p.loc_display();
+        // リポジトリが置かれたドライブ文字を実パスから取る（環境非依存）。
+        let drive = manifest[..2].to_owned(); // 例 "C:"
+        p.remember_cursor("a", 100);
+        assert!(p.enter("src", true), "src へ入れる");
+        let src = p.loc_display();
+        p.remember_cursor("b", 100);
+        // 同ドライブで最後に居たディレクトリ（src）が返る。大小は無視。
+        assert_eq!(p.recalled_drive_dir(&drive), Some(src.as_str()));
+        assert_eq!(p.recalled_drive_dir(&drive.to_ascii_lowercase()), Some(src.as_str()));
+        // 記憶に無いドライブは None。
+        assert_eq!(p.recalled_drive_dir("Z:"), None);
+        assert_eq!(p.recalled_drive_dir(""), None);
+    }
+
+    #[test]
+    fn pane_drive_recall_includes_dirs_left_on_parent() {
+        let mut p = Pane::open(env!("CARGO_MANIFEST_DIR"));
+        let drive = p.loc_display()[..2].to_owned();
+        // カーソルを動かさず（".."のまま）侵入即離脱したディレクトリも、
+        // ドライブ移動の前回位置として引ける（カーソル名は無し）。
+        assert!(p.enter("src", true), "src へ入れる");
+        let src = p.loc_display();
+        p.remember_cursor("..", 100);
+        assert_eq!(p.recalled_drive_dir(&drive), Some(src.as_str()));
+        assert_eq!(p.recalled_cursor(&src), None);
+    }
+
+    #[test]
+    fn pane_remember_keeps_real_cursor_when_left_on_parent() {
+        let mut p = Pane::open(env!("CARGO_MANIFEST_DIR"));
+        assert!(p.enter("src", true), "src へ入れる");
+        let src = p.loc_display();
+        p.remember_cursor("lib.rs", 100);
+        assert_eq!(p.recalled_cursor(&src), Some("lib.rs"));
+        // 同じディレクトリを ".." のまま再離脱しても実カーソル記憶は消えない。
+        p.remember_cursor("..", 100);
+        assert_eq!(p.recalled_cursor(&src), Some("lib.rs"));
     }
 }

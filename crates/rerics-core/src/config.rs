@@ -174,6 +174,23 @@ pub struct Bookmark {
     pub path: String,
 }
 
+/// カーソル位置記憶（原作 Cursor/CursorHistory）の設定。ディレクトリ移動の直前に離脱
+/// 位置を覚え、再訪時にカーソルを復元する。記憶はセッション内のみで、ファイルには残さない。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CursorSettings {
+    /// 位置記憶のオン/オフ（原作既定はオフ）。
+    pub history: bool,
+    /// 記憶するパス数の上限。超えると古いものから捨てる（原作 CursorHistoryCount・既定 100）。
+    pub history_count: usize,
+}
+
+impl Default for CursorSettings {
+    fn default() -> Self {
+        Self { history: false, history_count: 100 }
+    }
+}
+
 /// アプリ全体の設定。デフォルトは埋め込み `default.toml`、ユーザ `config.toml` は
 /// デフォルトとの差分のみを記録し、適用時に再帰マージする。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,6 +207,8 @@ pub struct Config {
     pub bookmarks: Vec<Bookmark>,
     /// Edit コマンドで開く外部エディタ（実行ファイル名 or パス）。
     pub editor: String,
+    /// カーソル位置記憶の設定。
+    pub cursor: CursorSettings,
     /// 起動時に解決した実テーマ。ファイルには保存しない（`resolve_theme` で設定）。
     #[serde(skip)]
     pub resolved: ResolvedTheme,
@@ -206,6 +225,7 @@ impl Default for Config {
             keybinds: KeyMap::default().to_string_map(),
             bookmarks: Vec::new(),
             editor: "notepad.exe".to_owned(),
+            cursor: CursorSettings::default(),
             resolved: ResolvedTheme::default(),
         }
     }
