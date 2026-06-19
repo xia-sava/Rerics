@@ -515,6 +515,10 @@ impl MainWindow {
             self.media.on_menu(move |pt| {
                 let _ = this.show_media_menu(pt);
             });
+            let this = self.clone();
+            self.viewer.on_menu(move |pt| {
+                let _ = this.show_text_menu(pt);
+            });
         }
 
         // メニュー項目（有効なもの）をアクティブ側ペインへのコマンド実行に配線する。

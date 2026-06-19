@@ -49,6 +49,8 @@ struct Inner {
     sel_cursor: Cell<Option<Pos>>,
     /// ドラッグ中か。
     selecting: Cell<bool>,
+    /// 右クリック時に呼ぶコールバック（画面座標）。メニュー表示は MainWindow が担う。
+    on_menu: RefCell<Option<Box<dyn Fn(w::POINT)>>>,
 }
 
 /// ビューア表示パネル。
@@ -94,6 +96,7 @@ impl ViewerView {
             sel_anchor: Cell::new(None),
             sel_cursor: Cell::new(None),
             selecting: Cell::new(false),
+            on_menu: RefCell::new(None),
         });
         let me = Self { wnd, inner };
         me.setup_events();
@@ -102,6 +105,11 @@ impl ViewerView {
 
     pub fn hwnd(&self) -> &w::HWND {
         self.wnd.hwnd()
+    }
+
+    /// 右クリック時のコールバック（コンテキストメニュー表示）を登録する。
+    pub fn on_menu(&self, cb: impl Fn(w::POINT) + 'static) {
+        *self.inner.on_menu.borrow_mut() = Some(Box::new(cb));
     }
 
     /// ファイル内容を読み込んで表示状態にする（モード/エンコーディングは既定へ戻す）。
@@ -355,12 +363,51 @@ impl ViewerView {
             Ok(())
         });
 
-        // 右クリックで選択範囲をコピー（キーボードに触れず手早く）。
+        // ダブルクリックでカーソル下の単語を選択する。
         let this = self.clone();
-        self.wnd.on().wm_r_button_down(move |_p| {
-            let _ = this.copy_selection();
+        self.wnd.on().wm_l_button_dbl_clk(move |p| {
+            this.select_word_at(p.coords);
+            this.refresh()?;
             Ok(())
         });
+
+        // 右クリックでコンテキストメニューを開く（表示は MainWindow が担う）。
+        let this = self.clone();
+        self.wnd.on().wm_r_button_down(move |p| {
+            let screen = this.hwnd().ClientToScreen(p.coords).unwrap_or(p.coords);
+            if let Some(cb) = this.inner.on_menu.borrow().as_ref() {
+                cb(screen);
+            }
+            Ok(())
+        });
+    }
+
+    /// 全選択（先頭から末尾まで）。
+    pub fn select_all(&self) {
+        let lines = self.inner.lines.borrow();
+        if lines.is_empty() {
+            return;
+        }
+        let last = lines.len() - 1;
+        let last_col = lines[last].body.chars().count();
+        drop(lines);
+        self.inner.sel_anchor.set(Some((0, 0)));
+        self.inner.sel_cursor.set(Some((last, last_col)));
+    }
+
+    /// `pt` 直下の単語を選択する（語＝英数字＋アンダースコアの連なり。その他は1文字）。
+    fn select_word_at(&self, pt: w::POINT) {
+        let (line, col) = self.point_to_pos(pt);
+        let lines = self.inner.lines.borrow();
+        let Some(dl) = lines.get(line) else { return };
+        let (s, e) = word_bounds(&dl.body, col);
+        drop(lines);
+        if s == e {
+            self.clear_selection();
+        } else {
+            self.inner.sel_anchor.set(Some((line, s)));
+            self.inner.sel_cursor.set(Some((line, e)));
+        }
     }
 
     /// マウス座標を表示行内の位置 (行, char オフセット) へ変換する。
@@ -629,4 +676,74 @@ impl ViewerView {
 
 fn rgb(c: Rgb) -> w::COLORREF {
     w::COLORREF::from_rgb(c.r, c.g, c.b)
+}
+
+/// 文字の種別（語・空白・記号）。ダブルクリックは同種の連なりを選ぶ。
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum CharClass {
+    Word,
+    Space,
+    Other,
+}
+
+fn char_class(c: char) -> CharClass {
+    if c.is_alphanumeric() || c == '_' {
+        CharClass::Word
+    } else if c.is_whitespace() {
+        CharClass::Space
+    } else {
+        CharClass::Other
+    }
+}
+
+/// `body` の char オフセット `col` 直下の「同種の連なり」の範囲 `[s, e)` を返す。
+/// 語（英数字＋アンダースコア）・空白・記号をそれぞれ別種として連なりをまとめる。
+fn word_bounds(body: &str, col: usize) -> (usize, usize) {
+    let chars: Vec<char> = body.chars().collect();
+    if chars.is_empty() {
+        return (0, 0);
+    }
+    let i = col.min(chars.len() - 1);
+    let target = char_class(chars[i]);
+    let mut s = i;
+    while s > 0 && char_class(chars[s - 1]) == target {
+        s -= 1;
+    }
+    let mut e = i + 1;
+    while e < chars.len() && char_class(chars[e]) == target {
+        e += 1;
+    }
+    (s, e)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::word_bounds;
+
+    #[test]
+    fn word_bounds_selects_word_run() {
+        let s = "the quick_brown fox";
+        // "the" の中。
+        assert_eq!(word_bounds(s, 1), (0, 3));
+        // "quick_brown"（アンダースコア込みで1語）。
+        assert_eq!(word_bounds(s, 6), (4, 15));
+        // "fox" 末尾語。
+        assert_eq!(word_bounds(s, 17), (16, 19));
+    }
+
+    #[test]
+    fn word_bounds_groups_spaces_and_symbols() {
+        let s = "a == b";
+        // 空白1つ。
+        assert_eq!(word_bounds(s, 1), (1, 2));
+        // "==" は記号の連なり。
+        assert_eq!(word_bounds(s, 3), (2, 4));
+    }
+
+    #[test]
+    fn word_bounds_handles_edges() {
+        assert_eq!(word_bounds("", 0), (0, 0));
+        // 範囲外 col は末尾文字へクランプ。
+        assert_eq!(word_bounds("ab", 9), (0, 2));
+    }
 }

@@ -251,6 +251,12 @@ impl MainWindow {
             self.viewer.copy_selection()?;
             return Ok(());
         }
+        // Ctrl+A は全選択。
+        if ctrl && vk == vk::A {
+            self.viewer.select_all();
+            self.viewer.refresh()?;
+            return Ok(());
+        }
         match vk {
             vk::ESCAPE | VK_Q | vk::RETURN => self.close_viewer()?,
             vk::UP => self.viewer.scroll_by(-1)?,
@@ -370,6 +376,47 @@ impl MainWindow {
             FLIP_V => self.media.flip_vertical()?,
             PREV => self.media.navigate(-1)?,
             NEXT => self.media.navigate(1)?,
+            CLOSE => self.close_viewer()?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// テキストビューアの右クリックメニューを表示し、選んだ操作を実行する（画面座標 `pt`）。
+    /// メニュー構成は暫定（朝レビュー対象）。
+    pub(crate) fn show_text_menu(&self, pt: w::POINT) -> w::AnyResult<()> {
+        const COPY: u16 = 1;
+        const SELECT_ALL: u16 = 2;
+        const SEARCH: u16 = 3;
+        const FIND_NEXT: u16 = 4;
+        const ENCODING: u16 = 5;
+        const MODE: u16 = 6;
+        const CLOSE: u16 = 7;
+        let items: &[(u16, &str)] = &[
+            (COPY, "コピー(&C)"),
+            (SELECT_ALL, "すべて選択(&A)"),
+            (0, ""),
+            (SEARCH, "検索(&F)..."),
+            (FIND_NEXT, "次を検索(&N)"),
+            (0, ""),
+            (ENCODING, "文字コード切替(&E)"),
+            (MODE, "テキスト／バイナリ切替(&B)"),
+            (0, ""),
+            (CLOSE, "閉じる(&X)"),
+        ];
+        let Some(id) = self.popup_menu(items, pt, self.viewer.hwnd())? else {
+            return Ok(());
+        };
+        match id {
+            COPY => self.viewer.copy_selection()?,
+            SELECT_ALL => {
+                self.viewer.select_all();
+                self.viewer.refresh()?;
+            }
+            SEARCH => self.viewer_search()?,
+            FIND_NEXT => self.viewer.find_next(true)?,
+            ENCODING => self.viewer.cycle_encoding(true)?,
+            MODE => self.viewer.toggle_mode()?,
             CLOSE => self.close_viewer()?,
             _ => {}
         }
