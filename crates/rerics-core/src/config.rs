@@ -168,10 +168,14 @@ impl Default for ThemeColors {
 }
 
 /// 登録ディレクトリ（ブックマーク）。`label` で一覧表示し、選ぶと `path` へジャンプする。
+/// `shortcut` はジャンプダイアログで割り当てる1キー（原作 RegisteredPaths の Shortcut・
+/// 未割当なら空）で、ダイアログ表示中にそのキーを押すと該当行へ直接ジャンプできる。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bookmark {
     pub label: String,
     pub path: String,
+    #[serde(default)]
+    pub shortcut: String,
 }
 
 /// カーソル位置記憶（原作 Cursor/CursorHistory）の設定。ディレクトリ移動の直前に離脱
@@ -321,12 +325,17 @@ impl Config {
         std::fs::write(path, text)
     }
 
-    /// 登録ディレクトリを追加する。同じ `path` が既にあれば `label` を更新する。
+    /// 登録ディレクトリを追加する。同じ `path` が既にあれば `label` を更新する
+    /// （割り当て済みのショートカットは保持する）。
     pub fn add_bookmark(&mut self, label: &str, path: &str) {
         if let Some(b) = self.bookmarks.iter_mut().find(|b| b.path == path) {
             b.label = label.to_owned();
         } else {
-            self.bookmarks.push(Bookmark { label: label.to_owned(), path: path.to_owned() });
+            self.bookmarks.push(Bookmark {
+                label: label.to_owned(),
+                path: path.to_owned(),
+                shortcut: String::new(),
+            });
         }
     }
 

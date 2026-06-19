@@ -600,35 +600,185 @@ impl MainWindow {
         Ok(())
     }
 
-    /// 登録ディレクトリの一覧から選んでそこへジャンプする。空なら情報ログのみ。
+    /// 登録ディレクトリの一覧から選んでそこへジャンプする（原作 RegisteredPathDialog／
+    /// JumpDialog）。ショートカット/名前/場所の 3 列で表示し、行のショートカットキーを押すと
+    /// そのまま移動する。空なら情報ログのみ。
     pub(crate) fn jump_dialog(&self, is_left: bool) -> w::AnyResult<()> {
-        let bookmarks: Vec<(String, String)> = self
+        // (shortcut, label, path) を表示順に取り出す。
+        let entries: Vec<(String, String, String)> = self
             .config
             .borrow()
             .bookmarks
             .iter()
-            .map(|b| (b.label.clone(), b.path.clone()))
+            .map(|b| (b.shortcut.clone(), b.label.clone(), b.path.clone()))
             .collect();
-        if bookmarks.is_empty() {
+        if entries.is_empty() {
             self.log.info("登録ディレクトリがありません。");
             return Ok(());
         }
-        let labels: Vec<String> = bookmarks
-            .iter()
-            .map(|(l, p)| format!("{l}  ({p})"))
-            .collect();
-        let Some(idx) = dialog::list_box(&self.wnd, "ジャンプ", &labels, 0) else {
-            return Ok(());
-        };
-        let Some((_, path)) = bookmarks.get(idx) else {
-            return Ok(());
-        };
-        let loc = Location::parse(path);
-        self.remember_cursor_for_nav(is_left);
-        if self.pane(is_left).borrow_mut().navigate(loc) {
-            self.reload_side_navigated(is_left)?;
-        } else {
-            self.log.error(&format!("移動できません: {path}"));
+
+        let wnd = gui::WindowModal::new(gui::WindowModalOpts {
+            title: "登録ディレクトリ",
+            size: gui::dpi(600, 360),
+            style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
+            process_dlg_msgs: true,
+            ..Default::default()
+        });
+        let list = gui::ListView::<()>::new(
+            &wnd,
+            gui::ListViewOpts {
+                position: gui::dpi(12, 12),
+                size: gui::dpi(576, 292),
+                control_style: co::LVS::REPORT
+                    | co::LVS::NOSORTHEADER
+                    | co::LVS::SHOWSELALWAYS
+                    | co::LVS::SINGLESEL,
+                control_ex_style: co::LVS_EX::FULLROWSELECT,
+                ..Default::default()
+            },
+        );
+        let ok = gui::Button::new(
+            &wnd,
+            gui::ButtonOpts {
+                text: "OK",
+                control_style: co::BS::DEFPUSHBUTTON,
+                ctrl_id: 1,
+                position: gui::dpi(412, 318),
+                width: gui::dpi_x(80),
+                height: gui::dpi_y(26),
+                ..Default::default()
+            },
+        );
+        let cancel = gui::Button::new(
+            &wnd,
+            gui::ButtonOpts {
+                text: "中止(&S)",
+                ctrl_id: 2,
+                position: gui::dpi(500, 318),
+                width: gui::dpi_x(86),
+                height: gui::dpi_y(26),
+                ..Default::default()
+            },
+        );
+
+        let result: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+
+        {
+            let list = list.clone();
+            let entries_c = entries.clone();
+            wnd.on().wm_create(move |_| {
+                for (head, width) in [("", 44), ("名前", 180), ("場所", 330)] {
+                    list.cols().add(head, gui::dpi_x(width))?;
+                }
+                for (sc, name, path) in &entries_c {
+                    list.items().add(&[sc.clone(), name.clone(), path.clone()], None, ())?;
+                }
+                if let Some(it) = list.items().iter().next() {
+                    it.select(true)?;
+                    it.focus()?;
+                }
+                list.hwnd().SetFocus();
+                #[cfg(feature = "debug-server")]
+                {
+                    let modal_ptr = list.hwnd().GetParent().map(|h| h.ptr() as isize).unwrap_or(0);
+                    let list_r = list.clone();
+                    let list_s = list.clone();
+                    crate::debug_server::modal_registry::push_list_view(
+                        "jump",
+                        "登録ディレクトリ",
+                        modal_ptr,
+                        vec![("OK".to_owned(), 1u16), ("中止(&S)".to_owned(), 2u16)],
+                        crate::debug_server::modal_registry::ListViewHooks {
+                            headers: ["ショートカット", "名前", "場所"]
+                                .iter()
+                                .map(|s| s.to_string())
+                                .collect(),
+                            read: Box::new(move || {
+                                let rows = list_r
+                                    .items()
+                                    .iter()
+                                    .map(|it| (0..3u32).map(|c| it.text(c)).collect())
+                                    .collect();
+                                let sel = list_r.items().iter().position(|it| it.is_selected()).unwrap_or(0);
+                                (rows, sel)
+                            }),
+                            select: Box::new(move |idx| {
+                                if let Some(it) = list_s.items().iter().nth(idx) {
+                                    let _ = it.select(true);
+                                    let _ = it.focus();
+                                }
+                            }),
+                        },
+                    );
+                }
+                Ok(0)
+            });
+        }
+        {
+            // ショートカットキーを押したら、その行が一意に決まればそのまま選択＋移動。
+            let result = result.clone();
+            let entries_c = entries.clone();
+            let wnd2 = wnd.clone();
+            list.on().lvn_key_down(move |p| {
+                let raw = p.wVKey.raw();
+                if (0x41..=0x5A).contains(&raw) {
+                    let ch = raw as u8 as char; // 'A'..'Z'
+                    let idx = unique_shortcut_index(entries_c.iter().map(|(s, _, _)| s.as_str()), ch);
+                    if let Some(idx) = idx {
+                        *result.borrow_mut() = Some(idx);
+                        wnd2.close();
+                    }
+                }
+                Ok(())
+            });
+        }
+        {
+            let result = result.clone();
+            let wnd2 = wnd.clone();
+            list.on().lvn_item_activate(move |p| {
+                if p.iItem >= 0 {
+                    *result.borrow_mut() = Some(p.iItem as usize);
+                }
+                wnd2.close();
+                Ok(())
+            });
+        }
+        {
+            let result = result.clone();
+            let list2 = list.clone();
+            let wnd2 = wnd.clone();
+            ok.on().bn_clicked(move || {
+                if let Some(idx) = list2.items().iter().position(|it| it.is_selected()) {
+                    *result.borrow_mut() = Some(idx);
+                }
+                wnd2.close();
+                Ok(())
+            });
+        }
+        {
+            let wnd2 = wnd.clone();
+            cancel.on().bn_clicked(move || {
+                wnd2.close();
+                Ok(())
+            });
+        }
+
+        self.in_dialog.set(true);
+        let _ = wnd.show_modal(&self.wnd);
+        self.in_dialog.set(false);
+        #[cfg(feature = "debug-server")]
+        crate::debug_server::modal_registry::pop();
+        let _ = (ok, cancel, list);
+
+        let sel = *result.borrow();
+        if let Some((_, _, path)) = sel.and_then(|idx| entries.get(idx)) {
+            let loc = Location::parse(path);
+            self.remember_cursor_for_nav(is_left);
+            let outcome = self.pane(is_left).borrow_mut().navigate_reported(loc);
+            match outcome {
+                Ok(()) => self.reload_side_navigated(is_left)?,
+                Err(e) => self.report_change_directory_error(&e),
+            }
         }
         Ok(())
     }
@@ -718,6 +868,22 @@ fn change_directory_error_message(err: &std::io::Error) -> String {
     }
 }
 
+/// 登録ディレクトリのショートカット集合から、押されたキー `ch`（大文字）に一致する行が
+/// ただ一つのときだけその index を返す（未一致・複数一致は None＝確定させない）。
+/// 一致判定はショートカット先頭1文字を大文字化して比較する。
+fn unique_shortcut_index<'a>(shortcuts: impl Iterator<Item = &'a str>, ch: char) -> Option<usize> {
+    let mut hit = None;
+    for (i, sc) in shortcuts.enumerate() {
+        if sc.chars().next().map(|c| c.to_ascii_uppercase()) == Some(ch) {
+            if hit.is_some() {
+                return None;
+            }
+            hit = Some(i);
+        }
+    }
+    hit
+}
+
 fn next_ready_index(n: usize, cur: usize, delta: isize, ready: impl Fn(usize) -> bool) -> Option<usize> {
     (1..n)
         .map(|step| (cur as isize + delta * step as isize).rem_euclid(n as isize) as usize)
@@ -777,7 +943,25 @@ fn probe_drive_info(root: &str) -> (String, String, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{change_directory_error_message, next_ready_index};
+    use super::{change_directory_error_message, next_ready_index, unique_shortcut_index};
+
+    #[test]
+    fn shortcut_index_matches_unique_case_insensitively() {
+        let scs = ["G", "d", "", "M"];
+        let pick = |ch| unique_shortcut_index(scs.iter().copied(), ch);
+        assert_eq!(pick('G'), Some(0)); // 大文字一致
+        assert_eq!(pick('D'), Some(1)); // 小文字割当でも大文字キーで一致
+        assert_eq!(pick('M'), Some(3));
+        assert_eq!(pick('X'), None); // 未割当
+    }
+
+    #[test]
+    fn shortcut_index_rejects_duplicates_and_empty() {
+        // 同じショートカットが複数あれば確定させない。
+        assert_eq!(unique_shortcut_index(["A", "a"].iter().copied(), 'A'), None);
+        // 空ショートカットはどのキーにも一致しない。
+        assert_eq!(unique_shortcut_index(["", ""].iter().copied(), 'A'), None);
+    }
 
     #[test]
     fn change_directory_error_distinguishes_not_found() {

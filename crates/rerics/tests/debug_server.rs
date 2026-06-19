@@ -899,12 +899,29 @@ fn nav_register_and_jump() {
 
     server.req("POST", "/command/JumpDialog", "").unwrap();
     let modal = wait_modal(&server);
-    assert!(modal.contains("\"kind\":\"list\""), "jump should open a list: {modal}");
+    assert!(modal.contains("\"kind\":\"jump\""), "jump should open the registered-dir list: {modal}");
+    assert!(modal.contains("\"rows\":[["), "jump should be a multi-column list: {modal}");
     assert!(modal.contains("home"), "jump should list the bookmark: {modal}");
     server.req("POST", "/modal/select/0", "").unwrap();
     server.req("POST", "/modal/command/ok", "").unwrap();
     let back = poll(&server, "/state/panes/left/location", |b| b.trim() == sbx_json);
     assert_eq!(back.trim(), sbx_json, "jump should navigate to the bookmark");
+}
+
+/// #71: config に書いた登録ディレクトリのショートカットが、ジャンプダイアログの
+/// 先頭（ショートカット）列に表示される（多列 ListView＋serde フィールドの確認）。
+#[test]
+fn jump_dialog_shows_configured_shortcut() {
+    let cfg = "[[bookmarks]]\nlabel = \"ルート\"\npath = \"C:\\\\\"\nshortcut = \"C\"\n";
+    let server = Server::start(&["a.txt"], cfg);
+    server.req("POST", "/command/JumpDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"jump\""), "should open the jump dialog: {modal}");
+    assert!(modal.contains("ルート"), "configured label should be listed: {modal}");
+    // 行の先頭列がショートカット "C"。
+    assert!(modal.contains("[\"C\",\"ルート\""), "shortcut should fill the first column: {modal}");
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
 /// ChangeDriveDialog＝ドライブ一覧から選んでそのルートへ移動する。
