@@ -509,6 +509,14 @@ impl MainWindow {
         self.wire_pane(false);
         self.wire_key_sink();
 
+        // ビューアの右クリック＝コンテキストメニュー（表示・実行は MainWindow が担う）。
+        {
+            let this = self.clone();
+            self.media.on_menu(move |pt| {
+                let _ = this.show_media_menu(pt);
+            });
+        }
+
         // メニュー項目（有効なもの）をアクティブ側ペインへのコマンド実行に配線する。
         for (&id, &cmd) in self.menu_cmds.iter() {
             let this = self.clone();
@@ -1088,8 +1096,9 @@ impl MainWindow {
                     return Ok(());
                 }
                 ActiveView::Media => {
+                    let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
                     let shift = w::GetAsyncKeyState(co::VK::SHIFT);
-                    let _ = this.media_key(p.vkey_code.raw(), shift);
+                    let _ = this.media_key(p.vkey_code.raw(), ctrl, shift);
                     return Ok(());
                 }
                 ActiveView::None => {}
