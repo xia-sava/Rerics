@@ -310,9 +310,13 @@ impl MainWindow {
         let idx = roots
             .iter()
             .position(|r| Some(r.to_uppercase()) == cur)
-            .unwrap_or(0) as isize;
-        let n = roots.len() as isize;
-        let next = roots[((idx + delta).rem_euclid(n)) as usize].clone();
+            .unwrap_or(0);
+        // 準備未了（空の光学/リムーバブル・切断ネットワーク等）は巡回対象から外す。
+        let Some(next) = next_ready_index(roots.len(), idx, delta, |i| drive_ready(&roots[i]))
+        else {
+            return Ok(());
+        };
+        let next = roots[next].clone();
         self.go_to_drive(is_left, &next)
     }
 
@@ -465,5 +469,41 @@ impl MainWindow {
             }
         }
         Ok(())
+    }
+}
+
+/// `roots` を `delta`（+1/-1）方向に巡回し、`cur` 以外で最初に `ready` を満たす index を返す。
+/// 他に対象が無ければ（全て未了・ドライブが1つだけ等）None。
+fn next_ready_index(n: usize, cur: usize, delta: isize, ready: impl Fn(usize) -> bool) -> Option<usize> {
+    (1..n)
+        .map(|step| (cur as isize + delta * step as isize).rem_euclid(n as isize) as usize)
+        .find(|&i| ready(i))
+}
+
+/// ドライブのルートが今アクセス可能か（容量取得の成否で判定）。空の光学/リムーバブルや
+/// 切断ネットワークは失敗＝準備未了とみなす。
+fn drive_ready(root: &str) -> bool {
+    let mut free = 0u64;
+    let mut total = 0u64;
+    w::GetDiskFreeSpaceEx(Some(root), Some(&mut free), Some(&mut total), None).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_ready_index;
+
+    #[test]
+    fn skips_not_ready_in_both_directions() {
+        // 4 ドライブ、index 1 と 3 が未了（0 と 2 のみ ready）。
+        let ready = |i: usize| i == 0 || i == 2;
+        assert_eq!(next_ready_index(4, 0, 1, ready), Some(2)); // 0→(1飛ばし)→2
+        assert_eq!(next_ready_index(4, 0, -1, ready), Some(2)); // 0→(3飛ばし・巡回)→2
+        assert_eq!(next_ready_index(4, 2, 1, ready), Some(0)); // 2→(3飛ばし)→0
+    }
+
+    #[test]
+    fn none_when_no_other_ready() {
+        assert_eq!(next_ready_index(3, 0, 1, |i| i == 0), None); // 自分だけ ready
+        assert_eq!(next_ready_index(1, 0, 1, |_| true), None); // ドライブ1つだけ
     }
 }
