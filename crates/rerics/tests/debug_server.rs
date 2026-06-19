@@ -894,8 +894,9 @@ fn nav_change_drive_dialog() {
 
     server.req("POST", "/command/ChangeDriveDialog", "").unwrap();
     let modal = wait_modal(&server);
-    assert!(modal.contains("\"kind\":\"list\""), "drive dialog should open a list: {modal}");
-    assert!(modal.contains("\"items\":[\""), "should list at least one drive: {modal}");
+    assert!(modal.contains("\"kind\":\"drive\""), "drive dialog should open the drive selector: {modal}");
+    assert!(modal.contains("\"rows\":[["), "should list at least one drive row: {modal}");
+    assert!(modal.contains(&format!("\"{drive}:\"")), "should list the current drive: {modal}");
 
     // 既定選択（現在ドライブ）のまま OK。
     server.req("POST", "/modal/command/ok", "").unwrap();

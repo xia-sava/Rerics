@@ -151,6 +151,17 @@ impl MainWindow {
     /// `POST /modal/select/<index>`：リスト選択モーダルの選択行を設定する。
     #[cfg(feature = "debug-server")]
     pub(crate) fn debug_modal_select(&self, index: usize) -> debug_server::Response {
+        // 多列 ListView モーダルはフックで選択する。
+        let used = debug_server::modal_registry::with_top(|t| match t.and_then(|e| e.list_view.as_ref()) {
+            Some(h) => {
+                (h.select)(index);
+                true
+            }
+            None => false,
+        });
+        if used {
+            return debug_server::Response::Json(self.debug_state_value().to_string());
+        }
         let Some(modal) = self.debug_modal_hwnd() else {
             return debug_server::Response::BadRequest("no modal open".into());
         };
@@ -656,15 +667,25 @@ impl MainWindow {
                 } else {
                     serde_json::Value::Null
                 };
-                // リスト選択モーダルなら現在の選択を実コントロールから読む。
-                let selected = if e.items.is_empty() {
-                    e.selected
-                } else {
-                    let m = unsafe { w::HWND::from_ptr(e.modal_ptr as *mut std::ffi::c_void) };
-                    Self::debug_modal_listbox(&m)
-                        .and_then(|l| unsafe { l.SendMessage(w::msg::lb::GetCurSel {}) })
-                        .map(|n| n as usize)
-                        .unwrap_or(e.selected)
+                // 多列 ListView はフックから行・選択をライブで読む（プログレッシブ更新も反映）。
+                // 単列 ListBox は実コントロールから選択を読む。それ以外は静的値。
+                let (rows, headers, selected) = match &e.list_view {
+                    Some(h) => {
+                        let (rows, sel) = (h.read)();
+                        (rows, h.headers.clone(), sel)
+                    }
+                    None => {
+                        let selected = if e.items.is_empty() {
+                            e.selected
+                        } else {
+                            let m = unsafe { w::HWND::from_ptr(e.modal_ptr as *mut std::ffi::c_void) };
+                            Self::debug_modal_listbox(&m)
+                                .and_then(|l| unsafe { l.SendMessage(w::msg::lb::GetCurSel {}) })
+                                .map(|n| n as usize)
+                                .unwrap_or(e.selected)
+                        };
+                        (Vec::new(), Vec::new(), selected)
+                    }
                 };
                 json!({
                     "kind": e.kind,
@@ -673,6 +694,8 @@ impl MainWindow {
                     "has_input": e.has_input,
                     "input": input,
                     "items": e.items,
+                    "rows": rows,
+                    "headers": headers,
                     "selected": selected,
                     "buttons": e.buttons.iter().map(|(l, id)| json!({ "label": l, "id": id })).collect::<Vec<_>>(),
                 })

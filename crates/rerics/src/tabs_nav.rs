@@ -1,7 +1,9 @@
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
-use winsafe::{self as w, co, prelude::*};
-use rerics_core::{Location, MacroAbort, MacroCtx, expand_macros};
-use crate::{ActiveView, DialogMacroHost, MainWindow, TabSnapshot, dialog, drive_info_text, join_inner_path};
+use std::rc::Rc;
+use winsafe::{self as w, co, gui, prelude::*};
+use rerics_core::{Location, MacroAbort, MacroCtx, expand_macros, format_size};
+use crate::{ActiveView, DialogMacroHost, MainWindow, TabSnapshot, dialog, join_inner_path};
 
 impl MainWindow {
     /// 指定 index のタブへ切替える（範囲外・現在と同じなら何もしない）。
@@ -333,8 +335,9 @@ impl MainWindow {
         self.go_to_drive(is_left, &root)
     }
 
-    /// ドライブ一覧（容量つき）から選んでそのルートへ移動する。容量取得は未了ドライブで
-    /// 固まりうるため別スレッドで集め、集まってから UI で一覧表示する（UI を固めない）。
+    /// ドライブ一覧（多列）から選んでそのルートへ移動する。一覧はドライブ名・種類だけ
+    /// 即座に出し、ボリューム名・容量（取得が未了ドライブで遅い）は各ドライブを別スレッドで
+    /// probe して帰った順に各セルへ後追いで埋める（押した瞬間に出て、UI は固まらない）。
     pub(crate) fn change_drive_dialog(&self, is_left: bool) -> w::AnyResult<()> {
         let roots = w::GetLogicalDriveStrings().unwrap_or_default();
         if roots.is_empty() {
@@ -351,40 +354,241 @@ impl MainWindow {
             .iter()
             .position(|r| Some(r.to_uppercase()) == cur)
             .unwrap_or(0);
-        let roots_work = roots.clone();
-        self.spawn_job(
-            move || {
-                roots_work
-                    .iter()
-                    .map(|r| {
-                        let info = drive_info_text(Path::new(r));
-                        if info.is_empty() { r.clone() } else { info }
-                    })
-                    .collect::<Vec<String>>()
-            },
-            move |mw, labels| mw.show_drive_dialog(is_left, roots, labels, initial),
-        );
-        Ok(())
-    }
 
-    /// 収集済みのドライブラベルから選び、そのルートへ移動する（ジョブ完了時の UI 側処理）。
-    fn show_drive_dialog(
-        &self,
-        is_left: bool,
-        roots: Vec<String>,
-        labels: Vec<String>,
-        initial: usize,
-    ) -> w::AnyResult<()> {
+        let wnd = gui::WindowModal::new(gui::WindowModalOpts {
+            title: "ドライブの選択",
+            size: gui::dpi(472, 320),
+            style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
+            process_dlg_msgs: true,
+            ..Default::default()
+        });
+        let list = gui::ListView::<()>::new(
+            &wnd,
+            gui::ListViewOpts {
+                position: gui::dpi(12, 12),
+                size: gui::dpi(448, 252),
+                // 1 行だけ選べる単一選択。既定（REPORT/NOSORTHEADER/SHOWSELALWAYS）に追加する。
+                control_style: co::LVS::REPORT
+                    | co::LVS::NOSORTHEADER
+                    | co::LVS::SHOWSELALWAYS
+                    | co::LVS::SINGLESEL,
+                control_ex_style: co::LVS_EX::FULLROWSELECT,
+                ..Default::default()
+            },
+        );
+        let ok = gui::Button::new(
+            &wnd,
+            gui::ButtonOpts {
+                text: "OK",
+                control_style: co::BS::DEFPUSHBUTTON,
+                ctrl_id: 1,
+                position: gui::dpi(284, 278),
+                width: gui::dpi_x(80),
+                height: gui::dpi_y(26),
+                ..Default::default()
+            },
+        );
+        let cancel = gui::Button::new(
+            &wnd,
+            gui::ButtonOpts {
+                text: "中止(&S)",
+                ctrl_id: 2,
+                position: gui::dpi(372, 278),
+                width: gui::dpi_x(86),
+                height: gui::dpi_y(26),
+                ..Default::default()
+            },
+        );
+
+        let result: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        // モーダルが閉じた後に届く遅延 fill を捨てるための生存フラグ。
+        let alive = Rc::new(Cell::new(true));
+        // probe 中の行（true）。ボリューム列のスピナー表示に使う（帰ったら false）。
+        let pending = Rc::new(RefCell::new(vec![false; roots.len()]));
+        let spin_frame = Rc::new(Cell::new(0usize));
+
+        {
+            let list = list.clone();
+            let roots_c = roots.clone();
+            let me = self.clone();
+            let alive_c = alive.clone();
+            let pending_c = pending.clone();
+            wnd.on().wm_create(move |_| {
+                for (head, width) in [
+                    ("ドライブ", 64),
+                    ("ボリューム", 150),
+                    ("種類", 104),
+                    ("空き容量", 112),
+                    ("合計容量", 112),
+                ] {
+                    list.cols().add(head, gui::dpi_x(width))?;
+                }
+                // A/B のフロッピーは無駄に回さないため名前のみ・probe しない（原作準拠）。
+                for r in &roots_c {
+                    let ty = if is_ab_floppy(r) { "" } else { drive_type_label(r) };
+                    list.items()
+                        .add(&[drive_letter(r), String::new(), ty.to_owned(), String::new(), String::new()], None, ())?;
+                }
+                if let Some(it) = list.items().iter().nth(initial) {
+                    it.select(true)?;
+                    it.focus()?;
+                }
+                list.hwnd().SetFocus();
+                for (i, r) in roots_c.iter().enumerate() {
+                    if is_ab_floppy(r) {
+                        continue;
+                    }
+                    pending_c.borrow_mut()[i] = true;
+                    let root = r.clone();
+                    let list2 = list.clone();
+                    let alive2 = alive_c.clone();
+                    let pending2 = pending_c.clone();
+                    me.spawn_job(
+                        move || probe_drive_info(&root),
+                        move |_mw, (vol, free, total)| {
+                            pending2.borrow_mut()[i] = false;
+                            if alive2.get() {
+                                if let Some(it) = list2.items().iter().nth(i) {
+                                    let _ = it.set_text(1, &vol);
+                                    let _ = it.set_text(3, &free);
+                                    let _ = it.set_text(4, &total);
+                                }
+                            }
+                            Ok(())
+                        },
+                    );
+                }
+                // ボリューム取得中の行に回すスピナー（モーダル窓ローカルのタイマ）。
+                if let Ok(modal) = list.hwnd().GetParent() {
+                    let _ = modal.SetTimer(SPIN_TIMER_ID, 110, None);
+                }
+                #[cfg(feature = "debug-server")]
+                {
+                    let modal_ptr = list.hwnd().GetParent().map(|h| h.ptr() as isize).unwrap_or(0);
+                    let list_r = list.clone();
+                    let list_s = list.clone();
+                    crate::debug_server::modal_registry::push_list_view(
+                        "drive",
+                        "ドライブの選択",
+                        modal_ptr,
+                        vec![("OK".to_owned(), 1u16), ("中止(&S)".to_owned(), 2u16)],
+                        crate::debug_server::modal_registry::ListViewHooks {
+                            headers: ["ドライブ", "ボリューム", "種類", "空き容量", "合計容量"]
+                                .iter()
+                                .map(|s| s.to_string())
+                                .collect(),
+                            read: Box::new(move || {
+                                let rows = list_r
+                                    .items()
+                                    .iter()
+                                    .map(|it| (0..5u32).map(|c| it.text(c)).collect())
+                                    .collect();
+                                let sel = list_r.items().iter().position(|it| it.is_selected()).unwrap_or(0);
+                                (rows, sel)
+                            }),
+                            select: Box::new(move |idx| {
+                                if let Some(it) = list_s.items().iter().nth(idx) {
+                                    let _ = it.select(true);
+                                    let _ = it.focus();
+                                }
+                            }),
+                        },
+                    );
+                }
+                Ok(0)
+            });
+        }
+        {
+            // probe 中の行のボリューム列でスピナーを回す。
+            let list2 = list.clone();
+            let pending2 = pending.clone();
+            let frame2 = spin_frame.clone();
+            wnd.on().wm_timer(SPIN_TIMER_ID, move || {
+                let f = frame2.get();
+                frame2.set(f.wrapping_add(1));
+                let glyph = SPINNER[f % SPINNER.len()];
+                for (i, busy) in pending2.borrow().iter().enumerate() {
+                    if *busy {
+                        if let Some(it) = list2.items().iter().nth(i) {
+                            let _ = it.set_text(1, glyph);
+                        }
+                    }
+                }
+                Ok(())
+            });
+        }
+        {
+            // ドライブ文字キーで、その行が一意に決まればそのまま選択＋移動（原作準拠）。
+            let result = result.clone();
+            let list2 = list.clone();
+            let wnd2 = wnd.clone();
+            list.on().lvn_key_down(move |p| {
+                let raw = p.wVKey.raw();
+                if (0x41..=0x5A).contains(&raw) {
+                    let ch = raw as u8 as char;
+                    let mut hit = None;
+                    let mut multi = false;
+                    for (i, it) in list2.items().iter().enumerate() {
+                        if it.text(0).to_uppercase().starts_with(ch) {
+                            if hit.is_some() {
+                                multi = true;
+                                break;
+                            }
+                            hit = Some(i);
+                        }
+                    }
+                    if let (Some(idx), false) = (hit, multi) {
+                        *result.borrow_mut() = Some(idx);
+                        wnd2.close();
+                    }
+                }
+                Ok(())
+            });
+        }
+        {
+            let result = result.clone();
+            let wnd2 = wnd.clone();
+            list.on().lvn_item_activate(move |p| {
+                if p.iItem >= 0 {
+                    *result.borrow_mut() = Some(p.iItem as usize);
+                }
+                wnd2.close();
+                Ok(())
+            });
+        }
+        {
+            let result = result.clone();
+            let list2 = list.clone();
+            let wnd2 = wnd.clone();
+            ok.on().bn_clicked(move || {
+                if let Some(idx) = list2.items().iter().position(|it| it.is_selected()) {
+                    *result.borrow_mut() = Some(idx);
+                }
+                wnd2.close();
+                Ok(())
+            });
+        }
+        {
+            let wnd2 = wnd.clone();
+            cancel.on().bn_clicked(move || {
+                wnd2.close();
+                Ok(())
+            });
+        }
+
         self.in_dialog.set(true);
-        let sel = dialog::list_box(&self.wnd, "ドライブの選択", &labels, initial);
+        let _ = wnd.show_modal(&self.wnd);
         self.in_dialog.set(false);
-        let Some(idx) = sel else {
-            return Ok(());
-        };
-        let Some(root) = roots.get(idx).cloned() else {
-            return Ok(());
-        };
-        self.go_to_drive(is_left, &root)
+        #[cfg(feature = "debug-server")]
+        crate::debug_server::modal_registry::pop();
+        alive.set(false);
+        let _ = (ok, cancel, list);
+
+        let sel = *result.borrow();
+        if let Some(root) = sel.and_then(|idx| roots.get(idx).cloned()) {
+            self.go_to_drive(is_left, &root)?;
+        }
+        Ok(())
     }
 
     /// 登録ディレクトリの一覧から選んでそこへジャンプする。空なら情報ログのみ。
@@ -507,6 +711,49 @@ fn drive_ready(root: &str) -> bool {
     let mut free = 0u64;
     let mut total = 0u64;
     w::GetDiskFreeSpaceEx(Some(root), Some(&mut free), Some(&mut total), None).is_ok()
+}
+
+/// ドライブ probe 中にボリューム列で回すスピナーのフレーム（点字パターン）。
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// ドライブ選択ダイアログのスピナー用タイマ ID（モーダル窓ローカルなので衝突しない）。
+const SPIN_TIMER_ID: usize = 0xD2;
+
+/// ルート文字列（`C:\`）のドライブ表記（`C:`）。
+fn drive_letter(root: &str) -> String {
+    root.trim_end_matches(['\\', '/']).to_uppercase()
+}
+
+/// ドライブ種別の表示ラベル（メディアに触れない `GetDriveType` なので即時に得られる）。
+fn drive_type_label(root: &str) -> &'static str {
+    match w::GetDriveType(Some(root)) {
+        co::DRIVE::FIXED => "固定",
+        co::DRIVE::REMOVABLE => "リムーバブル",
+        co::DRIVE::CDROM => "CD-ROM",
+        co::DRIVE::REMOTE => "ネットワーク",
+        co::DRIVE::RAMDISK => "RAM ディスク",
+        _ => "",
+    }
+}
+
+/// A: / B: のリムーバブル（フロッピー）か。無駄にドライブを回さないよう probe 対象から外す。
+fn is_ab_floppy(root: &str) -> bool {
+    matches!(root.chars().next().map(|c| c.to_ascii_uppercase()), Some('A') | Some('B'))
+        && w::GetDriveType(Some(root)) == co::DRIVE::REMOVABLE
+}
+
+/// ドライブの遅い情報（ボリューム名・空き/合計容量）を probe する（ワーカースレッドで実行）。
+/// 準備未了（空の光学/リムーバブル等）では各取得が失敗するので、「probe は完了したが
+/// 情報なし」と分かるよう各セルを `--` で返す（空欄＝未取得 と区別する）。
+fn probe_drive_info(root: &str) -> (String, String, String) {
+    let mut free = 0u64;
+    let mut total = 0u64;
+    if w::GetDiskFreeSpaceEx(Some(root), Some(&mut free), Some(&mut total), None).is_err() {
+        let dash = || "--".to_owned();
+        return (dash(), dash(), dash());
+    }
+    let mut volume = String::new();
+    let _ = w::GetVolumeInformation(Some(root), Some(&mut volume), None, None, None, None);
+    (volume, format_size(free), format_size(total))
 }
 
 #[cfg(test)]
