@@ -63,9 +63,10 @@ pub struct Pane {
     back: Vec<Location>,
     /// 進む履歴（戻った後にだけ積まれる。新しい移動で破棄）。
     forward: Vec<Location>,
-    /// パス表示文字列 → そのディレクトリで最後にカーソルがあったファイル名。
-    /// ディレクトリへ再び入った時にカーソル位置を復元する（セッション内のみ保持）。
-    cursor_memory: std::collections::HashMap<String, String>,
+    /// （パス表示文字列, そのディレクトリで最後にカーソルがあったファイル名）を
+    /// 新しい順で末尾に持つ。ディレクトリへ再び入った時にカーソル位置を復元する。
+    /// 上限を超えると先頭（古い方）から捨てる（セッション内のみ保持）。
+    cursor_memory: Vec<(String, String)>,
 }
 
 /// 移動履歴の上限（これを超えると古い方から捨てる）。
@@ -80,7 +81,7 @@ impl Pane {
             loc: Location::Real(abs),
             back: Vec::new(),
             forward: Vec::new(),
-            cursor_memory: std::collections::HashMap::new(),
+            cursor_memory: Vec::new(),
         }
     }
 
@@ -91,7 +92,7 @@ impl Pane {
             loc: Location::parse(display),
             back: Vec::new(),
             forward: Vec::new(),
-            cursor_memory: std::collections::HashMap::new(),
+            cursor_memory: Vec::new(),
         }
     }
 
@@ -199,18 +200,30 @@ impl Pane {
         false
     }
 
-    /// 現在地で離れる時のカーソルファイル名を覚える（移動の直前に呼ぶ）。
-    /// 空名・親（".."）は記録しない。
-    pub fn remember_cursor(&mut self, filename: &str) {
-        if filename.is_empty() || filename == ".." {
+    /// 現在地で離れる時のカーソルファイル名を覚える（移動の直前に呼ぶ）。空名・親（".."）・
+    /// `limit == 0` は記録しない。同じパスの既存記録は最新の位置へ更新し、件数が `limit` を
+    /// 超えたら古い方から捨てる。
+    pub fn remember_cursor(&mut self, filename: &str, limit: usize) {
+        if filename.is_empty() || filename == ".." || limit == 0 {
             return;
         }
-        self.cursor_memory.insert(self.loc.loc_display(), filename.to_owned());
+        let key = self.loc.loc_display();
+        if let Some(pos) = self.cursor_memory.iter().position(|(k, _)| *k == key) {
+            self.cursor_memory.remove(pos);
+        }
+        self.cursor_memory.push((key, filename.to_owned()));
+        while self.cursor_memory.len() > limit {
+            self.cursor_memory.remove(0);
+        }
     }
 
     /// 指定パス表示に対して覚えているカーソルファイル名を返す（無ければ None）。
     pub fn recalled_cursor(&self, path_display: &str) -> Option<&str> {
-        self.cursor_memory.get(path_display).map(|s| s.as_str())
+        self.cursor_memory
+            .iter()
+            .rev()
+            .find(|(k, _)| k == path_display)
+            .map(|(_, v)| v.as_str())
     }
 
     /// 移動履歴（新しい順・重複除去）を表示文字列で返す。同じ場所を何度往復しても
@@ -320,13 +333,32 @@ mod tests {
     fn pane_cursor_memory_remembers_and_recalls() {
         let mut p = Pane::open(env!("CARGO_MANIFEST_DIR"));
         let here = p.loc_display();
-        p.remember_cursor("Cargo.toml");
+        p.remember_cursor("Cargo.toml", 100);
         assert_eq!(p.recalled_cursor(&here), Some("Cargo.toml"));
-        // 空名・親（".."）は記録しない（既存の記憶を上書きしない）。
-        p.remember_cursor("");
-        p.remember_cursor("..");
+        // 空名・親（".."）・limit==0 は記録しない（既存の記憶を上書きしない）。
+        p.remember_cursor("", 100);
+        p.remember_cursor("..", 100);
+        p.remember_cursor("other.txt", 0);
         assert_eq!(p.recalled_cursor(&here), Some("Cargo.toml"));
         // 未知パスは None。
         assert_eq!(p.recalled_cursor("Z:\\nope"), None);
+    }
+
+    #[test]
+    fn pane_cursor_memory_evicts_oldest_over_limit() {
+        let mut p = Pane::open(env!("CARGO_MANIFEST_DIR"));
+        let manifest = p.loc_display();
+        p.remember_cursor("a", 2);
+        assert!(p.enter("src", true), "src へ入れる");
+        let src = p.loc_display();
+        p.remember_cursor("b", 2);
+        assert!(p.to_parent().is_some(), "親（manifest）へ戻れる");
+        assert!(p.to_parent().is_some(), "さらに親（crates）へ");
+        let crates = p.loc_display();
+        p.remember_cursor("c", 2);
+        // 上限 2：最も古い manifest が捨てられ、新しい src / crates は残る。
+        assert_eq!(p.recalled_cursor(&manifest), None, "古い記録は破棄される");
+        assert_eq!(p.recalled_cursor(&src), Some("b"));
+        assert_eq!(p.recalled_cursor(&crates), Some("c"));
     }
 }

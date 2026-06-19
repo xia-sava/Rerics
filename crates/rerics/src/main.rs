@@ -1096,14 +1096,22 @@ impl MainWindow {
 
     /// ディレクトリ移動の直前に呼ぶ。現在カーソル下のファイル名を Pane に覚えさせ、
     /// 同じパスへ戻った時に [`reload_side_navigated`] がそこへカーソルを復元できるようにする。
+    /// カーソル位置記憶がオフ（`cursor.history`）なら何もしない。
     fn remember_cursor_for_nav(&self, is_left: bool) {
+        let (history, limit) = {
+            let cfg = self.config.borrow();
+            (cfg.cursor.history, cfg.cursor.history_count)
+        };
+        if !history {
+            return;
+        }
         let name = {
             let st = self.view(is_left).state();
             let s = st.borrow();
             s.items.get(s.cursor).map(|it| it.name.clone())
         };
         if let Some(name) = name {
-            self.pane(is_left).borrow_mut().remember_cursor(&name);
+            self.pane(is_left).borrow_mut().remember_cursor(&name, limit);
         }
     }
 
@@ -1146,8 +1154,8 @@ impl MainWindow {
             None => items,
         };
         let path = self.pane(is_left).borrow().loc_display();
-        // ディレクトリ移動（Recall）のときだけ、このパスで覚えたカーソル位置を引く。
-        let recalled = if matches!(mode, ReloadCursor::Recall) {
+        // ディレクトリ移動（Recall）かつ記憶オンのときだけ、このパスで覚えた位置を引く。
+        let recalled = if matches!(mode, ReloadCursor::Recall) && self.config.borrow().cursor.history {
             self.pane(is_left)
                 .borrow()
                 .recalled_cursor(&path)
