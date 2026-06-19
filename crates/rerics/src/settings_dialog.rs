@@ -961,30 +961,48 @@ fn build_cursor(parent: &gui::WindowControl, shared: &Rc<Shared>) {
     }
 }
 
-/// 「画像ビューア」ページ（マウスホイールの動作）を構築する。編集は即 `Shared` へ反映する。
-fn build_image(parent: &gui::WindowControl, shared: &Rc<Shared>) {
+/// ラベル付きのグループ枠を置く（Win32 の BS_GROUPBOX ボタン）。
+fn group_box(parent: &(impl GuiParent + 'static), text: &str, x: i32, y: i32, cx: i32, cy: i32) {
+    let _ = gui::Button::new(
+        parent,
+        gui::ButtonOpts {
+            text,
+            control_style: co::BS::GROUPBOX,
+            position: gui::dpi(x, y),
+            width: gui::dpi_x(cx),
+            height: gui::dpi_y(cy),
+            ..Default::default()
+        },
+    );
+}
+
+/// 「ビューア」ページ。画像／テキストでセクション分けし、各設定を即 `Shared` へ反映する。
+/// テキストセクションは枠のみ（設定項目は今後ここへ追加していく）。
+fn build_viewer(parent: &gui::WindowControl, shared: &Rc<Shared>) {
     let wheel = shared.cfg.borrow().image.wheel;
-    label(parent, "マウスホイールの動作", 16, 16, 200);
+
+    // 画像セクション。
+    group_box(parent, "画像", 12, 8, 338, 76);
+    label(parent, "マウスホイール", 28, 38, 110);
     let group = gui::RadioGroup::new(
         parent,
         &[
             gui::RadioButtonOpts {
-                text: "前後の画像へ送る(&N)",
-                position: gui::dpi(28, 42),
-                size: gui::dpi(280, 20),
+                text: "前後送り(&N)",
+                position: gui::dpi(142, 36),
+                size: gui::dpi(104, 20),
                 selected: wheel == WheelAction::Navigate,
                 ..Default::default()
             },
             gui::RadioButtonOpts {
-                text: "拡大／縮小する(&Z)",
-                position: gui::dpi(28, 66),
-                size: gui::dpi(280, 20),
+                text: "拡大／縮小(&Z)",
+                position: gui::dpi(248, 36),
+                size: gui::dpi(118, 20),
                 selected: wheel == WheelAction::Zoom,
                 ..Default::default()
             },
         ],
     );
-    label(parent, "（送り：ホイール上＝前の画像・下＝次の画像。ズームは + / - キーでも行えます）", 16, 100, 360);
     {
         let shared = shared.clone();
         let group2 = group.clone();
@@ -996,6 +1014,9 @@ fn build_image(parent: &gui::WindowControl, shared: &Rc<Shared>) {
             Ok(())
         });
     }
+
+    // テキストセクション（設定項目は今後追加）。
+    group_box(parent, "テキスト", 12, 96, 338, 76);
 }
 
 /// ショートカット入力を先頭1文字へ丸める（空白のみ/空は空文字）。
@@ -1418,7 +1439,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     build_appearance(&pane_appearance, &shared, &preview);
     build_layout(&pane_layout, &shared, &preview);
     build_cursor(&pane_cursor, &shared);
-    build_image(&pane_image, &shared);
+    build_viewer(&pane_image, &shared);
     let registered = RegisteredPane::new(&pane_registered, &shared);
     let keys = KeysPane::new(&pane_keys, &shared);
 
@@ -1503,7 +1524,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
             if let Ok(behavior) = nav.items().add_root("動作", None, 3) {
                 let _ = behavior.add_child("カーソル", None, 3);
                 let _ = behavior.add_child("登録ディレクトリ", None, 4);
-                let _ = behavior.add_child("画像ビューア", None, 6);
+                let _ = behavior.add_child("ビューア", None, 6);
                 let _ = behavior.expand(true);
             }
             let _ = nav.items().add_root("キー", None, 5);
