@@ -6,7 +6,29 @@
 //! ピクセルバッファを GDI で描画するだけにする。フィット倍率・回転・配置の幾何計算も
 //! 純関数としてここに置き、テストで固める。
 
+use std::io::Cursor;
 use std::time::Duration;
+
+use image::ImageDecoder;
+
+/// バイト列をデコードし、EXIF の Orientation に従って正立させた `DynamicImage` を返す。
+///
+/// JPEG/TIFF/WebP は decoder が EXIF Orientation を読む（他形式は無変換）。回転メタ付きの
+/// 写真（スマホの縦撮り等）を撮影時の向きへ補正する。decoder 経由が失敗した場合は素の
+/// `load_from_memory` にフォールバックする（向き補正は諦めるが画像は出す）。
+fn decode_oriented(bytes: &[u8]) -> Option<image::DynamicImage> {
+    fn oriented(bytes: &[u8]) -> Option<image::DynamicImage> {
+        let reader = image::ImageReader::new(Cursor::new(bytes))
+            .with_guessed_format()
+            .ok()?;
+        let mut decoder = reader.into_decoder().ok()?;
+        let orientation = decoder.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
+        let mut img = image::DynamicImage::from_decoder(decoder).ok()?;
+        img.apply_orientation(orientation);
+        Some(img)
+    }
+    oriented(bytes).or_else(|| image::load_from_memory(bytes).ok())
+}
 
 /// デコード済み 1 フレーム。`rgba` は行優先・トップダウン・1 画素 4 バイト（R,G,B,A）。
 pub struct Frame {
@@ -68,9 +90,9 @@ pub struct StillImage {
 }
 
 impl StillImage {
-    /// バイト列をデコードする（形式はマジックバイトから自動判別）。失敗時は `None`。
+    /// バイト列をデコードする（形式はマジックバイトから自動判別・EXIF Orientation で正立補正）。失敗時は `None`。
     pub fn load(bytes: &[u8]) -> Option<Self> {
-        let img = image::load_from_memory(bytes).ok()?;
+        let img = decode_oriented(bytes)?;
         let rgba = img.to_rgba8();
         let (width, height) = rgba.dimensions();
         if width == 0 || height == 0 {
@@ -290,7 +312,7 @@ pub fn load_image(bytes: &[u8]) -> Option<Box<dyn FrameSource>> {
 /// サムネイル用：バイト列をデコードし、長辺が `max` px 以内に収まるよう縮小した RGBA を返す
 /// （アスペクト比保持）。リスト一覧の小プレビュー生成に使う。失敗時は `None`。
 pub fn decode_thumbnail(bytes: &[u8], max: u32) -> Option<(u32, u32, Vec<u8>)> {
-    let img = image::load_from_memory(bytes).ok()?;
+    let img = decode_oriented(bytes)?;
     let thumb = img.thumbnail(max.max(1), max.max(1));
     let rgba = thumb.to_rgba8();
     let (w, h) = rgba.dimensions();
@@ -660,6 +682,77 @@ mod tests {
             .unwrap();
         let still = load_image(png.get_ref()).unwrap();
         assert!(!still.is_animated());
+    }
+
+    /// `w`×`h` の単色グラデ JPEG を作る。
+    fn encode_jpeg(w: u32, h: u32) -> Vec<u8> {
+        let img = image::RgbImage::from_fn(w, h, |x, _| image::Rgb([(x * 20) as u8, 100, 150]));
+        let mut buf = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
+            .unwrap();
+        buf
+    }
+
+    /// JPEG の SOI 直後に Orientation タグだけの最小 EXIF(APP1) を差し込む。
+    fn with_exif_orientation(jpeg: &[u8], orient: u8) -> Vec<u8> {
+        // TIFF（リトルエンディアン）：ヘッダ→IFD0（Orientation 1件）。
+        let tiff: [u8; 26] = [
+            0x49, 0x49, 0x2A, 0x00, // "II", 42
+            0x08, 0x00, 0x00, 0x00, // IFD0 offset = 8
+            0x01, 0x00, // エントリ数 1
+            0x12, 0x01, // tag 0x0112 Orientation
+            0x03, 0x00, // type SHORT
+            0x01, 0x00, 0x00, 0x00, // count 1
+            orient, 0x00, 0x00, 0x00, // value
+            0x00, 0x00, 0x00, 0x00, // next IFD = 0
+        ];
+        let mut payload = b"Exif\0\0".to_vec();
+        payload.extend_from_slice(&tiff);
+        let seg_len = (payload.len() + 2) as u16; // length は自身2バイトを含む
+        let mut out = jpeg[0..2].to_vec(); // SOI
+        out.extend_from_slice(&[0xFF, 0xE1, (seg_len >> 8) as u8, (seg_len & 0xFF) as u8]);
+        out.extend_from_slice(&payload);
+        out.extend_from_slice(&jpeg[2..]);
+        out
+    }
+
+    #[test]
+    fn exif_orientation_uprights_still_image() {
+        // 横長 8×4。
+        let jpeg = encode_jpeg(8, 4);
+        // EXIF 無し → 寸法そのまま。
+        let plain = StillImage::load(&jpeg).unwrap();
+        assert_eq!(plain.dimensions(), (8, 4));
+        // Orientation=1（無変換）→ そのまま。
+        let id = StillImage::load(&with_exif_orientation(&jpeg, 1)).unwrap();
+        assert_eq!(id.dimensions(), (8, 4));
+        // Orientation=6（時計回り90°）→ 縦長 4×8 に正立。
+        let rot = StillImage::load(&with_exif_orientation(&jpeg, 6)).unwrap();
+        assert_eq!(rot.dimensions(), (4, 8));
+        // Orientation=8（反時計回り90°）→ 同じく 4×8。
+        let rot8 = StillImage::load(&with_exif_orientation(&jpeg, 8)).unwrap();
+        assert_eq!(rot8.dimensions(), (4, 8));
+    }
+
+    #[test]
+    fn exif_orientation_uprights_thumbnail() {
+        // サムネイルも正立する（縦撮り写真のサムネが横倒しにならない）。
+        // thumbnail は拡縮するので、寸法そのものでなく向き（縦長/横長）で判定する。
+        let jpeg = encode_jpeg(8, 4); // 元は横長。
+        let (w0, h0, _) = decode_thumbnail(&jpeg, 16).unwrap();
+        assert!(w0 > h0, "EXIF 無し＝横長のまま ({w0}x{h0})");
+        let (w, h, _) = decode_thumbnail(&with_exif_orientation(&jpeg, 6), 16).unwrap();
+        assert!(h > w, "Orientation=6 で縦長に正立 ({w}x{h})");
+    }
+
+    #[test]
+    fn decode_oriented_falls_back_on_broken_exif() {
+        // 壊れた Orientation 値（範囲外）でも素デコードへフォールバックして画像は出す。
+        let jpeg = encode_jpeg(8, 4);
+        let broken = with_exif_orientation(&jpeg, 99);
+        let img = StillImage::load(&broken).unwrap();
+        assert_eq!(img.dimensions(), (8, 4)); // 補正されないが寸法は元のまま
     }
 
     #[test]
