@@ -982,7 +982,7 @@ fn build_viewer(parent: &gui::WindowControl, shared: &Rc<Shared>) {
     let wheel = shared.cfg.borrow().image.wheel;
 
     // 画像セクション。
-    group_box(parent, "画像", 12, 8, 338, 76);
+    group_box(parent, "画像", 12, 8, 752, 76);
     label(parent, "マウスホイール", 28, 38, 110);
     let group = gui::RadioGroup::new(
         parent,
@@ -1016,7 +1016,7 @@ fn build_viewer(parent: &gui::WindowControl, shared: &Rc<Shared>) {
     }
 
     // テキストセクション（設定項目は今後追加）。
-    group_box(parent, "テキスト", 12, 96, 338, 76);
+    group_box(parent, "テキスト", 12, 96, 752, 76);
 }
 
 /// ショートカット入力を先頭1文字へ丸める（空白のみ/空は空文字）。
@@ -1411,7 +1411,8 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     let pane_cursor = make_pane(&wnd, pane_pos, pane_size); // 3
     let pane_registered = make_pane(&wnd, pane_pos, pane_size); // 4
     let pane_keys = make_pane(&wnd, pane_pos, pane_size); // 5
-    let pane_image = make_pane(&wnd, pane_pos, pane_size); // 6
+    // ビューアページはプレビューを出さないので、その領域までフル幅に広げる。
+    let pane_image = make_pane(&wnd, pane_pos, gui::dpi(776, 544)); // 6
     let panes = vec![
         pane_appearance.clone(),
         pane_colors.clone(),
