@@ -1,7 +1,9 @@
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
-use winsafe::{self as w, co, prelude::*};
-use rerics_core::{Location, MacroAbort, MacroCtx, expand_macros};
-use crate::{ActiveView, DialogMacroHost, MainWindow, TabSnapshot, dialog, drive_info_text, join_inner_path};
+use std::rc::Rc;
+use winsafe::{self as w, co, gui, prelude::*};
+use rerics_core::{Location, MacroAbort, MacroCtx, expand_macros, format_size};
+use crate::{ActiveView, DialogMacroHost, MainWindow, TabSnapshot, dialog, join_inner_path};
 
 impl MainWindow {
     /// 指定 index のタブへ切替える（範囲外・現在と同じなら何もしない）。
@@ -98,8 +100,8 @@ impl MainWindow {
         let r = self.right_pane.borrow().loc().clone();
         self.left_pane.borrow_mut().set_loc(r);
         self.right_pane.borrow_mut().set_loc(l);
-        self.reload_side_navigated(true)?;
-        self.reload_side_navigated(false)?;
+        self.reload_side_navigated_nolog(true)?;
+        self.reload_side_navigated_nolog(false)?;
         Ok(())
     }
 
@@ -203,14 +205,15 @@ impl MainWindow {
             if forward { p.go_forward() } else { p.go_back() }
         };
         if moved {
-            self.reload_side_navigated(is_left)?;
+            self.reload_side_history(is_left)?;
         }
         Ok(())
     }
 
-    /// 移動履歴の一覧から選んでそこへジャンプする。履歴が空なら情報ログのみ。
+    /// パス移動履歴（訪問ログ＝グローバル・永続・新しい順）から選んでそこへジャンプする。
+    /// 履歴が空なら情報ログのみ。原作 PathHistoryDialog 相当。
     pub(crate) fn path_history_dialog(&self, is_left: bool) -> w::AnyResult<()> {
-        let history = self.pane(is_left).borrow().history();
+        let history = rerics_core::InputHistory::load().get(rerics_core::PATH_HISTORY_KEY);
         if history.is_empty() {
             self.log.info("移動履歴がありません。");
             return Ok(());
@@ -223,8 +226,10 @@ impl MainWindow {
         };
         let loc = Location::parse(&disp);
         self.remember_cursor_for_nav(is_left);
-        if self.pane(is_left).borrow_mut().navigate(loc) {
-            self.reload_side_navigated(is_left)?;
+        let outcome = self.pane(is_left).borrow_mut().navigate_reported(loc);
+        match outcome {
+            Ok(()) => self.reload_side_navigated(is_left)?,
+            Err(e) => self.report_change_directory_error(&e),
         }
         Ok(())
     }
@@ -238,10 +243,12 @@ impl MainWindow {
         };
         let loc = Location::parse(input);
         self.remember_cursor_for_nav(is_left);
-        if self.pane(is_left).borrow_mut().navigate(loc) {
-            self.reload_side_navigated(is_left)?;
-        } else {
-            self.log.error(&format!("移動できません: {input}"));
+        // navigate_reported の RefMut はこの行で解放してから（reload が同じ pane を再借用するため）
+        // 結果を判定する。match の scrutinee に直接書くと借用が match 末尾まで延命して panic する。
+        let outcome = self.pane(is_left).borrow_mut().navigate_reported(loc);
+        match outcome {
+            Ok(()) => self.reload_side_navigated(is_left)?,
+            Err(e) => self.report_change_directory_error(&e),
         }
         Ok(())
     }
@@ -259,13 +266,20 @@ impl MainWindow {
         }
         let loc = Location::parse(input);
         self.remember_cursor_for_nav(is_left);
-        if self.pane(is_left).borrow_mut().navigate(loc) {
-            self.reload_side_navigated(is_left)?;
-        } else {
-            let line = format!("移動できません: {input}");
-            self.log.error(&line);
+        let outcome = self.pane(is_left).borrow_mut().navigate_reported(loc);
+        match outcome {
+            Ok(()) => self.reload_side_navigated(is_left)?,
+            Err(e) => self.report_change_directory_error(&e),
         }
         Ok(())
+    }
+
+    /// `ChangeDirectory` の失敗をログ＋エラーダイアログで報せる（原作 `NotExistsDirectory` /
+    /// `ChangeDirectoryError` 相当）。存在しない場合と、それ以外（権限不足等）で文言を分ける。
+    fn report_change_directory_error(&self, err: &std::io::Error) {
+        let msg = change_directory_error_message(err);
+        self.log.error(&msg);
+        dialog::message_box(&self.wnd, "ディレクトリ移動", &msg, dialog::MessageStyle::Error);
     }
 
     /// 指定ドライブのルート文字列（`C:\` 形式）へ移す共通口。カーソル履歴が有効なら、
@@ -310,9 +324,13 @@ impl MainWindow {
         let idx = roots
             .iter()
             .position(|r| Some(r.to_uppercase()) == cur)
-            .unwrap_or(0) as isize;
-        let n = roots.len() as isize;
-        let next = roots[((idx + delta).rem_euclid(n)) as usize].clone();
+            .unwrap_or(0);
+        // 準備未了（空の光学/リムーバブル・切断ネットワーク等）は巡回対象から外す。
+        let Some(next) = next_ready_index(roots.len(), idx, delta, |i| drive_ready(&roots[i]))
+        else {
+            return Ok(());
+        };
+        let next = roots[next].clone();
         self.go_to_drive(is_left, &next)
     }
 
@@ -329,19 +347,14 @@ impl MainWindow {
         self.go_to_drive(is_left, &root)
     }
 
-    /// ドライブ一覧（容量つき）から選んでそのルートへ移動する。
+    /// ドライブ一覧（多列）から選んでそのルートへ移動する。一覧はドライブ名・種類だけ
+    /// 即座に出し、ボリューム名・容量（取得が未了ドライブで遅い）は各ドライブを別スレッドで
+    /// probe して帰った順に各セルへ後追いで埋める（押した瞬間に出て、UI は固まらない）。
     pub(crate) fn change_drive_dialog(&self, is_left: bool) -> w::AnyResult<()> {
         let roots = w::GetLogicalDriveStrings().unwrap_or_default();
         if roots.is_empty() {
             return Ok(());
         }
-        let labels: Vec<String> = roots
-            .iter()
-            .map(|r| {
-                let info = drive_info_text(Path::new(r));
-                if info.is_empty() { r.clone() } else { info }
-            })
-            .collect();
         let cur = self
             .pane(is_left)
             .borrow()
@@ -353,44 +366,422 @@ impl MainWindow {
             .iter()
             .position(|r| Some(r.to_uppercase()) == cur)
             .unwrap_or(0);
-        let Some(idx) = dialog::list_box(&self.wnd, "ドライブの選択", &labels, initial) else {
-            return Ok(());
-        };
-        let Some(root) = roots.get(idx) else {
-            return Ok(());
-        };
-        self.go_to_drive(is_left, root)
+
+        let wnd = gui::WindowModal::new(gui::WindowModalOpts {
+            title: "ドライブの選択",
+            size: gui::dpi(472, 320),
+            style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
+            process_dlg_msgs: true,
+            ..Default::default()
+        });
+        let list = gui::ListView::<()>::new(
+            &wnd,
+            gui::ListViewOpts {
+                position: gui::dpi(12, 12),
+                size: gui::dpi(448, 252),
+                // 1 行だけ選べる単一選択。既定（REPORT/NOSORTHEADER/SHOWSELALWAYS）に追加する。
+                control_style: co::LVS::REPORT
+                    | co::LVS::NOSORTHEADER
+                    | co::LVS::SHOWSELALWAYS
+                    | co::LVS::SINGLESEL,
+                control_ex_style: co::LVS_EX::FULLROWSELECT,
+                ..Default::default()
+            },
+        );
+        let ok = gui::Button::new(
+            &wnd,
+            gui::ButtonOpts {
+                text: "OK",
+                control_style: co::BS::DEFPUSHBUTTON,
+                ctrl_id: 1,
+                position: gui::dpi(284, 278),
+                width: gui::dpi_x(80),
+                height: gui::dpi_y(26),
+                ..Default::default()
+            },
+        );
+        let cancel = gui::Button::new(
+            &wnd,
+            gui::ButtonOpts {
+                text: "中止(&S)",
+                ctrl_id: 2,
+                position: gui::dpi(372, 278),
+                width: gui::dpi_x(86),
+                height: gui::dpi_y(26),
+                ..Default::default()
+            },
+        );
+
+        let result: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+        // モーダルが閉じた後に届く遅延 fill を捨てるための生存フラグ。
+        let alive = Rc::new(Cell::new(true));
+        // probe 中の行（true）。ボリューム列のスピナー表示に使う（帰ったら false）。
+        let pending = Rc::new(RefCell::new(vec![false; roots.len()]));
+        let spin_frame = Rc::new(Cell::new(0usize));
+
+        {
+            let list = list.clone();
+            let roots_c = roots.clone();
+            let me = self.clone();
+            let alive_c = alive.clone();
+            let pending_c = pending.clone();
+            wnd.on().wm_create(move |_| {
+                for (head, width) in [
+                    ("ドライブ", 64),
+                    ("ボリューム", 150),
+                    ("種類", 104),
+                    ("空き容量", 112),
+                    ("合計容量", 112),
+                ] {
+                    list.cols().add(head, gui::dpi_x(width))?;
+                }
+                // A/B のフロッピーは無駄に回さないため名前のみ・probe しない（原作準拠）。
+                for r in &roots_c {
+                    let ty = if is_ab_floppy(r) { "" } else { drive_type_label(r) };
+                    list.items()
+                        .add(&[drive_letter(r), String::new(), ty.to_owned(), String::new(), String::new()], None, ())?;
+                }
+                if let Some(it) = list.items().iter().nth(initial) {
+                    it.select(true)?;
+                    it.focus()?;
+                }
+                list.hwnd().SetFocus();
+                for (i, r) in roots_c.iter().enumerate() {
+                    if is_ab_floppy(r) {
+                        continue;
+                    }
+                    pending_c.borrow_mut()[i] = true;
+                    let root = r.clone();
+                    let list2 = list.clone();
+                    let alive2 = alive_c.clone();
+                    let pending2 = pending_c.clone();
+                    me.spawn_job(
+                        move || probe_drive_info(&root),
+                        move |_mw, (vol, free, total)| {
+                            pending2.borrow_mut()[i] = false;
+                            if alive2.get() {
+                                if let Some(it) = list2.items().iter().nth(i) {
+                                    let _ = it.set_text(1, &vol);
+                                    let _ = it.set_text(3, &free);
+                                    let _ = it.set_text(4, &total);
+                                }
+                            }
+                            Ok(())
+                        },
+                    );
+                }
+                // ボリューム取得中の行に回すスピナー（モーダル窓ローカルのタイマ）。
+                if let Ok(modal) = list.hwnd().GetParent() {
+                    let _ = modal.SetTimer(SPIN_TIMER_ID, 110, None);
+                }
+                #[cfg(feature = "debug-server")]
+                {
+                    let modal_ptr = list.hwnd().GetParent().map(|h| h.ptr() as isize).unwrap_or(0);
+                    let list_r = list.clone();
+                    let list_s = list.clone();
+                    crate::debug_server::modal_registry::push_list_view(
+                        "drive",
+                        "ドライブの選択",
+                        modal_ptr,
+                        vec![("OK".to_owned(), 1u16), ("中止(&S)".to_owned(), 2u16)],
+                        crate::debug_server::modal_registry::ListViewHooks {
+                            headers: ["ドライブ", "ボリューム", "種類", "空き容量", "合計容量"]
+                                .iter()
+                                .map(|s| s.to_string())
+                                .collect(),
+                            read: Box::new(move || {
+                                let rows = list_r
+                                    .items()
+                                    .iter()
+                                    .map(|it| (0..5u32).map(|c| it.text(c)).collect())
+                                    .collect();
+                                let sel = list_r.items().iter().position(|it| it.is_selected()).unwrap_or(0);
+                                (rows, sel)
+                            }),
+                            select: Box::new(move |idx| {
+                                if let Some(it) = list_s.items().iter().nth(idx) {
+                                    let _ = it.select(true);
+                                    let _ = it.focus();
+                                }
+                            }),
+                        },
+                    );
+                }
+                Ok(0)
+            });
+        }
+        {
+            // probe 中の行のボリューム列でスピナーを回す。
+            let list2 = list.clone();
+            let pending2 = pending.clone();
+            let frame2 = spin_frame.clone();
+            wnd.on().wm_timer(SPIN_TIMER_ID, move || {
+                let f = frame2.get();
+                frame2.set(f.wrapping_add(1));
+                let glyph = SPINNER[f % SPINNER.len()];
+                for (i, busy) in pending2.borrow().iter().enumerate() {
+                    if *busy {
+                        if let Some(it) = list2.items().iter().nth(i) {
+                            let _ = it.set_text(1, glyph);
+                        }
+                    }
+                }
+                Ok(())
+            });
+        }
+        {
+            // ドライブ文字キーで、その行が一意に決まればそのまま選択＋移動（原作準拠）。
+            let result = result.clone();
+            let list2 = list.clone();
+            let wnd2 = wnd.clone();
+            list.on().lvn_key_down(move |p| {
+                let raw = p.wVKey.raw();
+                if (0x41..=0x5A).contains(&raw) {
+                    let ch = raw as u8 as char;
+                    let mut hit = None;
+                    let mut multi = false;
+                    for (i, it) in list2.items().iter().enumerate() {
+                        if it.text(0).to_uppercase().starts_with(ch) {
+                            if hit.is_some() {
+                                multi = true;
+                                break;
+                            }
+                            hit = Some(i);
+                        }
+                    }
+                    if let (Some(idx), false) = (hit, multi) {
+                        *result.borrow_mut() = Some(idx);
+                        wnd2.close();
+                    }
+                }
+                Ok(())
+            });
+        }
+        {
+            let result = result.clone();
+            let wnd2 = wnd.clone();
+            list.on().lvn_item_activate(move |p| {
+                if p.iItem >= 0 {
+                    *result.borrow_mut() = Some(p.iItem as usize);
+                }
+                wnd2.close();
+                Ok(())
+            });
+        }
+        {
+            let result = result.clone();
+            let list2 = list.clone();
+            let wnd2 = wnd.clone();
+            ok.on().bn_clicked(move || {
+                if let Some(idx) = list2.items().iter().position(|it| it.is_selected()) {
+                    *result.borrow_mut() = Some(idx);
+                }
+                wnd2.close();
+                Ok(())
+            });
+        }
+        {
+            let wnd2 = wnd.clone();
+            cancel.on().bn_clicked(move || {
+                wnd2.close();
+                Ok(())
+            });
+        }
+
+        self.in_dialog.set(true);
+        let _ = wnd.show_modal(&self.wnd);
+        self.in_dialog.set(false);
+        #[cfg(feature = "debug-server")]
+        crate::debug_server::modal_registry::pop();
+        alive.set(false);
+        let _ = (ok, cancel, list);
+
+        let sel = *result.borrow();
+        if let Some(root) = sel.and_then(|idx| roots.get(idx).cloned()) {
+            self.go_to_drive(is_left, &root)?;
+        }
+        Ok(())
     }
 
-    /// 登録ディレクトリの一覧から選んでそこへジャンプする。空なら情報ログのみ。
+    /// 登録ディレクトリの一覧から選んでそこへジャンプする（原作 RegisteredPathDialog／
+    /// JumpDialog）。ショートカット/名前/場所の 3 列で表示し、行のショートカットキーを押すと
+    /// そのまま移動する。空なら情報ログのみ。
     pub(crate) fn jump_dialog(&self, is_left: bool) -> w::AnyResult<()> {
-        let bookmarks: Vec<(String, String)> = self
+        // (shortcut, label, path) を表示順に取り出す。
+        let entries: Vec<(String, String, String)> = self
             .config
             .borrow()
             .bookmarks
             .iter()
-            .map(|b| (b.label.clone(), b.path.clone()))
+            .map(|b| (b.shortcut.clone(), b.label.clone(), b.path.clone()))
             .collect();
-        if bookmarks.is_empty() {
+        if entries.is_empty() {
             self.log.info("登録ディレクトリがありません。");
             return Ok(());
         }
-        let labels: Vec<String> = bookmarks
-            .iter()
-            .map(|(l, p)| format!("{l}  ({p})"))
-            .collect();
-        let Some(idx) = dialog::list_box(&self.wnd, "ジャンプ", &labels, 0) else {
-            return Ok(());
-        };
-        let Some((_, path)) = bookmarks.get(idx) else {
-            return Ok(());
-        };
-        let loc = Location::parse(path);
-        self.remember_cursor_for_nav(is_left);
-        if self.pane(is_left).borrow_mut().navigate(loc) {
-            self.reload_side_navigated(is_left)?;
-        } else {
-            self.log.error(&format!("移動できません: {path}"));
+
+        let wnd = gui::WindowModal::new(gui::WindowModalOpts {
+            title: "登録ディレクトリ",
+            size: gui::dpi(600, 360),
+            style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
+            process_dlg_msgs: true,
+            ..Default::default()
+        });
+        let list = gui::ListView::<()>::new(
+            &wnd,
+            gui::ListViewOpts {
+                position: gui::dpi(12, 12),
+                size: gui::dpi(576, 292),
+                control_style: co::LVS::REPORT
+                    | co::LVS::NOSORTHEADER
+                    | co::LVS::SHOWSELALWAYS
+                    | co::LVS::SINGLESEL,
+                control_ex_style: co::LVS_EX::FULLROWSELECT,
+                ..Default::default()
+            },
+        );
+        let ok = gui::Button::new(
+            &wnd,
+            gui::ButtonOpts {
+                text: "OK",
+                control_style: co::BS::DEFPUSHBUTTON,
+                ctrl_id: 1,
+                position: gui::dpi(412, 318),
+                width: gui::dpi_x(80),
+                height: gui::dpi_y(26),
+                ..Default::default()
+            },
+        );
+        let cancel = gui::Button::new(
+            &wnd,
+            gui::ButtonOpts {
+                text: "中止(&S)",
+                ctrl_id: 2,
+                position: gui::dpi(500, 318),
+                width: gui::dpi_x(86),
+                height: gui::dpi_y(26),
+                ..Default::default()
+            },
+        );
+
+        let result: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+
+        {
+            let list = list.clone();
+            let entries_c = entries.clone();
+            wnd.on().wm_create(move |_| {
+                for (head, width) in [("", 44), ("名前", 180), ("場所", 330)] {
+                    list.cols().add(head, gui::dpi_x(width))?;
+                }
+                for (sc, name, path) in &entries_c {
+                    list.items().add(&[sc.clone(), name.clone(), path.clone()], None, ())?;
+                }
+                if let Some(it) = list.items().iter().next() {
+                    it.select(true)?;
+                    it.focus()?;
+                }
+                list.hwnd().SetFocus();
+                #[cfg(feature = "debug-server")]
+                {
+                    let modal_ptr = list.hwnd().GetParent().map(|h| h.ptr() as isize).unwrap_or(0);
+                    let list_r = list.clone();
+                    let list_s = list.clone();
+                    crate::debug_server::modal_registry::push_list_view(
+                        "jump",
+                        "登録ディレクトリ",
+                        modal_ptr,
+                        vec![("OK".to_owned(), 1u16), ("中止(&S)".to_owned(), 2u16)],
+                        crate::debug_server::modal_registry::ListViewHooks {
+                            headers: ["ショートカット", "名前", "場所"]
+                                .iter()
+                                .map(|s| s.to_string())
+                                .collect(),
+                            read: Box::new(move || {
+                                let rows = list_r
+                                    .items()
+                                    .iter()
+                                    .map(|it| (0..3u32).map(|c| it.text(c)).collect())
+                                    .collect();
+                                let sel = list_r.items().iter().position(|it| it.is_selected()).unwrap_or(0);
+                                (rows, sel)
+                            }),
+                            select: Box::new(move |idx| {
+                                if let Some(it) = list_s.items().iter().nth(idx) {
+                                    let _ = it.select(true);
+                                    let _ = it.focus();
+                                }
+                            }),
+                        },
+                    );
+                }
+                Ok(0)
+            });
+        }
+        {
+            // ショートカットキーを押したら、その行が一意に決まればそのまま選択＋移動。
+            let result = result.clone();
+            let entries_c = entries.clone();
+            let wnd2 = wnd.clone();
+            list.on().lvn_key_down(move |p| {
+                let raw = p.wVKey.raw();
+                if (0x41..=0x5A).contains(&raw) {
+                    let ch = raw as u8 as char; // 'A'..'Z'
+                    let idx = unique_shortcut_index(entries_c.iter().map(|(s, _, _)| s.as_str()), ch);
+                    if let Some(idx) = idx {
+                        *result.borrow_mut() = Some(idx);
+                        wnd2.close();
+                    }
+                }
+                Ok(())
+            });
+        }
+        {
+            let result = result.clone();
+            let wnd2 = wnd.clone();
+            list.on().lvn_item_activate(move |p| {
+                if p.iItem >= 0 {
+                    *result.borrow_mut() = Some(p.iItem as usize);
+                }
+                wnd2.close();
+                Ok(())
+            });
+        }
+        {
+            let result = result.clone();
+            let list2 = list.clone();
+            let wnd2 = wnd.clone();
+            ok.on().bn_clicked(move || {
+                if let Some(idx) = list2.items().iter().position(|it| it.is_selected()) {
+                    *result.borrow_mut() = Some(idx);
+                }
+                wnd2.close();
+                Ok(())
+            });
+        }
+        {
+            let wnd2 = wnd.clone();
+            cancel.on().bn_clicked(move || {
+                wnd2.close();
+                Ok(())
+            });
+        }
+
+        self.in_dialog.set(true);
+        let _ = wnd.show_modal(&self.wnd);
+        self.in_dialog.set(false);
+        #[cfg(feature = "debug-server")]
+        crate::debug_server::modal_registry::pop();
+        let _ = (ok, cancel, list);
+
+        let sel = *result.borrow();
+        if let Some((_, _, path)) = sel.and_then(|idx| entries.get(idx)) {
+            let loc = Location::parse(path);
+            self.remember_cursor_for_nav(is_left);
+            let outcome = self.pane(is_left).borrow_mut().navigate_reported(loc);
+            match outcome {
+                Ok(()) => self.reload_side_navigated(is_left)?,
+                Err(e) => self.report_change_directory_error(&e),
+            }
         }
         Ok(())
     }
@@ -465,5 +856,139 @@ impl MainWindow {
             }
         }
         Ok(())
+    }
+}
+
+/// `roots` を `delta`（+1/-1）方向に巡回し、`cur` 以外で最初に `ready` を満たす index を返す。
+/// 他に対象が無ければ（全て未了・ドライブが1つだけ等）None。
+/// `ChangeDirectory` 失敗時のダイアログ文言（原作 `NotExistsDirectory` / `ChangeDirectoryError`）。
+/// 移動先が存在しないなら専用文、それ以外（権限不足・読込エラー等）は原因付きで報せる。
+fn change_directory_error_message(err: &std::io::Error) -> String {
+    if err.kind() == std::io::ErrorKind::NotFound {
+        "ディレクトリが存在しません。".to_owned()
+    } else {
+        format!("ディレクトリが変更出来ません。\n原因：{err}")
+    }
+}
+
+/// 登録ディレクトリのショートカット集合から、押されたキー `ch`（大文字）に一致する行が
+/// ただ一つのときだけその index を返す（未一致・複数一致は None＝確定させない）。
+/// 一致判定はショートカット先頭1文字を大文字化して比較する。
+fn unique_shortcut_index<'a>(shortcuts: impl Iterator<Item = &'a str>, ch: char) -> Option<usize> {
+    let mut hit = None;
+    for (i, sc) in shortcuts.enumerate() {
+        if sc.chars().next().map(|c| c.to_ascii_uppercase()) == Some(ch) {
+            if hit.is_some() {
+                return None;
+            }
+            hit = Some(i);
+        }
+    }
+    hit
+}
+
+fn next_ready_index(n: usize, cur: usize, delta: isize, ready: impl Fn(usize) -> bool) -> Option<usize> {
+    (1..n)
+        .map(|step| (cur as isize + delta * step as isize).rem_euclid(n as isize) as usize)
+        .find(|&i| ready(i))
+}
+
+/// ドライブのルートが今アクセス可能か（容量取得の成否で判定）。空の光学/リムーバブルや
+/// 切断ネットワークは失敗＝準備未了とみなす。
+fn drive_ready(root: &str) -> bool {
+    let mut free = 0u64;
+    let mut total = 0u64;
+    w::GetDiskFreeSpaceEx(Some(root), Some(&mut free), Some(&mut total), None).is_ok()
+}
+
+/// ドライブ probe 中にボリューム列で回すスピナーのフレーム（点字パターン）。
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// ドライブ選択ダイアログのスピナー用タイマ ID（モーダル窓ローカルなので衝突しない）。
+const SPIN_TIMER_ID: usize = 0xD2;
+
+/// ルート文字列（`C:\`）のドライブ表記（`C:`）。
+fn drive_letter(root: &str) -> String {
+    root.trim_end_matches(['\\', '/']).to_uppercase()
+}
+
+/// ドライブ種別の表示ラベル（メディアに触れない `GetDriveType` なので即時に得られる）。
+fn drive_type_label(root: &str) -> &'static str {
+    match w::GetDriveType(Some(root)) {
+        co::DRIVE::FIXED => "固定",
+        co::DRIVE::REMOVABLE => "リムーバブル",
+        co::DRIVE::CDROM => "CD-ROM",
+        co::DRIVE::REMOTE => "ネットワーク",
+        co::DRIVE::RAMDISK => "RAM ディスク",
+        _ => "",
+    }
+}
+
+/// A: / B: のリムーバブル（フロッピー）か。無駄にドライブを回さないよう probe 対象から外す。
+fn is_ab_floppy(root: &str) -> bool {
+    matches!(root.chars().next().map(|c| c.to_ascii_uppercase()), Some('A') | Some('B'))
+        && w::GetDriveType(Some(root)) == co::DRIVE::REMOVABLE
+}
+
+/// ドライブの遅い情報（ボリューム名・空き/合計容量）を probe する（ワーカースレッドで実行）。
+/// 準備未了（空の光学/リムーバブル等）では各取得が失敗するので、「probe は完了したが
+/// 情報なし」と分かるよう各セルを `--` で返す（空欄＝未取得 と区別する）。
+fn probe_drive_info(root: &str) -> (String, String, String) {
+    let mut free = 0u64;
+    let mut total = 0u64;
+    if w::GetDiskFreeSpaceEx(Some(root), Some(&mut free), Some(&mut total), None).is_err() {
+        let dash = || "--".to_owned();
+        return (dash(), dash(), dash());
+    }
+    let mut volume = String::new();
+    let _ = w::GetVolumeInformation(Some(root), Some(&mut volume), None, None, None, None);
+    (volume, format_size(free), format_size(total))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{change_directory_error_message, next_ready_index, unique_shortcut_index};
+
+    #[test]
+    fn shortcut_index_matches_unique_case_insensitively() {
+        let scs = ["G", "d", "", "M"];
+        let pick = |ch| unique_shortcut_index(scs.iter().copied(), ch);
+        assert_eq!(pick('G'), Some(0)); // 大文字一致
+        assert_eq!(pick('D'), Some(1)); // 小文字割当でも大文字キーで一致
+        assert_eq!(pick('M'), Some(3));
+        assert_eq!(pick('X'), None); // 未割当
+    }
+
+    #[test]
+    fn shortcut_index_rejects_duplicates_and_empty() {
+        // 同じショートカットが複数あれば確定させない。
+        assert_eq!(unique_shortcut_index(["A", "a"].iter().copied(), 'A'), None);
+        // 空ショートカットはどのキーにも一致しない。
+        assert_eq!(unique_shortcut_index(["", ""].iter().copied(), 'A'), None);
+    }
+
+    #[test]
+    fn change_directory_error_distinguishes_not_found() {
+        use std::io::{Error, ErrorKind};
+        let not_found = change_directory_error_message(&Error::from(ErrorKind::NotFound));
+        assert_eq!(not_found, "ディレクトリが存在しません。");
+
+        let denied = change_directory_error_message(&Error::new(ErrorKind::PermissionDenied, "アクセスが拒否されました"));
+        assert!(denied.starts_with("ディレクトリが変更出来ません。"));
+        assert!(denied.contains("原因："));
+    }
+
+    #[test]
+    fn skips_not_ready_in_both_directions() {
+        // 4 ドライブ、index 1 と 3 が未了（0 と 2 のみ ready）。
+        let ready = |i: usize| i == 0 || i == 2;
+        assert_eq!(next_ready_index(4, 0, 1, ready), Some(2)); // 0→(1飛ばし)→2
+        assert_eq!(next_ready_index(4, 0, -1, ready), Some(2)); // 0→(3飛ばし・巡回)→2
+        assert_eq!(next_ready_index(4, 2, 1, ready), Some(0)); // 2→(3飛ばし)→0
+    }
+
+    #[test]
+    fn none_when_no_other_ready() {
+        assert_eq!(next_ready_index(3, 0, 1, |i| i == 0), None); // 自分だけ ready
+        assert_eq!(next_ready_index(1, 0, 1, |_| true), None); // ドライブ1つだけ
     }
 }

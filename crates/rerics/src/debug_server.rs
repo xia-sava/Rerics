@@ -24,6 +24,16 @@ pub const DEFAULT_PORT: u16 = 8731;
 pub mod modal_registry {
     use std::cell::RefCell;
 
+    /// 多列 ListView モーダルを UI スレッドで読み書きするフック（同一スレッドなので
+    /// gui コントロールをクロージャに閉じ込めて使う＝raw メッセージを避ける）。
+    pub struct ListViewHooks {
+        pub headers: Vec<String>,
+        /// 現在の (行＝各列セル, 選択行 index) をライブで読む（プログレッシブ更新も反映される）。
+        pub read: Box<dyn Fn() -> (Vec<Vec<String>>, usize)>,
+        /// 指定 index の行を選択する。
+        pub select: Box<dyn Fn(usize)>,
+    }
+
     /// 1 つの開いているモーダル。`*_ptr` は HWND の生ポインタ（UI スレッド内でのみ有効）。
     pub struct ModalEntry {
         pub kind: &'static str,
@@ -37,6 +47,8 @@ pub mod modal_registry {
         pub items: Vec<String>,
         /// リスト選択モーダルの初期選択行（リストでなければ 0）。
         pub selected: usize,
+        /// 多列 ListView モーダルのフック（単列 ListBox や非リストなら None）。
+        pub list_view: Option<ListViewHooks>,
     }
 
     thread_local! {
@@ -63,6 +75,31 @@ pub mod modal_registry {
                 buttons,
                 items: Vec::new(),
                 selected: 0,
+                list_view: None,
+            })
+        });
+    }
+
+    /// 多列 ListView 選択モーダルを登録する（ドライブ選択など。`hooks` で行と選択を
+    /// ライブに読み書きする）。
+    pub fn push_list_view(
+        kind: &'static str,
+        title: &str,
+        modal_ptr: isize,
+        buttons: Vec<(String, u16)>,
+        hooks: ListViewHooks,
+    ) {
+        STACK.with(|s| {
+            s.borrow_mut().push(ModalEntry {
+                kind,
+                title: title.to_string(),
+                prompt: String::new(),
+                modal_ptr,
+                has_input: false,
+                buttons,
+                items: Vec::new(),
+                selected: 0,
+                list_view: Some(hooks),
             })
         });
     }
@@ -86,6 +123,7 @@ pub mod modal_registry {
                 buttons,
                 items,
                 selected,
+                list_view: None,
             })
         });
     }

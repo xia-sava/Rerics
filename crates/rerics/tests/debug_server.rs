@@ -638,29 +638,58 @@ fn nav_history_back_forward() {
     assert_eq!(fwd.trim(), parent, "HistoryForward should go back to the parent");
 }
 
-/// PathHistoryDialog＝移動履歴の一覧（list_box モーダル）から選んでジャンプする。
+/// #67: cursor.history=false でも、戻る/進むはカーソルを元の項目へ復元する（原作準拠＝常時復元）。
+#[test]
+fn history_back_restores_cursor_even_with_history_off() {
+    let server = Server::start(&["a.txt", "b.txt", "c.txt"], "[cursor]\nhistory = false\n");
+    let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+
+    // items: [.., a.txt, b.txt, c.txt]。CursorDown×3 で c.txt（index 3）へ。
+    for _ in 0..3 {
+        server.req("POST", "/command/CursorDown", "").unwrap();
+    }
+    let pre = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(pre.trim(), "3", "precondition: cursor should be on c.txt (index 3): {pre}");
+
+    // 親へ移動 → 戻る。
+    server.req("POST", "/command/ToParent", "").unwrap();
+    poll(&server, "/state/panes/left/location", |b| b.trim() != sbx);
+    server.req("POST", "/command/HistoryBack", "").unwrap();
+    poll(&server, "/state/panes/left/location", |b| b.trim() == sbx);
+
+    // cursor.history=false でもカーソルは c.txt（index 3）へ復元される。
+    let restored = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "3");
+    assert_eq!(restored.trim(), "3", "HistoryBack should restore the cursor even with cursor.history off: {restored}");
+}
+
+/// PathHistoryDialog＝訪問ログ（list_box モーダル・新しい順）から選んでジャンプする。
 #[test]
 fn nav_path_history_dialog() {
     let server = Server::start(&["a.txt"], "");
-    let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1;
-    let sbx = sbx.trim().to_string();
+    let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+    let sbx_raw = sbx.trim_matches('"').replace("\\\\", "\\");
 
-    // 親へ移動して履歴を1件作る。
+    // 親へ移動（履歴に親）→ パス入力で sbx へ戻る（履歴に sbx）。訪問ログは [親, sbx]。
     server.req("POST", "/command/ToParent", "").unwrap();
-    let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx);
-    assert_ne!(parent.trim(), sbx, "ToParent should leave the sandbox");
+    let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx).trim().to_string();
+    assert_ne!(parent, sbx, "ToParent should leave the sandbox");
+    server.req("POST", "/command/ChangeDirectoryDialog", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/text", &sbx_raw).unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    poll(&server, "/state/panes/left/location", |b| b.trim() == sbx);
 
-    // 履歴ダイアログを開く（リスト選択モーダル）。
+    // 履歴ダイアログを開く（新しい順＝[sbx, 親]）。訪問した sbx が一覧に出る。
     server.req("POST", "/command/PathHistoryDialog", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"list\""), "should open a list modal: {modal}");
-    assert!(modal.contains("sbx"), "history should list the sandbox: {modal}");
+    assert!(modal.contains("sbx"), "visited sbx should be listed: {modal}");
 
-    // 先頭（直前の現在地＝sbx）を選んで OK＝そこへジャンプ。
-    server.req("POST", "/modal/select/0", "").unwrap();
+    // 現在地でない親（index 1）を選んで OK＝そこへジャンプ。
+    server.req("POST", "/modal/select/1", "").unwrap();
     server.req("POST", "/modal/command/ok", "").unwrap();
-    let back = poll(&server, "/state/panes/left/location", |b| b.trim() == sbx);
-    assert_eq!(back.trim(), sbx, "selecting a history entry should navigate there");
+    let now = poll(&server, "/state/panes/left/location", |b| b.trim() == parent);
+    assert_eq!(now.trim(), parent, "selecting the parent entry should navigate there");
 }
 
 /// ChangeDirectoryDialog＝パスを入力してそこへ移動する（input_box モーダル）。
@@ -689,6 +718,104 @@ fn nav_change_directory_dialog() {
     server.req("POST", "/modal/key/enter", "").unwrap();
     let back = poll(&server, "/state/panes/left/location", |b| b.trim() == sbx_json);
     assert_eq!(back.trim(), sbx_json, "typing a path should navigate there");
+}
+
+/// #70: 存在しないパスを入力すると、ログだけでなくエラーダイアログ（kind=message）が出る。
+#[test]
+fn nav_change_directory_missing_path_shows_error_dialog() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx_json = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+    let sbx_raw = sbx_json.trim_matches('"').replace("\\\\", "\\");
+    let missing = format!("{sbx_raw}\\__no_such_dir__");
+
+    server.req("POST", "/command/ChangeDirectoryDialog", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/text", &missing).unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+
+    // 入力モーダルが閉じた後、存在しないパスのエラーダイアログが開く。
+    let err = poll(&server, "/state/modal", |b| b.contains("\"kind\":\"message\""));
+    assert!(err.contains("ディレクトリが存在しません"), "missing path should raise NotExists dialog: {err}");
+
+    // ダイアログを閉じても現在地は動かない（移動は失敗のまま）。
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    let loc = server.req("GET", "/state/panes/left/location", "").unwrap().1;
+    assert_eq!(loc.trim(), sbx_json, "failed navigation should keep the original location");
+}
+
+/// #66: ユーザが行き先を指定した移動（親移動・パス入力）が訪問ログに記録され、
+/// PathHistoryDialog に新しい順で出る。さらに history.toml の pathhistory バケツへ永続する。
+#[test]
+fn path_history_records_and_persists() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx_json = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+    let sbx_raw = sbx_json.trim_matches('"').replace("\\\\", "\\");
+
+    // 親へ移動（履歴に親が入る）→ パス入力で sbx へ戻る（履歴に sbx が入る）。
+    server.req("POST", "/command/ToParent", "").unwrap();
+    poll(&server, "/state/panes/left/location", |b| b.trim() != sbx_json);
+    server.req("POST", "/command/ChangeDirectoryDialog", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/text", &sbx_raw).unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    poll(&server, "/state/panes/left/location", |b| b.trim() == sbx_json);
+
+    // PathHistoryDialog：訪問した sbx が一覧に出る（新しい順の先頭）。
+    server.req("POST", "/command/PathHistoryDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"list\""), "path history should open a list modal: {modal}");
+    assert!(modal.contains("sbx"), "visited sbx should be listed: {modal}");
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+
+    // history.toml に pathhistory バケツが永続する（再起動間も残る土台）。
+    let hist_path = server.base.join("data").join("history.toml");
+    let mut hist = String::new();
+    for _ in 0..50 {
+        if let Ok(s) = std::fs::read_to_string(&hist_path) {
+            if s.contains("pathhistory") {
+                hist = s;
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(hist.contains("pathhistory"), "history.toml should persist the pathhistory bucket: {hist}");
+    assert!(hist.contains("sbx"), "the visited path should be saved: {hist}");
+}
+
+/// #66: 戻る/進む（履歴の再生）は訪問ログに新たな記録を増やさない（往復で増殖しない）。
+#[test]
+fn path_history_back_forward_does_not_grow_log() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx_json = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+
+    // 親へ一度移動して back/forward の素地を作る（ここで親と…は記録される）。
+    server.req("POST", "/command/ToParent", "").unwrap();
+    poll(&server, "/state/panes/left/location", |b| b.trim() != sbx_json);
+
+    let hist_path = server.base.join("data").join("history.toml");
+    let read_hist = || std::fs::read_to_string(&hist_path).unwrap_or_default();
+    // pathhistory が書かれるまで待ち、その時点の pathhistory 行数を数える。
+    for _ in 0..50 {
+        if read_hist().contains("pathhistory") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    // 各訪問パスにユニークな作業dir名 "rerics_it" がちょうど1回出る＝記録件数の代理。
+    let count_paths = |s: &str| s.matches("rerics_it").count();
+    let before = count_paths(&read_hist());
+
+    // 戻る→進む を数回。履歴の再生なので pathhistory は増えないはず。
+    for _ in 0..3 {
+        server.req("POST", "/command/HistoryBack", "").unwrap();
+        server.req("POST", "/command/HistoryForward", "").unwrap();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let after = count_paths(&read_hist());
+    assert_eq!(after, before, "back/forward should not add path-history entries: before={before} after={after}");
 }
 
 /// 入力履歴（D2-1）：ChangeDirectory で打った値が history.toml の "changedir" バケツに永続する。
@@ -875,12 +1002,29 @@ fn nav_register_and_jump() {
 
     server.req("POST", "/command/JumpDialog", "").unwrap();
     let modal = wait_modal(&server);
-    assert!(modal.contains("\"kind\":\"list\""), "jump should open a list: {modal}");
+    assert!(modal.contains("\"kind\":\"jump\""), "jump should open the registered-dir list: {modal}");
+    assert!(modal.contains("\"rows\":[["), "jump should be a multi-column list: {modal}");
     assert!(modal.contains("home"), "jump should list the bookmark: {modal}");
     server.req("POST", "/modal/select/0", "").unwrap();
     server.req("POST", "/modal/command/ok", "").unwrap();
     let back = poll(&server, "/state/panes/left/location", |b| b.trim() == sbx_json);
     assert_eq!(back.trim(), sbx_json, "jump should navigate to the bookmark");
+}
+
+/// #71: config に書いた登録ディレクトリのショートカットが、ジャンプダイアログの
+/// 先頭（ショートカット）列に表示される（多列 ListView＋serde フィールドの確認）。
+#[test]
+fn jump_dialog_shows_configured_shortcut() {
+    let cfg = "[[bookmarks]]\nlabel = \"ルート\"\npath = \"C:\\\\\"\nshortcut = \"C\"\n";
+    let server = Server::start(&["a.txt"], cfg);
+    server.req("POST", "/command/JumpDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"jump\""), "should open the jump dialog: {modal}");
+    assert!(modal.contains("ルート"), "configured label should be listed: {modal}");
+    // 行の先頭列がショートカット "C"。
+    assert!(modal.contains("[\"C\",\"ルート\""), "shortcut should fill the first column: {modal}");
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
 /// ChangeDriveDialog＝ドライブ一覧から選んでそのルートへ移動する。
@@ -894,8 +1038,9 @@ fn nav_change_drive_dialog() {
 
     server.req("POST", "/command/ChangeDriveDialog", "").unwrap();
     let modal = wait_modal(&server);
-    assert!(modal.contains("\"kind\":\"list\""), "drive dialog should open a list: {modal}");
-    assert!(modal.contains("\"items\":[\""), "should list at least one drive: {modal}");
+    assert!(modal.contains("\"kind\":\"drive\""), "drive dialog should open the drive selector: {modal}");
+    assert!(modal.contains("\"rows\":[["), "should list at least one drive row: {modal}");
+    assert!(modal.contains(&format!("\"{drive}:\"")), "should list the current drive: {modal}");
 
     // 既定選択（現在ドライブ）のまま OK。
     server.req("POST", "/modal/command/ok", "").unwrap();
@@ -1162,6 +1307,34 @@ fn cursor_opposite_toggles_active_pane() {
     server.req("POST", "/command/CursorOpposite", "").unwrap();
     let a2 = poll(&server, "/state/active_pane", |b| b.contains("left"));
     assert!(a2.contains("left"), "もう一度で左へ戻る: {a2}");
+}
+
+/// #74: CursorToParent=on のとき、アクティブ側ペインで外向きカーソルキー（左ペインで
+/// FocusLeft）が親移動になる。
+#[test]
+fn cursor_to_parent_navigates_on_outward_key() {
+    let server = Server::start(&["a.txt"], "[cursor]\nto_parent = true\n");
+    let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+    assert!(server.req("GET", "/state/active_pane", "").unwrap().1.contains("left"), "初期は左アクティブ");
+
+    server.req("POST", "/command/FocusLeft", "").unwrap();
+    let up = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx);
+    assert_ne!(up.trim(), sbx, "left+FocusLeft with CursorToParent should go to parent");
+    // 移動先は sbx の祖先（親）のはず。
+    let parent = up.trim().trim_matches('"');
+    let sbx_raw = sbx.trim_matches('"');
+    assert!(sbx_raw.starts_with(parent), "moved location should be an ancestor of sbx: {up} / {sbx}");
+}
+
+/// #74: CursorToParent=off（既定）では FocusLeft は親移動せず、フォーカス移動のみ。
+#[test]
+fn cursor_to_parent_off_keeps_focus_only() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+    server.req("POST", "/command/FocusLeft", "").unwrap();
+    std::thread::sleep(Duration::from_millis(250));
+    let loc = server.req("GET", "/state/panes/left/location", "").unwrap().1;
+    assert_eq!(loc.trim(), sbx, "off: FocusLeft must not navigate to parent");
 }
 
 /// SelectFile はカーソル位置を（トグルでなく）マークし、カーソルを1つ下げる。

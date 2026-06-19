@@ -168,10 +168,14 @@ impl Default for ThemeColors {
 }
 
 /// 登録ディレクトリ（ブックマーク）。`label` で一覧表示し、選ぶと `path` へジャンプする。
+/// `shortcut` はジャンプダイアログで割り当てる1キー（原作 RegisteredPaths の Shortcut・
+/// 未割当なら空）で、ダイアログ表示中にそのキーを押すと該当行へ直接ジャンプできる。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bookmark {
     pub label: String,
     pub path: String,
+    #[serde(default)]
+    pub shortcut: String,
 }
 
 /// カーソル位置記憶（原作 Cursor/CursorHistory）の設定。ディレクトリ移動の直前に離脱
@@ -183,11 +187,15 @@ pub struct CursorSettings {
     pub history: bool,
     /// 記憶するパス数の上限。超えると古いものから捨てる（原作 CursorHistoryCount・既定 100）。
     pub history_count: usize,
+    /// 左右カーソルキーで親ディレクトリへ移動するか（原作 Cursor/CursorToParent・既定オフ）。
+    /// オンのとき、アクティブ側ペインで外向きのカーソルキー（左ペインで左／右ペインで右）を
+    /// 押すと親へ移動する。オフのときは従来どおり反対ペインへフォーカス移動するのみ。
+    pub to_parent: bool,
 }
 
 impl Default for CursorSettings {
     fn default() -> Self {
-        Self { history: false, history_count: 100 }
+        Self { history: false, history_count: 100, to_parent: false }
     }
 }
 
@@ -317,12 +325,17 @@ impl Config {
         std::fs::write(path, text)
     }
 
-    /// 登録ディレクトリを追加する。同じ `path` が既にあれば `label` を更新する。
+    /// 登録ディレクトリを追加する。同じ `path` が既にあれば `label` を更新する
+    /// （割り当て済みのショートカットは保持する）。
     pub fn add_bookmark(&mut self, label: &str, path: &str) {
         if let Some(b) = self.bookmarks.iter_mut().find(|b| b.path == path) {
             b.label = label.to_owned();
         } else {
-            self.bookmarks.push(Bookmark { label: label.to_owned(), path: path.to_owned() });
+            self.bookmarks.push(Bookmark {
+                label: label.to_owned(),
+                path: path.to_owned(),
+                shortcut: String::new(),
+            });
         }
     }
 
@@ -432,6 +445,12 @@ impl State {
 /// 入力ダイアログの履歴上限（用途キーごと）。原作 `Other/InputHistoryCount` 相当。
 const HISTORY_CAP: usize = 30;
 
+/// パス移動履歴（訪問ログ）を `InputHistory` に同居させるときの用途キー。
+pub const PATH_HISTORY_KEY: &str = "pathhistory";
+/// パス移動履歴の保持上限（原作 `PathHistoryCount` は 100 だが、Rerics は back/forward と
+/// 揃えて多めに持つ）。超えたら古い方から落とす。
+pub const PATH_HISTORY_CAP: usize = 256;
+
 /// 入力ダイアログの履歴ストア（用途キー別）。`history.toml` に永続。
 /// 各キーの `Vec` は**古い順**で持ち、`get` は新しい順に直して返す。
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -459,9 +478,15 @@ impl InputHistory {
             .unwrap_or_default()
     }
 
-    /// 値を履歴へ追加する。空（trim 後）は無視。既存の同値は末尾へ移動（重複排除）。
-    /// 上限を超えたら古いものから落とす。
+    /// 値を履歴へ追加する（入力ダイアログ用・上限 [`HISTORY_CAP`]）。
     pub fn add(&mut self, key: &str, value: &str) {
+        self.add_capped(key, value, HISTORY_CAP);
+    }
+
+    /// 上限を指定して値を履歴へ追加する。空（trim 後）は無視。既存の同値は末尾へ移動
+    /// （重複排除＝最新に集約）。上限を超えたら古いものから落とす。パス移動履歴は入力
+    /// 履歴より多く持つため、こちらを使って大きな上限を渡す。
+    pub fn add_capped(&mut self, key: &str, value: &str, cap: usize) {
         let v = value.trim();
         if v.is_empty() {
             return;
@@ -471,8 +496,8 @@ impl InputHistory {
             list.remove(pos);
         }
         list.push(v.to_owned());
-        if list.len() > HISTORY_CAP {
-            let n = list.len() - HISTORY_CAP;
+        if list.len() > cap {
+            let n = list.len() - cap;
             list.drain(0..n);
         }
     }
@@ -762,6 +787,23 @@ mod tests {
         assert_eq!(got.len(), HISTORY_CAP);
         assert_eq!(got[0], format!("v{}", HISTORY_CAP + 4));
         assert_eq!(got.last().unwrap(), &format!("v{}", 5));
+    }
+
+    #[test]
+    fn add_capped_uses_custom_cap_for_path_history() {
+        let mut h = InputHistory::default();
+        for i in 0..(PATH_HISTORY_CAP + 5) {
+            h.add_capped(PATH_HISTORY_KEY, &format!("C:\\d{i}"), PATH_HISTORY_CAP);
+        }
+        let got = h.get(PATH_HISTORY_KEY);
+        // 入力履歴(30)ではなくパス履歴の上限(256)で頭打ち。
+        assert_eq!(got.len(), PATH_HISTORY_CAP);
+        assert_eq!(got[0], format!("C:\\d{}", PATH_HISTORY_CAP + 4)); // 新しい順の先頭=最後に追加
+        // 既存同値の再訪は最新へ集約（重複しない）。
+        h.add_capped(PATH_HISTORY_KEY, "C:\\d10", PATH_HISTORY_CAP);
+        let got2 = h.get(PATH_HISTORY_KEY);
+        assert_eq!(got2[0], "C:\\d10");
+        assert_eq!(got2.iter().filter(|x| x.as_str() == "C:\\d10").count(), 1);
     }
 
     #[test]
