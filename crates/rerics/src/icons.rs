@@ -8,7 +8,7 @@
 //! - **非同期・per-file**（実FSのファイル）：バックグラウンドスレッドで実パスから
 //!   `SHGFI_ADDOVERLAYS` 付きの固有アイコン（exe の埋込アイコン・ショートカット矢印等）を
 //!   取得、画像ファイルは小さなサムネイルを生成する。結果はパス＋mtime でキャッシュし、
-//!   取得できるまでは汎用アイコンを表示。完了で main 窓へ `WM_ICONS_READY` を Post して再描画。
+//!   取得できるまでは汎用アイコンを表示。完了で main 窓へ `winutil::msg::ICONS_READY` を Post して再描画。
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -111,9 +111,6 @@ const DIB_RGB_COLORS: u32 = 0;
 /// アイコンの論理サイズ（小アイコン）。描画時に DPI スケールする。
 pub const ICON_LOGICAL: i32 = 16;
 
-/// 非同期アイコン読込完了を main 窓へ通知するカスタムメッセージ（`WM_DEBUG_WAKE`=0x8001 と別）。
-pub const WM_ICONS_READY: u32 = 0x8002;
-
 /// サムネイル生成を諦めるファイルサイズ上限（巨大画像で OOM/遅延を避ける）。
 const THUMB_MAX_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -212,7 +209,7 @@ fn worker_loop(rx: Receiver<Request>, tx: Sender<IconResult>, wake: isize) {
             break;
         }
         unsafe {
-            PostMessageW(wake as *mut c_void, WM_ICONS_READY, 0, 0);
+            PostMessageW(wake as *mut c_void, crate::winutil::msg::ICONS_READY.raw(), 0, 0);
         }
     }
 }
@@ -255,7 +252,7 @@ impl IconCache {
         }
     }
 
-    /// 非同期ワーカを起動する。`wake_hwnd` は完了通知（`WM_ICONS_READY`）の送り先（生 HWND）。
+    /// 非同期ワーカを起動する。`wake_hwnd` は完了通知（`msg::ICONS_READY`）の送り先（生 HWND）。
     pub fn start(&self, wake_hwnd: isize) {
         let (req_tx, req_rx) = channel::<Request>();
         let (res_tx, res_rx) = channel::<IconResult>();

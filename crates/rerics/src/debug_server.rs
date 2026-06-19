@@ -4,16 +4,13 @@
 //! UI 状態を JSON で返す（段階2 以降でコマンド注入・スナップショット・モーダル操作）。
 //!
 //! winsafe の GUI 状態は UI スレッドでしか触れない（`!Send`）ため、HTTP スレッドは
-//! 要求をキューへ積んで `WM_DEBUG_WAKE` を main 窓へ Post し、応答チャネルで待つ。
+//! 要求をキューへ積んで `winutil::msg::DEBUG_WAKE` を main 窓へ Post し、応答チャネルで待つ。
 //! 実際の状態読取/操作は UI スレッドの WM ハンドラ（main.rs）が行う。
 
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
-
-/// UI スレッドを起こす自前メッセージ（`WM_APP + 1`）。main.rs の WM ハンドラと対。
-pub const WM_DEBUG_WAKE: u32 = 0x8001;
 
 /// `--debug-server` の既定ポート。
 pub const DEFAULT_PORT: u16 = 8731;
@@ -385,6 +382,6 @@ fn post_wake(hwnd_ptr: isize) {
         fn PostMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> i32;
     }
     unsafe {
-        PostMessageW(hwnd_ptr as *mut c_void, WM_DEBUG_WAKE, 0, 0);
+        PostMessageW(hwnd_ptr as *mut c_void, crate::winutil::msg::DEBUG_WAKE.raw(), 0, 0);
     }
 }

@@ -65,17 +65,6 @@ enum ActiveView {
     Media,
 }
 
-/// 表示完了後に最大化を実行させるための自前メッセージ（`WM_APP`）。
-fn wm_restore_maximize() -> co::WM {
-    unsafe { co::WM::from_raw(0x8000) }
-}
-
-/// 起動後に設定読み込み失敗のアラートを出すための自前メッセージ。
-/// 0x8000=最大化復元・0x8001=WM_DEBUG_WAKE・0x8002=WM_ICONS_READY と衝突しない番号にする。
-fn wm_config_warn() -> co::WM {
-    unsafe { co::WM::from_raw(0x8003) }
-}
-
 /// スナップショットの範囲指定 `"x,y-WxH"` を解析する。
 #[cfg(feature = "debug-server")]
 fn parse_region(s: &str) -> Option<(i32, i32, i32, i32)> {
@@ -545,7 +534,7 @@ impl MainWindow {
         #[cfg(feature = "debug-server")]
         {
             let this = self.clone();
-            let wake = unsafe { co::WM::from_raw(debug_server::WM_DEBUG_WAKE) };
+            let wake = winutil::msg::DEBUG_WAKE;
             self.wnd.on().wm(wake, move |_| {
                 this.drain_debug_requests();
                 Ok(0)
@@ -561,7 +550,7 @@ impl MainWindow {
 
         // 非同期アイコンローダの完了通知。結果を取り込み、両ペインを再描画する。
         let this = self.clone();
-        let icons_ready = unsafe { co::WM::from_raw(icons::WM_ICONS_READY) };
+        let icons_ready = winutil::msg::ICONS_READY;
         self.wnd.on().wm(icons_ready, move |_| {
             if this.icon_cache.drain_results() {
                 let _ = this.view(true).refresh();
@@ -583,7 +572,7 @@ impl MainWindow {
         let this = self.clone();
         self.wnd.on().wm_create(move |_| {
             this.wnd.hwnd().SetMenu(&this.menu_bar)?;
-            // 非同期アイコンローダを起動（完了は WM_ICONS_READY で受ける）。
+            // 非同期アイコンローダを起動（完了は msg::ICONS_READY で受ける）。
             this.icon_cache.start(this.wnd.hwnd().ptr() as isize);
             // デバッグ制御サーバ起動時は本体を最小化で立ち上げ、作業の邪魔をしない。
             #[cfg(feature = "debug-server")]
@@ -596,7 +585,7 @@ impl MainWindow {
                 if applied && ws.maximized && !debug_minimized {
                     unsafe {
                         let _ = this.wnd.hwnd().PostMessage(w::msg::WndMsg {
-                            msg_id: wm_restore_maximize(),
+                            msg_id: winutil::msg::RESTORE_MAXIMIZE,
                             wparam: 0,
                             lparam: 0,
                         });
@@ -633,7 +622,7 @@ impl MainWindow {
                 this.log.warn(&format!("config.toml の詳細: {detail}"));
                 unsafe {
                     let _ = this.wnd.hwnd().PostMessage(w::msg::WndMsg {
-                        msg_id: wm_config_warn(),
+                        msg_id: winutil::msg::CONFIG_WARN,
                         wparam: 0,
                         lparam: 0,
                     });
@@ -643,7 +632,7 @@ impl MainWindow {
         });
 
         let this = self.clone();
-        self.wnd.on().wm(wm_restore_maximize(), move |_| {
+        self.wnd.on().wm(winutil::msg::RESTORE_MAXIMIZE, move |_| {
             window_state::maximize(&this.wnd.hwnd());
             Ok(0)
         });
@@ -651,7 +640,7 @@ impl MainWindow {
         // 設定読込エラーのアラート（窓表示後に遅延表示）。詳細はログに出してある。
         // 登録モーダルなので debug-server から観測・クローズできる（実機/headless 同一挙動）。
         let this = self.clone();
-        self.wnd.on().wm(wm_config_warn(), move |_| {
+        self.wnd.on().wm(winutil::msg::CONFIG_WARN, move |_| {
             dialog::message_box(
                 &this.wnd,
                 "設定の読み込み",
