@@ -329,15 +329,34 @@ impl Config {
 
     /// 指定パスのユーザ設定を埋め込みデフォルトへマージして読み込む。
     pub fn load_from(path: &Path) -> Self {
+        Self::load_from_reporting(path).0
+    }
+
+    /// 埋め込みデフォルトにユーザ `config.toml` をマージして読み込み、合わせて読込エラーの
+    /// 説明文（あれば）を返す。ファイルが無いのは正常（`None`）。TOML の文法エラーや型不一致で
+    /// ユーザ設定を反映できなかった場合のみ `Some(詳細)`＝呼び側が警告表示／ログに使う。
+    /// **エラー時は既定（または反映できた範囲）で起動する**（黙って全無視はしない）。
+    pub fn load_reporting() -> (Self, Option<String>) {
+        Self::load_from_reporting(&config_path())
+    }
+
+    /// [`Config::load_reporting`] の指定パス版。
+    pub fn load_from_reporting(path: &Path) -> (Self, Option<String>) {
         let mut base: Value =
             toml::from_str(DEFAULT_CONFIG_TOML).expect("埋め込み default.toml が不正");
-        let user: Option<Value> = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| toml::from_str(&s).ok());
-        if let Some(u) = user {
-            deep_merge(&mut base, &u);
+        let mut error = None;
+        // ファイル無し＝既定で起動（正常）。読めたが TOML が壊れていれば詳細を控える。
+        if let Ok(s) = std::fs::read_to_string(path) {
+            match toml::from_str::<Value>(&s) {
+                Ok(user) => deep_merge(&mut base, &user),
+                Err(e) => error = Some(e.to_string()),
+            }
         }
-        base.try_into().unwrap_or_default()
+        match base.try_into() {
+            Ok(cfg) => (cfg, error),
+            // マージ後の型不一致（例：未知の列挙値）も既定へ。先のエラーを優先。
+            Err(e) => (Self::default(), error.or_else(|| Some(e.to_string()))),
+        }
     }
 
     /// 実効値とデフォルトの差分だけを `config.toml` へ書き出す。
@@ -715,6 +734,35 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let st: State = load_toml(&path);
         assert!(st.window.is_none());
+    }
+
+    #[test]
+    fn load_reporting_flags_broken_toml() {
+        let path = std::env::temp_dir().join("rerics_test_broken_config.toml");
+        // 文法エラー（未閉じ・無効エスケープ）の config.toml。
+        std::fs::write(&path, "editor = \"C:\\Users\"\n").unwrap();
+        let (cfg, err) = Config::load_from_reporting(&path);
+        assert!(err.is_some(), "壊れた TOML はエラーを報告する");
+        // 既定で起動する（黙って一部反映ではなく既定に戻る）。
+        assert_eq!(cfg.editor, Config::default().editor);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_reporting_ok_for_valid_and_missing() {
+        // 妥当な config はエラーなしで反映。
+        let path = std::env::temp_dir().join("rerics_test_valid_config.toml");
+        std::fs::write(&path, "editor = 'code.exe'\n").unwrap();
+        let (cfg, err) = Config::load_from_reporting(&path);
+        assert!(err.is_none());
+        assert_eq!(cfg.editor, "code.exe");
+        let _ = std::fs::remove_file(&path);
+        // ファイル無しは正常（既定・エラーなし）。
+        let missing = std::env::temp_dir().join("rerics_test_no_such_config.toml");
+        let _ = std::fs::remove_file(&missing);
+        let (cfg2, err2) = Config::load_from_reporting(&missing);
+        assert!(err2.is_none());
+        assert_eq!(cfg2.editor, Config::default().editor);
     }
 
     #[test]

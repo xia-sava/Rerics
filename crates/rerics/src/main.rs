@@ -69,6 +69,12 @@ fn wm_restore_maximize() -> co::WM {
     unsafe { co::WM::from_raw(0x8000) }
 }
 
+/// 起動後に設定読み込み失敗のアラートを出すための自前メッセージ。
+/// 0x8000=最大化復元・0x8001=WM_DEBUG_WAKE・0x8002=WM_ICONS_READY と衝突しない番号にする。
+fn wm_config_warn() -> co::WM {
+    unsafe { co::WM::from_raw(0x8003) }
+}
+
 /// スナップショットの範囲指定 `"x,y-WxH"` を解析する。
 #[cfg(feature = "debug-server")]
 fn parse_region(s: &str) -> Option<(i32, i32, i32, i32)> {
@@ -214,6 +220,8 @@ struct MainWindow {
     menu_bar: Rc<w::HMENU>,
     menu_cmds: Rc<std::collections::HashMap<u16, Command>>,
     config: Rc<RefCell<Config>>,
+    /// 起動時の config.toml 読込エラー（あれば）。窓表示後にアラート＋ログで知らせる。
+    config_error: Option<String>,
     left_pane: Rc<RefCell<Pane>>,
     right_pane: Rc<RefCell<Pane>>,
     keymap: Rc<RefCell<KeyMap>>,
@@ -330,7 +338,7 @@ impl MainWindow {
             ..Default::default()
         });
 
-        let mut config = Config::load();
+        let (mut config, config_error) = Config::load_reporting();
         config.resolve_theme(system_is_light());
         let m = config.layout.margin;
 
@@ -451,6 +459,7 @@ impl MainWindow {
             menu_bar: Rc::new(menu_bar),
             menu_cmds: Rc::new(menu_cmds),
             config: Rc::new(RefCell::new(config)),
+            config_error,
             left_pane,
             right_pane,
             keymap: Rc::new(RefCell::new(keymap)),
@@ -617,12 +626,37 @@ impl MainWindow {
                 let hwnd_ptr = this.wnd.hwnd().ptr() as isize;
                 debug_server::start(port, this.debug.queue.clone(), hwnd_ptr);
             }
+            // 設定読込エラーは、詳細をログへ出し、窓表示後にアラートを出す（遅延）。
+            if let Some(detail) = &this.config_error {
+                this.log.error("設定ファイル config.toml を読み込めませんでした。既定の設定で起動しています。");
+                this.log.warn(&format!("config.toml の詳細: {detail}"));
+                unsafe {
+                    let _ = this.wnd.hwnd().PostMessage(w::msg::WndMsg {
+                        msg_id: wm_config_warn(),
+                        wparam: 0,
+                        lparam: 0,
+                    });
+                }
+            }
             Ok(0)
         });
 
         let this = self.clone();
         self.wnd.on().wm(wm_restore_maximize(), move |_| {
             window_state::maximize(&this.wnd.hwnd());
+            Ok(0)
+        });
+
+        // 設定読込エラーのアラート（窓表示後に遅延表示）。詳細はログに出してある。
+        // 登録モーダルなので debug-server から観測・クローズできる（実機/headless 同一挙動）。
+        let this = self.clone();
+        self.wnd.on().wm(wm_config_warn(), move |_| {
+            dialog::message_box(
+                &this.wnd,
+                "設定の読み込み",
+                "config.toml を読み込めませんでした。\n既定の設定で起動しました。\n詳細はログを確認してください。",
+                dialog::MessageStyle::Error,
+            );
             Ok(0)
         });
 

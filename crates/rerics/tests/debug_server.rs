@@ -354,6 +354,33 @@ fn debug_server_smoke() {
     assert!(pc.contains("\"cursor\""), "resolved_colors should list palette: {pc}");
 }
 
+/// 壊れた config.toml はアプリを止めず、既定で起動した上でアラート（メッセージモーダル）と
+/// ログの詳細で知らせる（実機/headless 同一挙動＝モーダルは debug-server で観測・クローズ可能）。
+#[test]
+fn broken_config_warns_and_starts_with_defaults() {
+    // `"C:\Users"` は TOML の無効エスケープ（\U）でパース失敗する（実際に起きた失敗例）。
+    let server = Server::start(&["a.txt"], "editor = \"C:\\Users\"\n");
+
+    // 既定で起動して応答する（黙って全無視で固まらない）。
+    let av = server.req("GET", "/state/active_view", "").expect("active_view").1;
+    assert_eq!(av.trim(), "\"none\"", "壊れた config でも既定で起動して応答する");
+
+    // 起動時アラート（メッセージモーダル）が出ており、観測できる。
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"message\""), "alert modal が出る: {modal}");
+    assert!(modal.contains("設定の読み込み"), "alert タイトル: {modal}");
+
+    // ログに読込失敗の旨とパースエラーの詳細が出ている。
+    let log = server.req("GET", "/state/log", "").expect("log").1;
+    assert!(log.contains("config.toml を読み込めませんでした"), "ログにエラー: {log}");
+    assert!(log.contains("TOML parse error"), "ログに詳細: {log}");
+
+    // モーダルは debug-server から閉じられる（実機と同じ操作で進行できる）。
+    server.req("POST", "/modal/key/enter", "").expect("close alert");
+    let after = poll(&server, "/state/modal", |b| b.trim() == "null");
+    assert_eq!(after.trim(), "null", "Enter でアラートを閉じられる");
+}
+
 /// `/command` の body 引数（JSON 文字列配列）が受理され、引数を見ないコマンドでは
 /// 無害に無視されること、不正な body は 400 になることを確認する（引数基盤の配線検証）。
 #[test]
