@@ -157,3 +157,6 @@ history = false
 history_count = 100
 to_parent = false
 down_after_select = true
+
+[image]
+wheel = "navigate"

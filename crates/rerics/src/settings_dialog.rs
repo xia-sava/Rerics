@@ -9,7 +9,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use rerics_core::{Bookmark, Colors, Config, Layout, Rgb, ResolvedTheme, Theme};
+use rerics_core::{Bookmark, Colors, Config, Layout, Rgb, ResolvedTheme, Theme, WheelAction};
 use winsafe::{self as w, co, gui, msg::tvm, prelude::*};
 
 /// 自前描画コントロールをオフスクリーン DC へ描かせるメッセージ。`PrintWindow`
@@ -961,6 +961,64 @@ fn build_cursor(parent: &gui::WindowControl, shared: &Rc<Shared>) {
     }
 }
 
+/// ラベル付きのグループ枠を置く（Win32 の BS_GROUPBOX ボタン）。
+fn group_box(parent: &(impl GuiParent + 'static), text: &str, x: i32, y: i32, cx: i32, cy: i32) {
+    let _ = gui::Button::new(
+        parent,
+        gui::ButtonOpts {
+            text,
+            control_style: co::BS::GROUPBOX,
+            position: gui::dpi(x, y),
+            width: gui::dpi_x(cx),
+            height: gui::dpi_y(cy),
+            ..Default::default()
+        },
+    );
+}
+
+/// 「ビューア」ページ。画像／テキストでセクション分けし、各設定を即 `Shared` へ反映する。
+/// テキストセクションは枠のみ（設定項目は今後ここへ追加していく）。
+fn build_viewer(parent: &gui::WindowControl, shared: &Rc<Shared>) {
+    let wheel = shared.cfg.borrow().image.wheel;
+
+    // 画像セクション。
+    group_box(parent, "画像", 12, 8, 752, 76);
+    label(parent, "マウスホイール", 28, 38, 110);
+    let group = gui::RadioGroup::new(
+        parent,
+        &[
+            gui::RadioButtonOpts {
+                text: "前後送り(&N)",
+                position: gui::dpi(142, 36),
+                size: gui::dpi(104, 20),
+                selected: wheel == WheelAction::Navigate,
+                ..Default::default()
+            },
+            gui::RadioButtonOpts {
+                text: "拡大／縮小(&Z)",
+                position: gui::dpi(248, 36),
+                size: gui::dpi(118, 20),
+                selected: wheel == WheelAction::Zoom,
+                ..Default::default()
+            },
+        ],
+    );
+    {
+        let shared = shared.clone();
+        let group2 = group.clone();
+        group.on().bn_clicked(move || {
+            shared.cfg.borrow_mut().image.wheel = match group2.selected_index() {
+                Some(1) => WheelAction::Zoom,
+                _ => WheelAction::Navigate,
+            };
+            Ok(())
+        });
+    }
+
+    // テキストセクション（設定項目は今後追加）。
+    group_box(parent, "テキスト", 12, 96, 752, 76);
+}
+
 /// ショートカット入力を先頭1文字へ丸める（空白のみ/空は空文字）。
 fn normalize_shortcut(raw: &str) -> String {
     raw.trim().chars().next().map(|c| c.to_string()).unwrap_or_default()
@@ -1353,6 +1411,8 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     let pane_cursor = make_pane(&wnd, pane_pos, pane_size); // 3
     let pane_registered = make_pane(&wnd, pane_pos, pane_size); // 4
     let pane_keys = make_pane(&wnd, pane_pos, pane_size); // 5
+    // ビューアページはプレビューを出さないので、その領域までフル幅に広げる。
+    let pane_image = make_pane(&wnd, pane_pos, gui::dpi(776, 544)); // 6
     let panes = vec![
         pane_appearance.clone(),
         pane_colors.clone(),
@@ -1360,6 +1420,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         pane_cursor.clone(),
         pane_registered.clone(),
         pane_keys.clone(),
+        pane_image.clone(),
     ];
 
     // 右カラム：プレビュー（外観カテゴリ選択中だけ表示）。表示テーマは「配色テーマ」に追従する
@@ -1379,6 +1440,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     build_appearance(&pane_appearance, &shared, &preview);
     build_layout(&pane_layout, &shared, &preview);
     build_cursor(&pane_cursor, &shared);
+    build_viewer(&pane_image, &shared);
     let registered = RegisteredPane::new(&pane_registered, &shared);
     let keys = KeysPane::new(&pane_keys, &shared);
 
@@ -1463,6 +1525,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
             if let Ok(behavior) = nav.items().add_root("動作", None, 3) {
                 let _ = behavior.add_child("カーソル", None, 3);
                 let _ = behavior.add_child("登録ディレクトリ", None, 4);
+                let _ = behavior.add_child("ビューア", None, 6);
                 let _ = behavior.expand(true);
             }
             let _ = nav.items().add_root("キー", None, 5);
