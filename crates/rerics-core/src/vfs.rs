@@ -271,6 +271,18 @@ mod tests {
     }
 
     #[test]
+    fn to_root_unc_returns_share_root() {
+        // UNC（ネットワーク共有）内の深いパスは、共有ルート \\server\share へ。
+        let unc = Location::Real(PathBuf::from("\\\\server\\share\\dir\\sub"));
+        let root = unc.to_root().and_then(|l| l.as_real_path().map(Path::to_path_buf));
+        assert_eq!(root, Some(PathBuf::from("\\\\server\\share\\")));
+        // 既に共有ルートでも安全に共有ルートを返す。
+        let already = Location::Real(PathBuf::from("\\\\server\\share"));
+        let root2 = already.to_root().and_then(|l| l.as_real_path().map(Path::to_path_buf));
+        assert_eq!(root2, Some(PathBuf::from("\\\\server\\share\\")));
+    }
+
+    #[test]
     fn real_helpers() {
         let r = Location::Real(PathBuf::from("C:\\x\\y"));
         assert_eq!(r.as_real_path(), Some(Path::new("C:\\x\\y")));
