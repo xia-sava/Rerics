@@ -38,6 +38,42 @@ impl MainWindow {
         Ok(())
     }
 
+    /// 任意の仕事をワーカースレッドで回し、結果を UI スレッドの継続 `done` に渡す汎用ジョブ。
+    /// `work` はワーカースレッドで走る（`Send`）、結果 `T` も `Send`。`done` は UI スレッドで
+    /// 走るので `Send` 不要＝開いているダイアログのコントロール等を自由にキャプチャできる。
+    /// 継続は `in_dialog` 中も配達されるので、モーダルを開いたまま後追いで内容を埋められる
+    /// （Android の Main looper 相当を winsafe 向けに手で用意したもの）。
+    pub(crate) fn spawn_job<T, W, D>(&self, work: W, done: D)
+    where
+        T: Send + 'static,
+        W: FnOnce() -> T + Send + 'static,
+        D: FnOnce(&MainWindow, T) -> w::AnyResult<()> + 'static,
+    {
+        let id = self.next_id();
+        self.ui_jobs.borrow_mut().insert(
+            id,
+            Box::new(move |mw, any| match any.downcast::<T>() {
+                Ok(t) => done(mw, *t),
+                Err(_) => Ok(()),
+            }),
+        );
+        self.ensure_task_timer();
+        let tx = self.ui_job_tx.clone();
+        std::thread::spawn(move || {
+            let result = work();
+            let _ = tx.send((id, Box::new(result)));
+        });
+    }
+
+    /// 取り込みタイマを起動する（汎用ジョブ用。`SetTimer` は同一 id 再呼び出しでリセット
+    /// されるだけなので冪等に呼べる）。
+    fn ensure_task_timer(&self) {
+        let _ = self
+            .wnd
+            .hwnd()
+            .SetTimer(task::TASK_TIMER_ID, task::TASK_TIMER_MS, None);
+    }
+
     /// タスクマネージャ・モーダルを開く。
     pub(crate) fn open_task_manager(&self) -> w::AnyResult<()> {
         task_manager::show(&self.wnd, &self.tasks);
@@ -49,6 +85,14 @@ impl MainWindow {
     /// 衝突モーダル表示中はモーダルの内部ループから `WM_TIMER` が再入するため、
     /// `in_dialog` ガードで多重取り込みを抑止する。
     pub(crate) fn pump_tasks(&self) -> w::AnyResult<()> {
+        // 汎用ジョブの継続は自己完結で安全なので、モーダル表示中（in_dialog）でも配達する。
+        // 取り込み中に継続が別のジョブを積むこともあるので、対応表から取り出してから呼ぶ。
+        while let Ok((id, result)) = self.ui_job_rx.try_recv() {
+            let done = self.ui_jobs.borrow_mut().remove(&id);
+            if let Some(done) = done {
+                done(self, result)?;
+            }
+        }
         if self.in_dialog.get() {
             return Ok(());
         }
@@ -150,6 +194,7 @@ impl MainWindow {
         for is_left in [true, false] {
             self.view(is_left).tick_loading();
         }
+        self.maybe_kill_task_timer();
         Ok(())
     }
 
@@ -183,10 +228,10 @@ impl MainWindow {
         Ok(())
     }
 
-    /// タスクが空で、かつどちらのペインも読込中でなければ取り込みタイマを止める。
+    /// タスク・汎用ジョブとも空で、かつどちらのペインも読込中でなければ取り込みタイマを止める。
     pub(crate) fn maybe_kill_task_timer(&self) {
         let loading = self.view(true).is_loading() || self.view(false).is_loading();
-        if self.tasks.borrow().is_empty() && !loading {
+        if self.tasks.borrow().is_empty() && !loading && self.ui_jobs.borrow().is_empty() {
             let _ = self.wnd.hwnd().KillTimer(task::TASK_TIMER_ID);
         }
     }

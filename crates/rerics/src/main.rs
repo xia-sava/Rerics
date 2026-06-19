@@ -190,6 +190,12 @@ fn system_is_light() -> bool {
     if rc == 0 { data != 0 } else { true }
 }
 
+/// 汎用バックグラウンドジョブの結果（型消去してワーカー → UI スレッドへ運ぶ）。
+type UiJobResult = Box<dyn std::any::Any + Send>;
+/// その結果を UI スレッドで受け取って後処理する継続（UI 側に置くので `Send` 不要＝
+/// 開いているダイアログのコントロール等を自由にキャプチャできる）。
+type UiJobDone = Box<dyn FnOnce(&MainWindow, UiJobResult) -> w::AnyResult<()>>;
+
 #[derive(Clone)]
 struct MainWindow {
     wnd: gui::WindowMain,
@@ -223,6 +229,11 @@ struct MainWindow {
     right_mask: Rc<RefCell<Option<String>>>,
     task_tx: Sender<WorkerEvent>,
     task_rx: Rc<Receiver<WorkerEvent>>,
+    /// 汎用ジョブのワーカー → UI レーン。レガシーの `task_*` と別建てで、`in_dialog` 中も
+    /// 配達する（モーダルを後追いで埋めるため）。`ui_jobs` は id → 継続の対応表。
+    ui_job_tx: Sender<(u64, UiJobResult)>,
+    ui_job_rx: Rc<Receiver<(u64, UiJobResult)>>,
+    ui_jobs: Rc<RefCell<std::collections::HashMap<u64, UiJobDone>>>,
     tasks: Rc<RefCell<Vec<TaskEntry>>>,
     next_task_id: Rc<Cell<u64>>,
     progress_seq: Arc<AtomicU64>,
@@ -419,6 +430,7 @@ impl MainWindow {
         let (menu_bar, menu_cmds) = menu::build().expect("メニューバーの構築");
 
         let (task_tx, task_rx) = std::sync::mpsc::channel();
+        let (ui_job_tx, ui_job_rx) = std::sync::mpsc::channel();
 
         Self {
             wnd,
@@ -448,6 +460,9 @@ impl MainWindow {
             right_mask: Rc::new(RefCell::new(None)),
             task_tx,
             task_rx: Rc::new(task_rx),
+            ui_job_tx,
+            ui_job_rx: Rc::new(ui_job_rx),
+            ui_jobs: Rc::new(RefCell::new(std::collections::HashMap::new())),
             tasks: Rc::new(RefCell::new(Vec::new())),
             next_task_id: Rc::new(Cell::new(0)),
             progress_seq: Arc::new(AtomicU64::new(0)),

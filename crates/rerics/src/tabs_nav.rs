@@ -333,19 +333,13 @@ impl MainWindow {
         self.go_to_drive(is_left, &root)
     }
 
-    /// ドライブ一覧（容量つき）から選んでそのルートへ移動する。
+    /// ドライブ一覧（容量つき）から選んでそのルートへ移動する。容量取得は未了ドライブで
+    /// 固まりうるため別スレッドで集め、集まってから UI で一覧表示する（UI を固めない）。
     pub(crate) fn change_drive_dialog(&self, is_left: bool) -> w::AnyResult<()> {
         let roots = w::GetLogicalDriveStrings().unwrap_or_default();
         if roots.is_empty() {
             return Ok(());
         }
-        let labels: Vec<String> = roots
-            .iter()
-            .map(|r| {
-                let info = drive_info_text(Path::new(r));
-                if info.is_empty() { r.clone() } else { info }
-            })
-            .collect();
         let cur = self
             .pane(is_left)
             .borrow()
@@ -357,13 +351,40 @@ impl MainWindow {
             .iter()
             .position(|r| Some(r.to_uppercase()) == cur)
             .unwrap_or(0);
-        let Some(idx) = dialog::list_box(&self.wnd, "ドライブの選択", &labels, initial) else {
+        let roots_work = roots.clone();
+        self.spawn_job(
+            move || {
+                roots_work
+                    .iter()
+                    .map(|r| {
+                        let info = drive_info_text(Path::new(r));
+                        if info.is_empty() { r.clone() } else { info }
+                    })
+                    .collect::<Vec<String>>()
+            },
+            move |mw, labels| mw.show_drive_dialog(is_left, roots, labels, initial),
+        );
+        Ok(())
+    }
+
+    /// 収集済みのドライブラベルから選び、そのルートへ移動する（ジョブ完了時の UI 側処理）。
+    fn show_drive_dialog(
+        &self,
+        is_left: bool,
+        roots: Vec<String>,
+        labels: Vec<String>,
+        initial: usize,
+    ) -> w::AnyResult<()> {
+        self.in_dialog.set(true);
+        let sel = dialog::list_box(&self.wnd, "ドライブの選択", &labels, initial);
+        self.in_dialog.set(false);
+        let Some(idx) = sel else {
             return Ok(());
         };
-        let Some(root) = roots.get(idx) else {
+        let Some(root) = roots.get(idx).cloned() else {
             return Ok(());
         };
-        self.go_to_drive(is_left, root)
+        self.go_to_drive(is_left, &root)
     }
 
     /// 登録ディレクトリの一覧から選んでそこへジャンプする。空なら情報ログのみ。
