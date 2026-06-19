@@ -915,6 +915,28 @@ fn build_cursor(parent: &gui::WindowControl, shared: &Rc<Shared>) {
             Ok(())
         });
     }
+
+    // 左右カーソルキーで親移動（原作 CursorToParent・既定オフ）。
+    let to_parent = shared.cfg.borrow().cursor.to_parent;
+    let parent_check = gui::CheckBox::new(
+        parent,
+        gui::CheckBoxOpts {
+            text: "左右カーソルキーで親ディレクトリへ移動する(&P)",
+            position: gui::dpi(16, 124),
+            size: gui::dpi(320, 22),
+            check_state: if to_parent { co::BST::CHECKED } else { co::BST::UNCHECKED },
+            ..Default::default()
+        },
+    );
+    label(parent, "（アクティブ側で外向きのカーソルキー：左ペインで←／右ペインで→ が親移動になります）", 16, 152, 360);
+    {
+        let shared = shared.clone();
+        let pc = parent_check.clone();
+        parent_check.on().bn_clicked(move || {
+            shared.cfg.borrow_mut().cursor.to_parent = pc.is_checked();
+            Ok(())
+        });
+    }
 }
 
 /// 「キー」ページ（割り当ての一覧表示）。

@@ -183,11 +183,15 @@ pub struct CursorSettings {
     pub history: bool,
     /// 記憶するパス数の上限。超えると古いものから捨てる（原作 CursorHistoryCount・既定 100）。
     pub history_count: usize,
+    /// 左右カーソルキーで親ディレクトリへ移動するか（原作 Cursor/CursorToParent・既定オフ）。
+    /// オンのとき、アクティブ側ペインで外向きのカーソルキー（左ペインで左／右ペインで右）を
+    /// 押すと親へ移動する。オフのときは従来どおり反対ペインへフォーカス移動するのみ。
+    pub to_parent: bool,
 }
 
 impl Default for CursorSettings {
     fn default() -> Self {
-        Self { history: false, history_count: 100 }
+        Self { history: false, history_count: 100, to_parent: false }
     }
 }
 

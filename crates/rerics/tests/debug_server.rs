@@ -1189,6 +1189,34 @@ fn cursor_opposite_toggles_active_pane() {
     assert!(a2.contains("left"), "もう一度で左へ戻る: {a2}");
 }
 
+/// #74: CursorToParent=on のとき、アクティブ側ペインで外向きカーソルキー（左ペインで
+/// FocusLeft）が親移動になる。
+#[test]
+fn cursor_to_parent_navigates_on_outward_key() {
+    let server = Server::start(&["a.txt"], "[cursor]\nto_parent = true\n");
+    let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+    assert!(server.req("GET", "/state/active_pane", "").unwrap().1.contains("left"), "初期は左アクティブ");
+
+    server.req("POST", "/command/FocusLeft", "").unwrap();
+    let up = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx);
+    assert_ne!(up.trim(), sbx, "left+FocusLeft with CursorToParent should go to parent");
+    // 移動先は sbx の祖先（親）のはず。
+    let parent = up.trim().trim_matches('"');
+    let sbx_raw = sbx.trim_matches('"');
+    assert!(sbx_raw.starts_with(parent), "moved location should be an ancestor of sbx: {up} / {sbx}");
+}
+
+/// #74: CursorToParent=off（既定）では FocusLeft は親移動せず、フォーカス移動のみ。
+#[test]
+fn cursor_to_parent_off_keeps_focus_only() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+    server.req("POST", "/command/FocusLeft", "").unwrap();
+    std::thread::sleep(Duration::from_millis(250));
+    let loc = server.req("GET", "/state/panes/left/location", "").unwrap().1;
+    assert_eq!(loc.trim(), sbx, "off: FocusLeft must not navigate to parent");
+}
+
 /// SelectFile はカーソル位置を（トグルでなく）マークし、カーソルを1つ下げる。
 #[test]
 fn select_file_marks_current_and_advances() {

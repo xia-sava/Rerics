@@ -783,11 +783,21 @@ impl MainWindow {
                 return Ok(());
             }
             Command::FocusLeft => {
-                self.view(true).hwnd().SetFocus();
+                // 既に左ペインがアクティブで CursorToParent が有効なら親へ移動、
+                // そうでなければ左ペインへフォーカス移動（原作 CursorLeft 準拠）。
+                if is_left && self.config.borrow().cursor.to_parent {
+                    self.to_parent(true)?;
+                } else {
+                    self.view(true).hwnd().SetFocus();
+                }
                 return Ok(());
             }
             Command::FocusRight => {
-                self.view(false).hwnd().SetFocus();
+                if !is_left && self.config.borrow().cursor.to_parent {
+                    self.to_parent(false)?;
+                } else {
+                    self.view(false).hwnd().SetFocus();
+                }
                 return Ok(());
             }
             Command::MarkToggle => {
