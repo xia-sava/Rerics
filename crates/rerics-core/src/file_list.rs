@@ -662,6 +662,19 @@ impl FileListState {
         self.clamp_scroll(page_rows);
     }
 
+    /// カーソルを `target` へ移動する。`select` のとき、アンカー(`select_start`)から
+    /// 移動後の位置までを範囲マークする（それ以外のマークは落とす）。`select` でないときは
+    /// アンカーを移動後の位置へ追従させる（原作 `CursorXxx(bool select)` 準拠）。
+    pub fn move_cursor(&mut self, target: isize, page_rows: usize, select: bool) {
+        self.set_cursor(target, page_rows);
+        if select {
+            self.clear_all();
+            self.select_files(self.select_start, self.cursor);
+        } else {
+            self.select_start = self.cursor;
+        }
+    }
+
     /// scroll_top を直接設定する（カーソルは動かさない）。
     pub fn set_scroll_top(&mut self, top: isize, page_rows: usize) {
         let top = if top < 0 { 0 } else { top as usize };
@@ -1370,6 +1383,55 @@ mod tests {
         assert!(s.items[1].selected);
         assert_eq!(s.cursor, 1);
         assert_eq!(s.select_start, 1);
+    }
+
+    #[test]
+    fn move_cursor_plain_follows_anchor() {
+        // 非 select の移動は select_start を移動後のカーソルへ追従させる（#61）。
+        let mut s = FileListState::new();
+        s.items = vec![FileItem::parent(), file("a"), file("b"), file("c")];
+        s.select_start = 0;
+        s.move_cursor(2, 10, false);
+        assert_eq!(s.cursor, 2);
+        assert_eq!(s.select_start, 2);
+        // マークは付かない。
+        assert!(s.items.iter().all(|it| !it.selected));
+    }
+
+    #[test]
+    fn move_cursor_select_marks_anchor_range() {
+        // select の移動はアンカー〜現在位置を範囲マークし、アンカーは固定（#60/#208）。
+        let mut s = FileListState::new();
+        s.items = vec![FileItem::parent(), file("a"), file("b"), file("c"), file("d")];
+        s.select_start = 1;
+        s.set_cursor(1, 10);
+        // 1→3 を選択しながら移動。
+        s.move_cursor(3, 10, true);
+        assert_eq!(s.cursor, 3);
+        assert_eq!(s.select_start, 1); // アンカーは動かない
+        assert!(!s.items[0].selected);
+        assert!(s.items[1].selected);
+        assert!(s.items[2].selected);
+        assert!(s.items[3].selected);
+        assert!(!s.items[4].selected);
+        // さらに 3→1 へ縮めると範囲外（旧マーク）は落ちる。
+        s.move_cursor(1, 10, true);
+        assert!(s.items[1].selected);
+        assert!(!s.items[2].selected);
+        assert!(!s.items[3].selected);
+    }
+
+    #[test]
+    fn move_cursor_select_skips_parent() {
+        // 範囲が親(..)を含んでも親はマークしない。
+        let mut s = FileListState::new();
+        s.items = vec![FileItem::parent(), file("a"), file("b")];
+        s.select_start = 2;
+        s.set_cursor(2, 10);
+        s.move_cursor(0, 10, true);
+        assert!(!s.items[0].selected);
+        assert!(s.items[1].selected);
+        assert!(s.items[2].selected);
     }
 
     #[test]

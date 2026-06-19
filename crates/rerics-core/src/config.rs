@@ -191,11 +191,15 @@ pub struct CursorSettings {
     /// オンのとき、アクティブ側ペインで外向きのカーソルキー（左ペインで左／右ペインで右）を
     /// 押すと親へ移動する。オフのときは従来どおり反対ペインへフォーカス移動するのみ。
     pub to_parent: bool,
+    /// マーク反転（Space）後にカーソルを下へ動かすか（原作 Cursor/DownAfterSelect・既定オン）。
+    /// オフのときはマークしてもカーソルは留まる。移動量を明示した割当（Shift+Space 等）は
+    /// この設定に関わらずその量だけ動く。
+    pub down_after_select: bool,
 }
 
 impl Default for CursorSettings {
     fn default() -> Self {
-        Self { history: false, history_count: 100, to_parent: false }
+        Self { history: false, history_count: 100, to_parent: false, down_after_select: true }
     }
 }
 

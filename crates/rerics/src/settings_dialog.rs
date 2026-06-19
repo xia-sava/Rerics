@@ -937,6 +937,28 @@ fn build_cursor(parent: &gui::WindowControl, shared: &Rc<Shared>) {
             Ok(())
         });
     }
+
+    // マーク反転後のカーソル下移動（原作 DownAfterSelect・既定オン）。
+    let down_after = shared.cfg.borrow().cursor.down_after_select;
+    let down_check = gui::CheckBox::new(
+        parent,
+        gui::CheckBoxOpts {
+            text: "マーク反転後にカーソルを下へ移動する(&D)",
+            position: gui::dpi(16, 184),
+            size: gui::dpi(320, 22),
+            check_state: if down_after { co::BST::CHECKED } else { co::BST::UNCHECKED },
+            ..Default::default()
+        },
+    );
+    label(parent, "（Space でマークを反転したあと、自動でカーソルが1つ下へ進みます）", 16, 212, 360);
+    {
+        let shared = shared.clone();
+        let dc = down_check.clone();
+        down_check.on().bn_clicked(move || {
+            shared.cfg.borrow_mut().cursor.down_after_select = dc.is_checked();
+            Ok(())
+        });
+    }
 }
 
 /// ショートカット入力を先頭1文字へ丸める（空白のみ/空は空文字）。

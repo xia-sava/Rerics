@@ -538,6 +538,18 @@ impl Default for KeyMap {
         m.bind(KeyChord::key(vk::NEXT), CursorPageDown);
         m.bind(KeyChord::new(vk::HOME, true, false, false), CursorTop);
         m.bind(KeyChord::new(vk::END, true, false, false), CursorEnd);
+        // Shift＋上下/PageUp/Down＝選択しながら移動（原作 CursorXxx(True)）。
+        for (vk, cmd) in [
+            (vk::UP, CursorUp),
+            (vk::DOWN, CursorDown),
+            (vk::PRIOR, CursorPageUp),
+            (vk::NEXT, CursorPageDown),
+        ] {
+            m.bind_inv(
+                KeyChord::new(vk, false, true, false),
+                Invocation::new(cmd, vec!["select".into()]),
+            );
+        }
         // 侵入・親・ルート・履歴・フォーカス（原作: Enter=Open / BackSpace / Pipe / Alt+←→）。
         m.bind(KeyChord::key(vk::RETURN), EnterDir);
         m.bind(KeyChord::key(vk::BACK), ToParent);
@@ -557,6 +569,11 @@ impl Default for KeyMap {
         m.bind(KeyChord::key(vk::J), JumpDialog);
         // 選択（原作: Space=ReverseFile / A=ReverseAllFile・Shift+A=ReverseAll・Ctrl+A=SelectAll / Home=ClearAll）。
         m.bind(KeyChord::key(vk::SPACE), MarkToggle);
+        // Shift+Space＝反転＋カーソル上移動（原作 ReverseFile(-1)）。
+        m.bind_inv(
+            KeyChord::new(vk::SPACE, false, true, false),
+            Invocation::new(MarkToggle, vec!["-1".into()]),
+        );
         m.bind(KeyChord::key(vk::A), ReverseAllFile);
         m.bind(KeyChord::new(vk::A, false, true, false), ReverseAll);
         m.bind(KeyChord::new(vk::A, true, false, false), SelectAll);
@@ -810,6 +827,26 @@ mod tests {
             m.resolve(&KeyChord::new(vk::LEFT, false, true, false)),
             Some(Command::PreviousDrive)
         );
+    }
+
+    #[test]
+    fn default_binds_shift_select_move() {
+        // Shift＋上下/PageUp/Down＝選択しながら移動（CursorXxx("select")）。
+        let m = KeyMap::default();
+        for (vk, cmd) in [
+            (vk::UP, Command::CursorUp),
+            (vk::DOWN, Command::CursorDown),
+            (vk::PRIOR, Command::CursorPageUp),
+            (vk::NEXT, Command::CursorPageDown),
+        ] {
+            let inv = m.resolve_inv(&KeyChord::new(vk, false, true, false)).unwrap();
+            assert_eq!(inv.command, cmd);
+            assert_eq!(inv.args, vec!["select".to_string()]);
+        }
+        // Shift+Space＝反転＋上移動（MarkToggle("-1")）。
+        let space = m.resolve_inv(&KeyChord::new(vk::SPACE, false, true, false)).unwrap();
+        assert_eq!(space.command, Command::MarkToggle);
+        assert_eq!(space.args, vec!["-1".to_string()]);
     }
 
     #[test]
