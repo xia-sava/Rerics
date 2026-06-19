@@ -1,5 +1,5 @@
-//! 設定ダイアログ。左ナビ（外観・配色・レイアウト・キー）と、右側に常時表示する
-//! 「ミニ全体窓」プレビューを並べた 3 カラムの master-detail 構成。
+//! 設定ダイアログ。左ナビ（ツリー：外観＝テーマ・フォント／配色／レイアウト、動作＝カーソル、
+//! キー）と中央の詳細 pane、外観カテゴリ選択中だけ右へ出す「ミニ全体窓」プレビューの構成。
 //!
 //! 編集中の値はすべて [`Shared`] へ即時反映し、配色・フォント・レイアウト寸法・テーマの
 //! 変更はその場でプレビューへ反映する（ライブプレビュー）。`OK`／`適用` で現在の [`Config`]
@@ -10,7 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rerics_core::{Colors, Config, Layout, Rgb, ResolvedTheme, Theme};
-use winsafe::{self as w, co, gui, msg::lb, prelude::*};
+use winsafe::{self as w, co, gui, msg::tvm, prelude::*};
 
 /// 自前描画コントロールをオフスクリーン DC へ描かせるメッセージ。`PrintWindow`
 /// （デバッグ制御サーバの `/snapshot/modal`）が子ごとに送るので、これに応答しないと黒く写る。
@@ -54,8 +54,6 @@ const LAYOUT_FIELDS: &[(&str, fn(&Layout) -> i32, fn(&mut Layout, i32))] = &[
 ];
 
 /// 左ナビの項目名（順序はセクション pane と一致させる）。
-const SECTIONS: &[&str] = &["外観", "配色", "レイアウト", "キー"];
-
 fn to_colorref(c: Rgb) -> w::COLORREF {
     w::COLORREF::from_rgb(c.r, c.g, c.b)
 }
@@ -750,16 +748,27 @@ fn build_appearance(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &
     label(parent, "（フォント・サイズはプレビューに反映されます）", 16, 232, 340);
     drop(cfg);
 
-    // テーマ選択を即反映する（プレビューの配色は右の「プレビュー表示」で切り替える）。
+    // テーマ選択を即反映し、プレビュー／配色編集の対象サイドもこれに追従させる。
     {
         let shared = shared.clone();
         let theme2 = theme.clone();
+        let preview = preview.clone();
         theme.on().bn_clicked(move || {
-            shared.cfg.borrow_mut().theme = match theme2.selected_index() {
-                Some(0) => Theme::Dark,
-                Some(1) => Theme::Light,
-                _ => Theme::System,
+            let dark = {
+                let mut cfg = shared.cfg.borrow_mut();
+                cfg.theme = match theme2.selected_index() {
+                    Some(0) => Theme::Dark,
+                    Some(1) => Theme::Light,
+                    _ => Theme::System,
+                };
+                match cfg.theme {
+                    Theme::Dark => true,
+                    Theme::Light => false,
+                    Theme::System => cfg.resolved == ResolvedTheme::Dark,
+                }
             };
+            shared.target_dark.set(dark);
+            preview.refresh();
             Ok(())
         });
     }
@@ -852,6 +861,62 @@ fn build_layout(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &Prev
     }
 }
 
+/// 「カーソル」ページ（位置記憶のオン/オフと履歴件数の上限）を構築する。各操作を即 `Shared` へ反映する。
+fn build_cursor(parent: &gui::WindowControl, shared: &Rc<Shared>) {
+    let (history, count) = {
+        let cfg = shared.cfg.borrow();
+        (cfg.cursor.history, cfg.cursor.history_count)
+    };
+    let check = gui::CheckBox::new(
+        parent,
+        gui::CheckBoxOpts {
+            text: "カーソル位置を記憶する(&M)",
+            position: gui::dpi(16, 16),
+            size: gui::dpi(280, 22),
+            check_state: if history { co::BST::CHECKED } else { co::BST::UNCHECKED },
+            ..Default::default()
+        },
+    );
+    label(parent, "履歴件数の上限", 36, 52, 110);
+    let count_edit = gui::Edit::new(
+        parent,
+        gui::EditOpts {
+            text: &count.to_string(),
+            control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
+            position: gui::dpi(150, 50),
+            width: gui::dpi_x(64),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+    label(parent, "（ディレクトリを再訪したとき、前回のカーソル位置へ戻します）", 16, 92, 340);
+    let _ = count_edit.hwnd().EnableWindow(history);
+
+    // オン/オフ：cfg へ反映し、件数 Edit の有効/無効を連動させる。
+    {
+        let shared = shared.clone();
+        let check2 = check.clone();
+        let count_edit = count_edit.clone();
+        check.on().bn_clicked(move || {
+            let on = check2.is_checked();
+            shared.cfg.borrow_mut().cursor.history = on;
+            let _ = count_edit.hwnd().EnableWindow(on);
+            Ok(())
+        });
+    }
+    // 件数：1 以上にクランプして反映。
+    {
+        let shared = shared.clone();
+        let edit = count_edit.clone();
+        count_edit.on().en_change(move || {
+            let cur = shared.cfg.borrow().cursor.history_count as i32;
+            let v = parse_or(&edit, cur).max(1);
+            shared.cfg.borrow_mut().cursor.history_count = v as usize;
+            Ok(())
+        });
+    }
+}
+
 /// 「キー」ページ（割り当ての一覧表示）。
 #[derive(Clone)]
 struct KeysPane {
@@ -902,56 +967,49 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         target_dark: Cell::new(current.resolved == ResolvedTheme::Dark),
     });
 
-    // 左カラム：ナビ。
-    let nav = gui::ListBox::new(
+    // 左カラム：ナビ（ツリー）。各ノードの data は表示する pane 番号。
+    let nav = gui::TreeView::<usize>::new(
         &wnd,
-        gui::ListBoxOpts {
+        gui::TreeViewOpts {
             position: gui::dpi(12, 12),
-            size: gui::dpi(120, 544),
+            size: gui::dpi(152, 544),
             ..Default::default()
         },
     );
 
-    // 中央カラム：セクション pane（同じ矩形に重ねて show/hide で切替）。
-    let pane_pos = gui::dpi(144, 12);
+    // 中央カラム：セクション pane（同じ矩形に重ねて show/hide で切替）。番号は nav の data と対応。
+    let pane_pos = gui::dpi(172, 12);
     let pane_size = gui::dpi(360, 544);
-    let pane_appearance = make_pane(&wnd, pane_pos, pane_size);
-    let pane_colors = make_pane(&wnd, pane_pos, pane_size);
-    let pane_layout = make_pane(&wnd, pane_pos, pane_size);
-    let pane_keys = make_pane(&wnd, pane_pos, pane_size);
+    let pane_appearance = make_pane(&wnd, pane_pos, pane_size); // 0
+    let pane_colors = make_pane(&wnd, pane_pos, pane_size); // 1
+    let pane_layout = make_pane(&wnd, pane_pos, pane_size); // 2
+    let pane_cursor = make_pane(&wnd, pane_pos, pane_size); // 3
+    let pane_keys = make_pane(&wnd, pane_pos, pane_size); // 4
     let panes = vec![
         pane_appearance.clone(),
         pane_colors.clone(),
         pane_layout.clone(),
+        pane_cursor.clone(),
         pane_keys.clone(),
     ];
 
-    // 右カラム：プレビュー（フル高・常時表示）と、その表示テーマ切替。
-    label(&wnd, "プレビュー", 516, 14, 80);
-    let target = gui::RadioGroup::new(
+    // 右カラム：プレビュー（外観カテゴリ選択中だけ表示）。表示テーマは「配色テーマ」に追従する
+    // （専用のダーク/ライト切替は廃止）。pane 切替に応じてラベルごと show/hide する。
+    let preview_label = gui::Label::new(
         &wnd,
-        &[
-            gui::RadioButtonOpts {
-                text: "ダーク",
-                position: gui::dpi(600, 12),
-                size: gui::dpi(72, 20),
-                selected: shared.target_dark.get(),
-                ..Default::default()
-            },
-            gui::RadioButtonOpts {
-                text: "ライト",
-                position: gui::dpi(674, 12),
-                size: gui::dpi(72, 20),
-                selected: !shared.target_dark.get(),
-                ..Default::default()
-            },
-        ],
+        gui::LabelOpts {
+            text: "プレビュー",
+            position: gui::dpi(546, 14),
+            size: gui::dpi(80, 18),
+            ..Default::default()
+        },
     );
-    let preview = Preview::new(&wnd, gui::dpi(516, 40), gui::dpi(432, 516), shared.clone());
+    let preview = Preview::new(&wnd, gui::dpi(546, 40), gui::dpi(402, 516), shared.clone());
 
     // 各 pane の中身。
     build_appearance(&pane_appearance, &shared, &preview);
     build_layout(&pane_layout, &shared, &preview);
+    build_cursor(&pane_cursor, &shared);
     let keys = KeysPane::new(&pane_keys, &shared);
 
     // 配色 pane：操作ボタン（上段）＋スウォッチ一覧（フル高・1 列）。
@@ -1024,9 +1082,27 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         #[cfg(feature = "debug-server")]
         let reg_wnd = wnd.clone();
         wnd.on().wm_create(move |_| {
-            let _ = nav.items().add(SECTIONS);
+            // ツリー構築：外観(テーマ・フォント/配色/レイアウト)・動作(カーソル)・キー。data＝pane 番号。
+            if let Ok(appearance) = nav.items().add_root("外観", None, 0) {
+                let _ = appearance.add_child("テーマ・フォント", None, 0);
+                let _ = appearance.add_child("配色", None, 1);
+                let _ = appearance.add_child("レイアウト", None, 2);
+                let _ = appearance.expand(true);
+            }
+            if let Ok(behavior) = nav.items().add_root("動作", None, 3) {
+                let _ = behavior.add_child("カーソル", None, 3);
+                let _ = behavior.expand(true);
+            }
+            let _ = nav.items().add_root("キー", None, 4);
+            // 先頭ルート（外観＝pane 0）を初期選択（tvn_sel_changed が pane／プレビューを整える）。
             unsafe {
-                let _ = nav.hwnd().SendMessage(lb::SetCurSel { index: Some(0) });
+                if let Some(first) =
+                    nav.hwnd().SendMessage(tvm::GetNextItem { relationship: co::TVGN::ROOT, hitem: None })
+                {
+                    let _ = nav
+                        .hwnd()
+                        .SendMessage(tvm::SelectItem { action: co::TVGN::CARET, hitem: &first });
+                }
             }
             for (i, p) in panes.iter().enumerate() {
                 p.hwnd().ShowWindow(if i == 0 { co::SW::SHOW } else { co::SW::HIDE });
@@ -1049,31 +1125,23 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         });
     }
 
-    // 左ナビ選択で pane を切り替える。
+    // 左ナビ（ツリー）選択で pane を切り替え、外観ブランチ（pane 0..=2）のときだけプレビューを出す。
     {
         let nav2 = nav.clone();
         let panes = panes.clone();
-        nav.on().lbn_sel_change(move || {
-            let idx = unsafe { nav2.hwnd().SendMessage(lb::GetCurSel {}) };
-            if let Some(idx) = idx {
-                for (i, p) in panes.iter().enumerate() {
-                    p.hwnd().ShowWindow(if i as u32 == idx { co::SW::SHOW } else { co::SW::HIDE });
-                }
-            }
-            Ok(())
-        });
-    }
-
-    // プレビュー表示テーマの切替（配色編集対象も連動）。
-    {
-        let shared = shared.clone();
         let preview = preview.clone();
-        let swatch = swatch.clone();
-        let target2 = target.clone();
-        target.on().bn_clicked(move || {
-            shared.target_dark.set(target2.selected_index() == Some(0));
-            swatch.refresh();
-            preview.refresh();
+        let preview_label = preview_label.clone();
+        nav.on().tvn_sel_changed(move |_| {
+            if let Some(item) = nav2.items().iter_selected().next() {
+                let idx = *item.data().borrow();
+                for (i, p) in panes.iter().enumerate() {
+                    p.hwnd().ShowWindow(if i == idx { co::SW::SHOW } else { co::SW::HIDE });
+                }
+                // 外観ブランチ（pane 0..=2）のときだけプレビューを出す。
+                let sw = if idx <= 2 { co::SW::SHOW } else { co::SW::HIDE };
+                preview_label.hwnd().ShowWindow(sw);
+                preview.hwnd().ShowWindow(sw);
+            }
             Ok(())
         });
     }
@@ -1126,5 +1194,5 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     let _ = wnd.show_modal(parent);
     #[cfg(feature = "debug-server")]
     crate::debug_server::modal_registry::pop();
-    let _ = (nav, panes, swatch, change, reset, target, keys, ok, cancel, apply);
+    let _ = (nav, panes, swatch, change, reset, keys, ok, cancel, apply, preview_label);
 }
