@@ -52,9 +52,6 @@ impl MainWindow {
                 debug_server::Request::ModalSelect { index } => {
                     let _ = tx.send(self.debug_modal_select(index));
                 }
-                debug_server::Request::ModalPage { index } => {
-                    let _ = tx.send(self.debug_modal_page(index));
-                }
             }
         }
     }
@@ -176,23 +173,6 @@ impl MainWindow {
                 debug_server::Response::Json(self.debug_state_value().to_string())
             }
             None => debug_server::Response::BadRequest("modal has no list".into()),
-        }
-    }
-
-    /// `POST /modal/page/<index>`：複数ページモーダル（設定）の表示ページを切り替える。
-    #[cfg(feature = "debug-server")]
-    pub(crate) fn debug_modal_page(&self, index: usize) -> debug_server::Response {
-        let used = debug_server::modal_registry::with_top(|t| match t.and_then(|e| e.nav.as_ref()) {
-            Some(n) => {
-                (n.select)(index);
-                true
-            }
-            None => false,
-        });
-        if used {
-            debug_server::Response::Json(self.debug_state_value().to_string())
-        } else {
-            debug_server::Response::BadRequest("modal has no pages".into())
         }
     }
 
@@ -707,11 +687,6 @@ impl MainWindow {
                         (Vec::new(), Vec::new(), selected)
                     }
                 };
-                // 複数ページ（左ナビ）モーダルはページ一覧と現在ページを出す。
-                let (pages, current_page) = match &e.nav {
-                    Some(n) => (n.pages.clone(), (n.current)()),
-                    None => (Vec::new(), 0),
-                };
                 json!({
                     "kind": e.kind,
                     "title": e.title,
@@ -722,8 +697,6 @@ impl MainWindow {
                     "rows": rows,
                     "headers": headers,
                     "selected": selected,
-                    "pages": pages,
-                    "current_page": current_page,
                     "buttons": e.buttons.iter().map(|(l, id)| json!({ "label": l, "id": id })).collect::<Vec<_>>(),
                 })
             }

@@ -1460,57 +1460,17 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
             registered.populate();
             keys.populate();
             #[cfg(feature = "debug-server")]
-            crate::debug_server::modal_registry::push_nav(
+            crate::debug_server::modal_registry::push(
                 "settings",
                 "設定",
+                "",
                 reg_wnd.hwnd().ptr() as isize,
+                false,
                 vec![
                     ("OK".to_string(), 1u16),
                     ("キャンセル".to_string(), 2u16),
                     ("適用".to_string(), 3u16),
                 ],
-                crate::debug_server::modal_registry::NavHooks {
-                    // ページ番号順（pane 番号と一致）。
-                    pages: ["テーマ・フォント", "配色", "レイアウト", "カーソル", "登録ディレクトリ", "キー"]
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect(),
-                    current: {
-                        let nav = nav.clone();
-                        Box::new(move || {
-                            nav.items().iter_selected().next().map(|it| *it.data().borrow()).unwrap_or(0)
-                        })
-                    },
-                    select: {
-                        let nav = nav.clone();
-                        Box::new(move |idx: usize| {
-                            // pane 番号 idx に対応するツリーノードを選択＝既存の tvn_sel_changed が
-                            // pane／プレビューを切替える。
-                            'outer: for root in nav.items().iter_root() {
-                                if *root.data().borrow() == idx {
-                                    unsafe {
-                                        let _ = nav.hwnd().SendMessage(tvm::SelectItem {
-                                            action: co::TVGN::CARET,
-                                            hitem: root.htreeitem(),
-                                        });
-                                    }
-                                    break;
-                                }
-                                for child in root.iter_children() {
-                                    if *child.data().borrow() == idx {
-                                        unsafe {
-                                            let _ = nav.hwnd().SendMessage(tvm::SelectItem {
-                                                action: co::TVGN::CARET,
-                                                hitem: child.htreeitem(),
-                                            });
-                                        }
-                                        break 'outer;
-                                    }
-                                }
-                            }
-                        })
-                    },
-                },
             );
             Ok(0)
         });
