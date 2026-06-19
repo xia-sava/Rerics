@@ -638,29 +638,34 @@ fn nav_history_back_forward() {
     assert_eq!(fwd.trim(), parent, "HistoryForward should go back to the parent");
 }
 
-/// PathHistoryDialog＝移動履歴の一覧（list_box モーダル）から選んでジャンプする。
+/// PathHistoryDialog＝訪問ログ（list_box モーダル・新しい順）から選んでジャンプする。
 #[test]
 fn nav_path_history_dialog() {
     let server = Server::start(&["a.txt"], "");
-    let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1;
-    let sbx = sbx.trim().to_string();
+    let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+    let sbx_raw = sbx.trim_matches('"').replace("\\\\", "\\");
 
-    // 親へ移動して履歴を1件作る。
+    // 親へ移動（履歴に親）→ パス入力で sbx へ戻る（履歴に sbx）。訪問ログは [親, sbx]。
     server.req("POST", "/command/ToParent", "").unwrap();
-    let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx);
-    assert_ne!(parent.trim(), sbx, "ToParent should leave the sandbox");
+    let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx).trim().to_string();
+    assert_ne!(parent, sbx, "ToParent should leave the sandbox");
+    server.req("POST", "/command/ChangeDirectoryDialog", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/text", &sbx_raw).unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    poll(&server, "/state/panes/left/location", |b| b.trim() == sbx);
 
-    // 履歴ダイアログを開く（リスト選択モーダル）。
+    // 履歴ダイアログを開く（新しい順＝[sbx, 親]）。訪問した sbx が一覧に出る。
     server.req("POST", "/command/PathHistoryDialog", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"list\""), "should open a list modal: {modal}");
-    assert!(modal.contains("sbx"), "history should list the sandbox: {modal}");
+    assert!(modal.contains("sbx"), "visited sbx should be listed: {modal}");
 
-    // 先頭（直前の現在地＝sbx）を選んで OK＝そこへジャンプ。
-    server.req("POST", "/modal/select/0", "").unwrap();
+    // 現在地でない親（index 1）を選んで OK＝そこへジャンプ。
+    server.req("POST", "/modal/select/1", "").unwrap();
     server.req("POST", "/modal/command/ok", "").unwrap();
-    let back = poll(&server, "/state/panes/left/location", |b| b.trim() == sbx);
-    assert_eq!(back.trim(), sbx, "selecting a history entry should navigate there");
+    let now = poll(&server, "/state/panes/left/location", |b| b.trim() == parent);
+    assert_eq!(now.trim(), parent, "selecting the parent entry should navigate there");
 }
 
 /// ChangeDirectoryDialog＝パスを入力してそこへ移動する（input_box モーダル）。
@@ -713,6 +718,80 @@ fn nav_change_directory_missing_path_shows_error_dialog() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
     let loc = server.req("GET", "/state/panes/left/location", "").unwrap().1;
     assert_eq!(loc.trim(), sbx_json, "failed navigation should keep the original location");
+}
+
+/// #66: ユーザが行き先を指定した移動（親移動・パス入力）が訪問ログに記録され、
+/// PathHistoryDialog に新しい順で出る。さらに history.toml の pathhistory バケツへ永続する。
+#[test]
+fn path_history_records_and_persists() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx_json = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+    let sbx_raw = sbx_json.trim_matches('"').replace("\\\\", "\\");
+
+    // 親へ移動（履歴に親が入る）→ パス入力で sbx へ戻る（履歴に sbx が入る）。
+    server.req("POST", "/command/ToParent", "").unwrap();
+    poll(&server, "/state/panes/left/location", |b| b.trim() != sbx_json);
+    server.req("POST", "/command/ChangeDirectoryDialog", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/text", &sbx_raw).unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    poll(&server, "/state/panes/left/location", |b| b.trim() == sbx_json);
+
+    // PathHistoryDialog：訪問した sbx が一覧に出る（新しい順の先頭）。
+    server.req("POST", "/command/PathHistoryDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"list\""), "path history should open a list modal: {modal}");
+    assert!(modal.contains("sbx"), "visited sbx should be listed: {modal}");
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+
+    // history.toml に pathhistory バケツが永続する（再起動間も残る土台）。
+    let hist_path = server.base.join("data").join("history.toml");
+    let mut hist = String::new();
+    for _ in 0..50 {
+        if let Ok(s) = std::fs::read_to_string(&hist_path) {
+            if s.contains("pathhistory") {
+                hist = s;
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(hist.contains("pathhistory"), "history.toml should persist the pathhistory bucket: {hist}");
+    assert!(hist.contains("sbx"), "the visited path should be saved: {hist}");
+}
+
+/// #66: 戻る/進む（履歴の再生）は訪問ログに新たな記録を増やさない（往復で増殖しない）。
+#[test]
+fn path_history_back_forward_does_not_grow_log() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx_json = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+
+    // 親へ一度移動して back/forward の素地を作る（ここで親と…は記録される）。
+    server.req("POST", "/command/ToParent", "").unwrap();
+    poll(&server, "/state/panes/left/location", |b| b.trim() != sbx_json);
+
+    let hist_path = server.base.join("data").join("history.toml");
+    let read_hist = || std::fs::read_to_string(&hist_path).unwrap_or_default();
+    // pathhistory が書かれるまで待ち、その時点の pathhistory 行数を数える。
+    for _ in 0..50 {
+        if read_hist().contains("pathhistory") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    // 各訪問パスにユニークな作業dir名 "rerics_it" がちょうど1回出る＝記録件数の代理。
+    let count_paths = |s: &str| s.matches("rerics_it").count();
+    let before = count_paths(&read_hist());
+
+    // 戻る→進む を数回。履歴の再生なので pathhistory は増えないはず。
+    for _ in 0..3 {
+        server.req("POST", "/command/HistoryBack", "").unwrap();
+        server.req("POST", "/command/HistoryForward", "").unwrap();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let after = count_paths(&read_hist());
+    assert_eq!(after, before, "back/forward should not add path-history entries: before={before} after={after}");
 }
 
 /// 入力履歴（D2-1）：ChangeDirectory で打った値が history.toml の "changedir" バケツに永続する。

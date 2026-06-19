@@ -100,8 +100,8 @@ impl MainWindow {
         let r = self.right_pane.borrow().loc().clone();
         self.left_pane.borrow_mut().set_loc(r);
         self.right_pane.borrow_mut().set_loc(l);
-        self.reload_side_navigated(true)?;
-        self.reload_side_navigated(false)?;
+        self.reload_side_navigated_nolog(true)?;
+        self.reload_side_navigated_nolog(false)?;
         Ok(())
     }
 
@@ -205,14 +205,15 @@ impl MainWindow {
             if forward { p.go_forward() } else { p.go_back() }
         };
         if moved {
-            self.reload_side_navigated(is_left)?;
+            self.reload_side_navigated_nolog(is_left)?;
         }
         Ok(())
     }
 
-    /// 移動履歴の一覧から選んでそこへジャンプする。履歴が空なら情報ログのみ。
+    /// パス移動履歴（訪問ログ＝グローバル・永続・新しい順）から選んでそこへジャンプする。
+    /// 履歴が空なら情報ログのみ。原作 PathHistoryDialog 相当。
     pub(crate) fn path_history_dialog(&self, is_left: bool) -> w::AnyResult<()> {
-        let history = self.pane(is_left).borrow().history();
+        let history = rerics_core::InputHistory::load().get(rerics_core::PATH_HISTORY_KEY);
         if history.is_empty() {
             self.log.info("移動履歴がありません。");
             return Ok(());
@@ -225,8 +226,10 @@ impl MainWindow {
         };
         let loc = Location::parse(&disp);
         self.remember_cursor_for_nav(is_left);
-        if self.pane(is_left).borrow_mut().navigate(loc) {
-            self.reload_side_navigated(is_left)?;
+        let outcome = self.pane(is_left).borrow_mut().navigate_reported(loc);
+        match outcome {
+            Ok(()) => self.reload_side_navigated(is_left)?,
+            Err(e) => self.report_change_directory_error(&e),
         }
         Ok(())
     }

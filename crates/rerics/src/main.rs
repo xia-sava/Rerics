@@ -919,14 +919,14 @@ impl MainWindow {
                 let loc = self.pane(is_left).borrow().loc().clone();
                 self.remember_cursor_for_nav(!is_left);
                 self.pane(!is_left).borrow_mut().set_loc(loc);
-                self.reload_side_navigated(!is_left)?;
+                self.reload_side_navigated_nolog(!is_left)?;
                 return Ok(());
             }
             Command::CurrentToOpposite => {
                 let loc = self.pane(!is_left).borrow().loc().clone();
                 self.remember_cursor_for_nav(is_left);
                 self.pane(is_left).borrow_mut().set_loc(loc);
-                self.reload_side_navigated(is_left)?;
+                self.reload_side_navigated_nolog(is_left)?;
                 return Ok(());
             }
             Command::Rename => {
@@ -1148,9 +1148,28 @@ impl MainWindow {
         self.reload_side_impl(is_left, ReloadCursor::Reset)
     }
 
-    /// ディレクトリ移動後の再読込。移動先パスで以前覚えたカーソル位置を復元する。
+    /// ディレクトリ移動後の再読込。移動先パスで以前覚えたカーソル位置を復元し、
+    /// 移動先をパス移動履歴（訪問ログ・グローバル・永続）へ記録する。ユーザが行き先を
+    /// 指定した移動（侵入・パス入力・ジャンプ・ドライブ変更・親/ルート移動）で使う。
     fn reload_side_navigated(&self, is_left: bool) -> w::AnyResult<()> {
+        self.record_visit(is_left);
         self.reload_side_impl(is_left, ReloadCursor::Recall)
+    }
+
+    /// 移動後の再読込だが、パス移動履歴へは記録しない。戻る/進む（履歴の再生）・ペイン
+    /// 入替・左右同期のように「新しい行き先の指定」ではない移動で使う（往復で履歴が
+    /// 増殖するのを防ぐ）。カーソル復元は通常の移動と同じ。
+    fn reload_side_navigated_nolog(&self, is_left: bool) -> w::AnyResult<()> {
+        self.reload_side_impl(is_left, ReloadCursor::Recall)
+    }
+
+    /// 移動先（そのペインの現在地）をパス移動履歴へ記録する。同一パスは最新へ集約、
+    /// 上限超過は古い方から落とす。入力履歴と同じ `history.toml` に永続する。
+    fn record_visit(&self, is_left: bool) {
+        let disp = self.pane(is_left).borrow().loc_display();
+        let mut hist = rerics_core::InputHistory::load();
+        hist.add_capped(rerics_core::PATH_HISTORY_KEY, &disp, rerics_core::PATH_HISTORY_CAP);
+        let _ = hist.save();
     }
 
     /// ペインを再読込する。`mode` でカーソルの行き先を決める：`Keep`＝再読込前のカーソル下

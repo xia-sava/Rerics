@@ -445,6 +445,12 @@ impl State {
 /// 入力ダイアログの履歴上限（用途キーごと）。原作 `Other/InputHistoryCount` 相当。
 const HISTORY_CAP: usize = 30;
 
+/// パス移動履歴（訪問ログ）を `InputHistory` に同居させるときの用途キー。
+pub const PATH_HISTORY_KEY: &str = "pathhistory";
+/// パス移動履歴の保持上限（原作 `PathHistoryCount` は 100 だが、Rerics は back/forward と
+/// 揃えて多めに持つ）。超えたら古い方から落とす。
+pub const PATH_HISTORY_CAP: usize = 256;
+
 /// 入力ダイアログの履歴ストア（用途キー別）。`history.toml` に永続。
 /// 各キーの `Vec` は**古い順**で持ち、`get` は新しい順に直して返す。
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -472,9 +478,15 @@ impl InputHistory {
             .unwrap_or_default()
     }
 
-    /// 値を履歴へ追加する。空（trim 後）は無視。既存の同値は末尾へ移動（重複排除）。
-    /// 上限を超えたら古いものから落とす。
+    /// 値を履歴へ追加する（入力ダイアログ用・上限 [`HISTORY_CAP`]）。
     pub fn add(&mut self, key: &str, value: &str) {
+        self.add_capped(key, value, HISTORY_CAP);
+    }
+
+    /// 上限を指定して値を履歴へ追加する。空（trim 後）は無視。既存の同値は末尾へ移動
+    /// （重複排除＝最新に集約）。上限を超えたら古いものから落とす。パス移動履歴は入力
+    /// 履歴より多く持つため、こちらを使って大きな上限を渡す。
+    pub fn add_capped(&mut self, key: &str, value: &str, cap: usize) {
         let v = value.trim();
         if v.is_empty() {
             return;
@@ -484,8 +496,8 @@ impl InputHistory {
             list.remove(pos);
         }
         list.push(v.to_owned());
-        if list.len() > HISTORY_CAP {
-            let n = list.len() - HISTORY_CAP;
+        if list.len() > cap {
+            let n = list.len() - cap;
             list.drain(0..n);
         }
     }
@@ -775,6 +787,23 @@ mod tests {
         assert_eq!(got.len(), HISTORY_CAP);
         assert_eq!(got[0], format!("v{}", HISTORY_CAP + 4));
         assert_eq!(got.last().unwrap(), &format!("v{}", 5));
+    }
+
+    #[test]
+    fn add_capped_uses_custom_cap_for_path_history() {
+        let mut h = InputHistory::default();
+        for i in 0..(PATH_HISTORY_CAP + 5) {
+            h.add_capped(PATH_HISTORY_KEY, &format!("C:\\d{i}"), PATH_HISTORY_CAP);
+        }
+        let got = h.get(PATH_HISTORY_KEY);
+        // 入力履歴(30)ではなくパス履歴の上限(256)で頭打ち。
+        assert_eq!(got.len(), PATH_HISTORY_CAP);
+        assert_eq!(got[0], format!("C:\\d{}", PATH_HISTORY_CAP + 4)); // 新しい順の先頭=最後に追加
+        // 既存同値の再訪は最新へ集約（重複しない）。
+        h.add_capped(PATH_HISTORY_KEY, "C:\\d10", PATH_HISTORY_CAP);
+        let got2 = h.get(PATH_HISTORY_KEY);
+        assert_eq!(got2[0], "C:\\d10");
+        assert_eq!(got2.iter().filter(|x| x.as_str() == "C:\\d10").count(), 1);
     }
 
     #[test]
