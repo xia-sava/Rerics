@@ -248,6 +248,14 @@ impl LogView {
         self.wnd.on().wm_paint(move || this.on_paint());
 
         let this = self.clone();
+        self.wnd.on().wm_size(move |_| {
+            let pr = this.page_rows();
+            this.inner.state.borrow_mut().scroll_to_bottom(pr);
+            this.refresh()?;
+            Ok(())
+        });
+
+        let this = self.clone();
         self.wnd.on().wm_mouse_wheel(move |p| {
             let dist = p.keys.raw() as i16;
             this.scroll_by_wheel(dist)?;
