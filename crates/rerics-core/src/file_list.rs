@@ -591,6 +591,16 @@ pub struct Colors {
     pub log_info: Rgb,
     pub log_warning: Rgb,
     pub log_error: Rgb,
+    /// テキストビューアの背景。
+    pub viewer_background: Rgb,
+    /// テキストビューアの本文。
+    pub viewer_text: Rgb,
+    /// テキストビューアの行番号（gutter）。
+    pub viewer_line: Rgb,
+    /// テキストビューアの行番号と本文を仕切る縦線。
+    pub viewer_separator: Rgb,
+    /// テキストビューアの記号（改行マーク・[EOF]）。
+    pub viewer_symbol: Rgb,
 }
 
 impl Default for Colors {
@@ -618,6 +628,11 @@ impl Colors {
             log_info: Rgb::new(0xc8, 0xc8, 0xc8),
             log_warning: Rgb::new(0xff, 0xd0, 0x40),
             log_error: Rgb::new(0xff, 0x70, 0x70),
+            viewer_background: Rgb::new(0x00, 0x00, 0x00),
+            viewer_text: Rgb::new(0xff, 0xff, 0xff),
+            viewer_line: Rgb::new(0x80, 0xc0, 0x80),
+            viewer_separator: Rgb::new(0x55, 0x55, 0x55),
+            viewer_symbol: Rgb::new(0x80, 0x90, 0xc0),
         }
     }
 
@@ -640,6 +655,11 @@ impl Colors {
             log_info: Rgb::new(0x40, 0x40, 0x40),
             log_warning: Rgb::new(0x9a, 0x5a, 0x00),
             log_error: Rgb::new(0xc0, 0x00, 0x00),
+            viewer_background: Rgb::new(0xff, 0xff, 0xff),
+            viewer_text: Rgb::new(0x00, 0x00, 0x00),
+            viewer_line: Rgb::new(0x00, 0x80, 0x00),
+            viewer_separator: Rgb::new(0xa0, 0xa0, 0xa0),
+            viewer_symbol: Rgb::new(0x40, 0x60, 0x90),
         }
     }
 }

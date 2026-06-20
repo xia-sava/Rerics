@@ -41,6 +41,11 @@ log_normal = "#ffffff"
 log_info = "#c8c8c8"
 log_warning = "#ffd040"
 log_error = "#ff7070"
+viewer_background = "#000000"
+viewer_text = "#ffffff"
+viewer_line = "#80c080"
+viewer_separator = "#555555"
+viewer_symbol = "#8090c0"
 
 [colors.light]
 file_normal = "#000000"
@@ -58,6 +63,11 @@ log_normal = "#000000"
 log_info = "#404040"
 log_warning = "#9a5a00"
 log_error = "#c00000"
+viewer_background = "#ffffff"
+viewer_text = "#000000"
+viewer_line = "#008000"
+viewer_separator = "#a0a0a0"
+viewer_symbol = "#406090"
 
 [[columns]]
 kind = "FileBaseName"

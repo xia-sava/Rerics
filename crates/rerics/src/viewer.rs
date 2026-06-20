@@ -570,11 +570,11 @@ impl ViewerView {
         let sel = self.normalized_selection();
 
         // 背景。
-        let bg = w::HBRUSH::CreateSolidBrush(rgb(colors.background))?;
+        let bg = w::HBRUSH::CreateSolidBrush(rgb(colors.viewer_background))?;
         dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &bg)?;
 
-        // 行番号欄とコンテンツを仕切る縦線（原作の Separator 相当・本文領域の高さ分）。
-        chrome::vline(dc, sep_x, 0, body_h, rgb(colors.log_info))?;
+        // 行番号欄とコンテンツを仕切る縦線。
+        chrome::vline(dc, sep_x, 0, body_h, rgb(colors.viewer_separator))?;
 
         // 本文。
         let is_text = self.inner.model.borrow().mode == ViewMode::Text;
@@ -603,12 +603,12 @@ impl ViewerView {
                 dc.FillRect(w::RECT { left: content_left, top: y, right: cw, bottom: y + lh }, &sel_brush)?;
             }
             if !line.gutter.is_empty() {
-                dc.SetTextColor(rgb(colors.log_info))?;
+                dc.SetTextColor(rgb(colors.viewer_line))?;
                 let rect = w::RECT { left: 0, top: y, right: num_right, bottom: y + lh };
                 dc.DrawText(&line.gutter, rect, co::DT::SINGLELINE | co::DT::RIGHT | co::DT::NOPREFIX)?;
             }
             if !line.body.is_empty() {
-                let col = if is_match { colors.selected_file } else { colors.file_normal };
+                let col = if is_match { colors.selected_file } else { colors.viewer_text };
                 dc.SetTextColor(rgb(col))?;
                 let rect = w::RECT { left: content_left, top: y, right: cw, bottom: y + lh };
                 dc.DrawText(&line.body, rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
@@ -617,14 +617,14 @@ impl ViewerView {
             i += 1;
         }
 
-        // テキストモードでは本文末尾に [EOF] マーカーを出す（gutter と同じ log_info 色を流用）。
+        // テキストモードでは本文末尾に [EOF] マーカーを出す（記号色）。
         if is_text && i == lines.len() {
             if let Some(last) = lines.last() {
                 let eof_y = y - lh;
                 if eof_y >= 0 {
                     let end_col = last.body.chars().count();
                     let x = self.col_x(&last.body, end_col, content_left, cwd) + cwd;
-                    dc.SetTextColor(rgb(colors.log_info))?;
+                    dc.SetTextColor(rgb(colors.viewer_symbol))?;
                     let rect = w::RECT { left: x, top: eof_y, right: cw, bottom: eof_y + lh };
                     dc.DrawText("[EOF]", rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
                 }

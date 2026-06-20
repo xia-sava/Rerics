@@ -20,9 +20,12 @@ use winsafe::{self as w, co, gui, msg::lb, prelude::*};
 /// （デバッグ制御サーバの `/snapshot/modal`）が子ごとに送るので、これに応答しないと黒く写る。
 const WM_PRINTCLIENT: u32 = 0x0318;
 
-/// 配色テーブルの行ラベルと、`Colors` の各色への get/set（表示順）。
+/// 配色テーブル：行ラベルと `Colors` の各色への get/set（表示順）。
 #[allow(clippy::type_complexity)]
-const COLOR_FIELDS: &[(&str, fn(&Colors) -> Rgb, fn(&mut Colors, Rgb))] = &[
+type ColorFields = &'static [(&'static str, fn(&Colors) -> Rgb, fn(&mut Colors, Rgb))];
+
+/// ファイル一覧・ログの配色（「配色」ページ）。
+const COLOR_FIELDS: ColorFields = &[
     ("通常ファイル", |c| c.file_normal, |c, v| c.file_normal = v),
     ("ディレクトリ", |c| c.directory, |c, v| c.directory = v),
     ("読取専用", |c| c.readonly, |c, v| c.readonly = v),
@@ -38,6 +41,15 @@ const COLOR_FIELDS: &[(&str, fn(&Colors) -> Rgb, fn(&mut Colors, Rgb))] = &[
     ("ログ情報", |c| c.log_info, |c, v| c.log_info = v),
     ("ログ警告", |c| c.log_warning, |c, v| c.log_warning = v),
     ("ログエラー", |c| c.log_error, |c, v| c.log_error = v),
+];
+
+/// テキストビューアの配色（「テキストビューア」ページ）。
+const VIEWER_COLOR_FIELDS: ColorFields = &[
+    ("背景", |c| c.viewer_background, |c, v| c.viewer_background = v),
+    ("本文", |c| c.viewer_text, |c, v| c.viewer_text = v),
+    ("行番号", |c| c.viewer_line, |c, v| c.viewer_line = v),
+    ("区切り線", |c| c.viewer_separator, |c, v| c.viewer_separator = v),
+    ("記号(改行/EOF)", |c| c.viewer_symbol, |c, v| c.viewer_symbol = v),
 ];
 
 /// レイアウト寸法フィールドのラベルと get/set（すべて論理 px）。
@@ -490,6 +502,8 @@ struct SwatchList {
     preview: Preview,
     sel: Rc<Cell<usize>>,
     row_h: Rc<Cell<i32>>,
+    /// このリストが編集する色フィールド（配色 or テキストビューア）。
+    fields: ColorFields,
 }
 
 impl SwatchList {
@@ -499,6 +513,7 @@ impl SwatchList {
         size: (i32, i32),
         shared: Rc<Shared>,
         preview: Preview,
+        fields: ColorFields,
     ) -> Self {
         let wnd = gui::WindowControl::new(
             parent,
@@ -515,6 +530,7 @@ impl SwatchList {
             preview,
             sel: Rc::new(Cell::new(0)),
             row_h: Rc::new(Cell::new(gui::dpi_y(24))),
+            fields,
         };
         let this = me.clone();
         me.wnd.on().wm_paint(move || this.on_paint());
@@ -555,7 +571,7 @@ impl SwatchList {
     fn on_click(&self, pt: w::POINT) {
         let rh = self.row_h.get().max(1);
         let idx = (pt.y / rh) as usize;
-        if idx < COLOR_FIELDS.len() {
+        if idx < self.fields.len() {
             self.sel.set(idx);
             self.refresh();
         }
@@ -564,7 +580,7 @@ impl SwatchList {
     /// 選択中の色を色選択ダイアログで編集して反映する。
     fn edit_selected(&self) {
         let idx = self.sel.get();
-        let Some((_, get, set)) = COLOR_FIELDS.get(idx) else {
+        let Some((_, get, set)) = self.fields.get(idx) else {
             return;
         };
         let dark = self.shared.target_dark.get();
@@ -581,15 +597,15 @@ impl SwatchList {
         }
     }
 
-    /// 編集対象テーマの配色を既定へ戻す。
+    /// このリストが扱う色だけを編集対象テーマの既定へ戻す。
     fn reset(&self) {
         let dark = self.shared.target_dark.get();
+        let defaults = if dark { Colors::dark() } else { Colors::light() };
         {
             let mut cfg = self.shared.cfg.borrow_mut();
-            if dark {
-                cfg.colors.dark = Colors::dark();
-            } else {
-                cfg.colors.light = Colors::light();
+            let target = if dark { &mut cfg.colors.dark } else { &mut cfg.colors.light };
+            for (_, get, set) in self.fields {
+                set(target, get(&defaults));
             }
         }
         self.refresh();
@@ -643,8 +659,8 @@ impl SwatchList {
         let sw_w = gui::dpi_x(34);
         let sw_pad = gui::dpi_y(3);
 
-        // 15 項目を 1 列に縦並び（フル高で全色を収める）。
-        for (i, (label, get, _)) in COLOR_FIELDS.iter().enumerate() {
+        // 各色を 1 列に縦並び（フル高で全色を収める）。
+        for (i, (label, get, _)) in self.fields.iter().enumerate() {
             let y = i as i32 * row_h;
             let selected = i == sel;
             if selected {
@@ -668,6 +684,52 @@ impl SwatchList {
             dc.TextOut(label_x + gui::dpi_x(132), y + pad, &hex)?;
         }
         Ok(())
+    }
+}
+
+/// 色ページ（「配色」「テキストビューア」）を組む：説明ラベル＋変更/既定ボタン＋スウォッチ一覧。
+/// 変更・リセットのボタンハンドラまで配線する（コントロールは pane が所有するので返さない）。
+fn build_color_page(
+    pane: &gui::WindowControl,
+    shared: &Rc<Shared>,
+    preview: &Preview,
+    fields: ColorFields,
+) {
+    label(pane, "色をダブルクリックで変更", 8, 14, 200);
+    let change = gui::Button::new(
+        pane,
+        gui::ButtonOpts {
+            text: "変更(&C)...",
+            position: gui::dpi(8, 36),
+            width: gui::dpi_x(110),
+            height: gui::dpi_y(28),
+            ..Default::default()
+        },
+    );
+    let reset = gui::Button::new(
+        pane,
+        gui::ButtonOpts {
+            text: "既定に戻す(&R)",
+            position: gui::dpi(126, 36),
+            width: gui::dpi_x(130),
+            height: gui::dpi_y(28),
+            ..Default::default()
+        },
+    );
+    let swatch = SwatchList::new(pane, gui::dpi(8, 72), gui::dpi(344, 466), shared.clone(), preview.clone(), fields);
+    {
+        let swatch = swatch.clone();
+        change.on().bn_clicked(move || {
+            swatch.edit_selected();
+            Ok(())
+        });
+    }
+    {
+        let swatch = swatch.clone();
+        reset.on().bn_clicked(move || {
+            swatch.reset();
+            Ok(())
+        });
     }
 }
 
@@ -711,6 +773,7 @@ const NAV_ROWS: &[NavRow] = &[
     NavRow::Header("外観"),
     NavRow::Page { label: "テーマ・フォント", pane: 0 },
     NavRow::Page { label: "配色", pane: 1 },
+    NavRow::Page { label: "テキストビューア", pane: 9 },
     NavRow::Page { label: "レイアウト", pane: 2 },
     NavRow::Page { label: "一覧", pane: 7 },
     NavRow::Header("動作"),
@@ -2195,6 +2258,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     let pane_image = make_pane(&wnd, pane_pos, pane_wide); // 6
     let pane_list = make_pane(&wnd, pane_pos, pane_wide); // 7
     let pane_behavior = make_pane(&wnd, pane_pos, pane_wide); // 8
+    let pane_viewer_colors = make_pane(&wnd, pane_pos, pane_size); // 9
     let panes = vec![
         pane_appearance.clone(),
         pane_colors.clone(),
@@ -2205,6 +2269,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         pane_image.clone(),
         pane_list.clone(),
         pane_behavior.clone(),
+        pane_viewer_colors.clone(),
     ];
 
     // 右カラム：プレビュー（外観カテゴリ選択中だけ表示）。表示テーマは「配色テーマ」に追従する
@@ -2231,29 +2296,9 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     let registered = RegisteredPane::new(&pane_registered, &shared);
     let keys = KeysPane::new(&pane_keys, &shared);
 
-    // 配色 pane：操作ボタン（上段）＋スウォッチ一覧（フル高・1 列）。
-    label(&pane_colors, "色をダブルクリックで変更", 8, 14, 200);
-    let change = gui::Button::new(
-        &pane_colors,
-        gui::ButtonOpts {
-            text: "変更(&C)...",
-            position: gui::dpi(8, 36),
-            width: gui::dpi_x(110),
-            height: gui::dpi_y(28),
-            ..Default::default()
-        },
-    );
-    let reset = gui::Button::new(
-        &pane_colors,
-        gui::ButtonOpts {
-            text: "既定に戻す(&R)",
-            position: gui::dpi(126, 36),
-            width: gui::dpi_x(130),
-            height: gui::dpi_y(28),
-            ..Default::default()
-        },
-    );
-    let swatch = SwatchList::new(&pane_colors, gui::dpi(8, 72), gui::dpi(344, 466), shared.clone(), preview.clone());
+    // 配色 pane（ファイル一覧・ログ）とテキストビューア pane（ビューア専用色）。
+    build_color_page(&pane_colors, &shared, &preview, COLOR_FIELDS);
+    build_color_page(&pane_viewer_colors, &shared, &preview, VIEWER_COLOR_FIELDS);
 
     // 下段：OK / キャンセル / 適用。
     let ok = gui::Button::new(
@@ -2344,22 +2389,6 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         });
     }
 
-    // 配色操作ボタン。
-    {
-        let swatch = swatch.clone();
-        change.on().bn_clicked(move || {
-            swatch.edit_selected();
-            Ok(())
-        });
-    }
-    {
-        let swatch = swatch.clone();
-        reset.on().bn_clicked(move || {
-            swatch.reset();
-            Ok(())
-        });
-    }
-
     // 適用：閉じずに現在の設定を反映する。
     {
         let on_apply = on_apply.clone();
@@ -2392,7 +2421,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     let _ = wnd.show_modal(parent);
     #[cfg(feature = "debug-server")]
     crate::debug_server::modal_registry::pop();
-    let _ = (nav, panes, swatch, change, reset, keys, registered, ok, cancel, apply, preview_label);
+    let _ = (nav, panes, keys, registered, ok, cancel, apply, preview_label);
 }
 
 #[cfg(test)]
