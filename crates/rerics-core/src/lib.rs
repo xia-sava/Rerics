@@ -6,6 +6,7 @@ mod archive;
 mod attrs;
 mod config;
 mod file_list;
+mod highlight;
 mod input;
 mod log;
 mod macros;

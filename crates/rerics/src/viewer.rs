@@ -116,7 +116,16 @@ impl ViewerView {
     pub fn open(&self, filename: &str, mut bytes: Vec<u8>, truncated: bool) {
         bytes.truncate(MAX_VIEW_BYTES);
         // バイナリらしければバイナリモードで開始する（原作准拠の自動判定）。
-        *self.inner.model.borrow_mut() = ViewerModel::open(bytes);
+        let mut model = ViewerModel::open(bytes);
+        // 構文ハイライト：拡張子で言語を、背景の明暗でテーマ（dark/light）を選ぶ。
+        let ext = std::path::Path::new(filename)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase());
+        let bg = self.inner.colors.viewer_background;
+        let dark = (bg.r as u32 + bg.g as u32 + bg.b as u32) < 384;
+        model.set_highlight(ext, dark);
+        *self.inner.model.borrow_mut() = model;
         *self.inner.title.borrow_mut() = filename.to_owned();
         self.inner.truncated.set(truncated);
         self.inner.scroll_top.set(0);
@@ -609,10 +618,30 @@ impl ViewerView {
                 dc.DrawText(&line.gutter, rect, co::DT::SINGLELINE | co::DT::RIGHT | co::DT::NOPREFIX)?;
             }
             if !line.body.is_empty() {
-                let col = if is_match { colors.viewer_find_text } else { colors.viewer_text };
-                dc.SetTextColor(rgb(col))?;
-                let rect = w::RECT { left: content_left, top: y, right: cw, bottom: y + lh };
-                dc.DrawText(&line.body, rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
+                if is_match {
+                    // 検索ヒット行は構文色より検索色を優先（行全体を一色で塗る）。
+                    dc.SetTextColor(rgb(colors.viewer_find_text))?;
+                    let rect = w::RECT { left: content_left, top: y, right: cw, bottom: y + lh };
+                    dc.DrawText(&line.body, rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
+                } else if line.colors.is_empty() {
+                    // ハイライト無し：本文色で一括描画。
+                    dc.SetTextColor(rgb(colors.viewer_text))?;
+                    let rect = w::RECT { left: content_left, top: y, right: cw, bottom: y + lh };
+                    dc.DrawText(&line.body, rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
+                } else {
+                    // 構文ハイライト：色ランごとに描く。
+                    let chars: Vec<char> = line.body.chars().collect();
+                    for (r, &(start, color)) in line.colors.iter().enumerate() {
+                        let end = line.colors.get(r + 1).map(|(s, _)| *s).unwrap_or(chars.len());
+                        if end <= start {
+                            continue;
+                        }
+                        let sub: String = chars[start..end].iter().collect();
+                        let x = self.col_x(&line.body, start, content_left, cwd);
+                        dc.SetTextColor(rgb(color))?;
+                        dc.TextOut(x, y, &sub)?;
+                    }
+                }
             }
             // 行末の改行マーク（記号色・本文とは別レイヤーなので選択・コピーには混ざらない）。
             if let Some(nl) = line.newline {

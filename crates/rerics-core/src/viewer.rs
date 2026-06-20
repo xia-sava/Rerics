@@ -7,6 +7,8 @@
 use encoding_rs::Encoding as RsEncoding;
 use unicode_width::UnicodeWidthChar;
 
+use crate::Rgb;
+
 /// ビューアが扱うエンコーディング（原作の 6 種を踏襲。自動判定はしない）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Encoding {
@@ -125,30 +127,55 @@ pub enum LineEnding {
 
 /// 1 表示行。`gutter`＝左端の行番号 or オフセット（折返し継続行は空）、`body`＝本文。
 /// `newline`＝この表示行が論理行の末尾（改行で終わる）なら、その改行種別。継続行・行末でないなら `None`。
+/// `colors`＝構文ハイライトの前景色ラン `(本文内の文字開始位置, 色)`。次のランの開始位置までその色。
+/// 空なら全体が既定色（ハイライト無効・継続位置までは前のランの色）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisplayLine {
     pub gutter: String,
     pub body: String,
     pub newline: Option<LineEnding>,
+    pub colors: Vec<(usize, Rgb)>,
 }
+
+/// 構文ハイライトを適用する上限バイト数（これを超えるファイルは素のまま＝開く速度優先）。
+const HIGHLIGHT_MAX_BYTES: usize = 256 * 1024;
 
 /// ビューアの表示モデル。バイト列＋現在のエンコーディング＋モードを保持する。
 pub struct ViewerModel {
     pub bytes: Vec<u8>,
     pub encoding: Encoding,
     pub mode: ViewMode,
+    /// 構文ハイライト用のファイル拡張子（小文字・無ければ None）。
+    ext: Option<String>,
+    /// 構文ハイライトのテーマ（true＝ダーク）。
+    dark: bool,
 }
 
 impl ViewerModel {
     /// 既定（UTF-8・テキストモード）で作る。
     pub fn new(bytes: Vec<u8>) -> Self {
-        Self { bytes, encoding: Encoding::Utf8, mode: ViewMode::Text }
+        Self { bytes, encoding: Encoding::Utf8, mode: ViewMode::Text, ext: None, dark: false }
     }
 
     /// ファイルを開く。バイナリらしければバイナリモードで開始する（原作准拠）。
     pub fn open(bytes: Vec<u8>) -> Self {
         let mode = if looks_binary(&bytes) { ViewMode::Binary } else { ViewMode::Text };
-        Self { bytes, encoding: Encoding::Utf8, mode }
+        Self { bytes, encoding: Encoding::Utf8, mode, ext: None, dark: false }
+    }
+
+    /// 構文ハイライトの文脈（拡張子・ダーク/ライト）を設定する。
+    pub fn set_highlight(&mut self, ext: Option<String>, dark: bool) {
+        self.ext = ext;
+        self.dark = dark;
+    }
+
+    /// 現在の設定でハイライタを作る（テキストモード・拡張子あり・サイズ内のときだけ）。
+    fn highlighter(&self) -> Option<crate::highlight::Highlighter> {
+        if self.mode != ViewMode::Text || self.bytes.len() > HIGHLIGHT_MAX_BYTES {
+            return None;
+        }
+        let ext = self.ext.as_deref()?;
+        crate::highlight::Highlighter::for_extension(ext, self.dark)
     }
 
     /// エンコーディングを循環切替する。
@@ -176,21 +203,29 @@ impl ViewerModel {
     fn text_lines(&self, wrap_cols: usize, tab_width: usize) -> Vec<DisplayLine> {
         let text = self.encoding.decode(&self.bytes);
         let tab_width = tab_width.max(1);
+        let mut hl = self.highlighter();
         let mut out = Vec::new();
         let mut lineno = 0usize;
         for (logical, ending) in split_lines(&text) {
             lineno += 1;
-            let segments = wrap_line(logical, wrap_cols, tab_width);
+            // 各ソース文字に前景色を付ける（ハイライト無効なら全 None＝既定色）。
+            let styled: Vec<(char, Option<Rgb>)> = match hl.as_mut() {
+                Some(h) => h.highlight_line(logical),
+                None => logical.chars().map(|c| (c, None)).collect(),
+            };
+            let segments = wrap_line(&styled, wrap_cols, tab_width);
             let last = segments.len().saturating_sub(1);
             for (i, seg) in segments.into_iter().enumerate() {
                 let gutter = if i == 0 { lineno.to_string() } else { String::new() };
                 // 改行マークは論理行の最終セグメントだけに付ける（折返し継続行には付けない）。
                 let newline = if i == last { ending } else { None };
-                out.push(DisplayLine { gutter, body: seg, newline });
+                let body: String = seg.iter().map(|(c, _)| *c).collect();
+                let colors = rle_colors(&seg);
+                out.push(DisplayLine { gutter, body, newline, colors });
             }
         }
         if out.is_empty() {
-            out.push(DisplayLine { gutter: "1".to_owned(), body: String::new(), newline: None });
+            out.push(DisplayLine { gutter: "1".to_owned(), body: String::new(), newline: None, colors: Vec::new() });
         }
         out
     }
@@ -220,10 +255,11 @@ impl ViewerModel {
                 gutter: format!("{offset:06X}"),
                 body: format!("{hex}| {chars}"),
                 newline: None,
+                colors: Vec::new(),
             });
         }
         if out.is_empty() {
-            out.push(DisplayLine { gutter: "000000".to_owned(), body: String::new(), newline: None });
+            out.push(DisplayLine { gutter: "000000".to_owned(), body: String::new(), newline: None, colors: Vec::new() });
         }
         out
     }
@@ -264,41 +300,64 @@ fn split_lines(text: &str) -> Vec<(&str, Option<LineEnding>)> {
     lines
 }
 
-/// 1 論理行をタブ展開しつつ表示幅 `wrap_cols`（全角=2）で折返す。各セグメント文字列を返す。
-fn wrap_line(line: &str, wrap_cols: usize, tab_width: usize) -> Vec<String> {
+/// 1 文字＋その前景色（`None`＝既定色）。
+type Styled = (char, Option<Rgb>);
+
+/// 1 論理行（前景色付き）をタブ展開しつつ表示幅 `wrap_cols`（全角=2）で折返す。
+/// 各セグメントを「前景色付き文字の列」で返す。タブ展開のスペース・制御文字の置換文字は
+/// 元文字の色を引き継ぐ。
+fn wrap_line(line: &[Styled], wrap_cols: usize, tab_width: usize) -> Vec<Vec<Styled>> {
     let wrap = wrap_cols.max(1);
-    let mut segments = Vec::new();
-    let mut cur = String::new();
+    let mut segments: Vec<Vec<Styled>> = Vec::new();
+    let mut cur: Vec<Styled> = Vec::new();
     let mut col = 0usize;
-    let push_char = |cur: &mut String, col: &mut usize, segments: &mut Vec<String>, ch: char, w: usize| {
+    let push_char = |cur: &mut Vec<Styled>, col: &mut usize, segments: &mut Vec<Vec<Styled>>, ch: char, color: Option<Rgb>, w: usize| {
         if *col + w > wrap && !cur.is_empty() {
             segments.push(std::mem::take(cur));
             *col = 0;
         }
-        cur.push(ch);
+        cur.push((ch, color));
         *col += w;
     };
-    for ch in line.chars() {
+    for &(ch, color) in line {
         if ch == '\t' {
             let spaces = tab_width - (col % tab_width);
             for _ in 0..spaces {
-                push_char(&mut cur, &mut col, &mut segments, ' ', 1);
+                push_char(&mut cur, &mut col, &mut segments, ' ', color, 1);
             }
         } else {
             let w = UnicodeWidthChar::width(ch).unwrap_or(0);
             if w == 0 {
                 if ch.is_control() {
                     // 制御文字は脱落させず置換文字で可視化する（1桁消費する）。
-                    push_char(&mut cur, &mut col, &mut segments, '\u{FFFD}', 1);
+                    push_char(&mut cur, &mut col, &mut segments, '\u{FFFD}', color, 1);
                 }
                 // 結合文字などのゼロ幅文字は表示行に出さない（基底文字に影響させない）。
                 continue;
             }
-            push_char(&mut cur, &mut col, &mut segments, ch, w);
+            push_char(&mut cur, &mut col, &mut segments, ch, color, w);
         }
     }
     segments.push(cur);
     segments
+}
+
+/// 前景色付き文字列を `(文字開始位置, 色)` のランへ畳む。`None`（既定色）はランにせず省く。
+/// ハイライト時は全文字が `Some` で隙間なく覆われる前提（syntect は行全体に色を付ける）。
+fn rle_colors(seg: &[Styled]) -> Vec<(usize, Rgb)> {
+    let mut spans = Vec::new();
+    let mut prev: Option<Rgb> = None;
+    for (i, (_, color)) in seg.iter().enumerate() {
+        match color {
+            Some(c) if Some(*c) != prev => {
+                spans.push((i, *c));
+                prev = Some(*c);
+            }
+            Some(_) => {}
+            None => prev = None,
+        }
+    }
+    spans
 }
 
 #[cfg(test)]
@@ -335,9 +394,9 @@ mod tests {
         let model = ViewerModel::new(b"abcdef".to_vec());
         let lines = model.lines(3, 4);
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], DisplayLine { gutter: "1".into(), body: "abc".into(), newline: None });
+        assert_eq!(lines[0], DisplayLine { gutter: "1".into(), body: "abc".into(), newline: None, colors: vec![] });
         // 折返し継続行は gutter 空。最終行に改行は無い（改行マークも付かない）。
-        assert_eq!(lines[1], DisplayLine { gutter: "".into(), body: "def".into(), newline: None });
+        assert_eq!(lines[1], DisplayLine { gutter: "".into(), body: "def".into(), newline: None, colors: vec![] });
     }
 
     #[test]
@@ -356,9 +415,9 @@ mod tests {
         let lines = model.lines(80, 4);
         assert_eq!(lines.len(), 3);
         // 改行種別（CRLF / LF / 末尾は改行なし）も保持する。
-        assert_eq!(lines[0], DisplayLine { gutter: "1".into(), body: "a".into(), newline: Some(LineEnding::CrLf) });
-        assert_eq!(lines[1], DisplayLine { gutter: "2".into(), body: "b".into(), newline: Some(LineEnding::Lf) });
-        assert_eq!(lines[2], DisplayLine { gutter: "3".into(), body: "c".into(), newline: None });
+        assert_eq!(lines[0], DisplayLine { gutter: "1".into(), body: "a".into(), newline: Some(LineEnding::CrLf), colors: vec![] });
+        assert_eq!(lines[1], DisplayLine { gutter: "2".into(), body: "b".into(), newline: Some(LineEnding::Lf), colors: vec![] });
+        assert_eq!(lines[2], DisplayLine { gutter: "3".into(), body: "c".into(), newline: None, colors: vec![] });
     }
 
     #[test]
