@@ -686,53 +686,54 @@ fn label(parent: &(impl GuiParent + 'static), text: &str, x: i32, y: i32, cx: i3
 /// イベントは親 window 側に保持されるため、生成したコントロールは保持しなくてよい。
 fn build_appearance(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &Preview) {
     let cfg = shared.cfg.borrow();
-    label(parent, "配色テーマ", 16, 14, 120);
+    group_box(parent, "配色テーマ", 12, 8, 344, 96);
     let theme = gui::RadioGroup::new(
         parent,
         &[
             gui::RadioButtonOpts {
                 text: "ダーク(&D)",
-                position: gui::dpi(28, 38),
-                size: gui::dpi(180, 20),
+                position: gui::dpi(28, 32),
+                size: gui::dpi(300, 20),
                 selected: cfg.theme == Theme::Dark,
                 ..Default::default()
             },
             gui::RadioButtonOpts {
                 text: "ライト(&L)",
-                position: gui::dpi(28, 62),
-                size: gui::dpi(180, 20),
+                position: gui::dpi(28, 56),
+                size: gui::dpi(300, 20),
                 selected: cfg.theme == Theme::Light,
                 ..Default::default()
             },
             gui::RadioButtonOpts {
                 text: "システムに従う(&S)",
-                position: gui::dpi(28, 86),
-                size: gui::dpi(220, 20),
+                position: gui::dpi(28, 80),
+                size: gui::dpi(300, 20),
                 selected: cfg.theme == Theme::System,
                 ..Default::default()
             },
         ],
     );
 
-    label(parent, "フォント名", 16, 134, 90);
+    group_box(parent, "フォント", 12, 112, 344, 116);
+    label(parent, "フォント名", 24, 138, 90);
     let font_family = gui::Edit::new(
         parent,
         gui::EditOpts {
             text: &cfg.font.family,
             control_style: co::ES::AUTOHSCROLL,
-            position: gui::dpi(112, 132),
-            width: gui::dpi_x(240),
+            position: gui::dpi(108, 136),
+            width: gui::dpi_x(232),
             height: gui::dpi_y(22),
             ..Default::default()
         },
     );
-    label(parent, "フォントサイズ", 16, 166, 90);
+    label(parent, "サイズ", 24, 170, 90);
     let font_size = gui::Edit::new(
         parent,
         gui::EditOpts {
             text: &cfg.font.size.to_string(),
             control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
-            position: gui::dpi(112, 164),
+            position: gui::dpi(108, 168),
             width: gui::dpi_x(60),
             height: gui::dpi_y(22),
             ..Default::default()
@@ -742,61 +743,60 @@ fn build_appearance(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &
         parent,
         gui::ButtonOpts {
             text: "フォント選択(&F)...",
-            position: gui::dpi(112, 196),
+            position: gui::dpi(108, 196),
             width: gui::dpi_x(150),
             height: gui::dpi_y(26),
             ..Default::default()
         },
     );
-    label(parent, "（フォント・サイズはプレビューに反映されます）", 16, 232, 340);
 
     // アイコン（表示の有無とサイズ）。フォントの下に縦に積む（右側はプレビューが占有）。
-    group_box(parent, "アイコン", 12, 268, 360, 214);
+    group_box(parent, "アイコン", 12, 236, 344, 246);
     let icon_show = gui::CheckBox::new(
         parent,
         gui::CheckBoxOpts {
             text: "ファイル一覧にアイコンを表示する(&I)",
-            position: gui::dpi(28, 296),
-            size: gui::dpi(330, 22),
+            position: gui::dpi(24, 264),
+            size: gui::dpi(320, 22),
             check_state: if cfg.icons.show { co::BST::CHECKED } else { co::BST::UNCHECKED },
             ..Default::default()
         },
     );
-    label(parent, "サイズ", 28, 334, 100);
+    label(parent, "サイズ", 24, 302, 100);
     let icon_size = gui::RadioGroup::new(
         parent,
         &[
             gui::RadioButtonOpts {
                 text: "自動（行に合わせる）(&U)",
-                position: gui::dpi(48, 358),
-                size: gui::dpi(280, 20),
+                position: gui::dpi(44, 326),
+                size: gui::dpi(290, 20),
                 selected: cfg.icons.size == IconSize::Auto,
                 ..Default::default()
             },
             gui::RadioButtonOpts {
                 text: "小 (16)(&A)",
-                position: gui::dpi(48, 382),
-                size: gui::dpi(280, 20),
+                position: gui::dpi(44, 350),
+                size: gui::dpi(290, 20),
                 selected: cfg.icons.size == IconSize::Small,
                 ..Default::default()
             },
             gui::RadioButtonOpts {
                 text: "中 (24)(&M)",
-                position: gui::dpi(48, 406),
-                size: gui::dpi(280, 20),
+                position: gui::dpi(44, 374),
+                size: gui::dpi(290, 20),
                 selected: cfg.icons.size == IconSize::Medium,
                 ..Default::default()
             },
             gui::RadioButtonOpts {
                 text: "大 (32)(&G)",
-                position: gui::dpi(48, 430),
-                size: gui::dpi(280, 20),
+                position: gui::dpi(44, 398),
+                size: gui::dpi(290, 20),
                 selected: cfg.icons.size == IconSize::Large,
                 ..Default::default()
             },
         ],
     );
-    label(parent, "（中・大を選ぶと行の高さが広がります）", 28, 456, 330);
+    label(parent, "（中・大を選ぶと行の高さが広がります）", 24, 424, 320);
     drop(cfg);
 
     // テーマ選択を即反映し、プレビュー／配色編集の対象サイドもこれに追従させる。
