@@ -37,6 +37,7 @@ pub fn show(parent: &impl GuiParent, tasks: &Registry) {
         &wnd,
         gui::ButtonOpts {
             text: "中止(&A)",
+            ctrl_id: 100,
             position: gui::dpi(12, 294),
             width: gui::dpi_x(90),
             height: gui::dpi_y(26),
@@ -48,6 +49,7 @@ pub fn show(parent: &impl GuiParent, tasks: &Registry) {
         &wnd,
         gui::ButtonOpts {
             text: "中断(&S)",
+            ctrl_id: 101,
             position: gui::dpi(110, 294),
             width: gui::dpi_x(90),
             height: gui::dpi_y(26),
@@ -59,6 +61,7 @@ pub fn show(parent: &impl GuiParent, tasks: &Registry) {
         &wnd,
         gui::ButtonOpts {
             text: "再開(&R)",
+            ctrl_id: 102,
             position: gui::dpi(208, 294),
             width: gui::dpi_x(90),
             height: gui::dpi_y(26),
@@ -70,6 +73,7 @@ pub fn show(parent: &impl GuiParent, tasks: &Registry) {
         &wnd,
         gui::ButtonOpts {
             text: "最新",
+            ctrl_id: 103,
             position: gui::dpi(306, 294),
             width: gui::dpi_x(90),
             height: gui::dpi_y(26),
@@ -94,6 +98,46 @@ pub fn show(parent: &impl GuiParent, tasks: &Registry) {
         let tasks = tasks.clone();
         wnd.on().wm_create(move |_| {
             populate(&list, &tasks);
+            #[cfg(feature = "debug-server")]
+            {
+                let modal_ptr = list.hwnd().GetParent().map(|h| h.ptr() as isize).unwrap_or(0);
+                let list_r = list.clone();
+                let list_s = list.clone();
+                crate::debug_server::modal_registry::push_list_view(
+                    "tasks",
+                    "タスクマネージャ",
+                    modal_ptr,
+                    vec![
+                        ("中止(&A)".to_owned(), 100u16),
+                        ("中断(&S)".to_owned(), 101u16),
+                        ("再開(&R)".to_owned(), 102u16),
+                        ("最新".to_owned(), 103u16),
+                        ("閉じる".to_owned(), 2u16),
+                    ],
+                    crate::debug_server::modal_registry::ListViewHooks {
+                        headers: ["タスク", "詳細", "状態", "経過時間"]
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect(),
+                        read: Box::new(move || {
+                            let rows = list_r
+                                .items()
+                                .iter()
+                                .map(|it| (0..4u32).map(|c| it.text(c)).collect())
+                                .collect();
+                            let sel =
+                                list_r.items().iter().position(|it| it.is_selected()).unwrap_or(0);
+                            (rows, sel)
+                        }),
+                        select: Box::new(move |idx| {
+                            if let Some(it) = list_s.items().iter().nth(idx) {
+                                let _ = it.select(true);
+                                let _ = it.focus();
+                            }
+                        }),
+                    },
+                );
+            }
             Ok(0)
         });
     }
@@ -143,6 +187,8 @@ pub fn show(parent: &impl GuiParent, tasks: &Registry) {
     }
 
     let _ = wnd.show_modal(parent);
+    #[cfg(feature = "debug-server")]
+    crate::debug_server::modal_registry::pop();
     let _ = (stop, suspend, resume, refresh, close);
 }
 

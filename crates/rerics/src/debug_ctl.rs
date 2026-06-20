@@ -103,11 +103,6 @@ impl MainWindow {
                 ));
                 let _ = self.exec(is_left, &inv);
             }
-            DebugCmdClass::Unsupported => {
-                let _ = tx.send(debug_server::Response::BadRequest(format!(
-                    "command not supported over debug server: {name}"
-                )));
-            }
         }
     }
 

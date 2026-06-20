@@ -89,11 +89,10 @@ enum DebugCmdClass {
     MaybeModal,
     /// モーダルを開く＋ファイルを操作し得る（要 `--debug-allow-write`・`/modal/*` で操作）。
     ModalWrite,
-    /// デバッグ制御サーバでは未対応（複雑モーダル等）。
-    Unsupported,
 }
 
-/// コマンドの種別を分類する。ファイル操作系のモーダルは ModalWrite、設定/タスク管理は Unsupported。
+/// コマンドの種別を分類する。ファイル操作系のモーダルは ModalWrite、その他のモーダルを開く
+/// ものは MaybeModal（いずれも modal_registry 登録済みで `/modal/*` から駆動できる）。
 #[cfg(feature = "debug-server")]
 fn debug_command_class(cmd: Command) -> DebugCmdClass {
     use Command::*;
@@ -125,7 +124,10 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         // 設定は modal_registry に登録済み＝開いて /snapshot/modal で撮れ、/modal/* で
         // ナビ移動・OK/Cancel まで駆動できる（配色変更そのものは Config 経由で別途検証）。
         OpenSettings => DebugCmdClass::MaybeModal,
-        OpenTaskManager => DebugCmdClass::Unsupported,
+        // タスクマネージャは多列 ListView モーダル（走行中タスクの一覧・中止/中断/再開）。
+        // modal_registry に登録済み＝開いて /snapshot/modal で撮れ、/modal/select・
+        // /modal/command で行選択やボタン操作まで駆動できる（タスク自体は別スレッド継続）。
+        OpenTaskManager => DebugCmdClass::MaybeModal,
         _ => DebugCmdClass::NonModal,
     }
 }

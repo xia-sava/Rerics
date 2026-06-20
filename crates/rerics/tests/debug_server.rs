@@ -1498,3 +1498,29 @@ fn settings_dialog_opens_snapshots_and_closes() {
     server.req("POST", "/modal/command/cancel", "").expect("cancel");
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
+
+/// タスクマネージャは多列 ListView モーダル（走行中タスクの一覧）。タスクが無くても開き、
+/// modal_registry 登録済みなので観測・撮影・クローズできる（デッドロックしない）。
+#[test]
+fn task_manager_dialog_opens_observes_and_closes() {
+    let server = Server::start(&["a.txt"], "");
+
+    server.req("POST", "/command/OpenTaskManager", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"tasks\""), "タスクマネージャが開くはず: {modal}");
+    assert!(modal.contains("\"headers\":[\"タスク\""), "列ヘッダが見えるはず: {modal}");
+    assert!(modal.contains("\"label\":\"中止(&A)\""), "中止ボタンが登録されているはず: {modal}");
+
+    // 登録モーダルなので PNG として撮れる。
+    let (st, png) = req_bytes(server.port, "GET", "/snapshot/modal").expect("snapshot/modal");
+    assert_eq!(st, 200, "/snapshot/modal は 200");
+    assert!(
+        png.starts_with(&[0x89, b'P', b'N', b'G']),
+        "PNG 署名で始まるはず ({} bytes)",
+        png.len()
+    );
+
+    // 閉じる（ブロックしない）。
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
