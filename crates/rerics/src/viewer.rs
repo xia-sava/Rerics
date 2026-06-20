@@ -112,10 +112,11 @@ impl ViewerView {
         *self.inner.on_menu.borrow_mut() = Some(Box::new(cb));
     }
 
-    /// ファイル内容を読み込んで表示状態にする（モード/エンコーディングは既定へ戻す）。
+    /// ファイル内容を読み込んで表示状態にする（エンコーディングは既定、モードは内容から自動判定）。
     pub fn open(&self, filename: &str, mut bytes: Vec<u8>, truncated: bool) {
         bytes.truncate(MAX_VIEW_BYTES);
-        *self.inner.model.borrow_mut() = ViewerModel::new(bytes);
+        // バイナリらしければバイナリモードで開始する（原作准拠の自動判定）。
+        *self.inner.model.borrow_mut() = ViewerModel::open(bytes);
         *self.inner.title.borrow_mut() = filename.to_owned();
         self.inner.truncated.set(truncated);
         self.inner.scroll_top.set(0);

@@ -67,6 +67,47 @@ impl Encoding {
     }
 }
 
+/// 先頭の一定範囲を見て、テキストとして表示できそうになければ true（バイナリ）。
+/// NUL を含むか、どのエンコーディングで解釈しても表示不可文字が多いならバイナリとみなす（軽量判定）。
+pub fn looks_binary(bytes: &[u8]) -> bool {
+    const SNIFF: usize = 8192;
+    let chunk = &bytes[..bytes.len().min(SNIFF)];
+    if chunk.is_empty() {
+        return false;
+    }
+    // NUL はテキストにはまず無い強い信号。
+    if chunk.contains(&0) {
+        return true;
+    }
+    // バイト指向のエンコーディングで解釈し、最も「テキストらしい」解釈でも表示不可文字が
+    // 多いならバイナリ。UTF-16 はどんなバイト対もコードポイントに化けて判定が緩むため除外する
+    // （UTF-16 テキストは ASCII 部が NUL を含むので上の NUL 信号で拾える＝git 流）。
+    let min_bad = Encoding::CYCLE
+        .iter()
+        .filter(|e| !matches!(e, Encoding::Utf16Le | Encoding::Utf16Be))
+        .map(|e| undisplayable_ratio(&e.decode(chunk)))
+        .fold(1.0f32, f32::min);
+    min_bad > 0.30
+}
+
+/// 文字列中の「表示できない文字」（制御文字・U+FFFD・DEL）の割合。タブ/改行/復帰は除く。
+fn undisplayable_ratio(s: &str) -> f32 {
+    let mut total = 0usize;
+    let mut bad = 0usize;
+    for ch in s.chars() {
+        total += 1;
+        let undisplayable = match ch {
+            '\t' | '\n' | '\r' => false,
+            '\u{FFFD}' | '\u{7F}' => true,
+            _ => (ch as u32) < 0x20,
+        };
+        if undisplayable {
+            bad += 1;
+        }
+    }
+    if total == 0 { 0.0 } else { bad as f32 / total as f32 }
+}
+
 /// 表示モード。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
@@ -92,6 +133,12 @@ impl ViewerModel {
     /// 既定（UTF-8・テキストモード）で作る。
     pub fn new(bytes: Vec<u8>) -> Self {
         Self { bytes, encoding: Encoding::Utf8, mode: ViewMode::Text }
+    }
+
+    /// ファイルを開く。バイナリらしければバイナリモードで開始する（原作准拠）。
+    pub fn open(bytes: Vec<u8>) -> Self {
+        let mode = if looks_binary(&bytes) { ViewMode::Binary } else { ViewMode::Text };
+        Self { bytes, encoding: Encoding::Utf8, mode }
     }
 
     /// エンコーディングを循環切替する。
@@ -325,6 +372,22 @@ mod tests {
         model.toggle_mode();
         let lines = model.lines(80, 4);
         assert!(lines[0].body.ends_with("| あ"));
+    }
+
+    #[test]
+    fn looks_binary_detects_binary_and_text() {
+        assert!(!looks_binary(b"hello world\n"));
+        assert!(!looks_binary("日本語のテキスト\n".as_bytes()));
+        assert!(!looks_binary(&[0x82, 0xA0, 0x82, 0xA2])); // Shift_JIS "あい"
+        assert!(!looks_binary(b"")); // 空はテキスト扱い
+        assert!(looks_binary(b"PK\x03\x04\x00\x00binary")); // NUL を含む
+        assert!(looks_binary(&[0xFFu8; 64])); // どのエンコでも不正
+    }
+
+    #[test]
+    fn open_starts_in_binary_for_binary_bytes() {
+        assert_eq!(ViewerModel::open(b"plain text\n".to_vec()).mode, ViewMode::Text);
+        assert_eq!(ViewerModel::open(vec![0x00, 0x01, 0x02, 0x03]).mode, ViewMode::Binary);
     }
 
     #[test]

@@ -51,7 +51,7 @@ pub use operation::{
 };
 pub use status::{format_drive, format_selected, format_size};
 pub use vfs::{Location, is_archive_path};
-pub use viewer::{DisplayLine, Encoding, ViewMode, ViewerModel};
+pub use viewer::{DisplayLine, Encoding, ViewMode, ViewerModel, looks_binary};
 
 use std::path::Path;
 
