@@ -6,7 +6,7 @@ use super::*;
 
 /// 原作 `frmCopyOption`（「同名ファイルの処理」）相当。コピー/移動先に同名ファイルが
 /// 在るとき、解決方法（最新ならコピー/上書き/強制上書き/名前変更/スキップ）と
-/// 「すべてに適用」を尋ねる。OK でラジオ選択＋チェック状態を、中止/Esc で `Cancel` を返す。
+/// 「すべてに適用」を尋ねる。OK でラジオ選択＋チェック状態を、キャンセル/Esc で `Cancel` を返す。
 pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution, bool) {
     let wnd = modal_window("同名ファイルの処理", 380, 250);
 
@@ -95,7 +95,7 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
     let cancel = gui::Button::new(
         &wnd,
         gui::ButtonOpts {
-            text: "中止(&S)",
+            text: "キャンセル",
             ctrl_id: 2,
             position: gui::dpi(278, 196),
             width: gui::dpi_x(86),
@@ -156,7 +156,7 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
             "同名ファイルの処理",
             name,
             true,
-            vec![("OK".to_string(), 1u16), ("中止(&S)".to_string(), 2u16)],
+            vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
             move |hwnd| {
                 refresh_c();
                 rename_sel.set_selection(rename_pos, rename_pos);

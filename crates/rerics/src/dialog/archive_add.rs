@@ -4,7 +4,7 @@ use winsafe::{co, gui, prelude::*};
 use super::*;
 
 /// 書庫への追加先に同名エントリがあるとき、追加方式を尋ねる。OK で選択を、
-/// 中止/Esc で `None` を返す。`summary` は衝突件数などの説明文。
+/// キャンセル/Esc で `None` を返す。`summary` は衝突件数などの説明文。
 pub fn archive_add_box(parent: &impl GuiParent, summary: &str) -> Option<ArchiveAddMode> {
     let wnd = modal_window("書庫への追加", 400, 180);
 
@@ -53,7 +53,7 @@ pub fn archive_add_box(parent: &impl GuiParent, summary: &str) -> Option<Archive
     let cancel = gui::Button::new(
         &wnd,
         gui::ButtonOpts {
-            text: "中止(&S)",
+            text: "キャンセル",
             ctrl_id: 2,
             position: gui::dpi(298, 126),
             width: gui::dpi_x(86),
@@ -77,7 +77,7 @@ pub fn archive_add_box(parent: &impl GuiParent, summary: &str) -> Option<Archive
                 &reg_prompt,
                 reg_wnd.hwnd().ptr() as isize,
                 true,
-                vec![("OK".to_string(), 1u16), ("中止(&S)".to_string(), 2u16)],
+                vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
             );
             Ok(0)
         });

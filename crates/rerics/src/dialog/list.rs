@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use winsafe::{self as w, co, gui, prelude::*};
 
-/// 一覧から1つ選ぶモーダル。OK・ダブルクリック・Enter で選択 index を、中止/Esc で
+/// 一覧から1つ選ぶモーダル。OK・ダブルクリック・Enter で選択 index を、キャンセル/Esc で
 /// `None` を返す。`items` は表示行、`initial` は初期選択行。ドライブ選択・履歴・
 /// 登録ディレクトリのジャンプで共用する。
 pub fn list_box(
@@ -38,7 +38,7 @@ pub fn list_box(
     let cancel = gui::Button::new(
         &wnd,
         gui::ButtonOpts {
-            text: "中止(&S)",
+            text: "キャンセル",
             ctrl_id: 2,
             position: gui::dpi(320, 276),
             width: gui::dpi_x(86),
@@ -74,7 +74,7 @@ pub fn list_box(
                 reg_items.clone(),
                 initial,
                 reg_wnd.hwnd().ptr() as isize,
-                vec![("OK".to_string(), 1u16), ("中止(&S)".to_string(), 2u16)],
+                vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
             );
             Ok(0)
         });
