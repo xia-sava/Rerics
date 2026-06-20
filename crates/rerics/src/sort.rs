@@ -23,6 +23,8 @@ impl MainWindow {
         if let Some(n) = name {
             s.set_cursor_position(&n, pr);
         }
+        drop(s);
+        let _ = view.refresh();
     }
 
     pub(crate) fn sort_active(&self, is_left: bool, sort: SortType, toggle: bool) {
@@ -36,5 +38,7 @@ impl MainWindow {
         if let Some(n) = name {
             s.set_cursor_position(&n, pr);
         }
+        drop(s);
+        let _ = view.refresh();
     }
 }

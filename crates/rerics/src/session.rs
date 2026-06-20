@@ -112,7 +112,13 @@ impl MainWindow {
     /// ウィンドウタイトルにアクティブタブ・アクティブペインの現在パスを反映する。
     pub(crate) fn update_title(&self) -> w::AnyResult<()> {
         let path = self.pane(!self.active_right.get()).borrow().loc_display();
-        let title = if path.is_empty() { "Rerics".to_owned() } else { path };
+        let app = concat!(
+            "Rerics ",
+            env!("CARGO_PKG_VERSION_MAJOR"),
+            ".",
+            env!("CARGO_PKG_VERSION_MINOR")
+        );
+        let title = if path.is_empty() { app.to_owned() } else { format!("{app} - {path}") };
         self.wnd.hwnd().SetWindowText(&title)?;
         Ok(())
     }
