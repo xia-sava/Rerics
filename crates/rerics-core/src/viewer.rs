@@ -270,7 +270,11 @@ fn wrap_line(line: &str, wrap_cols: usize, tab_width: usize) -> Vec<String> {
         } else {
             let w = UnicodeWidthChar::width(ch).unwrap_or(0);
             if w == 0 {
-                // 制御文字・ゼロ幅は表示行に出さない（落とす）。
+                if ch.is_control() {
+                    // 制御文字は脱落させず置換文字で可視化する（1桁消費する）。
+                    push_char(&mut cur, &mut col, &mut segments, '\u{FFFD}', 1);
+                }
+                // 結合文字などのゼロ幅文字は表示行に出さない（基底文字に影響させない）。
                 continue;
             }
             push_char(&mut cur, &mut col, &mut segments, ch, w);
@@ -337,6 +341,22 @@ mod tests {
         assert_eq!(lines[0], DisplayLine { gutter: "1".into(), body: "a".into() });
         assert_eq!(lines[1], DisplayLine { gutter: "2".into(), body: "b".into() });
         assert_eq!(lines[2], DisplayLine { gutter: "3".into(), body: "c".into() });
+    }
+
+    #[test]
+    fn control_char_becomes_replacement() {
+        // 制御文字（BEL=0x07）は脱落させず U+FFFD で可視化する。
+        let model = ViewerModel::new(b"a\x07b".to_vec());
+        let lines = model.lines(80, 4);
+        assert_eq!(lines[0].body, "a\u{FFFD}b");
+    }
+
+    #[test]
+    fn combining_mark_is_not_replaced() {
+        // 結合文字（U+0301 アクセント）はゼロ幅のまま落とし、置換文字にはしない。
+        let model = ViewerModel::new("e\u{0301}x".as_bytes().to_vec());
+        let lines = model.lines(80, 4);
+        assert!(!lines[0].body.contains('\u{FFFD}'), "結合文字を置換してはいけない: {:?}", lines[0].body);
     }
 
     #[test]
