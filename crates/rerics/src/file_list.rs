@@ -78,6 +78,8 @@ struct Inner {
     icon_size: Cell<IconSize>,
     /// ファイルサイズ列の表記スタイル（設定）。
     size_format: Cell<SizeFormat>,
+    /// 列幅を内容に合わせて自動調整するか（設定）。off なら設定幅を保つ。
+    auto_adjust: Cell<bool>,
     /// 現在表示中の実FSディレクトリ（per-file アイコン取得用。書庫内など実体が無ければ None）。
     dir: RefCell<Option<PathBuf>>,
 }
@@ -132,6 +134,7 @@ impl FileListView {
             icon_show: Cell::new(cfg.icons.show),
             icon_size: Cell::new(cfg.icons.size),
             size_format: Cell::new(cfg.size_format),
+            auto_adjust: Cell::new(cfg.auto_adjust_columns),
             dir: RefCell::new(None),
         });
         let me = Self { wnd, inner };
@@ -243,6 +246,10 @@ impl FileListView {
         self.inner.icon_show.set(cfg.icons.show);
         self.inner.icon_size.set(cfg.icons.size);
         self.inner.size_format.set(cfg.size_format);
+        self.inner.auto_adjust.set(cfg.auto_adjust_columns);
+        // 列構成をライブ反映（表示中ペイン）。幅は自動調整 on なら autofit が、off なら設定値が効く。
+        self.inner.state.borrow_mut().columns = cfg.columns.clone();
+        let _ = self.autofit_columns();
         let _ = self.refresh();
     }
 
@@ -252,6 +259,10 @@ impl FileListView {
     /// 代表文字列を「平均的な文字 `n` の幅 × 文字数」で測った固定幅にする（プロポーショナルでも安定）。
     /// いずれもヘッダラベル幅を下限とし、物理 px で測って格納先の `width`（論理 px）へ変換する。
     pub fn autofit_columns(&self) -> w::AnyResult<()> {
+        // 自動調整 off なら設定された列幅をそのまま使う（測定・上書きしない）。
+        if !self.inner.auto_adjust.get() {
+            return Ok(());
+        }
         let rc = self.hwnd().GetClientRect()?;
         let cw = rc.right - rc.left;
         if cw <= 0 {

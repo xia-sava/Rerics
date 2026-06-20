@@ -10,9 +10,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rerics_core::{
-    Bookmark, Colors, Config, IconSize, Layout, Rgb, ResolvedTheme, SizeFormat, Theme, WheelAction,
+    Bookmark, Colors, Column, ColumnKind, Config, IconSize, Layout, Rgb, ResolvedTheme,
+    SizeFormat, Theme, WheelAction,
 };
-use winsafe::{self as w, co, gui, msg::tvm, prelude::*};
+use winsafe::{self as w, co, gui, msg::lb, msg::tvm, prelude::*};
 
 /// 自前描画コントロールをオフスクリーン DC へ描かせるメッセージ。`PrintWindow`
 /// （デバッグ制御サーバの `/snapshot/modal`）が子ごとに送るので、これに応答しないと黒く写る。
@@ -1146,6 +1147,276 @@ fn build_list(parent: &gui::WindowControl, shared: &Rc<Shared>) {
     }
 }
 
+/// 列エディタで選べる種類と説明ラベル（リスト表示順）。Icon/Information は名前列内包のため無し。
+const COLUMN_KINDS: &[(ColumnKind, &str)] = &[
+    (ColumnKind::FileName, "ファイル名（拡張子込み）"),
+    (ColumnKind::FileBaseName, "ファイル名（拡張子なし）"),
+    (ColumnKind::FileExtension, "種類（拡張子）"),
+    (ColumnKind::Length, "サイズ"),
+    (ColumnKind::LastWriteTime, "更新日時（4桁年）"),
+    (ColumnKind::LastWriteTimeS, "更新日時（2桁年）"),
+    (ColumnKind::CreateTime, "作成日時（4桁年）"),
+    (ColumnKind::CreateTimeS, "作成日時（2桁年）"),
+    (ColumnKind::Attribute, "属性"),
+];
+
+/// 種類の説明ラベル。
+fn kind_label(kind: ColumnKind) -> &'static str {
+    COLUMN_KINDS.iter().find(|(k, _)| *k == kind).map(|(_, l)| *l).unwrap_or("?")
+}
+
+/// 種類ピッカーと幅入力から `Column` を組む（未選択なら None）。
+fn picker_column(kinds: &gui::ListBox, width: &gui::Edit) -> Option<Column> {
+    let ki = unsafe { kinds.hwnd().SendMessage(lb::GetCurSel {}) }? as usize;
+    let (kind, _) = COLUMN_KINDS.get(ki)?;
+    let w = width.text().unwrap_or_default().trim().parse::<i32>().unwrap_or(100).clamp(16, 1000);
+    Some(Column { kind: *kind, text: kind.header_label().to_owned(), width: w, align: kind.default_align() })
+}
+
+/// ラベル付きボタンを置く。
+fn button(parent: &(impl GuiParent + 'static), text: &str, x: i32, y: i32, w: i32) -> gui::Button {
+    gui::Button::new(
+        parent,
+        gui::ButtonOpts {
+            text,
+            position: gui::dpi(x, y),
+            width: gui::dpi_x(w),
+            height: gui::dpi_y(26),
+            ..Default::default()
+        },
+    )
+}
+
+/// 「一覧」ページの列エディタ（種類・幅・順序・自動調整トグル）。
+#[derive(Clone)]
+struct ColumnsEditor {
+    list: gui::ListView<()>,
+    kinds: gui::ListBox,
+    rebuild: Rc<dyn Fn(Option<usize>)>,
+}
+
+impl ColumnsEditor {
+    fn new(parent: &gui::WindowControl, shared: &Rc<Shared>) -> Self {
+        group_box(parent, "列構成", 12, 174, 752, 360);
+        label(parent, "ファイル一覧に表示する列。種類と幅を選んで 追加/更新、↑↓ で並べ替え。", 24, 196, 600);
+
+        let auto = shared.cfg.borrow().auto_adjust_columns;
+        let auto_check = gui::CheckBox::new(
+            parent,
+            gui::CheckBoxOpts {
+                text: "列幅を自動で内容に合わせる（オフで下の幅をそのまま使う）(&W)",
+                position: gui::dpi(24, 220),
+                size: gui::dpi(440, 22),
+                check_state: if auto { co::BST::CHECKED } else { co::BST::UNCHECKED },
+                ..Default::default()
+            },
+        );
+
+        let list = gui::ListView::<()>::new(
+            parent,
+            gui::ListViewOpts {
+                position: gui::dpi(24, 250),
+                size: gui::dpi(400, 256),
+                control_style: co::LVS::REPORT
+                    | co::LVS::NOSORTHEADER
+                    | co::LVS::SHOWSELALWAYS
+                    | co::LVS::SINGLESEL,
+                control_ex_style: co::LVS_EX::FULLROWSELECT,
+                ..Default::default()
+            },
+        );
+        let up = button(parent, "↑", 24, 510, 48);
+        let down = button(parent, "↓", 78, 510, 48);
+
+        label(parent, "追加・更新する種類", 440, 248, 200);
+        let kinds = gui::ListBox::new(
+            parent,
+            gui::ListBoxOpts {
+                position: gui::dpi(440, 270),
+                size: gui::dpi(250, 168),
+                ..Default::default()
+            },
+        );
+        label(parent, "幅", 440, 452, 30);
+        let width_edit = gui::Edit::new(
+            parent,
+            gui::EditOpts {
+                text: "100",
+                control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
+                position: gui::dpi(472, 450),
+                width: gui::dpi_x(64),
+                height: gui::dpi_y(22),
+                ..Default::default()
+            },
+        );
+        let add = button(parent, "追加(&D)", 440, 484, 70);
+        let update = button(parent, "更新(&U)", 516, 484, 70);
+        let del = button(parent, "削除(&L)", 592, 484, 70);
+
+        let selected: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+
+        let rebuild: Rc<dyn Fn(Option<usize>)> = Rc::new({
+            let list = list.clone();
+            let shared = shared.clone();
+            let selected = selected.clone();
+            move |sel| {
+                let _ = list.items().delete_all();
+                for c in shared.cfg.borrow().columns.iter() {
+                    let _ = list.items().add(
+                        &[kind_label(c.kind).to_owned(), c.width.to_string()],
+                        None,
+                        (),
+                    );
+                }
+                if let Some(i) = sel {
+                    if let Some(it) = list.items().iter().nth(i) {
+                        let _ = it.select(true);
+                        let _ = it.focus();
+                    }
+                }
+                selected.set(sel);
+            }
+        });
+
+        // 行選択：その列の種類・幅を右の入力欄へ展開。
+        {
+            let list2 = list.clone();
+            let shared = shared.clone();
+            let kinds2 = kinds.clone();
+            let we = width_edit.clone();
+            let selected = selected.clone();
+            list.on().lvn_item_changed(move |_| {
+                if let Some(i) = list2.items().iter().position(|it| it.is_selected()) {
+                    if let Some(c) = shared.cfg.borrow().columns.get(i) {
+                        if let Some(ki) = COLUMN_KINDS.iter().position(|(k, _)| *k == c.kind) {
+                            unsafe {
+                                let _ = kinds2.hwnd().SendMessage(lb::SetCurSel { index: Some(ki as u32) });
+                            }
+                        }
+                        let _ = we.set_text(&c.width.to_string());
+                    }
+                    selected.set(Some(i));
+                }
+                Ok(())
+            });
+        }
+
+        // 追加：選択中の種類＋幅を末尾に足す。
+        {
+            let shared = shared.clone();
+            let rebuild = rebuild.clone();
+            let kinds = kinds.clone();
+            let we = width_edit.clone();
+            add.on().bn_clicked(move || {
+                if let Some(col) = picker_column(&kinds, &we) {
+                    let idx = {
+                        let mut cfg = shared.cfg.borrow_mut();
+                        cfg.columns.push(col);
+                        cfg.columns.len() - 1
+                    };
+                    rebuild(Some(idx));
+                }
+                Ok(())
+            });
+        }
+
+        // 更新：選択行を種類＋幅で上書き。
+        {
+            let shared = shared.clone();
+            let rebuild = rebuild.clone();
+            let selected = selected.clone();
+            let kinds = kinds.clone();
+            let we = width_edit.clone();
+            update.on().bn_clicked(move || {
+                let Some(i) = selected.get() else { return Ok(()) };
+                if let Some(col) = picker_column(&kinds, &we) {
+                    {
+                        let mut cfg = shared.cfg.borrow_mut();
+                        if let Some(slot) = cfg.columns.get_mut(i) {
+                            *slot = col;
+                        }
+                    }
+                    rebuild(Some(i));
+                }
+                Ok(())
+            });
+        }
+
+        // 削除：選択行を消す（最低1列は残す）。
+        {
+            let shared = shared.clone();
+            let rebuild = rebuild.clone();
+            let selected = selected.clone();
+            del.on().bn_clicked(move || {
+                let Some(i) = selected.get() else { return Ok(()) };
+                let next = {
+                    let mut cfg = shared.cfg.borrow_mut();
+                    if cfg.columns.len() <= 1 {
+                        return Ok(());
+                    }
+                    cfg.columns.remove(i);
+                    Some(i.saturating_sub(1).min(cfg.columns.len() - 1))
+                };
+                rebuild(next);
+                Ok(())
+            });
+        }
+
+        // ↑/↓：順序入れ替え。
+        {
+            let shared = shared.clone();
+            let rebuild = rebuild.clone();
+            let selected = selected.clone();
+            up.on().bn_clicked(move || {
+                let Some(i) = selected.get() else { return Ok(()) };
+                if i == 0 {
+                    return Ok(());
+                }
+                shared.cfg.borrow_mut().columns.swap(i, i - 1);
+                rebuild(Some(i - 1));
+                Ok(())
+            });
+        }
+        {
+            let shared = shared.clone();
+            let rebuild = rebuild.clone();
+            let selected = selected.clone();
+            down.on().bn_clicked(move || {
+                let Some(i) = selected.get() else { return Ok(()) };
+                let len = shared.cfg.borrow().columns.len();
+                if i + 1 >= len {
+                    return Ok(());
+                }
+                shared.cfg.borrow_mut().columns.swap(i, i + 1);
+                rebuild(Some(i + 1));
+                Ok(())
+            });
+        }
+
+        // 自動調整トグル。
+        {
+            let shared = shared.clone();
+            let ac = auto_check.clone();
+            auto_check.on().bn_clicked(move || {
+                shared.cfg.borrow_mut().auto_adjust_columns = ac.is_checked();
+                Ok(())
+            });
+        }
+
+        Self { list, kinds, rebuild }
+    }
+
+    /// 窓生成後に列とピッカーを流し込む（生成前の add は無効化されるため）。
+    fn populate(&self) {
+        for (head, width) in [("種類", 280), ("幅", 90)] {
+            let _ = self.list.cols().add(head, gui::dpi_x(width));
+        }
+        let labels: Vec<&str> = COLUMN_KINDS.iter().map(|(_, l)| *l).collect();
+        let _ = self.kinds.items().add(&labels);
+        (self.rebuild)(Some(0));
+    }
+}
+
 /// ショートカット入力を先頭1文字へ丸める（空白のみ/空は空文字）。
 fn normalize_shortcut(raw: &str) -> String {
     raw.trim().chars().next().map(|c| c.to_string()).unwrap_or_default()
@@ -1567,6 +1838,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     build_cursor(&pane_cursor, &shared);
     build_viewer(&pane_image, &shared);
     build_list(&pane_list, &shared);
+    let columns_editor = ColumnsEditor::new(&pane_list, &shared);
     let registered = RegisteredPane::new(&pane_registered, &shared);
     let keys = KeysPane::new(&pane_keys, &shared);
 
@@ -1638,6 +1910,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         let panes = panes.clone();
         let keys = keys.clone();
         let registered = registered.clone();
+        let columns_editor = columns_editor.clone();
         #[cfg(feature = "debug-server")]
         let reg_wnd = wnd.clone();
         wnd.on().wm_create(move |_| {
@@ -1675,6 +1948,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
             }
             registered.populate();
             keys.populate();
+            columns_editor.populate();
             #[cfg(feature = "debug-server")]
             crate::debug_server::modal_registry::push(
                 "settings",

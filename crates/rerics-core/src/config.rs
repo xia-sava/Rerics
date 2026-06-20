@@ -280,6 +280,8 @@ pub struct Config {
     pub columns: Vec<Column>,
     /// ファイルサイズ列の表記スタイル。
     pub size_format: SizeFormat,
+    /// 列幅を内容に合わせて自動調整する（off なら `columns` の幅をそのまま使う）。
+    pub auto_adjust_columns: bool,
     /// キーバインド（チョード文字列 → コマンドトークン）。
     pub keybinds: BTreeMap<String, String>,
     /// 登録ディレクトリ（ジャンプ先）。
@@ -306,6 +308,7 @@ impl Default for Config {
             colors: ThemeColors::default(),
             columns: default_columns(),
             size_format: SizeFormat::Simple2,
+            auto_adjust_columns: true,
             keybinds: KeyMap::default().to_string_map(),
             bookmarks: Vec::new(),
             editor: "notepad.exe".to_owned(),

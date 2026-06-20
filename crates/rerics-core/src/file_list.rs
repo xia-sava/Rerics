@@ -395,6 +395,28 @@ pub enum ColumnKind {
     Attribute,
 }
 
+impl ColumnKind {
+    /// 列見出しの既定ラベル（日付の桁数違いは同じ見出し）。
+    pub fn header_label(self) -> &'static str {
+        match self {
+            ColumnKind::FileName | ColumnKind::FileBaseName => "ファイル名",
+            ColumnKind::FileExtension => "種類",
+            ColumnKind::Length => "サイズ",
+            ColumnKind::CreateTime | ColumnKind::CreateTimeS => "作成日時",
+            ColumnKind::LastWriteTime | ColumnKind::LastWriteTimeS => "更新日時",
+            ColumnKind::Attribute => "属性",
+        }
+    }
+
+    /// この種別の既定の揃え（サイズのみ右寄せ）。
+    pub fn default_align(self) -> Align {
+        match self {
+            ColumnKind::Length => Align::Right,
+            _ => Align::Left,
+        }
+    }
+}
+
 /// 列のテキスト揃え。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Align {
