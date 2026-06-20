@@ -69,8 +69,12 @@ RERICS_DATA_DIR=<隔離dir> ./target/debug/rerics.exe --debug-server=<PORT> --he
   `FocusLeft`/`FocusRight`/`EnterDir`/`ToParent`/`SortBySize`/`ViewFile`…）。未知/不可は 400。
   書込み系（`MakeDirectory`/`Rename`/`Delete`/`Copy`/`Move`）は要 `--debug-allow-write`。
 - `POST /view/key/<next|prev|close>` … 重ね表示ビューア（画像/テキスト）の操作。
-- `POST /modal/text`（body=値）／`POST /modal/key/<enter|esc|y|n|tab>`／
-  `POST /modal/command/<ok|cancel|役割名|ctrl_id>`／`POST /modal/select/<n>` … 開いてるモーダルの操作。
+- `POST /modal/text`（body=値）／`POST /modal/command/<ok|cancel|役割名|ctrl_id>`／
+  `POST /modal/select/<n>` … 開いてるモーダルの操作。
+- `POST /modal/key/<key>` … 開いてるモーダルへ**実キー送出**（`debug_modal_key`・debug_ctl.rs）。送れるキーは
+  **`enter`/`esc`/`tab`/`space`/`left`/`up`/`right`/`down`/`home`/`end`＋英数字1文字**。`<key>/down`・`<key>/up`
+  で押下フェーズ指定も可（`shift/down` 等）。**GetFocus 中の子コントロールへ届く**（IsDialogMessage の矢印グループ
+  移動が効くよう子宛に Post）。→ **ラジオ・チェック・TreeView/ListView ナビは矢印キーで辿れる**（下記レシピ）。
 
 ### 撮影（GET・PNG・窓非依存合成でフラッシュ無し・headless でも撮れる）
 - `GET /snapshot[.png]` … クライアント全体。
@@ -133,14 +137,33 @@ rm -rf "$D"
   書込み系＝`ModalWrite`（要 allow_write）、読取だがモーダルを開き得る `ViewFile` 等＝`MaybeModal`（allow_write 不要）。
 - **撮れる／撮れないの境目**：`/state/modal`・`/modal/*`・`/snapshot/modal` で観測・操作・撮影できるのは
   **`modal_registry`（debug_server.rs）に push 登録され、かつ開くコマンドが `MaybeModal`／`ModalWrite`** の
-  モーダルだけ（`dialog::` 系はこの両方を満たす）。winsafe の `show_modal` を registry 登録せず回すダイアログは
-  `DebugCmdClass::Unsupported` で、debug-server からは**起動も観測もできない**＝**実窓キャプチャが唯一の手段**（下記レシピ）。
+  モーダル。**自前モーダル（`dialog::` 系・設定・タスクマネージャ等）は全て登録済み**で観測・操作・撮影できる
+  （旧 `DebugCmdClass::Unsupported` は撤去済み。新規モーダルも `modal_window`＋registry 登録を通すこと）。
+  残る例外は **winsafe/OS 標準の共通ダイアログ**（`ChooseColor`/`ChooseFont` 等のシステムダイアログ）だけ＝
+  これらは子コントロールを自前管理しないので実窓キャプチャ（下記レシピ）になる。
+- **モーダル内のページ／コントロール移動は `/modal/key` の矢印で辿れる**：ラジオは `up/down`、チェックは `space`、
+  TreeView/ListView ナビは `down`×N で目的ページへ（フォーカス中の子へ実キーが届く）。「見えないから実窓」と諦める
+  前に、まずキーでフォーカス移動して `/snapshot/modal` を撮ること（下記「多ページダイアログの隠れページを撮る」）。
 - **手順例（入力欄つきモーダルを値設定→確定まで自動化）**：
   `POST /command/<Name>`（即 `{"maybe_modal":true}` 応答）→ `GET /state/modal`（入力ボックスが見える）→
   `POST /modal/text`（body=値）→ `POST /modal/key/enter` → `GET /state` で結果を確認。
   リスト選択モーダルは `POST /modal/select/<n>`。
 
 ## 個別レシピ
+
+### 多ページダイアログの隠れページを矢印で出して撮る（設定ダイアログ等・headless）
+設定ダイアログは左の **TreeView ナビ**で中央 pane を切替える。初期選択は先頭ルート（外観）。`/modal/key/down` を
+必要回数送ってツリーカーソルを目的項目へ動かし、`/snapshot/modal` で撮る（**実窓不要・headless で完結**）。
+
+```sh
+curl -s -X POST "127.0.0.1:$P/command/OpenSettings" >/dev/null; sleep 1
+# 外観 → テーマ・フォント → 配色 → レイアウト → 一覧（down×4）。展開済みなので子も1行ずつ送られる。
+for i in 1 2 3 4; do curl -s -X POST "127.0.0.1:$P/modal/key/down" >/dev/null; sleep 0.2; done
+curl -s "127.0.0.1:$P/snapshot/modal" -o /tmp/page.png    # → Read /tmp/page.png
+```
+
+ラジオの選択は `down`/`up`、チェックは `space`、ボタンは `/modal/command/<ctrl_id|役割>`。閉じるは `/modal/key/esc`。
+**「debug-server から見えない」と結論づける前に、必ずこのキー操作を試すこと**（標準コントロール窓は大抵辿れる）。
 
 ### 特定ディレクトリを開いた状態で始める
 上記フロー①の通り、`RERICS_DATA_DIR` 隔離の `state.toml` で両ペインを検証用 dir へ向ける（推奨）。
@@ -153,7 +176,8 @@ rm -rf "$D"
 書いて各起動でスクショ（本番 config.toml は通常空なので、隔離 dir 側に書けば復元不要）。F5=Reload は無害。
 
 ### debug-server で撮れないモーダルを実窓キャプチャする
-registry 非登録の `Unsupported` モーダル（winsafe `show_modal` 系）は debug-server で観測・撮影できないので、
+**自前モーダルは全て debug-server で撮れる**ので、これが要るのは **OS/winsafe 標準の共通ダイアログ**
+（`ChooseColor`/`ChooseFont` 等）に限られる（自前で撮れないか先に上のキー操作を尽くすこと）。
 実ウィンドウを出して `tools/ui.ps1 -Foreground` で前面に出た別窓を直接撮る（ユーザ作業中なら一声）。手順は汎用:
 
 1. メイン窓を `--headless` でなく**通常起動**（`Start-Process target/debug/rerics.exe`）。
