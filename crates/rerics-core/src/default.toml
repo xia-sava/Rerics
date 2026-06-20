@@ -46,6 +46,8 @@ viewer_text = "#ffffff"
 viewer_line = "#80c080"
 viewer_separator = "#555555"
 viewer_symbol = "#8090c0"
+viewer_find_text = "#000000"
+viewer_find_bg = "#ffd040"
 
 [colors.light]
 file_normal = "#000000"
@@ -68,6 +70,8 @@ viewer_text = "#000000"
 viewer_line = "#008000"
 viewer_separator = "#a0a0a0"
 viewer_symbol = "#406090"
+viewer_find_text = "#000000"
+viewer_find_bg = "#ffe060"
 
 [[columns]]
 kind = "FileBaseName"

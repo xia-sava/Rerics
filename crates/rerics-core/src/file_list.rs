@@ -601,6 +601,10 @@ pub struct Colors {
     pub viewer_separator: Rgb,
     /// テキストビューアの記号（改行マーク・[EOF]）。
     pub viewer_symbol: Rgb,
+    /// テキストビューアの検索ヒット文字。
+    pub viewer_find_text: Rgb,
+    /// テキストビューアの検索ヒット背景。
+    pub viewer_find_bg: Rgb,
 }
 
 impl Default for Colors {
@@ -633,6 +637,8 @@ impl Colors {
             viewer_line: Rgb::new(0x80, 0xc0, 0x80),
             viewer_separator: Rgb::new(0x55, 0x55, 0x55),
             viewer_symbol: Rgb::new(0x80, 0x90, 0xc0),
+            viewer_find_text: Rgb::new(0x00, 0x00, 0x00),
+            viewer_find_bg: Rgb::new(0xff, 0xd0, 0x40),
         }
     }
 
@@ -660,6 +666,8 @@ impl Colors {
             viewer_line: Rgb::new(0x00, 0x80, 0x00),
             viewer_separator: Rgb::new(0xa0, 0xa0, 0xa0),
             viewer_symbol: Rgb::new(0x40, 0x60, 0x90),
+            viewer_find_text: Rgb::new(0x00, 0x00, 0x00),
+            viewer_find_bg: Rgb::new(0xff, 0xe0, 0x60),
         }
     }
 }

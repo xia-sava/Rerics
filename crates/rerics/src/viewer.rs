@@ -582,6 +582,7 @@ impl ViewerView {
         let top = self.inner.scroll_top.get();
         let match_line = self.inner.match_line.get();
         let sel_brush = w::HBRUSH::CreateSolidBrush(rgb(colors.selected_file_bg))?;
+        let find_brush = w::HBRUSH::CreateSolidBrush(rgb(colors.viewer_find_bg))?;
         let mut y = 0i32;
         let mut i = top;
         while i < lines.len() && y < body_h {
@@ -600,7 +601,7 @@ impl ViewerView {
             }
             let is_match = !highlighted && match_line == Some(i);
             if is_match {
-                dc.FillRect(w::RECT { left: content_left, top: y, right: cw, bottom: y + lh }, &sel_brush)?;
+                dc.FillRect(w::RECT { left: content_left, top: y, right: cw, bottom: y + lh }, &find_brush)?;
             }
             if !line.gutter.is_empty() {
                 dc.SetTextColor(rgb(colors.viewer_line))?;
@@ -608,7 +609,7 @@ impl ViewerView {
                 dc.DrawText(&line.gutter, rect, co::DT::SINGLELINE | co::DT::RIGHT | co::DT::NOPREFIX)?;
             }
             if !line.body.is_empty() {
-                let col = if is_match { colors.selected_file } else { colors.viewer_text };
+                let col = if is_match { colors.viewer_find_text } else { colors.viewer_text };
                 dc.SetTextColor(rgb(col))?;
                 let rect = w::RECT { left: content_left, top: y, right: cw, bottom: y + lh };
                 dc.DrawText(&line.body, rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
