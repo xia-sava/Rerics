@@ -8,7 +8,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use rerics_core::{
-    Align, ColumnKind, Colors, Config, FileItem, FileListState, IconSize, MediaKind, Rgb, SortType,
+    Align, ColumnKind, Colors, Config, FileItem, FileListState, IconSize, MediaKind, Rgb,
+    SizeFormat, SortType,
 };
 use winsafe::{self as w, co, gui, prelude::*};
 
@@ -75,6 +76,8 @@ struct Inner {
     icon_show: Cell<bool>,
     /// アイコンの表示サイズ（設定）。
     icon_size: Cell<IconSize>,
+    /// ファイルサイズ列の表記スタイル（設定）。
+    size_format: Cell<SizeFormat>,
     /// 現在表示中の実FSディレクトリ（per-file アイコン取得用。書庫内など実体が無ければ None）。
     dir: RefCell<Option<PathBuf>>,
 }
@@ -128,6 +131,7 @@ impl FileListView {
             icon_cache: RefCell::new(None),
             icon_show: Cell::new(cfg.icons.show),
             icon_size: Cell::new(cfg.icons.size),
+            size_format: Cell::new(cfg.size_format),
             dir: RefCell::new(None),
         });
         let me = Self { wnd, inner };
@@ -238,6 +242,7 @@ impl FileListView {
         self.inner.scrollbar_width.set(cfg.layout.scrollbar_width);
         self.inner.icon_show.set(cfg.icons.show);
         self.inner.icon_size.set(cfg.icons.size);
+        self.inner.size_format.set(cfg.size_format);
         let _ = self.refresh();
     }
 
@@ -276,7 +281,7 @@ impl FileListView {
                 // 可変列（拡張子）：全セルを実測して最長に合わせる。
                 let mut m = 0;
                 for item in &s.items {
-                    let text = s.cell_text(item, col.kind);
+                    let text = s.cell_text(item, col.kind, self.inner.size_format.get());
                     if text.is_empty() {
                         continue;
                     }
@@ -915,7 +920,7 @@ impl FileListView {
             for (ci, col) in s.columns.iter().enumerate() {
                 let left = col_lefts[ci];
                 let right = col_lefts[ci + 1];
-                let text = s.cell_text(item, col.kind);
+                let text = s.cell_text(item, col.kind, self.inner.size_format.get());
                 if text.is_empty() {
                     continue;
                 }

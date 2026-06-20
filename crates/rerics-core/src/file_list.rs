@@ -140,6 +140,67 @@ pub enum SortType {
     ExtensionExpLike,
 }
 
+/// ファイルサイズ列の表記スタイル（原作 `CustomSizeStyle` 由来・単位は Unit1 固定）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SizeFormat {
+    /// 全バイトをカンマ区切り（例 `1,234,567`）。
+    #[default]
+    Detail,
+    /// 常に単位＋小数1桁（例 `1.2 MB` / `500.0 KB`）。原作 Simple1。
+    Simple1,
+    /// 1MB 未満はバイト、以上は単位＋小数1桁（例 `512,000` / `1.2 MB`）。原作 Simple2。
+    Simple2,
+    /// KB 単位の整数固定（エクスプローラ風・例 `1,229 KB`）。原作 Explorer。
+    Explorer,
+}
+
+/// バイト数を `SizeFormat` に従って整形する。単位ラベルは原作 Unit1（なし/ KB/ MB/ GB/ TB）。
+pub fn format_size_styled(n: u64, fmt: SizeFormat) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    const TB: u64 = GB * 1024;
+    match fmt {
+        SizeFormat::Detail => format_size(n),
+        SizeFormat::Simple1 => {
+            let (v, u) = if n >= TB {
+                (n as f64 / TB as f64, " TB")
+            } else if n >= GB {
+                (n as f64 / GB as f64, " GB")
+            } else if n >= MB {
+                (n as f64 / MB as f64, " MB")
+            } else {
+                (n as f64 / KB as f64, " KB")
+            };
+            format!("{}{}", decimal1_grouped(v), u)
+        }
+        SizeFormat::Simple2 => {
+            if n >= TB {
+                format!("{} TB", decimal1_grouped(n as f64 / TB as f64))
+            } else if n >= GB {
+                format!("{} GB", decimal1_grouped(n as f64 / GB as f64))
+            } else if n >= MB {
+                format!("{} MB", decimal1_grouped(n as f64 / MB as f64))
+            } else {
+                format_size(n)
+            }
+        }
+        SizeFormat::Explorer => {
+            let kb = ((n as f64) / KB as f64).round() as u64;
+            format!("{} KB", format_size(kb))
+        }
+    }
+}
+
+/// 非負の値を小数1桁・整数部3桁区切りにする（1880.25 → "1,880.2"）。
+fn decimal1_grouped(v: f64) -> String {
+    let s = format!("{v:.1}");
+    let (int_part, frac) = s.split_once('.').unwrap_or((s.as_str(), "0"));
+    let int_grouped = int_part.parse::<u64>().map(format_size).unwrap_or_else(|_| int_part.to_owned());
+    format!("{int_grouped}.{frac}")
+}
+
 impl SortType {
     /// リテラル引数（`Sort("name")` 等）からソート種別を解釈する。大小無視。
     /// バリアント名のほか、よく使う別名（size/date/ext 等）も受理する。
@@ -820,14 +881,14 @@ impl FileListState {
     }
 
     /// 列のセルテキストを生成する。
-    pub fn cell_text(&self, item: &FileItem, kind: ColumnKind) -> String {
+    pub fn cell_text(&self, item: &FileItem, kind: ColumnKind, size_format: SizeFormat) -> String {
         match kind {
             ColumnKind::FileName => item.name.clone(),
             ColumnKind::FileBaseName => item.base_name.clone(),
             ColumnKind::FileExtension => item.extension.clone(),
             ColumnKind::Length => match item.size {
                 // サイズが取れていればディレクトリでも数値表示（書庫内 dir 等）。
-                Some(sz) => format_size(sz),
+                Some(sz) => format_size_styled(sz, size_format),
                 // サイズ不明：ディレクトリは "<DIR>"、ファイルは 0 と詐称せず "--"。
                 None => {
                     if item.is_dir {
@@ -1460,26 +1521,26 @@ mod tests {
         let mut d = dir("mydir");
         d.modified = None;
         assert_eq!(
-            FileListState::new().cell_text(&d, ColumnKind::Length),
+            FileListState::new().cell_text(&d, ColumnKind::Length, SizeFormat::Detail),
             "<DIR>"
         );
         let mut f = file("big.bin");
         f.size = Some(1234567);
         assert_eq!(
-            FileListState::new().cell_text(&f, ColumnKind::Length),
+            FileListState::new().cell_text(&f, ColumnKind::Length, SizeFormat::Detail),
             "1,234,567"
         );
         // #14: サイズが取れているディレクトリ（書庫内 dir 等）は数値表示。
         let mut sized_dir = dir("withsize");
         sized_dir.size = Some(4096);
         assert_eq!(
-            FileListState::new().cell_text(&sized_dir, ColumnKind::Length),
+            FileListState::new().cell_text(&sized_dir, ColumnKind::Length, SizeFormat::Detail),
             "4,096"
         );
         // サイズ不明のファイルは 0 と詐称せず "--"。
         let unknown = file("unknown.bin");
         assert_eq!(
-            FileListState::new().cell_text(&unknown, ColumnKind::Length),
+            FileListState::new().cell_text(&unknown, ColumnKind::Length, SizeFormat::Detail),
             "--"
         );
         let mut attr = file("x");
@@ -1488,15 +1549,34 @@ mod tests {
         attr.readonly = true;
         attr.archive = true;
         assert_eq!(
-            FileListState::new().cell_text(&attr, ColumnKind::Attribute),
+            FileListState::new().cell_text(&attr, ColumnKind::Attribute, SizeFormat::Detail),
             "SHRA"
         );
         let dt = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(0);
         let mut tf = file("t");
         tf.modified = Some(dt);
-        let txt = FileListState::new().cell_text(&tf, ColumnKind::LastWriteTime);
+        let txt = FileListState::new().cell_text(&tf, ColumnKind::LastWriteTime, SizeFormat::Detail);
         assert_eq!(txt.len(), "yyyy/MM/dd HH:mm".len());
         assert_eq!(txt.matches('/').count(), 2);
+    }
+
+    #[test]
+    fn size_format_styles() {
+        let kb = 1024u64;
+        let mb = kb * 1024;
+        let gb = mb * 1024;
+        // 詳細：全バイト・カンマ区切り。
+        assert_eq!(format_size_styled(1_234_567, SizeFormat::Detail), "1,234,567");
+        // Simple1：常に単位＋小数1桁。
+        assert_eq!(format_size_styled(512, SizeFormat::Simple1), "0.5 KB");
+        assert_eq!(format_size_styled(5 * mb, SizeFormat::Simple1), "5.0 MB");
+        assert_eq!(format_size_styled(3 * gb + gb / 2, SizeFormat::Simple1), "3.5 GB");
+        // Simple2：1MB 未満はバイト、以上は単位。
+        assert_eq!(format_size_styled(500 * kb, SizeFormat::Simple2), "512,000");
+        assert_eq!(format_size_styled(5 * mb, SizeFormat::Simple2), "5.0 MB");
+        // Explorer：KB 整数固定。
+        assert_eq!(format_size_styled(5 * mb, SizeFormat::Explorer), "5,120 KB");
+        assert_eq!(format_size_styled(1536, SizeFormat::Explorer), "2 KB");
     }
 
     #[test]
@@ -1570,7 +1650,7 @@ mod tests {
         let dt = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(0);
         let mut tf = file("t");
         tf.modified = Some(dt);
-        let cell = FileListState::new().cell_text(&tf, ColumnKind::LastWriteTime);
+        let cell = FileListState::new().cell_text(&tf, ColumnKind::LastWriteTime, SizeFormat::Detail);
         assert_eq!(
             column_sample(ColumnKind::LastWriteTime).chars().count(),
             cell.chars().count()
@@ -1581,7 +1661,7 @@ mod tests {
         attr.hidden = true;
         attr.readonly = true;
         attr.archive = true;
-        let acell = FileListState::new().cell_text(&attr, ColumnKind::Attribute);
+        let acell = FileListState::new().cell_text(&attr, ColumnKind::Attribute, SizeFormat::Detail);
         assert!(column_sample(ColumnKind::Attribute).chars().count() >= acell.chars().count());
         // サイズの代表は12桁＋3桁区切り。
         assert_eq!(column_sample(ColumnKind::Length), "999,999,999,999");

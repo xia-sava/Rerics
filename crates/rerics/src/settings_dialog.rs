@@ -10,7 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rerics_core::{
-    Bookmark, Colors, Config, IconSize, Layout, Rgb, ResolvedTheme, Theme, WheelAction,
+    Bookmark, Colors, Config, IconSize, Layout, Rgb, ResolvedTheme, SizeFormat, Theme, WheelAction,
 };
 use winsafe::{self as w, co, gui, msg::tvm, prelude::*};
 
@@ -1092,6 +1092,60 @@ fn build_viewer(parent: &gui::WindowControl, shared: &Rc<Shared>) {
     group_box(parent, "テキスト", 12, 96, 752, 76);
 }
 
+/// 「一覧」ページ。ファイルサイズ列の表記スタイルを選ぶ（列構成・既定ソートは今後ここへ追加）。
+fn build_list(parent: &gui::WindowControl, shared: &Rc<Shared>) {
+    let fmt = shared.cfg.borrow().size_format;
+
+    group_box(parent, "ファイルサイズの表記", 12, 8, 752, 158);
+    label(parent, "サイズ列の表示形式", 28, 34, 200);
+    let group = gui::RadioGroup::new(
+        parent,
+        &[
+            gui::RadioButtonOpts {
+                text: "詳細：全バイトをカンマ区切り（例 1,234,567）(&D)",
+                position: gui::dpi(28, 58),
+                size: gui::dpi(420, 20),
+                selected: fmt == SizeFormat::Detail,
+                ..Default::default()
+            },
+            gui::RadioButtonOpts {
+                text: "省略：小はバイト・大は単位（例 1.2 MB）(&M)",
+                position: gui::dpi(28, 82),
+                size: gui::dpi(420, 20),
+                selected: fmt == SizeFormat::Simple2,
+                ..Default::default()
+            },
+            gui::RadioButtonOpts {
+                text: "省略：常に単位＋小数1桁（例 500.0 KB）(&U)",
+                position: gui::dpi(28, 106),
+                size: gui::dpi(420, 20),
+                selected: fmt == SizeFormat::Simple1,
+                ..Default::default()
+            },
+            gui::RadioButtonOpts {
+                text: "KB 固定：エクスプローラ風（例 1,229 KB）(&K)",
+                position: gui::dpi(28, 130),
+                size: gui::dpi(420, 20),
+                selected: fmt == SizeFormat::Explorer,
+                ..Default::default()
+            },
+        ],
+    );
+    {
+        let shared = shared.clone();
+        let group2 = group.clone();
+        group.on().bn_clicked(move || {
+            shared.cfg.borrow_mut().size_format = match group2.selected_index() {
+                Some(1) => SizeFormat::Simple2,
+                Some(2) => SizeFormat::Simple1,
+                Some(3) => SizeFormat::Explorer,
+                _ => SizeFormat::Detail,
+            };
+            Ok(())
+        });
+    }
+}
+
 /// ショートカット入力を先頭1文字へ丸める（空白のみ/空は空文字）。
 fn normalize_shortcut(raw: &str) -> String {
     raw.trim().chars().next().map(|c| c.to_string()).unwrap_or_default()
@@ -1482,6 +1536,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     let pane_registered = make_pane(&wnd, pane_pos, pane_wide); // 4
     let pane_keys = make_pane(&wnd, pane_pos, pane_wide); // 5
     let pane_image = make_pane(&wnd, pane_pos, pane_wide); // 6
+    let pane_list = make_pane(&wnd, pane_pos, pane_wide); // 7
     let panes = vec![
         pane_appearance.clone(),
         pane_colors.clone(),
@@ -1490,6 +1545,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         pane_registered.clone(),
         pane_keys.clone(),
         pane_image.clone(),
+        pane_list.clone(),
     ];
 
     // 右カラム：プレビュー（外観カテゴリ選択中だけ表示）。表示テーマは「配色テーマ」に追従する
@@ -1510,6 +1566,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     build_layout(&pane_layout, &shared, &preview);
     build_cursor(&pane_cursor, &shared);
     build_viewer(&pane_image, &shared);
+    build_list(&pane_list, &shared);
     let registered = RegisteredPane::new(&pane_registered, &shared);
     let keys = KeysPane::new(&pane_keys, &shared);
 
@@ -1592,6 +1649,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
                 let _ = appearance.add_child("レイアウト", None, 2);
                 let _ = appearance.expand(true);
             }
+            let _ = nav.items().add_root("一覧", None, 7);
             if let Ok(behavior) = nav.items().add_root("動作", None, 3) {
                 let _ = behavior.add_child("カーソル", None, 3);
                 let _ = behavior.add_child("ビューア", None, 6);

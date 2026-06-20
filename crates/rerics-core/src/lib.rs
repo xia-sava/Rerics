@@ -31,6 +31,7 @@ pub use config::{
     save_toml, state_path,
 };
 pub use file_list::{
+    SizeFormat, format_size_styled,
     Align, Colors, Column, ColumnKind, FileItem, FileListState, NameCase, Rgb, SeqCase, SortType,
     auto_adjust_columns, column_sample, default_columns, find_match, glob_match, read_items,
     sequence_rename,

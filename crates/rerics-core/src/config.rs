@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use toml::Value;
 
-use crate::file_list::{Colors, Column, SortType, default_columns};
+use crate::file_list::{Colors, Column, SizeFormat, SortType, default_columns};
 use crate::input::KeyMap;
 
 /// 設定/状態ファイルの保存先ディレクトリを返す。
@@ -278,6 +278,8 @@ pub struct Config {
     pub layout: Layout,
     pub colors: ThemeColors,
     pub columns: Vec<Column>,
+    /// ファイルサイズ列の表記スタイル。
+    pub size_format: SizeFormat,
     /// キーバインド（チョード文字列 → コマンドトークン）。
     pub keybinds: BTreeMap<String, String>,
     /// 登録ディレクトリ（ジャンプ先）。
@@ -303,6 +305,7 @@ impl Default for Config {
             layout: Layout::default(),
             colors: ThemeColors::default(),
             columns: default_columns(),
+            size_format: SizeFormat::Simple2,
             keybinds: KeyMap::default().to_string_map(),
             bookmarks: Vec::new(),
             editor: "notepad.exe".to_owned(),
