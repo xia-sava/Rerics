@@ -659,10 +659,12 @@ impl SwatchList {
             frame(dc, sx, sy, sx + sw_w, sb, frame_col)?;
             fill(dc, sx + 1, sy + 1, sx + sw_w - 1, sb - 1, c)?;
 
-            // ラベルと 16 進値。
+            // ラベルと 16 進値。16 進は固定列に描いて行をまたいで縦に揃える。
             dc.SetTextColor(if selected { hl_text } else { normal_text })?;
-            let text = format!("{label}  #{:02X}{:02X}{:02X}", c.r, c.g, c.b);
-            dc.TextOut(sx + sw_w + gui::dpi_x(8), y + pad, &text)?;
+            let label_x = sx + sw_w + gui::dpi_x(8);
+            dc.TextOut(label_x, y + pad, label)?;
+            let hex = format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b);
+            dc.TextOut(label_x + gui::dpi_x(132), y + pad, &hex)?;
         }
         Ok(())
     }
@@ -929,6 +931,21 @@ fn build_layout(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &Prev
                 position: gui::dpi(170, y),
                 width: gui::dpi_x(64),
                 height: gui::dpi_y(22),
+                ..Default::default()
+            },
+        );
+        // 直前の Edit にバディ付けした上下スピン（クリック・矢印キーで増減）。
+        let _spin = gui::UpDown::new(
+            parent,
+            gui::UpDownOpts {
+                position: gui::dpi(234, y),
+                height: gui::dpi_y(22),
+                range: (0, 4000),
+                value: get(&cfg.layout),
+                control_style: co::UDS::AUTOBUDDY
+                    | co::UDS::SETBUDDYINT
+                    | co::UDS::ALIGNRIGHT
+                    | co::UDS::ARROWKEYS,
                 ..Default::default()
             },
         );
