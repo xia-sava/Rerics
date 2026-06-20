@@ -1,5 +1,6 @@
-//! 設定ダイアログ。左ナビ（ツリー：外観＝テーマ・フォント／配色／レイアウト、動作＝カーソル、
-//! キー）と中央の詳細 pane、外観カテゴリ選択中だけ右へ出す「ミニ全体窓」プレビューの構成。
+//! 設定ダイアログ。左ナビ（フラットな自前描画リスト：ジャンル見出しは選択不可・ページだけが
+//! ↑↓／クリックで選べる）と中央の詳細 pane、外観カテゴリ選択中だけ右へ出す
+//! 「ミニ全体窓」プレビューの構成。
 //!
 //! 編集中の値はすべて [`Shared`] へ即時反映し、配色・フォント・レイアウト寸法・テーマの
 //! 変更はその場でプレビューへ反映する（ライブプレビュー）。`OK`／`適用` で現在の [`Config`]
@@ -13,7 +14,7 @@ use rerics_core::{
     Bookmark, Colors, Column, ColumnKind, Config, IconSize, Layout, Rgb, ResolvedTheme,
     SizeFormat, SortType, Theme, WheelAction,
 };
-use winsafe::{self as w, co, gui, msg::lb, msg::tvm, prelude::*};
+use winsafe::{self as w, co, gui, msg::lb, prelude::*};
 
 /// 自前描画コントロールをオフスクリーン DC へ描かせるメッセージ。`PrintWindow`
 /// （デバッグ制御サーバの `/snapshot/modal`）が子ごとに送るので、これに応答しないと黒く写る。
@@ -696,6 +697,245 @@ fn label(parent: &(impl GuiParent + 'static), text: &str, x: i32, y: i32, cx: i3
             ..Default::default()
         },
     );
+}
+
+/// 設定ナビの1行：ジャンル見出し（フォーカスを取らない）か、ページ（↑↓・クリックで選択可）。
+enum NavRow {
+    Header(&'static str),
+    Page { label: &'static str, pane: usize },
+}
+
+/// 設定の左ナビ（フラット）。`pane` は中央で出すペイン番号。見出しは選択対象にならず、
+/// ↑↓・クリックともページ行だけが選ばれる（見出しは飛ばす）。
+const NAV_ROWS: &[NavRow] = &[
+    NavRow::Header("外観"),
+    NavRow::Page { label: "テーマ・フォント", pane: 0 },
+    NavRow::Page { label: "配色", pane: 1 },
+    NavRow::Page { label: "レイアウト", pane: 2 },
+    NavRow::Page { label: "一覧", pane: 7 },
+    NavRow::Header("動作"),
+    NavRow::Page { label: "全般", pane: 8 },
+    NavRow::Page { label: "カーソル", pane: 3 },
+    NavRow::Page { label: "ビューア", pane: 6 },
+    NavRow::Header("登録"),
+    NavRow::Page { label: "登録ディレクトリ", pane: 4 },
+    NavRow::Header("キー"),
+    NavRow::Page { label: "キー割り当て", pane: 5 },
+];
+
+struct NavInner {
+    /// 選択中ページの `NAV_ROWS` インデックス。
+    sel: Cell<usize>,
+    /// 1行の高さ（px・描画時にフォント高から決める）。
+    row_h: Cell<i32>,
+    /// 選択変更時に pane 番号を渡すコールバック。
+    on_select: RefCell<Option<Box<dyn Fn(usize)>>>,
+}
+
+/// 設定の左ナビ。ジャンル見出し＋ページの平坦リストを自前描画し、見出しは選択させない。
+/// これで「親ジャンルを選んだら配下の代表でない先頭ページが出る」違和感を無くす。
+#[derive(Clone)]
+struct SettingsNav {
+    wnd: gui::WindowControl,
+    inner: Rc<NavInner>,
+}
+
+impl SettingsNav {
+    fn new(parent: &(impl GuiParent + 'static), pos: (i32, i32), size: (i32, i32)) -> Self {
+        let wnd = gui::WindowControl::new(
+            parent,
+            gui::WindowControlOpts {
+                position: pos,
+                size,
+                class_bg_brush: gui::Brush::Color(co::COLOR::WINDOW),
+                style: co::WS::CHILD
+                    | co::WS::VISIBLE
+                    | co::WS::CLIPSIBLINGS
+                    | co::WS::TABSTOP
+                    | co::WS::BORDER,
+                ..Default::default()
+            },
+        );
+        let first = NAV_ROWS
+            .iter()
+            .position(|r| matches!(r, NavRow::Page { .. }))
+            .unwrap_or(0);
+        let me = Self {
+            wnd,
+            inner: Rc::new(NavInner {
+                sel: Cell::new(first),
+                row_h: Cell::new(gui::dpi_y(22)),
+                on_select: RefCell::new(None),
+            }),
+        };
+        me.setup_events();
+        me
+    }
+
+    fn hwnd(&self) -> &w::HWND {
+        self.wnd.hwnd()
+    }
+
+    fn on_select(&self, cb: impl Fn(usize) + 'static) {
+        *self.inner.on_select.borrow_mut() = Some(Box::new(cb));
+    }
+
+    /// 現在選択中ページの pane 番号。
+    fn selected_pane(&self) -> usize {
+        match NAV_ROWS[self.inner.sel.get()] {
+            NavRow::Page { pane, .. } => pane,
+            NavRow::Header(_) => 0,
+        }
+    }
+
+    /// `idx` のページを選択し（見出しなら無視）、再描画してコールバックを呼ぶ。
+    fn select(&self, idx: usize) {
+        let NavRow::Page { pane, .. } = NAV_ROWS[idx] else {
+            return;
+        };
+        self.inner.sel.set(idx);
+        let _ = self.hwnd().InvalidateRect(None, false);
+        if let Some(cb) = self.inner.on_select.borrow().as_ref() {
+            cb(pane);
+        }
+    }
+
+    /// 現在選択から `dir`（+1/-1）方向の次のページへ移る（見出しは飛ばす）。
+    fn move_sel(&self, dir: isize) {
+        let n = NAV_ROWS.len() as isize;
+        let mut i = self.inner.sel.get() as isize + dir;
+        while (0..n).contains(&i) {
+            if matches!(NAV_ROWS[i as usize], NavRow::Page { .. }) {
+                self.select(i as usize);
+                return;
+            }
+            i += dir;
+        }
+    }
+
+    fn setup_events(&self) {
+        let this = self.clone();
+        self.wnd.on().wm_get_dlg_code(move |_| {
+            let _ = &this;
+            Ok(unsafe { co::DLGC::from_raw(co::DLGC::WANTARROWS.raw()) })
+        });
+
+        let this = self.clone();
+        self.wnd.on().wm_paint(move || this.on_paint());
+
+        let this = self.clone();
+        self.wnd.on().wm(unsafe { co::WM::from_raw(WM_PRINTCLIENT) }, move |p| {
+            this.on_print(p.wparam);
+            Ok(0)
+        });
+
+        let this = self.clone();
+        self.wnd.on().wm_set_focus(move |_| {
+            let _ = this.hwnd().InvalidateRect(None, false);
+            Ok(())
+        });
+        let this = self.clone();
+        self.wnd.on().wm_kill_focus(move |_| {
+            let _ = this.hwnd().InvalidateRect(None, false);
+            Ok(())
+        });
+
+        let this = self.clone();
+        self.wnd.on().wm_l_button_down(move |p| {
+            this.hwnd().SetFocus();
+            let rh = this.inner.row_h.get().max(1);
+            let row = (p.coords.y / rh) as usize;
+            if row < NAV_ROWS.len() {
+                this.select(row);
+            }
+            Ok(())
+        });
+
+        let this = self.clone();
+        self.wnd.on().wm_key_down(move |p| {
+            let vk = p.vkey_code.raw();
+            if vk == co::VK::UP.raw() {
+                this.move_sel(-1);
+            } else if vk == co::VK::DOWN.raw() {
+                this.move_sel(1);
+            }
+            Ok(())
+        });
+    }
+
+    fn on_paint(&self) -> w::AnyResult<()> {
+        let hdc = self.hwnd().BeginPaint()?;
+        let rc = self.hwnd().GetClientRect()?;
+        let cw = rc.right - rc.left;
+        let ch = rc.bottom - rc.top;
+        if cw <= 0 || ch <= 0 {
+            return Ok(());
+        }
+        let mem = hdc.CreateCompatibleDC()?;
+        let bmp = hdc.CreateCompatibleBitmap(cw, ch)?;
+        let _sel = mem.SelectObject(&*bmp)?;
+        self.render(&mem, cw, ch)?;
+        hdc.BitBlt(
+            w::POINT { x: 0, y: 0 },
+            w::SIZE { cx: cw, cy: ch },
+            &mem,
+            w::POINT { x: 0, y: 0 },
+            co::ROP::SRCCOPY,
+        )?;
+        Ok(())
+    }
+
+    /// `WM_PRINTCLIENT`：与えられた DC へ直接描く（デバッグ制御サーバのスナップショット用）。
+    fn on_print(&self, hdc_ptr: usize) {
+        let hdc = unsafe { w::HDC::from_ptr(hdc_ptr as *mut std::ffi::c_void) };
+        if let Ok(rc) = self.hwnd().GetClientRect() {
+            let _ = self.render(&hdc, rc.right - rc.left, rc.bottom - rc.top);
+        }
+    }
+
+    fn render(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
+        let font = w::HFONT::GetStockObject(co::STOCK_FONT::DEFAULT_GUI)?;
+        let _fsel = dc.SelectObject(&font)?;
+        let fh = dc.GetTextMetrics().map(|tm| tm.tmHeight).unwrap_or(16);
+        let row_h = (fh + gui::dpi_y(10)).max(gui::dpi_y(20));
+        self.inner.row_h.set(row_h);
+        dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
+
+        let bg = w::HBRUSH::GetSysColorBrush(co::COLOR::WINDOW)?;
+        dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &bg)?;
+
+        let text_col = w::GetSysColor(co::COLOR::WINDOWTEXT);
+        let gray_col = w::GetSysColor(co::COLOR::GRAYTEXT);
+        let hl_text = w::GetSysColor(co::COLOR::HIGHLIGHTTEXT);
+        let hl_bg = w::HBRUSH::GetSysColorBrush(co::COLOR::HIGHLIGHT)?;
+
+        let sel = self.inner.sel.get();
+        let header_x = gui::dpi_x(6);
+        let page_x = gui::dpi_x(22);
+        for (i, row) in NAV_ROWS.iter().enumerate() {
+            let y = i as i32 * row_h;
+            let ty = y + (row_h - fh) / 2;
+            match row {
+                NavRow::Header(name) => {
+                    dc.SetTextColor(gray_col)?;
+                    dc.TextOut(header_x, ty, name)?;
+                }
+                NavRow::Page { label, .. } => {
+                    if i == sel {
+                        dc.FillRect(
+                            w::RECT { left: 0, top: y, right: cw, bottom: y + row_h },
+                            &hl_bg,
+                        )?;
+                        dc.SetTextColor(hl_text)?;
+                    } else {
+                        dc.SetTextColor(text_col)?;
+                    }
+                    dc.TextOut(page_x, ty, label)?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// 「外観」ページ（テーマ・フォント）を構築する。すべての編集を即 `Shared` へ反映する。
@@ -1937,15 +2177,8 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         target_dark: Cell::new(current.resolved == ResolvedTheme::Dark),
     });
 
-    // 左カラム：ナビ（ツリー）。各ノードの data は表示する pane 番号。
-    let nav = gui::TreeView::<usize>::new(
-        &wnd,
-        gui::TreeViewOpts {
-            position: gui::dpi(12, 12),
-            size: gui::dpi(152, 544),
-            ..Default::default()
-        },
-    );
+    // 左カラム：ナビ（フラット・自前描画）。ジャンル見出しは選択不可、ページだけが選べる。
+    let nav = SettingsNav::new(&wnd, gui::dpi(12, 12), gui::dpi(152, 544));
 
     // 中央カラム：セクション pane（同じ矩形に重ねて show/hide で切替）。番号は nav の data と対応。
     let pane_pos = gui::dpi(172, 12);
@@ -2070,38 +2303,12 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         #[cfg(feature = "debug-server")]
         let reg_wnd = wnd.clone();
         wnd.on().wm_create(move |_| {
-            // ツリー構築：外観(テーマ・フォント/配色/レイアウト)・動作(カーソル/ビューア)・
-            // 登録(登録ディレクトリ)・キー。data＝pane 番号。外観のみ右にプレビューを出す。
-            if let Ok(appearance) = nav.items().add_root("外観", None, 0) {
-                let _ = appearance.add_child("テーマ・フォント", None, 0);
-                let _ = appearance.add_child("配色", None, 1);
-                let _ = appearance.add_child("レイアウト", None, 2);
-                let _ = appearance.expand(true);
-            }
-            let _ = nav.items().add_root("一覧", None, 7);
-            if let Ok(behavior) = nav.items().add_root("動作", None, 8) {
-                let _ = behavior.add_child("カーソル", None, 3);
-                let _ = behavior.add_child("ビューア", None, 6);
-                let _ = behavior.expand(true);
-            }
-            if let Ok(register) = nav.items().add_root("登録", None, 4) {
-                let _ = register.add_child("登録ディレクトリ", None, 4);
-                let _ = register.expand(true);
-            }
-            let _ = nav.items().add_root("キー", None, 5);
-            // 先頭ルート（外観＝pane 0）を初期選択（tvn_sel_changed が pane／プレビューを整える）。
-            unsafe {
-                if let Some(first) =
-                    nav.hwnd().SendMessage(tvm::GetNextItem { relationship: co::TVGN::ROOT, hitem: None })
-                {
-                    let _ = nav
-                        .hwnd()
-                        .SendMessage(tvm::SelectItem { action: co::TVGN::CARET, hitem: &first });
-                }
-            }
+            // 初期表示：先頭ページ（pane 0）を出し、ナビへフォーカスを与える。
+            let init = nav.selected_pane();
             for (i, p) in panes.iter().enumerate() {
-                p.hwnd().ShowWindow(if i == 0 { co::SW::SHOW } else { co::SW::HIDE });
+                p.hwnd().ShowWindow(if i == init { co::SW::SHOW } else { co::SW::HIDE });
             }
+            nav.hwnd().SetFocus();
             registered.populate();
             keys.populate();
             columns_editor.populate();
@@ -2122,24 +2329,18 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         });
     }
 
-    // 左ナビ（ツリー）選択で pane を切り替え、外観ブランチ（pane 0..=2）のときだけプレビューを出す。
+    // ナビのページ選択で中央 pane を切り替え、外観カテゴリ（pane 0..=2）のときだけプレビューを出す。
     {
-        let nav2 = nav.clone();
         let panes = panes.clone();
         let preview = preview.clone();
         let preview_label = preview_label.clone();
-        nav.on().tvn_sel_changed(move |_| {
-            if let Some(item) = nav2.items().iter_selected().next() {
-                let idx = *item.data().borrow();
-                for (i, p) in panes.iter().enumerate() {
-                    p.hwnd().ShowWindow(if i == idx { co::SW::SHOW } else { co::SW::HIDE });
-                }
-                // 外観ブランチ（pane 0..=2）のときだけプレビューを出す。
-                let sw = if idx <= 2 { co::SW::SHOW } else { co::SW::HIDE };
-                preview_label.hwnd().ShowWindow(sw);
-                preview.hwnd().ShowWindow(sw);
+        nav.on_select(move |pane| {
+            for (i, p) in panes.iter().enumerate() {
+                p.hwnd().ShowWindow(if i == pane { co::SW::SHOW } else { co::SW::HIDE });
             }
-            Ok(())
+            let sw = if pane <= 2 { co::SW::SHOW } else { co::SW::HIDE };
+            preview_label.hwnd().ShowWindow(sw);
+            preview.hwnd().ShowWindow(sw);
         });
     }
 
