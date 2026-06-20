@@ -6,6 +6,23 @@ use rerics_core::{Command, Invocation};
 use crate::{ActiveView, DebugCmdClass, MainWindow, debug_command_class, debug_json, debug_server, parse_region};
 
 impl MainWindow {
+    /// 保留中の汎用ジョブ（非同期ディレクトリ読込の継続など）を、無くなるまで同期実行する。
+    /// アプリの挙動（読込は非同期）は変えず、debug server がコマンド後の確定状態を観測できる
+    /// ようにするためのハーネス用。ワーカーが結果を返さない異常時は短いタイムアウトで諦める。
+    fn settle_pending_jobs(&self) {
+        while !self.ui_jobs.borrow().is_empty() {
+            match self.ui_job_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                Ok((id, result)) => {
+                    let done = self.ui_jobs.borrow_mut().remove(&id);
+                    if let Some(done) = done {
+                        let _ = done(self, result);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
     /// デバッグ制御サーバの要求キューを UI スレッドで処理する（feature 有効時のみ）。
     /// モーダルを開くコマンドは exec がネストループでブロックするため、応答を先に返してから実行する。
     /// その間に届く `/modal/*`・`/state` 等はネストループ経由で本関数が再入して捌く。
@@ -16,6 +33,7 @@ impl MainWindow {
             let Some((req, tx)) = item else { break };
             match req {
                 debug_server::Request::State { pointer } => {
+                    self.settle_pending_jobs();
                     let v = self.debug_state_value();
                     let r = match v.pointer(&pointer) {
                         Some(sub) => debug_server::Response::Json(sub.to_string()),
@@ -24,6 +42,7 @@ impl MainWindow {
                     let _ = tx.send(r);
                 }
                 debug_server::Request::Presentation { pointer } => {
+                    self.settle_pending_jobs();
                     let v = self.debug_presentation_value();
                     let r = match v.pointer(&pointer) {
                         Some(sub) => debug_server::Response::Json(sub.to_string()),
@@ -38,6 +57,7 @@ impl MainWindow {
                     let _ = tx.send(self.debug_view_key(&action));
                 }
                 debug_server::Request::Snapshot { spec } => {
+                    self.settle_pending_jobs();
                     let _ = tx.send(self.debug_snapshot(&spec));
                 }
                 debug_server::Request::ModalKey { key } => {
@@ -76,7 +96,10 @@ impl MainWindow {
         match debug_command_class(cmd) {
             DebugCmdClass::NonModal => {
                 let r = match self.exec(is_left, &inv) {
-                    Ok(()) => debug_server::Response::Json(self.debug_state_value().to_string()),
+                    Ok(()) => {
+                        self.settle_pending_jobs();
+                        debug_server::Response::Json(self.debug_state_value().to_string())
+                    }
                     Err(e) => debug_server::Response::Error(format!("exec error: {e}")),
                 };
                 let _ = tx.send(r);

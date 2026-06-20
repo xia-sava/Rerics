@@ -71,6 +71,12 @@ impl MainWindow {
         *self.view(true).state().borrow_mut() = snap.left_state.clone();
         *self.view(false).state().borrow_mut() = snap.right_state.clone();
         self.active_right.set(snap.active_right);
+        // 旧タブで走行中の非同期読込に追い越されないよう世代を進め、残りスピナーも消す
+        // （新タブの一覧はスナップショットから即復元済み）。
+        for is_left in [true, false] {
+            self.view(is_left).bump_load_gen();
+            self.view(is_left).clear_loading();
+        }
         // 起動・タブ切替の直後からアクティブ側ペインにカーソル下線を出す（反対側は消す）。
         // キー入力はキーシンクに集約するため、ペインに Win32 フォーカスを与えず可視状態だけ揃える。
         let active_is_left = !snap.active_right;

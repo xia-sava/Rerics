@@ -167,16 +167,8 @@ impl MainWindow {
         let Some(prev_name) = prev else {
             return Ok(());
         };
-        self.reload_side_navigated(is_left)?;
-        let view = self.view(is_left);
-        let pr = view.page_rows();
-        {
-            let state = view.state();
-            let mut s = state.borrow_mut();
-            s.set_cursor_position(&prev_name, pr);
-            s.center_cursor(pr);
-        }
-        view.refresh()?;
+        self.record_visit(is_left);
+        self.reload_side_focus(is_left, &prev_name, true)?;
         Ok(())
     }
 

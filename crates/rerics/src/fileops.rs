@@ -33,11 +33,7 @@ impl MainWindow {
             return Ok(());
         }
         self.log.normal(&messages::create_directory(name));
-        self.reload_side(is_left)?;
-        let view = self.view(is_left);
-        let pr = view.page_rows();
-        view.state().borrow_mut().set_cursor_position(name, pr);
-        view.refresh()?;
+        self.reload_side_focus(is_left, name, false)?;
         Ok(())
     }
 
@@ -80,11 +76,7 @@ impl MainWindow {
             dialog::message_box(&self.wnd, "新規ファイルの作成", &msg, dialog::MessageStyle::Error);
             return Ok(());
         }
-        self.reload_side(is_left)?;
-        let view = self.view(is_left);
-        let pr = view.page_rows();
-        view.state().borrow_mut().set_cursor_position(name, pr);
-        view.refresh()?;
+        self.reload_side_focus(is_left, name, false)?;
         Ok(())
     }
 
@@ -483,12 +475,10 @@ impl MainWindow {
             }
         }
 
-        self.reload_side(is_left)?;
-        if let Some(n) = cursor_name {
-            let pr = self.view(is_left).page_rows();
-            self.view(is_left).state().borrow_mut().set_cursor_position(&n, pr);
+        match cursor_name {
+            Some(n) => self.reload_side_focus(is_left, &n, false)?,
+            None => self.reload_side(is_left)?,
         }
-        self.view(is_left).refresh()?;
         Ok(())
     }
 

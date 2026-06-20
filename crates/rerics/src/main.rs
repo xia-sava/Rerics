@@ -305,6 +305,25 @@ enum ReloadCursor {
     /// 戻る/進む用：`cursor.history` 設定に関係なく、移動先で覚えたカーソル位置へ常に
     /// 戻す。無ければ先頭（原作 HistoryBack/Forward 準拠＝常時復元）。
     RecallAlways,
+    /// 読込完了後に指定名へカーソルを置く（無ければ先頭）。`center` で中央寄せ。
+    /// ディレクトリ作成・連番リネーム・親移動など「直後に特定行へ寄せたい」操作で使う。
+    Focus { name: String, center: bool },
+}
+
+/// 非同期読込の継続（[`MainWindow::apply_loaded_items`]）へ渡す、読込後処理の計画。
+/// 読込開始時に UI スレッドで確定し、ワーカーの結果と共に取り込み時へ運ぶ。
+struct LoadPlan {
+    mode: ReloadCursor,
+    /// Keep 用：再読込前のカーソル下名・スクロール・index。
+    keep_name: Option<String>,
+    keep_scroll: usize,
+    keep_idx: usize,
+    /// Recall/RecallAlways 用：このパスで覚えたカーソル名。
+    recalled: Option<String>,
+    /// 表示中のフィルタ（グロブ）。
+    mask: Option<String>,
+    /// この読込の世代（取り込み時に現世代と一致しなければ破棄）。
+    generation: u64,
 }
 
 impl MainWindow {
@@ -1219,6 +1238,12 @@ impl MainWindow {
         self.reload_side_impl(is_left, ReloadCursor::RecallAlways)
     }
 
+    /// 再読込し、完了後に `name` の行へカーソルを置く（無ければ先頭・`center` で中央寄せ）。
+    /// ディレクトリ作成・連番リネーム・親移動など、読込直後に特定行へ寄せたい操作で使う。
+    fn reload_side_focus(&self, is_left: bool, name: &str, center: bool) -> w::AnyResult<()> {
+        self.reload_side_impl(is_left, ReloadCursor::Focus { name: name.to_owned(), center })
+    }
+
     /// 移動先（そのペインの現在地）をパス移動履歴へ記録する。同一パスは最新へ集約、
     /// 上限超過は古い方から落とす。入力履歴と同じ `history.toml` に永続する。
     fn record_visit(&self, is_left: bool) {
@@ -1236,7 +1261,6 @@ impl MainWindow {
             return Ok(());
         }
         let view = self.view(is_left);
-        view.clear_loading();
         // F5（Keep）のときだけ、再読込前のカーソル下ファイル名とスクロール位置を退避する。
         let (keep_name, keep_scroll, keep_idx) = if matches!(mode, ReloadCursor::Keep) {
             let st = view.state();
@@ -1244,14 +1268,6 @@ impl MainWindow {
             (s.items.get(s.cursor).map(|it| it.name.clone()), s.scroll_top, s.cursor)
         } else {
             (None, 0, 0)
-        };
-        let items = self.read_side_items(is_left);
-        let items = match self.mask(is_left).borrow().as_ref() {
-            Some(m) => items
-                .into_iter()
-                .filter(|it| it.is_parent || it.is_dir || rerics_core::glob_match(&it.name, m))
-                .collect(),
-            None => items,
         };
         let path = self.pane(is_left).borrow().loc_display();
         // 戻る/進む（RecallAlways）は常に、通常移動（Recall）は記憶オンのときだけ、
@@ -1266,6 +1282,63 @@ impl MainWindow {
         } else {
             None
         };
+        let mask = self.mask(is_left).borrow().clone();
+        let read_loc = self.resolve_read_location(is_left);
+
+        // 移動先は確定済みなので、パスバー・基準dir・ドライブ情報・タイトル・タブは即時更新する。
+        // （一覧の中身だけがワーカーの読込待ち。）
+        self.bar(is_left).set_path(&path);
+        // per-file アイコン取得の基準ディレクトリ（実FSのみ。書庫内は None＝汎用アイコン）。
+        let real_dir = self.pane(is_left).borrow().loc().as_real_path().map(|p| p.to_path_buf());
+        view.set_dir(real_dir);
+        self.update_drive_info(is_left);
+        self.update_title()?;
+        self.refresh_tab_bar()?;
+
+        // 世代を進めてこの読込を識別し、閾値遅延つきの待機スピナーを仕込む。
+        let generation = view.bump_load_gen();
+        view.set_loading_delayed();
+
+        let plan = LoadPlan { mode, keep_name, keep_scroll, keep_idx, recalled, mask, generation };
+        self.spawn_job(
+            move || read_loc.read().unwrap_or_default(),
+            move |mw, items| mw.apply_loaded_items(is_left, items, plan),
+        );
+        Ok(())
+    }
+
+    /// 読み出す対象を Send な [`Location`] として確定する。一括展開済み書庫は **temp の実FS** を
+    /// 指す（tar.gz 等を毎回再解凍しない）。それ以外（実FS・RA書庫・未展開）は現在地そのまま。
+    fn resolve_read_location(&self, is_left: bool) -> Location {
+        let loc = self.pane(is_left).borrow().loc().clone();
+        if let Location::Archive { archive, inner } = &loc {
+            if let Some(root) = self.archive_extracted.borrow().get(archive).cloned() {
+                return Location::Real(root.join(Self::inner_to_pathbuf(inner)));
+            }
+        }
+        loc
+    }
+
+    /// ワーカーが読み終えた一覧を取り込み、フィルタ・ソート・カーソルを適用して描画する。
+    /// 読込開始後に新しいナビ／タブ切替へ追い越されていたら（世代不一致）破棄する。
+    fn apply_loaded_items(
+        &self,
+        is_left: bool,
+        items: Vec<rerics_core::FileItem>,
+        plan: LoadPlan,
+    ) -> w::AnyResult<()> {
+        let view = self.view(is_left);
+        if view.load_gen() != plan.generation {
+            return Ok(());
+        }
+        view.clear_loading();
+        let items = match plan.mask.as_ref() {
+            Some(m) => items
+                .into_iter()
+                .filter(|it| it.is_parent || it.is_dir || rerics_core::glob_match(&it.name, m))
+                .collect(),
+            None => items,
+        };
         let pr = view.page_rows();
         {
             let state = view.state();
@@ -1274,20 +1347,22 @@ impl MainWindow {
             let sort = s.sort_type;
             let reverse = s.sort_reverse;
             s.sort(sort, reverse);
-            match mode {
+            match &plan.mode {
                 ReloadCursor::Keep => {
-                    let found = keep_name
+                    let found = plan
+                        .keep_name
                         .as_deref()
                         .map(|n| s.set_cursor_position(n, pr))
                         .unwrap_or(false);
                     if !found {
-                        s.set_cursor(keep_idx as isize, pr);
+                        s.set_cursor(plan.keep_idx as isize, pr);
                     }
                     // スクロール位置を復元（カーソルが画面内に収まる限り見た目を維持）。
-                    s.set_scroll_top(keep_scroll as isize, pr);
+                    s.set_scroll_top(plan.keep_scroll as isize, pr);
                 }
                 ReloadCursor::Recall | ReloadCursor::RecallAlways => {
-                    let found = recalled
+                    let found = plan
+                        .recalled
                         .as_deref()
                         .map(|n| s.set_cursor_position(n, pr))
                         .unwrap_or(false);
@@ -1298,35 +1373,21 @@ impl MainWindow {
                 ReloadCursor::Reset => {
                     s.set_cursor(0, pr);
                 }
-            }
-        }
-        self.bar(is_left).set_path(&path);
-        // per-file アイコン取得の基準ディレクトリ（実FSのみ。書庫内は None＝汎用アイコン）。
-        let real_dir = self.pane(is_left).borrow().loc().as_real_path().map(|p| p.to_path_buf());
-        view.set_dir(real_dir);
-        view.autofit_columns()?;
-        view.refresh()?;
-        self.update_selected_info(is_left);
-        self.update_drive_info(is_left);
-        self.update_title()?;
-        self.refresh_tab_bar()?;
-        self.cleanup_unreferenced_temps();
-        Ok(())
-    }
-
-    /// ペインの一覧を読む。一括展開済み書庫は **temp の実FS から**列挙する（tar.gz 等を毎回
-    /// 再解凍しないため）。それ以外（実FS・RA書庫・未展開）は従来どおり `Pane::read`。
-    fn read_side_items(&self, is_left: bool) -> Vec<rerics_core::FileItem> {
-        let loc = self.pane(is_left).borrow().loc().clone();
-        if let Location::Archive { archive, inner } = &loc {
-            if let Some(root) = self.archive_extracted.borrow().get(archive).cloned() {
-                let dir = root.join(Self::inner_to_pathbuf(inner));
-                if let Ok(items) = rerics_core::read_items(&dir) {
-                    return items;
+                ReloadCursor::Focus { name, center } => {
+                    if !s.set_cursor_position(name, pr) {
+                        s.set_cursor(0, pr);
+                    }
+                    if *center {
+                        s.center_cursor(pr);
+                    }
                 }
             }
         }
-        self.pane(is_left).borrow().read()
+        view.autofit_columns()?;
+        view.refresh()?;
+        self.update_selected_info(is_left);
+        self.cleanup_unreferenced_temps();
+        Ok(())
     }
 
 }

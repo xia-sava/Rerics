@@ -519,11 +519,7 @@ impl MainWindow {
             return Ok(());
         }
         self.log.normal(&messages::create_directory(name));
-        self.reload_side(is_left)?;
-        let view = self.view(is_left);
-        let pr = view.page_rows();
-        view.state().borrow_mut().set_cursor_position(name, pr);
-        view.refresh()?;
+        self.reload_side_focus(is_left, name, false)?;
         Ok(())
     }
 

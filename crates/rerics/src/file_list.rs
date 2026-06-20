@@ -6,6 +6,7 @@
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 
 use rerics_core::{
     Align, ColumnKind, Colors, Config, FileItem, FileListState, IconSize, MediaKind, Rgb,
@@ -14,6 +15,9 @@ use rerics_core::{
 use winsafe::{self as w, co, gui, prelude::*};
 
 use crate::icons::{ICON_LOGICAL, IconCache};
+
+/// 非同期読込でこの時間を超えてから待機スピナーを出す（速い読込はチラつかせない）。
+const LOADING_SPINNER_DELAY: Duration = Duration::from_secs(1);
 
 /// FileItem の更新時刻を per-file アイコンキャッシュのキー用 u64 秒へ。取得不能は 0。
 fn item_mtime(it: &FileItem) -> u64 {
@@ -65,8 +69,10 @@ struct Inner {
     on_activate: RefCell<Option<ActivateCb>>,
     on_got_focus: RefCell<Option<Box<dyn Fn()>>>,
     on_wheel: RefCell<Option<WheelCb>>,
-    /// 読込・展開の待機表示。`Some` の間は一覧の代わりに進捗（バー）を重ねる。
+    /// 読込・展開の待機表示。`Some` の間は一覧の代わりに待機スピナーを重ねる。
     loading: RefCell<Option<Spinner>>,
+    /// 非同期読込の世代。新しい読込・タブ切替で進め、古い結果の取り込みを弾く。
+    load_gen: Cell<u64>,
     /// シェルアイコンのキャッシュ（左右ペインで共有・main 側から注入）。未設定なら描かない。
     icon_cache: RefCell<Option<Rc<IconCache>>>,
     /// アイコンを一覧に表示するか（設定）。
@@ -125,6 +131,7 @@ impl FileListView {
             on_got_focus: RefCell::new(None),
             on_wheel: RefCell::new(None),
             loading: RefCell::new(None),
+            load_gen: Cell::new(0),
             icon_cache: RefCell::new(None),
             icon_show: Cell::new(cfg.icons.show),
             icon_size: Cell::new(cfg.icons.size),
@@ -198,10 +205,29 @@ impl FileListView {
         Ok(())
     }
 
-    /// 読込中プログレスバーを表示開始する（書庫の一括展開待ち等・進捗は 0/0 から）。
+    /// 待機スピナーを即座に表示開始する（書庫の一括展開待ち等）。
     pub fn set_loading(&self) {
         *self.inner.loading.borrow_mut() = Some(Spinner::immediate());
         let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    /// 待機スピナーを閾値遅延つきで仕込む（非同期ディレクトリ読込用）。速い読込では閾値前に
+    /// 完了して `clear_loading` され、一覧がそのまま差し替わる＝チラつかない。
+    pub fn set_loading_delayed(&self) {
+        *self.inner.loading.borrow_mut() = Some(Spinner::with_delay(LOADING_SPINNER_DELAY));
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    /// 非同期読込の世代を1つ進めて新しい世代値を返す（読込開始・タブ切替で呼ぶ）。
+    pub fn bump_load_gen(&self) -> u64 {
+        let g = self.inner.load_gen.get().wrapping_add(1);
+        self.inner.load_gen.set(g);
+        g
+    }
+
+    /// 現在の読込世代。取り込み時にこれと一致しない結果は古いので捨てる。
+    pub fn load_gen(&self) -> u64 {
+        self.inner.load_gen.get()
     }
 
     /// 読込中表示を終了する。
