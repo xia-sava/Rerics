@@ -3,6 +3,7 @@ bookmarks = []
 editor = "notepad.exe"
 size_format = "simple2"
 auto_adjust_columns = true
+default_sort = "FileName"
 
 [font]
 family = "BIZ UDGothic"

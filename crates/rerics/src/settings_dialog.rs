@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use rerics_core::{
     Bookmark, Colors, Column, ColumnKind, Config, IconSize, Layout, Rgb, ResolvedTheme,
-    SizeFormat, Theme, WheelAction,
+    SizeFormat, SortType, Theme, WheelAction,
 };
 use winsafe::{self as w, co, gui, msg::lb, msg::tvm, prelude::*};
 
@@ -1097,36 +1097,36 @@ fn build_viewer(parent: &gui::WindowControl, shared: &Rc<Shared>) {
 fn build_list(parent: &gui::WindowControl, shared: &Rc<Shared>) {
     let fmt = shared.cfg.borrow().size_format;
 
-    group_box(parent, "ファイルサイズの表記", 12, 8, 752, 158);
-    label(parent, "サイズ列の表示形式", 28, 34, 200);
+    group_box(parent, "ファイルサイズの表記", 270, 8, 494, 158);
+    label(parent, "サイズ列の表示形式", 286, 34, 200);
     let group = gui::RadioGroup::new(
         parent,
         &[
             gui::RadioButtonOpts {
                 text: "詳細：全バイトをカンマ区切り（例 1,234,567）(&D)",
-                position: gui::dpi(28, 58),
-                size: gui::dpi(420, 20),
+                position: gui::dpi(286, 58),
+                size: gui::dpi(440, 20),
                 selected: fmt == SizeFormat::Detail,
                 ..Default::default()
             },
             gui::RadioButtonOpts {
                 text: "省略：小はバイト・大は単位（例 1.2 MB）(&M)",
-                position: gui::dpi(28, 82),
-                size: gui::dpi(420, 20),
+                position: gui::dpi(286, 82),
+                size: gui::dpi(440, 20),
                 selected: fmt == SizeFormat::Simple2,
                 ..Default::default()
             },
             gui::RadioButtonOpts {
                 text: "省略：常に単位＋小数1桁（例 500.0 KB）(&U)",
-                position: gui::dpi(28, 106),
-                size: gui::dpi(420, 20),
+                position: gui::dpi(286, 106),
+                size: gui::dpi(440, 20),
                 selected: fmt == SizeFormat::Simple1,
                 ..Default::default()
             },
             gui::RadioButtonOpts {
                 text: "KB 固定：エクスプローラ風（例 1,229 KB）(&K)",
-                position: gui::dpi(28, 130),
-                size: gui::dpi(420, 20),
+                position: gui::dpi(286, 130),
+                size: gui::dpi(440, 20),
                 selected: fmt == SizeFormat::Explorer,
                 ..Default::default()
             },
@@ -1165,6 +1165,18 @@ fn kind_label(kind: ColumnKind) -> &'static str {
     COLUMN_KINDS.iter().find(|(k, _)| *k == kind).map(|(_, l)| *l).unwrap_or("?")
 }
 
+/// 既定ソート選択肢（リスト表示順）。
+const SORT_TYPES: &[(SortType, &str)] = &[
+    (SortType::FileName, "名前順"),
+    (SortType::Extension, "拡張子順"),
+    (SortType::Length, "サイズ順"),
+    (SortType::LastWriteTime, "更新日時順"),
+    (SortType::CreateTime, "作成日時順"),
+    (SortType::Attribute, "属性順"),
+    (SortType::FileNameExpLike, "名前順（自然順）"),
+    (SortType::ExtensionExpLike, "拡張子順（自然順）"),
+];
+
 /// 種類ピッカーと幅入力から `Column` を組む（未選択なら None）。
 fn picker_column(kinds: &gui::ListBox, width: &gui::Edit) -> Option<Column> {
     let ki = unsafe { kinds.hwnd().SendMessage(lb::GetCurSel {}) }? as usize;
@@ -1187,16 +1199,42 @@ fn button(parent: &(impl GuiParent + 'static), text: &str, x: i32, y: i32, w: i3
     )
 }
 
-/// 「一覧」ページの列エディタ（種類・幅・順序・自動調整トグル）。
+/// 「一覧」ページの編集部（既定ソート・列の種類/幅/順序・自動調整トグル）。
 #[derive(Clone)]
 struct ColumnsEditor {
     list: gui::ListView<()>,
     kinds: gui::ListBox,
+    sort_list: gui::ListBox,
+    /// 既定ソートリストで初期選択する行（窓生成後の populate で選ぶ）。
+    sort_sel: Option<usize>,
     rebuild: Rc<dyn Fn(Option<usize>)>,
 }
 
 impl ColumnsEditor {
     fn new(parent: &gui::WindowControl, shared: &Rc<Shared>) -> Self {
+        // 既定の並び順（state が無い初回起動時に使う）。
+        group_box(parent, "既定の並び順", 12, 8, 250, 158);
+        let sort_list = gui::ListBox::new(
+            parent,
+            gui::ListBoxOpts {
+                position: gui::dpi(24, 32),
+                size: gui::dpi(226, 116),
+                ..Default::default()
+            },
+        );
+        {
+            let shared = shared.clone();
+            let sl = sort_list.clone();
+            sort_list.on().lbn_sel_change(move || {
+                if let Some(i) = unsafe { sl.hwnd().SendMessage(lb::GetCurSel {}) } {
+                    if let Some((st, _)) = SORT_TYPES.get(i as usize) {
+                        shared.cfg.borrow_mut().default_sort = *st;
+                    }
+                }
+                Ok(())
+            });
+        }
+
         group_box(parent, "列構成", 12, 174, 752, 360);
         label(parent, "ファイル一覧に表示する列。種類と幅を選んで 追加/更新、↑↓ で並べ替え。", 24, 196, 600);
 
@@ -1403,16 +1441,29 @@ impl ColumnsEditor {
             });
         }
 
-        Self { list, kinds, rebuild }
+        let sort_sel = SORT_TYPES
+            .iter()
+            .position(|(s, _)| *s == shared.cfg.borrow().default_sort);
+
+        Self { list, kinds, sort_list, sort_sel, rebuild }
     }
 
-    /// 窓生成後に列とピッカーを流し込む（生成前の add は無効化されるため）。
+    /// 窓生成後に列・ピッカー・既定ソートを流し込む（生成前の add は無効化されるため）。
     fn populate(&self) {
         for (head, width) in [("種類", 280), ("幅", 90)] {
             let _ = self.list.cols().add(head, gui::dpi_x(width));
         }
         let labels: Vec<&str> = COLUMN_KINDS.iter().map(|(_, l)| *l).collect();
         let _ = self.kinds.items().add(&labels);
+
+        let sort_labels: Vec<&str> = SORT_TYPES.iter().map(|(_, l)| *l).collect();
+        let _ = self.sort_list.items().add(&sort_labels);
+        unsafe {
+            let _ = self.sort_list.hwnd().SendMessage(lb::SetCurSel {
+                index: self.sort_sel.map(|i| i as u32),
+            });
+        }
+
         (self.rebuild)(Some(0));
     }
 }

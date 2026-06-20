@@ -282,6 +282,8 @@ pub struct Config {
     pub size_format: SizeFormat,
     /// 列幅を内容に合わせて自動調整する（off なら `columns` の幅をそのまま使う）。
     pub auto_adjust_columns: bool,
+    /// 既定のソート種別（state が無い初回起動時の並び順）。
+    pub default_sort: SortType,
     /// キーバインド（チョード文字列 → コマンドトークン）。
     pub keybinds: BTreeMap<String, String>,
     /// 登録ディレクトリ（ジャンプ先）。
@@ -309,6 +311,7 @@ impl Default for Config {
             columns: default_columns(),
             size_format: SizeFormat::Simple2,
             auto_adjust_columns: true,
+            default_sort: SortType::FileName,
             keybinds: KeyMap::default().to_string_map(),
             bookmarks: Vec::new(),
             editor: "notepad.exe".to_owned(),

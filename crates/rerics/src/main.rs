@@ -408,13 +408,13 @@ impl MainWindow {
                 left_state: Self::build_state_for(
                     &left_path,
                     &config.columns,
-                    SortType::default(),
+                    config.default_sort,
                     false,
                 ),
                 right_state: Self::build_state_for(
                     &right_path,
                     &config.columns,
-                    SortType::default(),
+                    config.default_sort,
                     false,
                 ),
                 left_path,
