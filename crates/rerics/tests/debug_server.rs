@@ -381,6 +381,29 @@ fn broken_config_warns_and_starts_with_defaults() {
     assert_eq!(after.trim(), "null", "Enter でアラートを閉じられる");
 }
 
+/// ログのコピー／クリア（CopyLog/ClearLog）が配線され、ClearLog でログ行が消えることを検証する。
+#[test]
+fn copy_and_clear_log() {
+    // 壊れた config で起動すると読込失敗の旨が必ずログに出る（クリア対象を確実に用意する）。
+    let server = Server::start(&["a.txt"], "editor = \"C:\\Users\"\n");
+    // 起動時アラートを閉じてから操作する。
+    wait_modal(&server);
+    server.req("POST", "/modal/key/enter", "").expect("close alert");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+
+    let log0 = server.req("GET", "/state/log", "").expect("log").1;
+    assert!(log0.contains("config.toml"), "前提：ログに行がある: {log0}");
+
+    // CopyLog は非モーダル・非破壊で実行できる（クリップボード内容は headless では読まない）。
+    let (cst, _) = server.req("POST", "/command/CopyLog", "").expect("CopyLog");
+    assert_eq!(cst, 200, "CopyLog は実行できる");
+
+    // ClearLog でログ行が空になる。
+    server.req("POST", "/command/ClearLog", "").expect("ClearLog");
+    let log1 = poll(&server, "/state/log", |b| b.contains("\"lines\":[]"));
+    assert!(log1.contains("\"lines\":[]"), "ClearLog でログが空になる: {log1}");
+}
+
 /// `/command` の body 引数（JSON 文字列配列）が受理され、引数を見ないコマンドでは
 /// 無害に無視されること、不正な body は 400 になることを確認する（引数基盤の配線検証）。
 #[test]

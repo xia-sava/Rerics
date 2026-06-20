@@ -1,10 +1,10 @@
 theme = "system"
-bookmarks = []
-editor = "notepad.exe"
 size_format = "simple2"
 auto_adjust_columns = true
 default_sort = "FileName"
 progress_delay_ms = 1000
+bookmarks = []
+editor = "notepad.exe"
 
 [font]
 family = "BIZ UDGothic"

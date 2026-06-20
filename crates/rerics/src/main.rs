@@ -1090,6 +1090,14 @@ impl MainWindow {
                 self.view(false).refresh()?;
                 return Ok(());
             }
+            Command::CopyLog => {
+                self.log.copy_all()?;
+                return Ok(());
+            }
+            Command::ClearLog => {
+                self.log.clear();
+                return Ok(());
+            }
             Command::Nop => {
                 return Ok(());
             }

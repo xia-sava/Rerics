@@ -132,6 +132,30 @@ impl LogView {
         let _ = self.refresh();
     }
 
+    /// ログ全文をクリップボードへコピーする（CF_UNICODETEXT・行は CRLF 区切り）。
+    pub fn copy_all(&self) -> w::AnyResult<()> {
+        let text = {
+            let s = self.inner.state.borrow();
+            s.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\r\n")
+        };
+        if text.is_empty() {
+            return Ok(());
+        }
+        let mut u16s: Vec<u16> = text.encode_utf16().collect();
+        u16s.push(0);
+        let bytes: Vec<u8> = u16s.iter().flat_map(|u| u.to_le_bytes()).collect();
+        let clip = self.hwnd().OpenClipboard()?;
+        clip.EmptyClipboard()?;
+        clip.SetClipboardData(co::CF::UNICODETEXT, &bytes)?;
+        Ok(())
+    }
+
+    /// ログを全消去して再描画する。
+    pub fn clear(&self) {
+        self.inner.state.borrow_mut().clear();
+        let _ = self.refresh();
+    }
+
     /// 1画面に収まる行数。
     fn page_rows(&self) -> usize {
         let lh = self.inner.line_height.get().max(1);
