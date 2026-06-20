@@ -257,7 +257,11 @@ impl FileListView {
         self.inner.auto_adjust.set(cfg.auto_adjust_columns);
         self.inner.progress_delay.set(Duration::from_millis(cfg.progress_delay_ms));
         // 列構成をライブ反映（表示中ペイン）。幅は自動調整 on なら autofit が、off なら設定値が効く。
-        self.inner.state.borrow_mut().columns = cfg.columns.clone();
+        {
+            let mut s = self.inner.state.borrow_mut();
+            s.columns = cfg.columns.clone();
+            s.reverse_sort_date = cfg.reverse_sort_date;
+        }
         let _ = self.autofit_columns();
         let _ = self.refresh();
     }

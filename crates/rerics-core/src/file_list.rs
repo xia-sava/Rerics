@@ -673,6 +673,8 @@ pub struct FileListState {
     pub select_start: usize,
     pub sort_type: SortType,
     pub sort_reverse: bool,
+    /// 日付ソートのときだけ昇降を追加で反転する（古い日付を先頭にできる）。既定 false。
+    pub reverse_sort_date: bool,
     pub columns: Vec<Column>,
 }
 
@@ -685,6 +687,7 @@ impl Default for FileListState {
             select_start: 0,
             sort_type: SortType::FileName,
             sort_reverse: false,
+            reverse_sort_date: false,
             columns: default_columns(),
         }
     }
@@ -909,12 +912,13 @@ impl FileListState {
         (count, size)
     }
 
-    /// items をソートする。
+    /// items をソートする。`reverse_sort_date` が有効なら日付ソートのみ昇降を追加反転する。
     pub fn sort(&mut self, sort: SortType, reverse: bool) {
         self.sort_type = sort;
         self.sort_reverse = reverse;
+        let effective = reverse ^ (self.reverse_sort_date && sort == SortType::LastWriteTime);
         self.items
-            .sort_by(|a, b| compare_items(a, b, sort, reverse));
+            .sort_by(|a, b| compare_items(a, b, sort, effective));
     }
 
     /// 列のセルテキストを生成する。
@@ -1446,6 +1450,27 @@ mod tests {
         s.sort(SortType::LastWriteTime, true);
         let names: Vec<&str> = s.items.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, vec!["old", "mid", "new"]);
+    }
+
+    #[test]
+    fn reverse_sort_date_flips_only_date() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let t1 = t0 + std::time::Duration::from_secs(100);
+        let mut a = file("old");
+        a.modified = Some(t0);
+        let mut b = file("new");
+        b.modified = Some(t1);
+        let mut s = FileListState::new();
+        s.reverse_sort_date = true;
+        s.items = vec![a, b];
+        // 既定 reverse=false でも日付ソートは反転して古い順が先頭になる。
+        s.sort(SortType::LastWriteTime, false);
+        let names: Vec<&str> = s.items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["old", "new"]);
+        // 名前ソートには影響しない。
+        s.sort(SortType::FileName, false);
+        let names: Vec<&str> = s.items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["new", "old"]);
     }
 
     #[test]

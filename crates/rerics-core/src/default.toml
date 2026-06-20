@@ -2,6 +2,7 @@ theme = "system"
 size_format = "simple2"
 auto_adjust_columns = true
 default_sort = "FileName"
+reverse_sort_date = false
 progress_delay_ms = 1000
 bookmarks = []
 editor = "notepad.exe"
