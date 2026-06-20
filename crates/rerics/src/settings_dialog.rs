@@ -496,12 +496,144 @@ impl Preview {
     }
 }
 
+/// テキストビューアの配色プレビュー（サンプルコードをビューア配色で描く小窓）。
+#[derive(Clone)]
+struct ViewerPreview {
+    wnd: gui::WindowControl,
+    shared: Rc<Shared>,
+}
+
+/// プレビューに出すサンプル行（行番号・改行マーク・[EOF]・検索ヒットの見え方を示す）。
+const VIEWER_SAMPLE: &[&str] = &[
+    "fn main() {",
+    "    let n = 42;",
+    "    println!(\"{}\", n);",
+    "}",
+];
+
+impl ViewerPreview {
+    fn new(parent: &(impl GuiParent + 'static), pos: (i32, i32), size: (i32, i32), shared: Rc<Shared>) -> Self {
+        let wnd = gui::WindowControl::new(
+            parent,
+            gui::WindowControlOpts {
+                position: pos,
+                size,
+                style: co::WS::CHILD | co::WS::VISIBLE | co::WS::CLIPSIBLINGS | co::WS::BORDER,
+                ..Default::default()
+            },
+        );
+        let me = Self { wnd, shared };
+        let this = me.clone();
+        me.wnd.on().wm_paint(move || this.on_paint());
+        let this = me.clone();
+        me.wnd.on().wm(unsafe { co::WM::from_raw(WM_PRINTCLIENT) }, move |p| {
+            this.on_print(p.wparam);
+            Ok(0)
+        });
+        me
+    }
+
+    fn hwnd(&self) -> &w::HWND {
+        self.wnd.hwnd()
+    }
+
+    fn refresh(&self) {
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    fn on_paint(&self) -> w::AnyResult<()> {
+        let hdc = self.hwnd().BeginPaint()?;
+        let rc = self.hwnd().GetClientRect()?;
+        let (cw, ch) = (rc.right - rc.left, rc.bottom - rc.top);
+        if cw <= 0 || ch <= 0 {
+            return Ok(());
+        }
+        let mem = hdc.CreateCompatibleDC()?;
+        let bmp = hdc.CreateCompatibleBitmap(cw, ch)?;
+        let _sel = mem.SelectObject(&*bmp)?;
+        self.render(&mem, cw, ch)?;
+        hdc.BitBlt(w::POINT { x: 0, y: 0 }, w::SIZE { cx: cw, cy: ch }, &mem, w::POINT { x: 0, y: 0 }, co::ROP::SRCCOPY)?;
+        Ok(())
+    }
+
+    fn on_print(&self, hdc_ptr: usize) {
+        let hdc = unsafe { w::HDC::from_ptr(hdc_ptr as *mut std::ffi::c_void) };
+        if let Ok(rc) = self.hwnd().GetClientRect() {
+            let _ = self.render(&hdc, rc.right - rc.left, rc.bottom - rc.top);
+        }
+    }
+
+    fn render(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
+        if cw <= 0 || ch <= 0 {
+            return Ok(());
+        }
+        let (family, fsize) = {
+            let cfg = self.shared.cfg.borrow();
+            (cfg.font.family.clone(), cfg.font.size)
+        };
+        let colors = self.shared.target_colors();
+        let font = w::HFONT::CreateFont(
+            w::SIZE { cx: 0, cy: -gui::dpi_y(fsize) },
+            0,
+            0,
+            co::FW::NORMAL,
+            false,
+            false,
+            false,
+            co::CHARSET::DEFAULT,
+            co::OUT_PRECIS::DEFAULT,
+            co::CLIP::DEFAULT_PRECIS,
+            co::QUALITY::CLEARTYPE,
+            co::PITCH::FIXED,
+            &family,
+        )?;
+        let _fsel = dc.SelectObject(&*font)?;
+        dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
+        let tm = dc.GetTextMetrics().ok();
+        let fh = tm.as_ref().map(|t| t.tmHeight).unwrap_or(16);
+        let cwd = tm.as_ref().map(|t| t.tmAveCharWidth).unwrap_or(8).max(1);
+        let lh = fh + gui::dpi_y(1);
+
+        fill(dc, 0, 0, cw, ch, colors.viewer_background)?;
+
+        let pad = gui::dpi_x(6);
+        let sep_x = pad + cwd * 3;
+        let body_x = sep_x + gui::dpi_x(6);
+        let top = gui::dpi_y(6);
+        let bottom = top + lh * VIEWER_SAMPLE.len() as i32;
+        // 行番号と本文を仕切る縦線。
+        fill(dc, sep_x, top, sep_x + gui::dpi_x(1), bottom, colors.viewer_separator)?;
+
+        let find_line = 1usize; // 2行目を検索ヒット例にする。
+        for (i, text) in VIEWER_SAMPLE.iter().enumerate() {
+            let y = top + i as i32 * lh;
+            if i == find_line {
+                fill(dc, body_x, y, cw, y + lh, colors.viewer_find_bg)?;
+            }
+            dc.SetTextColor(to_colorref(colors.viewer_line))?;
+            dc.TextOut(pad, y, &(i + 1).to_string())?;
+            let text_col = if i == find_line { colors.viewer_find_text } else { colors.viewer_text };
+            dc.SetTextColor(to_colorref(text_col))?;
+            dc.TextOut(body_x, y, text)?;
+            let end_x = body_x + text.chars().count() as i32 * cwd;
+            dc.SetTextColor(to_colorref(colors.viewer_symbol))?;
+            if i + 1 < VIEWER_SAMPLE.len() {
+                dc.TextOut(end_x, y, "↓")?;
+            } else {
+                dc.TextOut(end_x + cwd, y, "[EOF]")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// 配色を実色のスウォッチ付きで一覧し、ダブルクリック（または「変更」ボタン）で編集する自前リスト。
 #[derive(Clone)]
 struct SwatchList {
     wnd: gui::WindowControl,
     shared: Rc<Shared>,
-    preview: Preview,
+    /// 色変更・リセット後に呼ぶ（対応するプレビューを再描画する）。
+    on_change: Rc<dyn Fn()>,
     sel: Rc<Cell<usize>>,
     row_h: Rc<Cell<i32>>,
     /// このリストが編集する色フィールド（配色 or テキストビューア）。
@@ -514,7 +646,7 @@ impl SwatchList {
         pos: (i32, i32),
         size: (i32, i32),
         shared: Rc<Shared>,
-        preview: Preview,
+        on_change: Rc<dyn Fn()>,
         fields: ColorFields,
     ) -> Self {
         let wnd = gui::WindowControl::new(
@@ -529,7 +661,7 @@ impl SwatchList {
         let me = Self {
             wnd,
             shared,
-            preview,
+            on_change,
             sel: Rc::new(Cell::new(0)),
             row_h: Rc::new(Cell::new(gui::dpi_y(24))),
             fields,
@@ -595,7 +727,7 @@ impl SwatchList {
                 set(target, picked);
             }
             self.refresh();
-            self.preview.refresh();
+            (self.on_change)();
         }
     }
 
@@ -611,7 +743,7 @@ impl SwatchList {
             }
         }
         self.refresh();
-        self.preview.refresh();
+        (self.on_change)();
     }
 
     fn on_paint(&self) -> w::AnyResult<()> {
@@ -694,7 +826,7 @@ impl SwatchList {
 fn build_color_page(
     pane: &gui::WindowControl,
     shared: &Rc<Shared>,
-    preview: &Preview,
+    on_change: Rc<dyn Fn()>,
     fields: ColorFields,
 ) {
     label(pane, "色をダブルクリックで変更", 8, 14, 200);
@@ -718,7 +850,7 @@ fn build_color_page(
             ..Default::default()
         },
     );
-    let swatch = SwatchList::new(pane, gui::dpi(8, 72), gui::dpi(344, 466), shared.clone(), preview.clone(), fields);
+    let swatch = SwatchList::new(pane, gui::dpi(8, 72), gui::dpi(344, 466), shared.clone(), on_change, fields);
     {
         let swatch = swatch.clone();
         change.on().bn_clicked(move || {
@@ -2286,6 +2418,9 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         },
     );
     let preview = Preview::new(&wnd, gui::dpi(546, 40), gui::dpi(402, 516), shared.clone());
+    // テキストビューア配色用のプレビュー（同じ場所に重ね、ページに応じて出し分ける）。
+    let viewer_preview = ViewerPreview::new(&wnd, gui::dpi(546, 40), gui::dpi(402, 516), shared.clone());
+    viewer_preview.hwnd().ShowWindow(co::SW::HIDE);
 
     // 各 pane の中身。
     build_appearance(&pane_appearance, &shared, &preview);
@@ -2299,8 +2434,15 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     let keys = KeysPane::new(&pane_keys, &shared);
 
     // 配色 pane（ファイル一覧・ログ）とテキストビューア pane（ビューア専用色）。
-    build_color_page(&pane_colors, &shared, &preview, COLOR_FIELDS);
-    build_color_page(&pane_viewer_colors, &shared, &preview, VIEWER_COLOR_FIELDS);
+    // 色変更後はそれぞれ対応するプレビューだけを再描画する。
+    build_color_page(&pane_colors, &shared, {
+        let preview = preview.clone();
+        Rc::new(move || preview.refresh())
+    }, COLOR_FIELDS);
+    build_color_page(&pane_viewer_colors, &shared, {
+        let viewer_preview = viewer_preview.clone();
+        Rc::new(move || viewer_preview.refresh())
+    }, VIEWER_COLOR_FIELDS);
 
     // 下段：OK / キャンセル / 適用。
     let ok = gui::Button::new(
@@ -2376,18 +2518,22 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         });
     }
 
-    // ナビのページ選択で中央 pane を切り替え、外観カテゴリ（pane 0..=2）のときだけプレビューを出す。
+    // ナビのページ選択で中央 pane を切り替え、プレビューを出し分ける：
+    // ファイル一覧プレビュー（pane 0..=2）／テキストビューアプレビュー（pane 9）。
     {
         let panes = panes.clone();
         let preview = preview.clone();
+        let viewer_preview = viewer_preview.clone();
         let preview_label = preview_label.clone();
         nav.on_select(move |pane| {
             for (i, p) in panes.iter().enumerate() {
                 p.hwnd().ShowWindow(if i == pane { co::SW::SHOW } else { co::SW::HIDE });
             }
-            let sw = if pane <= 2 { co::SW::SHOW } else { co::SW::HIDE };
-            preview_label.hwnd().ShowWindow(sw);
-            preview.hwnd().ShowWindow(sw);
+            let list_pv = pane <= 2;
+            let viewer_pv = pane == 9;
+            preview_label.hwnd().ShowWindow(if list_pv || viewer_pv { co::SW::SHOW } else { co::SW::HIDE });
+            preview.hwnd().ShowWindow(if list_pv { co::SW::SHOW } else { co::SW::HIDE });
+            viewer_preview.hwnd().ShowWindow(if viewer_pv { co::SW::SHOW } else { co::SW::HIDE });
         });
     }
 
@@ -2423,7 +2569,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     let _ = wnd.show_modal(parent);
     #[cfg(feature = "debug-server")]
     crate::debug_server::modal_registry::pop();
-    let _ = (nav, panes, keys, registered, ok, cancel, apply, preview_label);
+    let _ = (nav, panes, keys, registered, ok, cancel, apply, preview_label, preview, viewer_preview);
 }
 
 #[cfg(test)]
