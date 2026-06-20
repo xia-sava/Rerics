@@ -147,7 +147,8 @@ impl FileListView {
 
     /// アイコンの描画サイズ（物理 px・DPI スケール済み）。
     fn icon_px(&self) -> i32 {
-        gui::dpi_x(ICON_LOGICAL)
+        // アイコンは行（フォント基準の高さ）に収まるサイズへ抑える。
+        gui::dpi_x(ICON_LOGICAL).min(self.item_height())
     }
 
     pub fn on_activate(&self, cb: impl Fn(usize) + 'static) {
@@ -352,13 +353,8 @@ impl FileListView {
     }
 
     fn item_height(&self) -> i32 {
-        // アイコンが収まる高さを最低限確保する（アイコン未設定でもフォント高で従来どおり）。
-        let icon = if self.inner.icon_cache.borrow().is_some() {
-            self.icon_px() + gui::dpi_y(2)
-        } else {
-            0
-        };
-        self.font_height().max(icon)
+        // 行高はフォント基準で詰める。アイコンは行に収まるサイズへ縮小して描く（icon_px）。
+        self.font_height()
     }
 
     /// フォントを生成する（設定のファミリ・サイズ）。
