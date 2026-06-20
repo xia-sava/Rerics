@@ -205,6 +205,7 @@ fn act_on_selected(
 fn populate(list: &gui::ListView<u64>, tasks: &Registry) {
     let prev = list.items().iter_selected().next().map(|it| *it.data().borrow());
     let _ = list.items().delete_all();
+    let mut selected_any = false;
     for entry in tasks.borrow().iter() {
         let elapsed = fmt_elapsed(Instant::now().saturating_duration_since(entry.start));
         let row = [
@@ -217,7 +218,15 @@ fn populate(list: &gui::ListView<u64>, tasks: &Registry) {
             if Some(entry.id) == prev {
                 let _ = item.select(true);
                 let _ = item.focus();
+                selected_any = true;
             }
+        }
+    }
+    // 前回選択が無い（初回表示など）ときは先頭行を選んでおく（そのまま操作できる）。
+    if !selected_any {
+        if let Some(item) = list.items().iter().next() {
+            let _ = item.select(true);
+            let _ = item.focus();
         }
     }
 }
