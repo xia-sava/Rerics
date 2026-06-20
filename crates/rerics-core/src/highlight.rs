@@ -22,6 +22,15 @@ fn themes() -> &'static ThemeSet {
     THEMES.get_or_init(ThemeSet::load_defaults)
 }
 
+/// 拡張子から判定される言語名（ハイライト対象なら `Some`）。プレーンテキスト・未知は `None`。
+pub fn syntax_name(ext: &str) -> Option<String> {
+    let syntax = syntaxes().find_syntax_by_extension(ext)?;
+    if syntax.name == "Plain Text" {
+        return None;
+    }
+    Some(syntax.name.clone())
+}
+
 /// 1ファイル分の行ハイライタ。行を順に渡すと前景色付きの文字列を返す（状態を持つ）。
 pub struct Highlighter {
     inner: HighlightLines<'static>,

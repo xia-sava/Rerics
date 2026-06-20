@@ -169,13 +169,26 @@ impl ViewerModel {
         self.dark = dark;
     }
 
+    /// 構文ハイライトを掛けられる状態か（テキスト・拡張子あり・サイズ内）。
+    fn can_highlight(&self) -> bool {
+        self.mode == ViewMode::Text && self.bytes.len() <= HIGHLIGHT_MAX_BYTES
+    }
+
     /// 現在の設定でハイライタを作る（テキストモード・拡張子あり・サイズ内のときだけ）。
     fn highlighter(&self) -> Option<crate::highlight::Highlighter> {
-        if self.mode != ViewMode::Text || self.bytes.len() > HIGHLIGHT_MAX_BYTES {
+        if !self.can_highlight() {
             return None;
         }
         let ext = self.ext.as_deref()?;
         crate::highlight::Highlighter::for_extension(ext, self.dark)
+    }
+
+    /// 現在ハイライトに使っている言語名（無効なら `None`＝ステータス表示用）。
+    pub fn syntax_name(&self) -> Option<String> {
+        if !self.can_highlight() {
+            return None;
+        }
+        crate::highlight::syntax_name(self.ext.as_deref()?)
     }
 
     /// エンコーディングを循環切替する。

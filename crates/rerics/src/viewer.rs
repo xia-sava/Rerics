@@ -703,6 +703,11 @@ impl ViewerView {
             ViewMode::Text => "テキスト",
             ViewMode::Binary => "バイナリ",
         };
+        // 構文ハイライトの言語（無ければ何も足さない＝素のテキスト）。
+        let syntax = match model.syntax_name() {
+            Some(name) => format!("・{name}"),
+            None => String::new(),
+        };
         let total = self.inner.lines.borrow().len();
         let cur = self.inner.scroll_top.get() + 1;
         let trunc = if self.inner.truncated.get() { "  [先頭のみ]" } else { "" };
@@ -716,10 +721,11 @@ impl ViewerView {
             }
         };
         format!(
-            "{}    [{}]  {}    {}/{} 行    (C:エンコ B:ダンプ F:検索 Ctrl+C/右ク:コピー Esc:閉じる){}{}",
+            "{}    [{}]  {}{}    {}/{} 行    (C:エンコ B:ダンプ F:検索 Ctrl+C/右ク:コピー Esc:閉じる){}{}",
             self.inner.title.borrow(),
             model.encoding.label(),
             mode,
+            syntax,
             cur.min(total.max(1)),
             total,
             trunc,

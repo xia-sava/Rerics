@@ -632,13 +632,14 @@ impl Colors {
             log_info: Rgb::new(0xc8, 0xc8, 0xc8),
             log_warning: Rgb::new(0xff, 0xd0, 0x40),
             log_error: Rgb::new(0xff, 0x70, 0x70),
+            // テキストビューアの既定色（ダークは背景＝黒・本文＝白）。
             viewer_background: Rgb::new(0x00, 0x00, 0x00),
             viewer_text: Rgb::new(0xff, 0xff, 0xff),
-            viewer_line: Rgb::new(0x80, 0xc0, 0x80),
-            viewer_separator: Rgb::new(0x55, 0x55, 0x55),
-            viewer_symbol: Rgb::new(0x80, 0x90, 0xc0),
+            viewer_line: Rgb::new(0x00, 0x80, 0x00),
+            viewer_separator: Rgb::new(0xa0, 0xa0, 0xa0),
+            viewer_symbol: Rgb::new(0x80, 0x00, 0x80),
             viewer_find_text: Rgb::new(0x00, 0x00, 0x00),
-            viewer_find_bg: Rgb::new(0xff, 0xd0, 0x40),
+            viewer_find_bg: Rgb::new(0xff, 0xff, 0x00),
         }
     }
 
@@ -661,13 +662,14 @@ impl Colors {
             log_info: Rgb::new(0x40, 0x40, 0x40),
             log_warning: Rgb::new(0x9a, 0x5a, 0x00),
             log_error: Rgb::new(0xc0, 0x00, 0x00),
+            // テキストビューアの既定色（ライトは背景＝白・本文＝黒）。
             viewer_background: Rgb::new(0xff, 0xff, 0xff),
             viewer_text: Rgb::new(0x00, 0x00, 0x00),
             viewer_line: Rgb::new(0x00, 0x80, 0x00),
             viewer_separator: Rgb::new(0xa0, 0xa0, 0xa0),
-            viewer_symbol: Rgb::new(0x40, 0x60, 0x90),
+            viewer_symbol: Rgb::new(0x80, 0x00, 0x80),
             viewer_find_text: Rgb::new(0x00, 0x00, 0x00),
-            viewer_find_bg: Rgb::new(0xff, 0xe0, 0x60),
+            viewer_find_bg: Rgb::new(0xff, 0xff, 0x00),
         }
     }
 }
