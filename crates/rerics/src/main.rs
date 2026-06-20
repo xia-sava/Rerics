@@ -1295,9 +1295,9 @@ impl MainWindow {
         self.update_title()?;
         self.refresh_tab_bar()?;
 
-        // 世代を進めてこの読込を識別し、閾値遅延つきの待機スピナーを仕込む。
+        // 世代を進めてこの読込を識別し、設定の遅延つきの待機スピナーを仕込む。
         let generation = view.bump_load_gen();
-        view.set_loading_delayed();
+        view.set_loading();
 
         let plan = LoadPlan { mode, keep_name, keep_scroll, keep_idx, recalled, mask, generation };
         self.spawn_job(

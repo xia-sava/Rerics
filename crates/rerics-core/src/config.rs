@@ -284,6 +284,9 @@ pub struct Config {
     pub auto_adjust_columns: bool,
     /// 既定のソート種別（state が無い初回起動時の並び順）。
     pub default_sort: SortType,
+    /// 読込・展開の待機スピナーを出すまでの遅延（ミリ秒）。これより速く終わる処理では
+    /// スピナーを出さずチラつかせない。0 で即時表示。
+    pub progress_delay_ms: u64,
     /// キーバインド（チョード文字列 → コマンドトークン）。
     pub keybinds: BTreeMap<String, String>,
     /// 登録ディレクトリ（ジャンプ先）。
@@ -312,6 +315,7 @@ impl Default for Config {
             size_format: SizeFormat::Simple2,
             auto_adjust_columns: true,
             default_sort: SortType::FileName,
+            progress_delay_ms: 1000,
             keybinds: KeyMap::default().to_string_map(),
             bookmarks: Vec::new(),
             editor: "notepad.exe".to_owned(),

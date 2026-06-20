@@ -16,9 +16,6 @@ use winsafe::{self as w, co, gui, prelude::*};
 
 use crate::icons::{ICON_LOGICAL, IconCache};
 
-/// 非同期読込でこの時間を超えてから待機スピナーを出す（速い読込はチラつかせない）。
-const LOADING_SPINNER_DELAY: Duration = Duration::from_secs(1);
-
 /// FileItem の更新時刻を per-file アイコンキャッシュのキー用 u64 秒へ。取得不能は 0。
 fn item_mtime(it: &FileItem) -> u64 {
     it.modified
@@ -71,6 +68,8 @@ struct Inner {
     on_wheel: RefCell<Option<WheelCb>>,
     /// 読込・展開の待機表示。`Some` の間は一覧の代わりに待機スピナーを重ねる。
     loading: RefCell<Option<Spinner>>,
+    /// 待機スピナーを出すまでの遅延（設定）。これより速い読込はチラつかせない。
+    progress_delay: Cell<Duration>,
     /// 非同期読込の世代。新しい読込・タブ切替で進め、古い結果の取り込みを弾く。
     load_gen: Cell<u64>,
     /// シェルアイコンのキャッシュ（左右ペインで共有・main 側から注入）。未設定なら描かない。
@@ -131,6 +130,7 @@ impl FileListView {
             on_got_focus: RefCell::new(None),
             on_wheel: RefCell::new(None),
             loading: RefCell::new(None),
+            progress_delay: Cell::new(Duration::from_millis(cfg.progress_delay_ms)),
             load_gen: Cell::new(0),
             icon_cache: RefCell::new(None),
             icon_show: Cell::new(cfg.icons.show),
@@ -205,16 +205,11 @@ impl FileListView {
         Ok(())
     }
 
-    /// 待機スピナーを即座に表示開始する（書庫の一括展開待ち等）。
+    /// 待機スピナーを仕込む（読込・展開の共通）。設定の遅延（`progress_delay`）を過ぎてから
+    /// 表示するので、それより速く終わる処理ではスピナーを出さず一覧がそのまま差し替わる
+    /// ＝チラつかない。遅延 0 なら即時表示。
     pub fn set_loading(&self) {
-        *self.inner.loading.borrow_mut() = Some(Spinner::immediate());
-        let _ = self.hwnd().InvalidateRect(None, false);
-    }
-
-    /// 待機スピナーを閾値遅延つきで仕込む（非同期ディレクトリ読込用）。速い読込では閾値前に
-    /// 完了して `clear_loading` され、一覧がそのまま差し替わる＝チラつかない。
-    pub fn set_loading_delayed(&self) {
-        *self.inner.loading.borrow_mut() = Some(Spinner::with_delay(LOADING_SPINNER_DELAY));
+        *self.inner.loading.borrow_mut() = Some(Spinner::with_delay(self.inner.progress_delay.get()));
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
@@ -260,6 +255,7 @@ impl FileListView {
         self.inner.icon_size.set(cfg.icons.size);
         self.inner.size_format.set(cfg.size_format);
         self.inner.auto_adjust.set(cfg.auto_adjust_columns);
+        self.inner.progress_delay.set(Duration::from_millis(cfg.progress_delay_ms));
         // 列構成をライブ反映（表示中ペイン）。幅は自動調整 on なら autofit が、off なら設定値が効く。
         self.inner.state.borrow_mut().columns = cfg.columns.clone();
         let _ = self.autofit_columns();

@@ -968,6 +968,47 @@ fn build_layout(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &Prev
             Ok(())
         });
     }
+
+    // 待機スピナーの出現遅延（ms）。レイアウト px とは別単位なので末尾に独立配置する。
+    let dy = 12 + LAYOUT_FIELDS.len() as i32 * 34;
+    let delay_ms = shared.cfg.borrow().progress_delay_ms;
+    label(parent, "スピナー遅延(ms)", 16, dy + 2, 150);
+    let delay_edit = gui::Edit::new(
+        parent,
+        gui::EditOpts {
+            text: &delay_ms.to_string(),
+            control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
+            position: gui::dpi(170, dy),
+            width: gui::dpi_x(64),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+    let _delay_spin = gui::UpDown::new(
+        parent,
+        gui::UpDownOpts {
+            position: gui::dpi(234, dy),
+            height: gui::dpi_y(22),
+            range: (0, 10000),
+            value: delay_ms.min(10000) as i32,
+            control_style: co::UDS::AUTOBUDDY
+                | co::UDS::SETBUDDYINT
+                | co::UDS::ALIGNRIGHT
+                | co::UDS::ARROWKEYS,
+            ..Default::default()
+        },
+    );
+    label(parent, "（読込・展開でスピナーを出すまで。0 で即時）", 16, dy + 28, 330);
+    {
+        let shared = shared.clone();
+        let delay_edit2 = delay_edit.clone();
+        delay_edit.on().en_change(move || {
+            let cur = shared.cfg.borrow().progress_delay_ms as i32;
+            let v = parse_or(&delay_edit2, cur).clamp(0, 10000);
+            shared.cfg.borrow_mut().progress_delay_ms = v as u64;
+            Ok(())
+        });
+    }
 }
 
 /// 「カーソル」ページ（位置記憶のオン/オフと履歴件数の上限）を構築する。各操作を即 `Shared` へ反映する。
