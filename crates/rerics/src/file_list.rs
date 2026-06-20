@@ -204,13 +204,6 @@ impl FileListView {
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
-    /// 進捗（done/total）を更新する（再描画はタイマの `tick_loading` に任せる）。
-    pub fn set_loading_progress(&self, done: u64, total: u64) {
-        if let Some(s) = self.inner.loading.borrow_mut().as_mut() {
-            s.set_progress(done, total);
-        }
-    }
-
     /// 読込中表示を終了する。
     pub fn clear_loading(&self) {
         if self.inner.loading.borrow_mut().take().is_some() {
@@ -780,53 +773,19 @@ impl FileListView {
         Ok(())
     }
 
-    /// 読込中プログレスバーを中央に描く（一覧の代わり）。進捗テキスト＋充填バー。
+    /// 待機中の不定スピナーを中央に描く（一覧の代わり）。進捗の % はログ側に出すため、
+    /// ここはぐるぐる＋ラベルだけにする。
     fn paint_loading(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
         let colors = self.inner.colors.get();
         let bg = w::HBRUSH::CreateSolidBrush(rgb(colors.background))?;
         dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &bg)?;
 
-        // done/total はバックエンド毎に意味が違う（7z=件数・tar=消費バイト）が、割合は共通。
-        let percent = self.inner.loading.borrow().as_ref().and_then(|s| s.percent());
-        let text = match percent {
-            Some(p) => format!("読込中  {}%", p),
-            None => "読込中".to_owned(),
-        };
+        let glyph = self.inner.loading.borrow().as_ref().map(|s| s.glyph()).unwrap_or("");
+        let text = format!("{}  読込中", glyph);
 
-        // バー寸法：クライアント幅の 60%（120〜600 でクランプ）×フォント1行高。中央配置。
-        let bar_w = (cw * 6 / 10).clamp(120, 600);
-        let bar_h = (self.inner.font_height.get()).max(12);
-        let bar_x = (cw - bar_w) / 2;
-        let bar_y = (ch - bar_h) / 2;
-
-        // 進捗テキストはバーの少し上に中央寄せ。
         dc.SetTextColor(rgb(colors.cursor))?;
         let sz = dc.GetTextExtentPoint32(&text).unwrap_or(w::SIZE { cx: 0, cy: 0 });
-        dc.TextOut(((cw - sz.cx) / 2).max(0), (bar_y - sz.cy - 6).max(0), &text)?;
-
-        // 枠（外周を file_normal で塗り）→ 溝（背景2）→ 充填（cursor）の三層。
-        let border = w::HBRUSH::CreateSolidBrush(rgb(colors.file_normal))?;
-        let track = w::HBRUSH::CreateSolidBrush(rgb(colors.background2))?;
-        let fill = w::HBRUSH::CreateSolidBrush(rgb(colors.cursor))?;
-        let outer = w::RECT { left: bar_x, top: bar_y, right: bar_x + bar_w, bottom: bar_y + bar_h };
-        dc.FillRect(outer, &border)?;
-        let inset = w::RECT {
-            left: outer.left + 1,
-            top: outer.top + 1,
-            right: outer.right - 1,
-            bottom: outer.bottom - 1,
-        };
-        dc.FillRect(inset, &track)?;
-        if let Some(p) = percent {
-            let inner_w = inset.right - inset.left;
-            let filled = (inner_w as i64 * p as i64 / 100) as i32;
-            if filled > 0 {
-                dc.FillRect(
-                    w::RECT { left: inset.left, top: inset.top, right: inset.left + filled, bottom: inset.bottom },
-                    &fill,
-                )?;
-            }
-        }
+        dc.TextOut(((cw - sz.cx) / 2).max(0), ((ch - sz.cy) / 2).max(0), &text)?;
         Ok(())
     }
 

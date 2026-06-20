@@ -136,8 +136,6 @@ pub enum WorkerEvent {
         src_dir: PathBuf,
         dst_dir: PathBuf,
     },
-    /// 書庫一括展開の進捗（`is_left` 側ペインに `done/total` を表示）。
-    ArchiveProgress { is_left: bool, done: u64, total: u64 },
     /// 書庫一括展開の完了。成功なら `temp_root` を提供先として登録する。完了反映は
     /// 「この書庫を指して読込中のペイン」を UI 側で走査して行うため side は持たない。
     ArchiveDone {

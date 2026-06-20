@@ -81,6 +81,16 @@ pub fn archive_add_failure(name: &str, reason: &str) -> String {
     format!("書庫への追加に失敗しました。- {name} ({reason})")
 }
 
+/// `Extract {0}`（非ランダムアクセス書庫の一括展開の開始行）。
+pub fn archive_extract(name: &str) -> String {
+    format!("Extract {name}")
+}
+
+/// `Extract {0} {1}%`（一括展開の進捗。インプレース更新行）。
+pub fn archive_extract_progress(name: &str, percent: u32) -> String {
+    format!("Extract {name} {percent}%")
+}
+
 /// `書庫の更新に失敗しました。- {0}`（再構築＝削除/改名/置換の共通失敗・理由併記）。
 pub fn archive_update_failure(name: &str, reason: &str) -> String {
     format!("書庫の更新に失敗しました。- {name} ({reason})")

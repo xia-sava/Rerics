@@ -133,9 +133,6 @@ impl MainWindow {
                     self.tasks.borrow_mut().retain(|e| e.id != id);
                     self.maybe_kill_task_timer();
                 }
-                WorkerEvent::ArchiveProgress { is_left, done, total } => {
-                    self.view(is_left).set_loading_progress(done, total);
-                }
                 WorkerEvent::ArchiveDone { id, archive, temp_root, outcome } => {
                     self.tasks.borrow_mut().retain(|e| e.id != id);
                     self.archive_extracting.borrow_mut().remove(&archive);

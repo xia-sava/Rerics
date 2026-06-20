@@ -239,9 +239,9 @@ impl MainWindow {
         Ok(true)
     }
 
-    /// 非RA 書庫の一括展開をワーカースレッドで起動する（読込ぐるぐる）。進捗は
-    /// `ArchiveProgress`、完了は `ArchiveDone` で `wm_timer` 経由に取り込む。中断は
-    /// `TaskControl`（Esc／タスクマネージャ）で伝える。
+    /// 非RA 書庫の一括展開をワーカースレッドで起動する。ペインには不定の待機スピナーを出し、
+    /// 進捗の % はログのインプレース行へ流す（`LogLine`/`LogUpdate`）。完了は `ArchiveDone` で
+    /// `wm_timer` 経由に取り込む。中断は `TaskControl`（Esc／タスクマネージャ）で伝える。
     pub(crate) fn start_archive_extract(
         &self,
         is_left: bool,
@@ -250,6 +250,7 @@ impl MainWindow {
     ) -> w::AnyResult<()> {
         let control = Arc::new(TaskControl::new());
         let id = self.next_id();
+        let pid = self.progress_seq.fetch_add(1, Ordering::Relaxed);
         let name = archive
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
@@ -261,15 +262,30 @@ impl MainWindow {
         let shutdown = self.shutdown.clone();
         let marker = Self::archive_extract_marker(&archive);
         std::thread::spawn(move || {
+            let _ = tx.send(WorkerEvent::LogLine {
+                id: pid,
+                level: LogLevel::Normal,
+                text: messages::archive_extract(&name),
+            });
             let result: Result<ArchiveOutcome, String> = (|| {
                 let backend = open_archive(&archive).map_err(|e| e.to_string())?;
                 // 前回の中断残骸を捨ててクリーンに展開する。
                 let _ = std::fs::remove_dir_all(&root);
                 std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
                 let mut cancelled = false;
+                let mut last_pct = u32::MAX;
                 backend
                     .extract_all(&root, &mut |_inner, done, total| {
-                        let _ = tx.send(WorkerEvent::ArchiveProgress { is_left, done, total });
+                        if total > 0 {
+                            let pct = (done.min(total) * 100 / total) as u32;
+                            if pct != last_pct {
+                                last_pct = pct;
+                                let _ = tx.send(WorkerEvent::LogUpdate {
+                                    id: pid,
+                                    text: messages::archive_extract_progress(&name, pct),
+                                });
+                            }
+                        }
                         if control.is_stopped() || shutdown.load(Ordering::Relaxed) {
                             cancelled = true;
                             return false;
@@ -291,6 +307,8 @@ impl MainWindow {
                     ArchiveOutcome::Failed(e)
                 }
             };
+            // 進捗行から % を落として確定する（成否に依らず）。
+            let _ = tx.send(WorkerEvent::LogUpdate { id: pid, text: messages::archive_extract(&name) });
             let _ = tx.send(WorkerEvent::ArchiveDone {
                 id,
                 archive,
