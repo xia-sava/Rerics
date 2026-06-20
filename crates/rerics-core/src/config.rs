@@ -228,6 +228,46 @@ impl Default for ImageSettings {
     }
 }
 
+/// ファイル一覧アイコンの表示サイズ。`Auto` は行（フォント高）に収める。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IconSize {
+    /// 行（フォント高）に収まるサイズ。行高を増やさない。
+    #[default]
+    Auto,
+    Small,
+    Medium,
+    Large,
+}
+
+impl IconSize {
+    /// 表示サイズの論理 px。`Auto` は 0 を返し、呼び出し側が行高に合わせる。
+    pub fn logical_px(self) -> i32 {
+        match self {
+            IconSize::Auto => 0,
+            IconSize::Small => 16,
+            IconSize::Medium => 24,
+            IconSize::Large => 32,
+        }
+    }
+}
+
+/// ファイル一覧のアイコン表示設定。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IconSettings {
+    /// 一覧にシェルアイコンを表示する。
+    pub show: bool,
+    /// アイコンの表示サイズ。
+    pub size: IconSize,
+}
+
+impl Default for IconSettings {
+    fn default() -> Self {
+        Self { show: true, size: IconSize::Auto }
+    }
+}
+
 /// アプリ全体の設定。デフォルトは埋め込み `default.toml`、ユーザ `config.toml` は
 /// デフォルトとの差分のみを記録し、適用時に再帰マージする。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -248,6 +288,8 @@ pub struct Config {
     pub cursor: CursorSettings,
     /// 画像ビューアの設定。
     pub image: ImageSettings,
+    /// ファイル一覧アイコンの表示設定。
+    pub icons: IconSettings,
     /// 起動時に解決した実テーマ。ファイルには保存しない（`resolve_theme` で設定）。
     #[serde(skip)]
     pub resolved: ResolvedTheme,
@@ -266,6 +308,7 @@ impl Default for Config {
             editor: "notepad.exe".to_owned(),
             cursor: CursorSettings::default(),
             image: ImageSettings::default(),
+            icons: IconSettings::default(),
             resolved: ResolvedTheme::default(),
         }
     }

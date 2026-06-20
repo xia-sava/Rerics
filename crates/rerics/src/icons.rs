@@ -75,20 +75,22 @@ unsafe extern "system" {
 
 #[link(name = "gdi32")]
 unsafe extern "system" {
-    fn SetDIBitsToDevice(
+    fn StretchDIBits(
         hdc: *mut c_void,
         xDest: i32,
         yDest: i32,
-        w: u32,
-        h: u32,
+        DestWidth: i32,
+        DestHeight: i32,
         xSrc: i32,
         ySrc: i32,
-        StartScan: u32,
-        cLines: u32,
-        lpvBits: *const c_void,
+        SrcWidth: i32,
+        SrcHeight: i32,
+        lpBits: *const c_void,
         lpbmi: *const BITMAPINFOHEADER,
-        ColorUse: u32,
+        iUsage: u32,
+        rop: u32,
     ) -> i32;
+    fn SetStretchBltMode(hdc: *mut c_void, mode: i32) -> i32;
 }
 
 #[link(name = "ole32")]
@@ -97,7 +99,6 @@ unsafe extern "system" {
 }
 
 const SHGFI_ICON: u32 = 0x0000_0100;
-const SHGFI_SMALLICON: u32 = 0x0000_0001;
 const SHGFI_USEFILEATTRIBUTES: u32 = 0x0000_0010;
 const SHGFI_ADDOVERLAYS: u32 = 0x0000_0020;
 
@@ -107,9 +108,14 @@ const FILE_ATTRIBUTE_NORMAL: u32 = 0x0000_0080;
 const DI_NORMAL: u32 = 0x0003;
 const COINIT_APARTMENTTHREADED: u32 = 0x2;
 const DIB_RGB_COLORS: u32 = 0;
+const SRCCOPY: u32 = 0x00CC_0020;
+const STRETCH_HALFTONE: i32 = 4;
 
-/// アイコンの論理サイズ（小アイコン）。描画時に DPI スケールする。
+/// アイコンの既定論理サイズ。自動サイズ時の上限（行に収める基準）で、描画時に DPI スケールする。
 pub const ICON_LOGICAL: i32 = 16;
+
+/// サムネイルをデコードする物理 px（大アイコン×高DPIでもボケない上限）。描画時に表示枠へ縮小する。
+const THUMB_DECODE_PX: u32 = 64;
 
 /// サムネイル生成を諦めるファイルサイズ上限（巨大画像で OOM/遅延を避ける）。
 const THUMB_MAX_BYTES: u64 = 32 * 1024 * 1024;
@@ -162,7 +168,8 @@ fn fetch_icon(pseudo: &str, attrs: u32, use_attrs: bool, add_overlays: bool) -> 
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
-    let mut flags = SHGFI_ICON | SHGFI_SMALLICON;
+    // 大アイコン（32px相当）を取得し、描画時に表示サイズへ縮小する（高DPIでもボケにくい）。
+    let mut flags = SHGFI_ICON;
     if use_attrs {
         flags |= SHGFI_USEFILEATTRIBUTES;
     }
@@ -221,7 +228,7 @@ fn make_thumb(path: &std::path::Path) -> Option<WorkerDrawable> {
         return None;
     }
     let bytes = std::fs::read(path).ok()?;
-    let (w, h, rgba) = rerics_core::decode_thumbnail(&bytes, ICON_LOGICAL as u32 * 2)?;
+    let (w, h, rgba) = rerics_core::decode_thumbnail(&bytes, THUMB_DECODE_PX)?;
     let bgra = rerics_core::rgba_to_bgra(&rgba);
     Some(WorkerDrawable::Thumb { w, h, bgra })
 }
@@ -322,8 +329,12 @@ impl IconCache {
             },
             Drawable::Thumb { w, h, bgra } => {
                 let (iw, ih) = (*w as i32, *h as i32);
-                let dx = x + (size - iw).max(0) / 2;
-                let dy = y + (size - ih).max(0) / 2;
+                // 表示枠 size に長辺を合わせ、縦横比を保って縮小して中央へ置く。
+                let long = iw.max(ih).max(1);
+                let dw = (iw * size / long).max(1);
+                let dh = (ih * size / long).max(1);
+                let dx = x + (size - dw) / 2;
+                let dy = y + (size - dh) / 2;
                 let bih = BITMAPINFOHEADER {
                     biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
                     biWidth: iw,
@@ -338,19 +349,21 @@ impl IconCache {
                     biClrImportant: 0,
                 };
                 unsafe {
-                    SetDIBitsToDevice(
+                    SetStretchBltMode(dc.ptr(), STRETCH_HALFTONE);
+                    StretchDIBits(
                         dc.ptr(),
                         dx,
                         dy,
-                        *w,
-                        *h,
+                        dw,
+                        dh,
                         0,
                         0,
-                        0,
-                        *h,
+                        iw,
+                        ih,
                         bgra.as_ptr() as *const c_void,
                         &bih,
                         DIB_RGB_COLORS,
+                        SRCCOPY,
                     );
                 }
             }

@@ -160,3 +160,7 @@ down_after_select = true
 
 [image]
 wheel = "navigate"
+
+[icons]
+show = true
+size = "auto"

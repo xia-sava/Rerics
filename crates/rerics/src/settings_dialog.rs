@@ -9,7 +9,9 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use rerics_core::{Bookmark, Colors, Config, Layout, Rgb, ResolvedTheme, Theme, WheelAction};
+use rerics_core::{
+    Bookmark, Colors, Config, IconSize, Layout, Rgb, ResolvedTheme, Theme, WheelAction,
+};
 use winsafe::{self as w, co, gui, msg::tvm, prelude::*};
 
 /// 自前描画コントロールをオフスクリーン DC へ描かせるメッセージ。`PrintWindow`
@@ -746,6 +748,54 @@ fn build_appearance(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &
         },
     );
     label(parent, "（フォント・サイズはプレビューに反映されます）", 16, 232, 340);
+
+    // アイコン（表示の有無とサイズ）。フォントの下に縦に積む（右側はプレビューが占有）。
+    group_box(parent, "アイコン", 12, 268, 360, 214);
+    let icon_show = gui::CheckBox::new(
+        parent,
+        gui::CheckBoxOpts {
+            text: "ファイル一覧にアイコンを表示する(&I)",
+            position: gui::dpi(28, 296),
+            size: gui::dpi(330, 22),
+            check_state: if cfg.icons.show { co::BST::CHECKED } else { co::BST::UNCHECKED },
+            ..Default::default()
+        },
+    );
+    label(parent, "サイズ", 28, 334, 100);
+    let icon_size = gui::RadioGroup::new(
+        parent,
+        &[
+            gui::RadioButtonOpts {
+                text: "自動（行に合わせる）(&U)",
+                position: gui::dpi(48, 358),
+                size: gui::dpi(280, 20),
+                selected: cfg.icons.size == IconSize::Auto,
+                ..Default::default()
+            },
+            gui::RadioButtonOpts {
+                text: "小 (16)(&A)",
+                position: gui::dpi(48, 382),
+                size: gui::dpi(280, 20),
+                selected: cfg.icons.size == IconSize::Small,
+                ..Default::default()
+            },
+            gui::RadioButtonOpts {
+                text: "中 (24)(&M)",
+                position: gui::dpi(48, 406),
+                size: gui::dpi(280, 20),
+                selected: cfg.icons.size == IconSize::Medium,
+                ..Default::default()
+            },
+            gui::RadioButtonOpts {
+                text: "大 (32)(&G)",
+                position: gui::dpi(48, 430),
+                size: gui::dpi(280, 20),
+                selected: cfg.icons.size == IconSize::Large,
+                ..Default::default()
+            },
+        ],
+    );
+    label(parent, "（中・大を選ぶと行の高さが広がります）", 28, 456, 330);
     drop(cfg);
 
     // テーマ選択を即反映し、プレビュー／配色編集の対象サイドもこれに追従させる。
@@ -817,6 +867,29 @@ fn build_appearance(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &
                 let _ = ff.hwnd().SetWindowText(&new_family);
                 let _ = fs.hwnd().SetWindowText(&new_size.to_string());
             }
+            Ok(())
+        });
+    }
+
+    // アイコン表示の有無・サイズを cfg へ反映する（プレビューは模式図なので未反映）。
+    {
+        let shared = shared.clone();
+        let check = icon_show.clone();
+        icon_show.on().bn_clicked(move || {
+            shared.cfg.borrow_mut().icons.show = check.is_checked();
+            Ok(())
+        });
+    }
+    {
+        let shared = shared.clone();
+        let group = icon_size.clone();
+        icon_size.on().bn_clicked(move || {
+            shared.cfg.borrow_mut().icons.size = match group.selected_index() {
+                Some(1) => IconSize::Small,
+                Some(2) => IconSize::Medium,
+                Some(3) => IconSize::Large,
+                _ => IconSize::Auto,
+            };
             Ok(())
         });
     }

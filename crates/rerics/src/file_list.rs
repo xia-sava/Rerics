@@ -7,7 +7,9 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use rerics_core::{Align, ColumnKind, Colors, Config, FileItem, FileListState, MediaKind, Rgb, SortType};
+use rerics_core::{
+    Align, ColumnKind, Colors, Config, FileItem, FileListState, IconSize, MediaKind, Rgb, SortType,
+};
 use winsafe::{self as w, co, gui, prelude::*};
 
 use crate::icons::{ICON_LOGICAL, IconCache};
@@ -69,6 +71,10 @@ struct Inner {
     loading_total: Cell<u64>,
     /// シェルアイコンのキャッシュ（左右ペインで共有・main 側から注入）。未設定なら描かない。
     icon_cache: RefCell<Option<Rc<IconCache>>>,
+    /// アイコンを一覧に表示するか（設定）。
+    icon_show: Cell<bool>,
+    /// アイコンの表示サイズ（設定）。
+    icon_size: Cell<IconSize>,
     /// 現在表示中の実FSディレクトリ（per-file アイコン取得用。書庫内など実体が無ければ None）。
     dir: RefCell<Option<PathBuf>>,
 }
@@ -120,6 +126,8 @@ impl FileListView {
             loading_done: Cell::new(0),
             loading_total: Cell::new(0),
             icon_cache: RefCell::new(None),
+            icon_show: Cell::new(cfg.icons.show),
+            icon_size: Cell::new(cfg.icons.size),
             dir: RefCell::new(None),
         });
         let me = Self { wnd, inner };
@@ -145,10 +153,18 @@ impl FileListView {
         *self.inner.dir.borrow_mut() = dir;
     }
 
+    /// アイコンを一覧に表示するか（設定 ON かつキャッシュ注入済み）。
+    fn icons_visible(&self) -> bool {
+        self.inner.icon_show.get() && self.inner.icon_cache.borrow().is_some()
+    }
+
     /// アイコンの描画サイズ（物理 px・DPI スケール済み）。
     fn icon_px(&self) -> i32 {
-        // アイコンは行（フォント基準の高さ）に収まるサイズへ抑える。
-        gui::dpi_x(ICON_LOGICAL).min(self.item_height())
+        match self.inner.icon_size.get().logical_px() {
+            // 自動：行（フォント基準の高さ）に収まるサイズへ抑える。
+            0 => gui::dpi_x(ICON_LOGICAL).min(self.font_height()),
+            logical => gui::dpi_x(logical),
+        }
     }
 
     pub fn on_activate(&self, cb: impl Fn(usize) + 'static) {
@@ -220,6 +236,8 @@ impl FileListView {
         *self.inner.font_family.borrow_mut() = cfg.font.family.clone();
         self.inner.font_size.set(cfg.font.size);
         self.inner.scrollbar_width.set(cfg.layout.scrollbar_width);
+        self.inner.icon_show.set(cfg.icons.show);
+        self.inner.icon_size.set(cfg.icons.size);
         let _ = self.refresh();
     }
 
@@ -353,8 +371,10 @@ impl FileListView {
     }
 
     fn item_height(&self) -> i32 {
-        // 行高はフォント基準で詰める。アイコンは行に収まるサイズへ縮小して描く（icon_px）。
-        self.font_height()
+        // 行高はフォント基準で詰める。アイコンを表示中で、かつアイコンがフォントより
+        // 大きい（中/大サイズを選んだ）ときだけ、その分だけ行を伸ばす。
+        let base = self.font_height();
+        if self.icons_visible() { base.max(self.icon_px()) } else { base }
     }
 
     /// フォントを生成する（設定のファミリ・サイズ）。
@@ -873,6 +893,7 @@ impl FileListView {
         };
         let sel_bg = w::HBRUSH::CreateSolidBrush(rgb(sel_bg_color))?;
         let icon_cache = self.inner.icon_cache.borrow();
+        let show_icons = self.inner.icon_show.get();
         let icon_px = self.icon_px();
         let dir = self.inner.dir.borrow();
         for i in s.scroll_top..=bottom {
@@ -910,7 +931,7 @@ impl FileListView {
                 let is_name_col =
                     matches!(col.kind, ColumnKind::FileName | ColumnKind::FileBaseName);
                 if is_name_col {
-                    if let Some(cache) = icon_cache.as_ref() {
+                    if let Some(cache) = icon_cache.as_ref().filter(|_| show_icons) {
                         let iy = y + (item_h - icon_px) / 2;
                         let mut drawn = false;
                         // 実FSのファイル（ディレクトリ・親・書庫内を除く）は per-file の固有
