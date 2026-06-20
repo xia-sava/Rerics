@@ -577,6 +577,7 @@ impl ViewerView {
         chrome::vline(dc, sep_x, 0, body_h, rgb(colors.log_info))?;
 
         // 本文。
+        let is_text = self.inner.model.borrow().mode == ViewMode::Text;
         let lines = self.inner.lines.borrow();
         let top = self.inner.scroll_top.get();
         let match_line = self.inner.match_line.get();
@@ -614,6 +615,20 @@ impl ViewerView {
             }
             y += lh;
             i += 1;
+        }
+
+        // テキストモードでは本文末尾に [EOF] マーカーを出す（gutter と同じ log_info 色を流用）。
+        if is_text && i == lines.len() {
+            if let Some(last) = lines.last() {
+                let eof_y = y - lh;
+                if eof_y >= 0 {
+                    let end_col = last.body.chars().count();
+                    let x = self.col_x(&last.body, end_col, content_left, cwd) + cwd;
+                    dc.SetTextColor(rgb(colors.log_info))?;
+                    let rect = w::RECT { left: x, top: eof_y, right: cw, bottom: eof_y + lh };
+                    dc.DrawText("[EOF]", rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
+                }
+            }
         }
 
         // 下端の状態行（chrome のグレー帯）。
