@@ -1177,14 +1177,6 @@ const SORT_TYPES: &[(SortType, &str)] = &[
     (SortType::ExtensionExpLike, "拡張子順（自然順）"),
 ];
 
-/// 種類ピッカーと幅入力から `Column` を組む（未選択なら None）。
-fn picker_column(kinds: &gui::ListBox, width: &gui::Edit) -> Option<Column> {
-    let ki = unsafe { kinds.hwnd().SendMessage(lb::GetCurSel {}) }? as usize;
-    let (kind, _) = COLUMN_KINDS.get(ki)?;
-    let w = width.text().unwrap_or_default().trim().parse::<i32>().unwrap_or(100).clamp(16, 1000);
-    Some(Column { kind: *kind, text: kind.header_label().to_owned(), width: w, align: kind.default_align() })
-}
-
 /// ラベル付きボタンを置く。
 fn button(parent: &(impl GuiParent + 'static), text: &str, x: i32, y: i32, w: i32) -> gui::Button {
     gui::Button::new(
@@ -1202,8 +1194,10 @@ fn button(parent: &(impl GuiParent + 'static), text: &str, x: i32, y: i32, w: i3
 /// 「一覧」ページの編集部（既定ソート・列の種類/幅/順序・自動調整トグル）。
 #[derive(Clone)]
 struct ColumnsEditor {
-    list: gui::ListView<()>,
-    kinds: gui::ListBox,
+    /// 表示中の列（種類・幅）。
+    shown: gui::ListView<()>,
+    /// 使用可能な列（全種類・重複可）。
+    available: gui::ListBox,
     sort_list: gui::ListBox,
     /// 既定ソートリストで初期選択する行（窓生成後の populate で選ぶ）。
     sort_sel: Option<usize>,
@@ -1235,26 +1229,42 @@ impl ColumnsEditor {
             });
         }
 
-        group_box(parent, "列構成", 12, 174, 752, 360);
-        label(parent, "ファイル一覧に表示する列。種類と幅を選んで 追加/更新、↑↓ で並べ替え。", 24, 196, 600);
+        group_box(parent, "ファイル一覧の列構成", 12, 174, 752, 360);
 
         let auto = shared.cfg.borrow().auto_adjust_columns;
         let auto_check = gui::CheckBox::new(
             parent,
             gui::CheckBoxOpts {
-                text: "列幅を自動で内容に合わせる（オフで下の幅をそのまま使う）(&W)",
-                position: gui::dpi(24, 220),
-                size: gui::dpi(440, 22),
+                text: "列幅を自動で内容に合わせる（オフで指定した幅をそのまま使う）(&W)",
+                position: gui::dpi(24, 198),
+                size: gui::dpi(470, 22),
                 check_state: if auto { co::BST::CHECKED } else { co::BST::UNCHECKED },
                 ..Default::default()
             },
         );
 
-        let list = gui::ListView::<()>::new(
+        // 左：使用可能な列（全種類・重複可）。
+        label(parent, "使用可能な列", 24, 228, 200);
+        let available = gui::ListBox::new(
+            parent,
+            gui::ListBoxOpts {
+                position: gui::dpi(24, 250),
+                size: gui::dpi(230, 248),
+                ..Default::default()
+            },
+        );
+
+        // 中央：←→ で出し入れ。
+        let to_shown = button(parent, "追加 →", 268, 300, 96);
+        let to_avail = button(parent, "← 削除", 268, 340, 96);
+
+        // 右：表示中の列（順番どおりに表示される）。
+        label(parent, "表示中の列", 376, 228, 200);
+        let shown = gui::ListView::<()>::new(
             parent,
             gui::ListViewOpts {
-                position: gui::dpi(24, 250),
-                size: gui::dpi(400, 256),
+                position: gui::dpi(376, 250),
+                size: gui::dpi(376, 218),
                 control_style: co::LVS::REPORT
                     | co::LVS::NOSORTHEADER
                     | co::LVS::SHOWSELALWAYS
@@ -1263,51 +1273,41 @@ impl ColumnsEditor {
                 ..Default::default()
             },
         );
-        let up = button(parent, "↑", 24, 510, 48);
-        let down = button(parent, "↓", 78, 510, 48);
-
-        label(parent, "追加・更新する種類", 440, 248, 200);
-        let kinds = gui::ListBox::new(
-            parent,
-            gui::ListBoxOpts {
-                position: gui::dpi(440, 270),
-                size: gui::dpi(250, 168),
-                ..Default::default()
-            },
-        );
-        label(parent, "幅", 440, 452, 30);
+        label(parent, "幅", 376, 478, 24);
         let width_edit = gui::Edit::new(
             parent,
             gui::EditOpts {
-                text: "100",
                 control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
-                position: gui::dpi(472, 450),
-                width: gui::dpi_x(64),
+                position: gui::dpi(400, 476),
+                width: gui::dpi_x(60),
                 height: gui::dpi_y(22),
                 ..Default::default()
             },
         );
-        let add = button(parent, "追加(&D)", 440, 484, 70);
-        let update = button(parent, "更新(&U)", 516, 484, 70);
-        let del = button(parent, "削除(&L)", 592, 484, 70);
+        label(parent, "（行をダブルクリックで幅編集）", 470, 478, 220);
+        let fwd = button(parent, "列を手前へ", 376, 506, 116);
+        let back = button(parent, "列を後ろへ", 498, 506, 116);
 
         let selected: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        // プログラム的な幅入力更新中フラグ（en_change の再入で cfg を二重借用しないよう抑制）。
+        let editing: Rc<Cell<bool>> = Rc::new(Cell::new(false));
 
+        // 表示中リストを cfg.columns から組み直す。
         let rebuild: Rc<dyn Fn(Option<usize>)> = Rc::new({
-            let list = list.clone();
+            let shown = shown.clone();
             let shared = shared.clone();
             let selected = selected.clone();
             move |sel| {
-                let _ = list.items().delete_all();
+                let _ = shown.items().delete_all();
                 for c in shared.cfg.borrow().columns.iter() {
-                    let _ = list.items().add(
+                    let _ = shown.items().add(
                         &[kind_label(c.kind).to_owned(), c.width.to_string()],
                         None,
                         (),
                     );
                 }
                 if let Some(i) = sel {
-                    if let Some(it) = list.items().iter().nth(i) {
+                    if let Some(it) = shown.items().iter().nth(i) {
                         let _ = it.select(true);
                         let _ = it.focus();
                     }
@@ -1316,76 +1316,94 @@ impl ColumnsEditor {
             }
         });
 
-        // 行選択：その列の種類・幅を右の入力欄へ展開。
+        // 表示中の選択 → 幅入力欄へ反映。
         {
-            let list2 = list.clone();
+            let shown2 = shown.clone();
             let shared = shared.clone();
-            let kinds2 = kinds.clone();
             let we = width_edit.clone();
             let selected = selected.clone();
-            list.on().lvn_item_changed(move |_| {
-                if let Some(i) = list2.items().iter().position(|it| it.is_selected()) {
-                    if let Some(c) = shared.cfg.borrow().columns.get(i) {
-                        if let Some(ki) = COLUMN_KINDS.iter().position(|(k, _)| *k == c.kind) {
-                            unsafe {
-                                let _ = kinds2.hwnd().SendMessage(lb::SetCurSel { index: Some(ki as u32) });
-                            }
-                        }
-                        let _ = we.set_text(&c.width.to_string());
-                    }
+            let editing = editing.clone();
+            shown.on().lvn_item_changed(move |_| {
+                if let Some(i) = shown2.items().iter().position(|it| it.is_selected()) {
+                    // 借用を手放してから set_text（en_change の再入で borrow_mut しても安全に）。
+                    let w = shared.cfg.borrow().columns.get(i).map(|c| c.width);
                     selected.set(Some(i));
-                }
-                Ok(())
-            });
-        }
-
-        // 追加：選択中の種類＋幅を末尾に足す。
-        {
-            let shared = shared.clone();
-            let rebuild = rebuild.clone();
-            let kinds = kinds.clone();
-            let we = width_edit.clone();
-            add.on().bn_clicked(move || {
-                if let Some(col) = picker_column(&kinds, &we) {
-                    let idx = {
-                        let mut cfg = shared.cfg.borrow_mut();
-                        cfg.columns.push(col);
-                        cfg.columns.len() - 1
-                    };
-                    rebuild(Some(idx));
-                }
-                Ok(())
-            });
-        }
-
-        // 更新：選択行を種類＋幅で上書き。
-        {
-            let shared = shared.clone();
-            let rebuild = rebuild.clone();
-            let selected = selected.clone();
-            let kinds = kinds.clone();
-            let we = width_edit.clone();
-            update.on().bn_clicked(move || {
-                let Some(i) = selected.get() else { return Ok(()) };
-                if let Some(col) = picker_column(&kinds, &we) {
-                    {
-                        let mut cfg = shared.cfg.borrow_mut();
-                        if let Some(slot) = cfg.columns.get_mut(i) {
-                            *slot = col;
-                        }
+                    if let Some(w) = w {
+                        editing.set(true);
+                        let _ = we.set_text(&w.to_string());
+                        editing.set(false);
                     }
-                    rebuild(Some(i));
                 }
                 Ok(())
             });
         }
 
-        // 削除：選択行を消す（最低1列は残す）。
+        // ダブルクリック → 幅入力へフォーカス（その場で幅編集）。
+        {
+            let we = width_edit.clone();
+            shown.on().nm_dbl_clk(move |_| {
+                let _ = we.hwnd().SetFocus();
+                Ok(())
+            });
+        }
+
+        // 幅入力の変更を選択行へ即反映（16〜1000 にクランプ）。
+        {
+            let shared = shared.clone();
+            let we = width_edit.clone();
+            let shown2 = shown.clone();
+            let selected = selected.clone();
+            let editing = editing.clone();
+            width_edit.on().en_change(move || {
+                if editing.get() {
+                    return Ok(());
+                }
+                let Some(i) = selected.get() else { return Ok(()) };
+                let w = we.text().unwrap_or_default().trim().parse::<i32>().unwrap_or(0);
+                if (16..=1000).contains(&w) {
+                    if let Some(c) = shared.cfg.borrow_mut().columns.get_mut(i) {
+                        c.width = w;
+                    }
+                    if let Some(it) = shown2.items().iter().nth(i) {
+                        let _ = it.set_text(1, &w.to_string());
+                    }
+                }
+                Ok(())
+            });
+        }
+
+        // → 使用可能で選択中の種類を表示中の末尾へ追加。
+        {
+            let shared = shared.clone();
+            let rebuild = rebuild.clone();
+            let available = available.clone();
+            to_shown.on().bn_clicked(move || {
+                if let Some(ki) = unsafe { available.hwnd().SendMessage(lb::GetCurSel {}) } {
+                    if let Some((kind, _)) = COLUMN_KINDS.get(ki as usize) {
+                        let col = Column {
+                            kind: *kind,
+                            text: kind.header_label().to_owned(),
+                            width: 100,
+                            align: kind.default_align(),
+                        };
+                        let idx = {
+                            let mut cfg = shared.cfg.borrow_mut();
+                            cfg.columns.push(col);
+                            cfg.columns.len() - 1
+                        };
+                        rebuild(Some(idx));
+                    }
+                }
+                Ok(())
+            });
+        }
+
+        // ← 表示中で選択中の列を外す（最低1列は残す）。
         {
             let shared = shared.clone();
             let rebuild = rebuild.clone();
             let selected = selected.clone();
-            del.on().bn_clicked(move || {
+            to_avail.on().bn_clicked(move || {
                 let Some(i) = selected.get() else { return Ok(()) };
                 let next = {
                     let mut cfg = shared.cfg.borrow_mut();
@@ -1400,12 +1418,12 @@ impl ColumnsEditor {
             });
         }
 
-        // ↑/↓：順序入れ替え。
+        // 手前へ / 後ろへ：順序入れ替え。
         {
             let shared = shared.clone();
             let rebuild = rebuild.clone();
             let selected = selected.clone();
-            up.on().bn_clicked(move || {
+            fwd.on().bn_clicked(move || {
                 let Some(i) = selected.get() else { return Ok(()) };
                 if i == 0 {
                     return Ok(());
@@ -1419,7 +1437,7 @@ impl ColumnsEditor {
             let shared = shared.clone();
             let rebuild = rebuild.clone();
             let selected = selected.clone();
-            down.on().bn_clicked(move || {
+            back.on().bn_clicked(move || {
                 let Some(i) = selected.get() else { return Ok(()) };
                 let len = shared.cfg.borrow().columns.len();
                 if i + 1 >= len {
@@ -1445,16 +1463,16 @@ impl ColumnsEditor {
             .iter()
             .position(|(s, _)| *s == shared.cfg.borrow().default_sort);
 
-        Self { list, kinds, sort_list, sort_sel, rebuild }
+        Self { shown, available, sort_list, sort_sel, rebuild }
     }
 
-    /// 窓生成後に列・ピッカー・既定ソートを流し込む（生成前の add は無効化されるため）。
+    /// 窓生成後に表示中の列・使用可能な列・既定ソートを流し込む（生成前の add は無効化されるため）。
     fn populate(&self) {
-        for (head, width) in [("種類", 280), ("幅", 90)] {
-            let _ = self.list.cols().add(head, gui::dpi_x(width));
+        for (head, width) in [("種類", 286), ("幅", 80)] {
+            let _ = self.shown.cols().add(head, gui::dpi_x(width));
         }
         let labels: Vec<&str> = COLUMN_KINDS.iter().map(|(_, l)| *l).collect();
-        let _ = self.kinds.items().add(&labels);
+        let _ = self.available.items().add(&labels);
 
         let sort_labels: Vec<&str> = SORT_TYPES.iter().map(|(_, l)| *l).collect();
         let _ = self.sort_list.items().add(&sort_labels);
