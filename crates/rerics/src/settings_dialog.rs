@@ -968,17 +968,18 @@ fn build_layout(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &Prev
             Ok(())
         });
     }
+}
 
-    // 待機スピナーの出現遅延（ms）。レイアウト px とは別単位なので末尾に独立配置する。
-    let dy = 12 + LAYOUT_FIELDS.len() as i32 * 34;
+/// 「動作」ページ（全般の動作設定）。今は待機表示の遅延のみ。操作を即 `Shared` へ反映する。
+fn build_behavior(parent: &gui::WindowControl, shared: &Rc<Shared>) {
     let delay_ms = shared.cfg.borrow().progress_delay_ms;
-    label(parent, "スピナー遅延(ms)", 16, dy + 2, 150);
+    label(parent, "「読込中」表示までの時間(ms)", 16, 18, 240);
     let delay_edit = gui::Edit::new(
         parent,
         gui::EditOpts {
             text: &delay_ms.to_string(),
             control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
-            position: gui::dpi(170, dy),
+            position: gui::dpi(262, 16),
             width: gui::dpi_x(64),
             height: gui::dpi_y(22),
             ..Default::default()
@@ -987,7 +988,7 @@ fn build_layout(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &Prev
     let _delay_spin = gui::UpDown::new(
         parent,
         gui::UpDownOpts {
-            position: gui::dpi(234, dy),
+            position: gui::dpi(326, 16),
             height: gui::dpi_y(22),
             range: (0, 10000),
             value: delay_ms.min(10000) as i32,
@@ -998,7 +999,13 @@ fn build_layout(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &Prev
             ..Default::default()
         },
     );
-    label(parent, "（読込・展開でスピナーを出すまで。0 で即時）", 16, dy + 28, 330);
+    label(
+        parent,
+        "（読込・展開がこれより長くかかるとき「読込中」を出します。0 で即時）",
+        16,
+        46,
+        560,
+    );
     {
         let shared = shared.clone();
         let delay_edit2 = delay_edit.clone();
@@ -1954,6 +1961,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     let pane_keys = make_pane(&wnd, pane_pos, pane_wide); // 5
     let pane_image = make_pane(&wnd, pane_pos, pane_wide); // 6
     let pane_list = make_pane(&wnd, pane_pos, pane_wide); // 7
+    let pane_behavior = make_pane(&wnd, pane_pos, pane_wide); // 8
     let panes = vec![
         pane_appearance.clone(),
         pane_colors.clone(),
@@ -1963,6 +1971,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         pane_keys.clone(),
         pane_image.clone(),
         pane_list.clone(),
+        pane_behavior.clone(),
     ];
 
     // 右カラム：プレビュー（外観カテゴリ選択中だけ表示）。表示テーマは「配色テーマ」に追従する
@@ -1983,6 +1992,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     build_layout(&pane_layout, &shared, &preview);
     build_cursor(&pane_cursor, &shared);
     build_viewer(&pane_image, &shared);
+    build_behavior(&pane_behavior, &shared);
     build_list(&pane_list, &shared);
     let columns_editor = ColumnsEditor::new(&pane_list, &shared);
     let registered = RegisteredPane::new(&pane_registered, &shared);
@@ -2069,7 +2079,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
                 let _ = appearance.expand(true);
             }
             let _ = nav.items().add_root("一覧", None, 7);
-            if let Ok(behavior) = nav.items().add_root("動作", None, 3) {
+            if let Ok(behavior) = nav.items().add_root("動作", None, 8) {
                 let _ = behavior.add_child("カーソル", None, 3);
                 let _ = behavior.add_child("ビューア", None, 6);
                 let _ = behavior.expand(true);
