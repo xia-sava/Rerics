@@ -8,7 +8,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use rerics_core::{Colors, Config, DisplayLine, Rgb, ViewMode, ViewerModel};
+use rerics_core::{Colors, Config, DisplayLine, LineEnding, Rgb, ViewMode, ViewerModel};
 use unicode_width::UnicodeWidthChar;
 use winsafe::{self as w, co, gui, prelude::*};
 
@@ -613,6 +613,13 @@ impl ViewerView {
                 let rect = w::RECT { left: content_left, top: y, right: cw, bottom: y + lh };
                 dc.DrawText(&line.body, rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
             }
+            // 行末の改行マーク（記号色・本文とは別レイヤーなので選択・コピーには混ざらない）。
+            if let Some(nl) = line.newline {
+                let bx = self.col_x(&line.body, line.body.chars().count(), content_left, cwd);
+                dc.SetTextColor(rgb(colors.viewer_symbol))?;
+                let rect = w::RECT { left: bx, top: y, right: cw, bottom: y + lh };
+                dc.DrawText(newline_glyph(nl), rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
+            }
             y += lh;
             i += 1;
         }
@@ -623,7 +630,9 @@ impl ViewerView {
                 let eof_y = y - lh;
                 if eof_y >= 0 {
                     let end_col = last.body.chars().count();
-                    let x = self.col_x(&last.body, end_col, content_left, cwd) + cwd;
+                    // 最終行に改行マークがあれば、その分だけ右にずらして重ねない。
+                    let nl_gap = if last.newline.is_some() { cwd * 2 } else { cwd };
+                    let x = self.col_x(&last.body, end_col, content_left, cwd) + nl_gap;
                     dc.SetTextColor(rgb(colors.viewer_symbol))?;
                     let rect = w::RECT { left: x, top: eof_y, right: cw, bottom: eof_y + lh };
                     dc.DrawText("[EOF]", rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
@@ -692,6 +701,15 @@ impl ViewerView {
 
 fn rgb(c: Rgb) -> w::COLORREF {
     w::COLORREF::from_rgb(c.r, c.g, c.b)
+}
+
+/// 改行種別ごとの表示グリフ（CR=左へ復帰・LF=下へ送り・CRLF=復帰改行）。
+fn newline_glyph(e: LineEnding) -> &'static str {
+    match e {
+        LineEnding::Cr => "←",
+        LineEnding::Lf => "↓",
+        LineEnding::CrLf => "↵",
+    }
 }
 
 /// 文字の種別（語・空白・記号）。ダブルクリックは同種の連なりを選ぶ。

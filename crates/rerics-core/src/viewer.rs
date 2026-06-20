@@ -115,11 +115,21 @@ pub enum ViewMode {
     Binary,
 }
 
+/// 論理行の改行（行末）種別。改行マークの描画に使う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineEnding {
+    Cr,
+    Lf,
+    CrLf,
+}
+
 /// 1 表示行。`gutter`＝左端の行番号 or オフセット（折返し継続行は空）、`body`＝本文。
+/// `newline`＝この表示行が論理行の末尾（改行で終わる）なら、その改行種別。継続行・行末でないなら `None`。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisplayLine {
     pub gutter: String,
     pub body: String,
+    pub newline: Option<LineEnding>,
 }
 
 /// ビューアの表示モデル。バイト列＋現在のエンコーディング＋モードを保持する。
@@ -168,16 +178,19 @@ impl ViewerModel {
         let tab_width = tab_width.max(1);
         let mut out = Vec::new();
         let mut lineno = 0usize;
-        for logical in split_lines(&text) {
+        for (logical, ending) in split_lines(&text) {
             lineno += 1;
             let segments = wrap_line(logical, wrap_cols, tab_width);
+            let last = segments.len().saturating_sub(1);
             for (i, seg) in segments.into_iter().enumerate() {
                 let gutter = if i == 0 { lineno.to_string() } else { String::new() };
-                out.push(DisplayLine { gutter, body: seg });
+                // 改行マークは論理行の最終セグメントだけに付ける（折返し継続行には付けない）。
+                let newline = if i == last { ending } else { None };
+                out.push(DisplayLine { gutter, body: seg, newline });
             }
         }
         if out.is_empty() {
-            out.push(DisplayLine { gutter: "1".to_owned(), body: String::new() });
+            out.push(DisplayLine { gutter: "1".to_owned(), body: String::new(), newline: None });
         }
         out
     }
@@ -206,17 +219,19 @@ impl ViewerModel {
             out.push(DisplayLine {
                 gutter: format!("{offset:06X}"),
                 body: format!("{hex}| {chars}"),
+                newline: None,
             });
         }
         if out.is_empty() {
-            out.push(DisplayLine { gutter: "000000".to_owned(), body: String::new() });
+            out.push(DisplayLine { gutter: "000000".to_owned(), body: String::new(), newline: None });
         }
         out
     }
 }
 
 /// テキストを論理行へ分割する（改行は `\n`・`\r\n`・`\r` を許容、行末改行は含めない）。
-fn split_lines(text: &str) -> Vec<&str> {
+/// 各行に、その行を終わらせた改行種別（最終行で改行が無ければ `None`）を添えて返す。
+fn split_lines(text: &str) -> Vec<(&str, Option<LineEnding>)> {
     let mut lines = Vec::new();
     let bytes = text.as_bytes();
     let mut start = 0usize;
@@ -224,14 +239,16 @@ fn split_lines(text: &str) -> Vec<&str> {
     while i < bytes.len() {
         match bytes[i] {
             b'\n' => {
-                lines.push(&text[start..i]);
+                lines.push((&text[start..i], Some(LineEnding::Lf)));
                 i += 1;
                 start = i;
             }
             b'\r' => {
-                lines.push(&text[start..i]);
-                i += 1;
-                if i < bytes.len() && bytes[i] == b'\n' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+                    lines.push((&text[start..i], Some(LineEnding::CrLf)));
+                    i += 2;
+                } else {
+                    lines.push((&text[start..i], Some(LineEnding::Cr)));
                     i += 1;
                 }
                 start = i;
@@ -240,9 +257,9 @@ fn split_lines(text: &str) -> Vec<&str> {
         }
     }
     if start < bytes.len() {
-        lines.push(&text[start..]);
+        lines.push((&text[start..], None));
     } else if bytes.is_empty() {
-        lines.push("");
+        lines.push(("", None));
     }
     lines
 }
@@ -318,9 +335,9 @@ mod tests {
         let model = ViewerModel::new(b"abcdef".to_vec());
         let lines = model.lines(3, 4);
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], DisplayLine { gutter: "1".into(), body: "abc".into() });
-        // 折返し継続行は gutter 空。
-        assert_eq!(lines[1], DisplayLine { gutter: "".into(), body: "def".into() });
+        assert_eq!(lines[0], DisplayLine { gutter: "1".into(), body: "abc".into(), newline: None });
+        // 折返し継続行は gutter 空。最終行に改行は無い（改行マークも付かない）。
+        assert_eq!(lines[1], DisplayLine { gutter: "".into(), body: "def".into(), newline: None });
     }
 
     #[test]
@@ -338,9 +355,25 @@ mod tests {
         let model = ViewerModel::new(b"a\r\nb\nc".to_vec());
         let lines = model.lines(80, 4);
         assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0], DisplayLine { gutter: "1".into(), body: "a".into() });
-        assert_eq!(lines[1], DisplayLine { gutter: "2".into(), body: "b".into() });
-        assert_eq!(lines[2], DisplayLine { gutter: "3".into(), body: "c".into() });
+        // 改行種別（CRLF / LF / 末尾は改行なし）も保持する。
+        assert_eq!(lines[0], DisplayLine { gutter: "1".into(), body: "a".into(), newline: Some(LineEnding::CrLf) });
+        assert_eq!(lines[1], DisplayLine { gutter: "2".into(), body: "b".into(), newline: Some(LineEnding::Lf) });
+        assert_eq!(lines[2], DisplayLine { gutter: "3".into(), body: "c".into(), newline: None });
+    }
+
+    #[test]
+    fn text_lines_lone_cr_and_wrapped_newline() {
+        // 単独 CR の行末種別。
+        let model = ViewerModel::new(b"x\ry".to_vec());
+        let lines = model.lines(80, 4);
+        assert_eq!(lines[0].newline, Some(LineEnding::Cr));
+        assert_eq!(lines[1].newline, None);
+        // 折返し時、改行マークは最終セグメントだけに付く。
+        let m2 = ViewerModel::new(b"abcdef\n".to_vec());
+        let l2 = m2.lines(3, 4);
+        assert_eq!(l2.len(), 2);
+        assert_eq!(l2[0].newline, None, "折返し継続前のセグメントに改行マークは付かない");
+        assert_eq!(l2[1].newline, Some(LineEnding::Lf), "最終セグメントに改行マーク");
     }
 
     #[test]
