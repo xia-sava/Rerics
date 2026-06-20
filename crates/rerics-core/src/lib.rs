@@ -12,6 +12,7 @@ mod macros;
 mod media;
 pub mod messages;
 mod operation;
+mod spinner;
 mod status;
 mod vfs;
 mod viewer;
@@ -49,6 +50,7 @@ pub use operation::{
     run_archive_add, run_archive_delete, run_archive_rebuild, run_archive_rename, run_calc_size,
     run_compress, run_copy, run_delete, run_extract,
 };
+pub use spinner::{SPINNER_FRAMES, Spinner};
 pub use status::{format_drive, format_selected, format_size};
 pub use vfs::{Location, is_archive_path};
 pub use viewer::{DisplayLine, Encoding, ViewMode, ViewerModel, looks_binary};

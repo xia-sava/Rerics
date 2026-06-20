@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use rerics_core::{
     Align, ColumnKind, Colors, Config, FileItem, FileListState, IconSize, MediaKind, Rgb,
-    SizeFormat, SortType,
+    SizeFormat, SortType, Spinner,
 };
 use winsafe::{self as w, co, gui, prelude::*};
 
@@ -65,11 +65,8 @@ struct Inner {
     on_activate: RefCell<Option<ActivateCb>>,
     on_got_focus: RefCell<Option<Box<dyn Fn()>>>,
     on_wheel: RefCell<Option<WheelCb>>,
-    /// 書庫の読込中はプログレスバーを重ね、一覧の代わりに進捗を表示する。
-    loading: Cell<bool>,
-    /// 展開済みファイル数／総数（プログレスバーの充填率に使う。total=0 は不定）。
-    loading_done: Cell<u64>,
-    loading_total: Cell<u64>,
+    /// 読込・展開の待機表示。`Some` の間は一覧の代わりに進捗（バー）を重ねる。
+    loading: RefCell<Option<Spinner>>,
     /// シェルアイコンのキャッシュ（左右ペインで共有・main 側から注入）。未設定なら描かない。
     icon_cache: RefCell<Option<Rc<IconCache>>>,
     /// アイコンを一覧に表示するか（設定）。
@@ -127,9 +124,7 @@ impl FileListView {
             on_activate: RefCell::new(None),
             on_got_focus: RefCell::new(None),
             on_wheel: RefCell::new(None),
-            loading: Cell::new(false),
-            loading_done: Cell::new(0),
-            loading_total: Cell::new(0),
+            loading: RefCell::new(None),
             icon_cache: RefCell::new(None),
             icon_show: Cell::new(cfg.icons.show),
             icon_size: Cell::new(cfg.icons.size),
@@ -205,34 +200,33 @@ impl FileListView {
 
     /// 読込中プログレスバーを表示開始する（書庫の一括展開待ち等・進捗は 0/0 から）。
     pub fn set_loading(&self) {
-        self.inner.loading.set(true);
-        self.inner.loading_done.set(0);
-        self.inner.loading_total.set(0);
+        *self.inner.loading.borrow_mut() = Some(Spinner::immediate());
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
     /// 進捗（done/total）を更新する（再描画はタイマの `tick_loading` に任せる）。
     pub fn set_loading_progress(&self, done: u64, total: u64) {
-        self.inner.loading_done.set(done);
-        self.inner.loading_total.set(total);
+        if let Some(s) = self.inner.loading.borrow_mut().as_mut() {
+            s.set_progress(done, total);
+        }
     }
 
     /// 読込中表示を終了する。
     pub fn clear_loading(&self) {
-        if self.inner.loading.get() {
-            self.inner.loading.set(false);
+        if self.inner.loading.borrow_mut().take().is_some() {
             let _ = self.hwnd().InvalidateRect(None, false);
         }
     }
 
     pub fn is_loading(&self) -> bool {
-        self.inner.loading.get()
+        self.inner.loading.borrow().is_some()
     }
 
-    /// 読込中なら再描画して進捗バーを最新にする（取り込みタイマから毎回呼ぶ）。
+    /// 読込中ならコマを進めて再描画する（取り込みタイマから毎回呼ぶ）。
     pub fn tick_loading(&self) {
-        if !self.inner.loading.get() {
-            return;
+        match self.inner.loading.borrow_mut().as_mut() {
+            Some(s) => s.tick(),
+            None => return,
         }
         let _ = self.hwnd().InvalidateRect(None, false);
     }
@@ -792,13 +786,11 @@ impl FileListView {
         let bg = w::HBRUSH::CreateSolidBrush(rgb(colors.background))?;
         dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &bg)?;
 
-        let done = self.inner.loading_done.get();
-        let total = self.inner.loading_total.get();
         // done/total はバックエンド毎に意味が違う（7z=件数・tar=消費バイト）が、割合は共通。
-        let text = if total > 0 {
-            format!("読込中  {}%", (done.min(total) * 100 / total))
-        } else {
-            "読込中".to_owned()
+        let percent = self.inner.loading.borrow().as_ref().and_then(|s| s.percent());
+        let text = match percent {
+            Some(p) => format!("読込中  {}%", p),
+            None => "読込中".to_owned(),
         };
 
         // バー寸法：クライアント幅の 60%（120〜600 でクランプ）×フォント1行高。中央配置。
@@ -825,9 +817,9 @@ impl FileListView {
             bottom: outer.bottom - 1,
         };
         dc.FillRect(inset, &track)?;
-        if total > 0 {
+        if let Some(p) = percent {
             let inner_w = inset.right - inset.left;
-            let filled = (inner_w as i64 * done as i64 / total as i64) as i32;
+            let filled = (inner_w as i64 * p as i64 / 100) as i32;
             if filled > 0 {
                 dc.FillRect(
                     w::RECT { left: inset.left, top: inset.top, right: inset.left + filled, bottom: inset.bottom },
@@ -852,7 +844,14 @@ impl FileListView {
     }
 
     fn paint_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
-        if self.inner.loading.get() {
+        // 閾値を過ぎた読込中なら一覧の代わりに進捗を出す（閾値前は通常の一覧を描く）。
+        let show_loading = self
+            .inner
+            .loading
+            .borrow()
+            .as_ref()
+            .is_some_and(|s| s.visible());
+        if show_loading {
             return self.paint_loading(dc, cw, ch);
         }
         let colors = self.inner.colors.get();

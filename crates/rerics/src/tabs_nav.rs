@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use winsafe::{self as w, co, gui, prelude::*};
-use rerics_core::{Location, MacroAbort, MacroCtx, expand_macros, format_size};
+use rerics_core::{Location, MacroAbort, MacroCtx, Spinner, expand_macros, format_size};
 use crate::{ActiveView, DialogMacroHost, MainWindow, TabSnapshot, dialog, join_inner_path};
 
 impl MainWindow {
@@ -411,7 +411,7 @@ impl MainWindow {
         let alive = Rc::new(Cell::new(true));
         // probe 中の行（true）。ボリューム列のスピナー表示に使う（帰ったら false）。
         let pending = Rc::new(RefCell::new(vec![false; roots.len()]));
-        let spin_frame = Rc::new(Cell::new(0usize));
+        let spinner = Rc::new(RefCell::new(Spinner::immediate()));
 
         {
             let list = list.clone();
@@ -508,11 +508,13 @@ impl MainWindow {
             // probe 中の行のボリューム列でスピナーを回す。
             let list2 = list.clone();
             let pending2 = pending.clone();
-            let frame2 = spin_frame.clone();
+            let spinner2 = spinner.clone();
             wnd.on().wm_timer(SPIN_TIMER_ID, move || {
-                let f = frame2.get();
-                frame2.set(f.wrapping_add(1));
-                let glyph = SPINNER[f % SPINNER.len()];
+                let glyph = {
+                    let mut s = spinner2.borrow_mut();
+                    s.tick();
+                    s.glyph()
+                };
                 for (i, busy) in pending2.borrow().iter().enumerate() {
                     if *busy {
                         if let Some(it) = list2.items().iter().nth(i) {
@@ -897,8 +899,6 @@ fn drive_ready(root: &str) -> bool {
     w::GetDiskFreeSpaceEx(Some(root), Some(&mut free), Some(&mut total), None).is_ok()
 }
 
-/// ドライブ probe 中にボリューム列で回すスピナーのフレーム（点字パターン）。
-const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /// ドライブ選択ダイアログのスピナー用タイマ ID（モーダル窓ローカルなので衝突しない）。
 const SPIN_TIMER_ID: usize = 0xD2;
 
