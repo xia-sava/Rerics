@@ -305,7 +305,7 @@ fn exp_like_compare(input1: &str, input2: &str) -> std::cmp::Ordering {
     }
     let c1 = input1.chars().next().unwrap_or('\0');
     let c2 = input2.chars().next().unwrap_or('\0');
-    if c1 == c2 || (c1.is_ascii_digit() && c2.is_ascii_digit()) {
+    if c1 == c2 || (digit_value(c1).is_some() && digit_value(c2).is_some()) {
         let mut m1 = ExpMatcher::new(input1);
         let mut m2 = ExpMatcher::new(input2);
         if let (Some(mut a), Some(mut b)) = (m1.next(), m2.next()) {
@@ -346,7 +346,17 @@ struct ExpMatch {
     end: usize,
 }
 
-/// `([^\d]*)(\d+)` を順次マッチするイテレータ。
+/// ASCII 数字と全角数字（U+FF10..=U+FF19）を 0..=9 の値へ。
+/// 全角数字を半角に揃えたうえで自然順比較するための変換を兼ねる。
+fn digit_value(c: char) -> Option<u32> {
+    match c {
+        '0'..='9' => Some(c as u32 - '0' as u32),
+        '０'..='９' => Some(c as u32 - '０' as u32),
+        _ => None,
+    }
+}
+
+/// `([^\d]*)(\d+)` を順次マッチするイテレータ。数字列は半角化して保持する。
 struct ExpMatcher<'a> {
     s: &'a str,
     pos: usize,
@@ -358,26 +368,31 @@ impl<'a> ExpMatcher<'a> {
     }
 
     fn next(&mut self) -> Option<ExpMatch> {
-        let bytes = self.s.as_bytes();
-        let n = bytes.len();
-        let mut i = self.pos;
         // 非数字プレフィクス。
-        let prefix_start = i;
-        while i < n && !bytes[i].is_ascii_digit() {
-            i += 1;
-        }
-        if i >= n {
+        let prefix_start = self.pos;
+        let Some((doff, _)) = self.s[self.pos..]
+            .char_indices()
+            .find(|(_, c)| digit_value(*c).is_some())
+        else {
+            self.pos = self.s.len();
             return None;
+        };
+        let digit_start = self.pos + doff;
+        let prefix = self.s[prefix_start..digit_start].to_owned();
+        // 数字列（1文字以上・全角は半角化して格納）。
+        let mut digits = String::new();
+        let mut end = digit_start;
+        for (off, c) in self.s[digit_start..].char_indices() {
+            match digit_value(c) {
+                Some(v) => {
+                    digits.push((b'0' + v as u8) as char);
+                    end = digit_start + off + c.len_utf8();
+                }
+                None => break,
+            }
         }
-        let prefix = self.s[prefix_start..i].to_owned();
-        // 数字列（1文字以上）。
-        let digit_start = i;
-        while i < n && bytes[i].is_ascii_digit() {
-            i += 1;
-        }
-        let digits = self.s[digit_start..i].to_owned();
-        self.pos = i;
-        Some(ExpMatch { prefix, digits, end: i })
+        self.pos = end;
+        Some(ExpMatch { prefix, digits, end })
     }
 }
 
@@ -1448,12 +1463,32 @@ mod tests {
     }
 
     #[test]
+    fn explike_fullwidth_digits() {
+        // 全角数字は半角化して数値比較する（原作 StrConv.Narrow 相当）。
+        assert_eq!(exp_like_compare("ファイル２", "ファイル１０"), Ordering::Less);
+        assert_eq!(exp_like_compare("ファイル１０", "ファイル２"), Ordering::Greater);
+        // 先頭が全角数字でも数字列として扱う。
+        assert_eq!(exp_like_compare("２", "10"), Ordering::Less);
+        // 半角と全角の混在も同値（半角化後に一致）。
+        assert_eq!(exp_like_compare("A１", "A1"), Ordering::Equal);
+    }
+
+    #[test]
     fn explike_sort_in_state() {
         let mut s = FileListState::new();
         s.items = vec![file("file10"), file("file2"), file("file1")];
         s.sort(SortType::FileNameExpLike, false);
         let names: Vec<&str> = s.items.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, vec!["file1", "file2", "file10"]);
+    }
+
+    #[test]
+    fn explike_sort_fullwidth_in_state() {
+        let mut s = FileListState::new();
+        s.items = vec![file("画像１０"), file("画像２"), file("画像１")];
+        s.sort(SortType::FileNameExpLike, false);
+        let names: Vec<&str> = s.items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["画像１", "画像２", "画像１０"]);
     }
 
     #[test]
