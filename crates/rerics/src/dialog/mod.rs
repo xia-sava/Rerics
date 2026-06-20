@@ -139,11 +139,24 @@ pub mod keyhook {
 
 /// 標準モーダル窓を作る（タイトル＋クライアント幅高）。原作 `PluginForm` 相当の佇まい
 /// （× 無し・最大化/最小化無し・親中央・`IsDialogMessage` 処理あり）を一元化する。
+///
+/// アプリのモーダルは生の `WindowModal::new` を各所で書かず、必ずこの関数（または
+/// [`modal_window_sysmenu`]）を通す。配線（登録・フォーカス）は [`arm_modal`] を併用する。
 pub fn modal_window(title: &str, w: i32, h: i32) -> gui::WindowModal {
+    modal_window_styled(title, w, h, co::WS::default())
+}
+
+/// [`modal_window`] にタイトルバーの × （システムメニュー）を足したもの。設定のように
+/// 大きく、× で閉じられると自然なモーダルで使う。
+pub fn modal_window_sysmenu(title: &str, w: i32, h: i32) -> gui::WindowModal {
+    modal_window_styled(title, w, h, co::WS::SYSMENU)
+}
+
+fn modal_window_styled(title: &str, w: i32, h: i32, extra: co::WS) -> gui::WindowModal {
     gui::WindowModal::new(gui::WindowModalOpts {
         title,
         size: gui::dpi(w, h),
-        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
+        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE | extra,
         process_dlg_msgs: true,
         ..Default::default()
     })

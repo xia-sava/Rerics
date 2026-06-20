@@ -1379,13 +1379,7 @@ impl KeysPane {
 /// 設定ダイアログを表示する。`OK`／`適用` で確定した [`Config`] を `on_apply` へ渡す
 /// （`適用` は閉じずに継続、`OK` は閉じる。`キャンセル` は破棄して閉じる）。
 pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config) + 'static) {
-    let wnd = gui::WindowModal::new(gui::WindowModalOpts {
-        title: "設定",
-        size: gui::dpi(960, 620),
-        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE | co::WS::SYSMENU,
-        process_dlg_msgs: true,
-        ..Default::default()
-    });
+    let wnd = crate::dialog::modal_window_sysmenu("設定", 960, 620);
 
     let shared = Rc::new(Shared {
         cfg: RefCell::new(current.clone()),

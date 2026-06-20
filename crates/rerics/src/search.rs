@@ -64,13 +64,7 @@ impl MainWindow {
     pub(crate) fn incremental_search(&self, is_left: bool) -> w::AnyResult<()> {
         let origin = self.view(is_left).state().borrow().cursor;
 
-        let wnd = gui::WindowModal::new(gui::WindowModalOpts {
-            title: "インクリメンタルサーチ",
-            size: gui::dpi(320, 96),
-            style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
-            process_dlg_msgs: true,
-            ..Default::default()
-        });
+        let wnd = crate::dialog::modal_window("インクリメンタルサーチ", 320, 96);
 
         let _label = gui::Label::new(
             &wnd,

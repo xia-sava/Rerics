@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use winsafe::{co, gui, prelude::*};
+use winsafe::{gui, prelude::*};
 
 use crate::task::TaskEntry;
 
@@ -15,13 +15,7 @@ type Registry = Rc<RefCell<Vec<TaskEntry>>>;
 
 /// タスクマネージャを表示する。タスクは別スレッドで動き続けるため、閉じても処理は継続する。
 pub fn show(parent: &impl GuiParent, tasks: &Registry) {
-    let wnd = gui::WindowModal::new(gui::WindowModalOpts {
-        title: "タスクマネージャ",
-        size: gui::dpi(588, 360),
-        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
-        process_dlg_msgs: true,
-        ..Default::default()
-    });
+    let wnd = crate::dialog::modal_window("タスクマネージャ", 588, 360);
 
     let list = gui::ListView::<u64>::new(
         &wnd,

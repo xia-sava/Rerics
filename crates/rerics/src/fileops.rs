@@ -809,13 +809,7 @@ impl MainWindow {
             "<F:r>_<No:0000><F:e>",
         ];
 
-        let wnd = gui::WindowModal::new(gui::WindowModalOpts {
-            title: "連番リネーム",
-            size: gui::dpi(444, 268),
-            style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
-            process_dlg_msgs: true,
-            ..Default::default()
-        });
+        let wnd = crate::dialog::modal_window("連番リネーム", 444, 268);
         let _lf = gui::Label::new(&wnd, gui::LabelOpts {
             text: "命名規則(&F):",
             position: gui::dpi(12, 15),

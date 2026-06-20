@@ -11,13 +11,7 @@ pub fn list_box(
     items: &[String],
     initial: usize,
 ) -> Option<usize> {
-    let wnd = gui::WindowModal::new(gui::WindowModalOpts {
-        title,
-        size: gui::dpi(420, 320),
-        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
-        process_dlg_msgs: true,
-        ..Default::default()
-    });
+    let wnd = super::modal_window(title, 420, 320);
 
     let list = gui::ListBox::new(
         &wnd,

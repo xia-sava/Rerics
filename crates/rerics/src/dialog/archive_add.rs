@@ -6,13 +6,7 @@ use super::*;
 /// 書庫への追加先に同名エントリがあるとき、追加方式を尋ねる。OK で選択を、
 /// 中止/Esc で `None` を返す。`summary` は衝突件数などの説明文。
 pub fn archive_add_box(parent: &impl GuiParent, summary: &str) -> Option<ArchiveAddMode> {
-    let wnd = gui::WindowModal::new(gui::WindowModalOpts {
-        title: "書庫への追加",
-        size: gui::dpi(400, 180),
-        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
-        process_dlg_msgs: true,
-        ..Default::default()
-    });
+    let wnd = modal_window("書庫への追加", 400, 180);
 
     let _label = gui::Label::new(
         &wnd,

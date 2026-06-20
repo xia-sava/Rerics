@@ -367,13 +367,7 @@ impl MainWindow {
             .position(|r| Some(r.to_uppercase()) == cur)
             .unwrap_or(0);
 
-        let wnd = gui::WindowModal::new(gui::WindowModalOpts {
-            title: "ドライブの選択",
-            size: gui::dpi(472, 320),
-            style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
-            process_dlg_msgs: true,
-            ..Default::default()
-        });
+        let wnd = crate::dialog::modal_window("ドライブの選択", 472, 320);
         let list = gui::ListView::<()>::new(
             &wnd,
             gui::ListViewOpts {
@@ -620,13 +614,7 @@ impl MainWindow {
             return Ok(());
         }
 
-        let wnd = gui::WindowModal::new(gui::WindowModalOpts {
-            title: "登録ディレクトリ",
-            size: gui::dpi(600, 360),
-            style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
-            process_dlg_msgs: true,
-            ..Default::default()
-        });
+        let wnd = crate::dialog::modal_window("登録ディレクトリ", 600, 360);
         let list = gui::ListView::<()>::new(
             &wnd,
             gui::ListViewOpts {

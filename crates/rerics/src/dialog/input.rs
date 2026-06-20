@@ -41,13 +41,7 @@ pub fn input_box_full(
     select: InputSelect,
     history: Option<&[&str]>,
 ) -> Option<String> {
-    let wnd = gui::WindowModal::new(gui::WindowModalOpts {
-        title,
-        size: gui::dpi(360, 150),
-        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
-        process_dlg_msgs: true,
-        ..Default::default()
-    });
+    let wnd = modal_window(title, 360, 150);
 
     let _label = gui::Label::new(
         &wnd,

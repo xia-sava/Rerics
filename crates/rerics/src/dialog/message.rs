@@ -38,13 +38,7 @@ pub fn message_box(
     // 窓幅はラベルが収まりつつボタン行も収まる幅に。
     let win_w = (label_x + label_w + 16).max(total + 32);
 
-    let wnd = gui::WindowModal::new(gui::WindowModalOpts {
-        title,
-        size: gui::dpi(win_w, win_h),
-        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE,
-        process_dlg_msgs: true,
-        ..Default::default()
-    });
+    let wnd = modal_window(title, win_w, win_h);
 
     let _label = gui::Label::new(
         &wnd,
