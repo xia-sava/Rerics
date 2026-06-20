@@ -248,6 +248,8 @@ fn draw_pane(
     status_h: i32,
     sb_w: i32,
     fh: i32,
+    icons_show: bool,
+    icon_px: i32,
     c: &Colors,
 ) -> w::AnyResult<()> {
     if w <= 0 || h <= 0 {
@@ -282,8 +284,9 @@ fn draw_pane(
         x + w
     };
 
-    // 行（色割り当てとカーソル／選択の見え方を一通り示す）。
-    let row_h = fh + pad * 2;
+    // 行（色割り当てとカーソル／選択の見え方を一通り示す）。アイコン表示時は左に代用の
+    // 四角を置き、その分だけ行高も伸ばして（中・大で行が高くなる挙動を反映）名前を右へ寄せる。
+    let row_h = if icons_show { (fh + pad * 2).max(icon_px) } else { fh + pad * 2 };
     let rows: [(&str, Rgb, Deco); 6] = [
         ("src", c.directory, Deco::Plain),
         ("readme.md", c.file_normal, Deco::Cursor),
@@ -306,7 +309,13 @@ fn draw_pane(
                 dc.SetTextColor(to_colorref(color))?;
             }
         }
-        dc.TextOut(left, ry + pad, name)?;
+        let mut text_left = left;
+        if icons_show {
+            let iy = ry + (row_h - icon_px) / 2;
+            fill(dc, left, iy, left + icon_px, iy + icon_px, color)?;
+            text_left = left + icon_px + gui::dpi_x(2);
+        }
+        dc.TextOut(text_left, ry + (row_h - fh) / 2, name)?;
         if matches!(deco, Deco::Cursor) {
             frame(dc, x, ry, list_r, ry + row_h, c.cursor)?;
         }
@@ -423,15 +432,20 @@ impl Preview {
         if cw <= 0 || ch <= 0 {
             return Ok(());
         }
-        let (family, fsize, lay) = {
+        let (family, fsize, lay, icons) = {
             let cfg = self.shared.cfg.borrow();
-            (cfg.font.family.clone(), cfg.font.size, cfg.layout.clone())
+            (cfg.font.family.clone(), cfg.font.size, cfg.layout.clone(), cfg.icons.clone())
         };
         let colors = self.shared.target_colors();
 
         let font = list_font(&family, fsize)?;
         let _fsel = dc.SelectObject(&*font)?;
         let fh = dc.GetTextMetrics().map(|tm| tm.tmHeight).unwrap_or(16);
+        // アイコンの代用枠サイズ（file_list と同じ式：自動は行=フォント高に収める）。
+        let icon_px = match icons.size.logical_px() {
+            0 => gui::dpi_x(16).min(fh),
+            logical => gui::dpi_x(logical),
+        };
         dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
 
         let m = gui::dpi_x(lay.margin);
@@ -460,8 +474,8 @@ impl Preview {
         // 余白・溝・スプリッタの地色。残りの矩形を上から punch していく。
         fill(dc, 0, 0, cw, ch, colors.background2)?;
         draw_tabs(dc, 0, 0, cw, tab_h, fh, &colors)?;
-        draw_pane(dc, left_x, pane_top, left_w, pane_h, bar_h, bar_gap, status_h, sb_w, fh, &colors)?;
-        draw_pane(dc, right_x, pane_top, right_w, pane_h, bar_h, bar_gap, status_h, sb_w, fh, &colors)?;
+        draw_pane(dc, left_x, pane_top, left_w, pane_h, bar_h, bar_gap, status_h, sb_w, fh, icons.show, icon_px, &colors)?;
+        draw_pane(dc, right_x, pane_top, right_w, pane_h, bar_h, bar_gap, status_h, sb_w, fh, icons.show, icon_px, &colors)?;
         draw_log(dc, left_x, log_y, log_w, log_h, fh, &colors)?;
         Ok(())
     }
@@ -872,18 +886,21 @@ fn build_appearance(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &
         });
     }
 
-    // アイコン表示の有無・サイズを cfg へ反映する（プレビューは模式図なので未反映）。
+    // アイコン表示の有無・サイズを cfg へ反映し、プレビューへも反映する。
     {
         let shared = shared.clone();
         let check = icon_show.clone();
+        let preview = preview.clone();
         icon_show.on().bn_clicked(move || {
             shared.cfg.borrow_mut().icons.show = check.is_checked();
+            preview.refresh();
             Ok(())
         });
     }
     {
         let shared = shared.clone();
         let group = icon_size.clone();
+        let preview = preview.clone();
         icon_size.on().bn_clicked(move || {
             shared.cfg.borrow_mut().icons.size = match group.selected_index() {
                 Some(1) => IconSize::Small,
@@ -891,6 +908,7 @@ fn build_appearance(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &
                 Some(3) => IconSize::Large,
                 _ => IconSize::Auto,
             };
+            preview.refresh();
             Ok(())
         });
     }
@@ -1343,6 +1361,7 @@ impl ColumnsEditor {
             let we = width_edit.clone();
             shown.on().nm_dbl_clk(move |_| {
                 let _ = we.hwnd().SetFocus();
+                we.set_selection(0, -1); // すぐ上書きできるよう全選択。
                 Ok(())
             });
         }
