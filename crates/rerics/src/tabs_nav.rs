@@ -312,10 +312,10 @@ impl MainWindow {
             .path()
             .ancestors()
             .last()
-            .map(|p| p.to_string_lossy().to_uppercase());
+            .map(|p| p.to_string_lossy().to_ascii_uppercase());
         let idx = roots
             .iter()
-            .position(|r| Some(r.to_uppercase()) == cur)
+            .position(|r| Some(r.to_ascii_uppercase()) == cur)
             .unwrap_or(0);
         // 準備未了（空の光学/リムーバブル・切断ネットワーク等）は巡回対象から外す。
         let Some(next) = next_ready_index(roots.len(), idx, delta, |i| drive_ready(&roots[i]))
@@ -353,10 +353,10 @@ impl MainWindow {
             .path()
             .ancestors()
             .last()
-            .map(|p| p.to_string_lossy().to_uppercase());
+            .map(|p| p.to_string_lossy().to_ascii_uppercase());
         let initial = roots
             .iter()
-            .position(|r| Some(r.to_uppercase()) == cur)
+            .position(|r| Some(r.to_ascii_uppercase()) == cur)
             .unwrap_or(0);
 
         let wnd = crate::dialog::modal_window("ドライブの選択", 472, 320);
@@ -529,7 +529,7 @@ impl MainWindow {
                     let mut hit = None;
                     let mut multi = false;
                     for (i, it) in list2.items().iter().enumerate() {
-                        if it.text(0).to_uppercase().starts_with(ch) {
+                        if it.text(0).to_ascii_uppercase().starts_with(ch) {
                             if hit.is_some() {
                                 multi = true;
                                 break;
