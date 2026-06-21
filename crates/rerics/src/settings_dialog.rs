@@ -1459,6 +1459,55 @@ fn build_behavior(parent: &gui::WindowControl, shared: &Rc<Shared>) {
             Ok(())
         });
     }
+
+    label(parent, "既定エディタ", 16, 86, 110);
+    let editor_init = shared.cfg.borrow().editor.clone();
+    let editor_edit = gui::Edit::new(
+        parent,
+        gui::EditOpts {
+            text: &editor_init,
+            control_style: co::ES::AUTOHSCROLL,
+            position: gui::dpi(130, 84),
+            width: gui::dpi_x(360),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+    let editor_browse = gui::Button::new(
+        parent,
+        gui::ButtonOpts {
+            text: "参照...",
+            position: gui::dpi(498, 83),
+            width: gui::dpi_x(64),
+            height: gui::dpi_y(24),
+            ..Default::default()
+        },
+    );
+    label(
+        parent,
+        "（ファイルを外部エディタで開く操作で使うプログラム。空にすると無効）",
+        16,
+        114,
+        560,
+    );
+    {
+        let shared = shared.clone();
+        let editor_edit2 = editor_edit.clone();
+        editor_edit.on().en_change(move || {
+            shared.cfg.borrow_mut().editor = editor_edit2.text().unwrap_or_default();
+            Ok(())
+        });
+    }
+    {
+        let parent_hwnd = parent.hwnd().ptr();
+        let ee = editor_edit.clone();
+        editor_browse.on().bn_clicked(move || {
+            if let Some(p) = crate::shell::choose_file(parent_hwnd, "既定エディタの選択", false) {
+                let _ = ee.set_text(&p.to_string_lossy());
+            }
+            Ok(())
+        });
+    }
 }
 
 /// 「カーソル」ページ（位置記憶のオン/オフと履歴件数の上限）を構築する。各操作を即 `Shared` へ反映する。
