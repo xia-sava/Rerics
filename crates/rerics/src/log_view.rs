@@ -156,6 +156,28 @@ impl LogView {
         let _ = self.refresh();
     }
 
+    /// 指定行数を表示するのに必要なログ窓の高さ（物理 px）。フォントの実測行高 × 行数。
+    /// レイアウト側がこれを使って窓高を決めるので、フォントサイズに比例して高さが変わる。
+    pub fn height_for_rows(&self, rows: i32) -> i32 {
+        rows.max(1) * self.measure_line_height().max(1)
+    }
+
+    /// 現在のフォントの行高（物理 px）を実測してキャッシュへ反映し、返す。実測できなければ
+    /// 直近のキャッシュ値を返す。
+    fn measure_line_height(&self) -> i32 {
+        if let Ok(dc) = self.hwnd().GetDC() {
+            if let Ok(font) = self.create_font(false) {
+                let _sel = dc.SelectObject(&*font);
+                if let Ok(tm) = dc.GetTextMetrics() {
+                    let lh = tm.tmHeight + tm.tmExternalLeading;
+                    self.inner.line_height.set(lh);
+                    return lh;
+                }
+            }
+        }
+        self.inner.line_height.get()
+    }
+
     /// 1画面に収まる行数。
     fn page_rows(&self) -> usize {
         let lh = self.inner.line_height.get().max(1);
@@ -351,7 +373,7 @@ impl LogView {
         let font_bold = self.create_font(true)?;
         let _font_sel = dc.SelectObject(&*font)?;
         if let Ok(tm) = dc.GetTextMetrics() {
-            self.inner.line_height.set(tm.tmHeight + gui::dpi_y(1));
+            self.inner.line_height.set(tm.tmHeight + tm.tmExternalLeading);
         }
         dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
         self.paint_to(dc, cw, ch, &font, &font_bold)

@@ -368,7 +368,9 @@ impl MainWindow {
         );
 
         let tab_bar = TabBar::new(&wnd, gui::dpi(0, 0), gui::dpi(800, config.layout.tab_height), &config);
-        let log = LogView::new(&wnd, gui::dpi(m, m), gui::dpi(800, config.layout.log_height), &config);
+        // 高さは初回 layout() でフォント実測の行高×行数に置き換わる。生成時は概算 px。
+        let log_h0 = config.layout.log_height * (config.font.size + 4);
+        let log = LogView::new(&wnd, gui::dpi(m, m), gui::dpi(800, log_h0), &config);
         // メイン領域に重ねるビューア（初期は非表示。layout で位置決め）。
         let viewer = ViewerView::new(&wnd, gui::dpi(0, 0), gui::dpi(400, 400), &config);
         let media = MediaView::new(&wnd, gui::dpi(0, 0), gui::dpi(400, 400), &config);

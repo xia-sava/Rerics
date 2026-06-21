@@ -14,7 +14,7 @@ impl MainWindow {
         let splitter_w = gui::dpi_x(lay.splitter_width);
 
         let tab_h = gui::dpi_y(lay.tab_height);
-        let log_h = gui::dpi_y(lay.log_height);
+        let log_h = self.log.height_for_rows(lay.log_height);
         let log_gap = gui::dpi_y(lay.log_gap);
         let bars_y = tab_h;
         let log_y = total_h - my - log_h;

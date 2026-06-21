@@ -63,7 +63,7 @@ const LAYOUT_FIELDS: &[(&str, fn(&Layout) -> i32, fn(&mut Layout, i32))] = &[
     ("パスバー間隔", |l| l.bar_gap, |l, v| l.bar_gap = v),
     ("ステータス高", |l| l.status_bar_height, |l, v| l.status_bar_height = v),
     ("タブ高", |l| l.tab_height, |l, v| l.tab_height = v),
-    ("ログ高", |l| l.log_height, |l, v| l.log_height = v),
+    ("ログ行数", |l| l.log_height, |l, v| l.log_height = v),
     ("ログ間隔", |l| l.log_gap, |l, v| l.log_gap = v),
     ("スクロールバー幅", |l| l.scrollbar_width, |l, v| l.scrollbar_width = v),
     ("スプリッタ幅", |l| l.splitter_width, |l, v| l.splitter_width = v),
@@ -455,7 +455,10 @@ impl Preview {
 
         let font = list_font(&family, fsize)?;
         let _fsel = dc.SelectObject(&*font)?;
-        let fh = dc.GetTextMetrics().map(|tm| tm.tmHeight).unwrap_or(16);
+        let tm = dc.GetTextMetrics().ok();
+        let fh = tm.as_ref().map(|t| t.tmHeight).unwrap_or(16);
+        // ログ窓はフォントの行高（tmHeight + 外部レディング）× 行数で高さを決める。
+        let log_line_h = tm.as_ref().map(|t| t.tmHeight + t.tmExternalLeading).unwrap_or(17);
         // アイコンの代用枠サイズ（file_list と同じ式：自動は行=フォント高に収める）。
         let icon_px = match icons.size.logical_px() {
             0 => gui::dpi_x(16).min(fh),
@@ -467,7 +470,7 @@ impl Preview {
         let my = gui::dpi_y(lay.margin);
         let splitter_w = gui::dpi_x(lay.splitter_width);
         let tab_h = gui::dpi_y(lay.tab_height);
-        let log_h = gui::dpi_y(lay.log_height);
+        let log_h = lay.log_height.max(1) * log_line_h;
         let log_gap = gui::dpi_y(lay.log_gap);
         let bar_h = gui::dpi_y(lay.bar_height);
         let bar_gap = gui::dpi_y(lay.bar_gap);

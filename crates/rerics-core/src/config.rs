@@ -86,7 +86,8 @@ impl Default for FontSpec {
     }
 }
 
-/// レイアウトの寸法（余白・各部の高さ・スクロールバー幅。すべて論理 px）。
+/// レイアウトの寸法（余白・各部の高さ・スクロールバー幅）。`log_height` のみ行数で、
+/// それ以外はすべて論理 px。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Layout {
     pub margin: i32,
@@ -95,6 +96,8 @@ pub struct Layout {
     pub bar_gap: i32,
     pub status_bar_height: i32,
     pub tab_height: i32,
+    /// ログ窓の高さ（行数）。フォントの行高 × この行数でピクセル高を決めるので、
+    /// フォントサイズを変えると窓高も追従する。最小 1 行。
     pub log_height: i32,
     pub log_gap: i32,
     pub scrollbar_width: i32,
@@ -115,7 +118,7 @@ impl Default for Layout {
             bar_gap: 2,
             status_bar_height: 20,
             tab_height: 24,
-            log_height: 96,
+            log_height: 6,
             log_gap: 2,
             scrollbar_width: 7,
             splitter_width: 4,
