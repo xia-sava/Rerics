@@ -235,3 +235,4 @@ size = "auto"
 ask_before_copy = false
 ask_before_move = false
 ask_before_delete = true
+extract_create_directory = false

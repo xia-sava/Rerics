@@ -67,6 +67,15 @@ impl Server {
     /// 書込み許可つき（`--debug-allow-write`）＝書庫への追加/移動/mkdir を駆動できる。
     /// 右ペインは zip の中へ入った状態で始まる。
     fn start_archive(real_files: &[(&str, &[u8])], zip_entries: &[(&str, &[u8])]) -> Server {
+        Self::start_archive_cfg(real_files, zip_entries, "")
+    }
+
+    /// [`start_archive`] に差分 config.toml を併せて書く版（config 駆動の書庫挙動の検証用）。
+    fn start_archive_cfg(
+        real_files: &[(&str, &[u8])],
+        zip_entries: &[(&str, &[u8])],
+        config_toml: &str,
+    ) -> Server {
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
         let base = std::env::temp_dir().join(format!("rerics_it_{}_{}", std::process::id(), n));
         let data = base.join("data");
@@ -87,6 +96,9 @@ impl Server {
             ),
         )
         .unwrap();
+        if !config_toml.is_empty() {
+            std::fs::write(data.join("config.toml"), config_toml).unwrap();
+        }
         let (child, port) = spawn_and_wait(&data, true);
         Server { child, port, base }
     }
@@ -668,6 +680,29 @@ fn compress_one_by_one_makes_per_item_zips() {
     assert!(
         items.contains("\"name\":\"a.txt.zip\"") && items.contains("\"name\":\"b.txt.zip\""),
         "each item should become its own zip: {items}"
+    );
+}
+
+/// extract_create_directory=true のとき、書庫の展開先に書庫名のフォルダ（arc）が作られる。
+#[test]
+fn extract_create_directory_wraps_in_archive_named_dir() {
+    let server = Server::start_archive_cfg(
+        &[],
+        &[("a.txt", b"AAA"), ("b.txt", b"BBB")],
+        "[file_ops]\nextract_create_directory = true\n",
+    );
+    server.req("POST", "/command/FocusRight", "").unwrap(); // 書庫ペインをアクティブに
+    // 右 items は [.., a.txt, b.txt]。両方マークして展開。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/MarkToggle", "").unwrap();
+    server.req("POST", "/command/MarkToggle", "").unwrap();
+    server.req("POST", "/command/Extract", "").unwrap();
+    // 左（実）ペインに書庫名の arc フォルダができ、その中へ取り出される。
+    let left = poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"arc\""));
+    assert!(left.contains("\"name\":\"arc\""), "extract should create an 'arc' directory: {left}");
+    assert!(
+        !left.contains("\"name\":\"a.txt\""),
+        "entries go inside arc/, not the top level: {left}"
     );
 }
 

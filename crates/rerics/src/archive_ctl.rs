@@ -537,14 +537,29 @@ impl MainWindow {
                 _ => return Ok(()),
             }
         };
-        let dst_dir = match self.pane(!is_left).borrow().as_real_path() {
+        let reload_dir = match self.pane(!is_left).borrow().as_real_path() {
             Some(p) => p.to_path_buf(),
             None => {
                 self.log.warn("取り出し先が実フォルダではありません");
                 return Ok(());
             }
         };
-        self.start_extract(archive, inner, names, dst_dir)
+        // 設定が有効なら、書庫名のディレクトリを作ってその中へ取り出す。再読込は表示中の
+        // ペイン（reload_dir）に対して行う。
+        let mut dst_dir = reload_dir.clone();
+        if self.config.borrow().file_ops.extract_create_directory {
+            let stem = archive
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "archive".to_owned());
+            let sub = reload_dir.join(&stem);
+            if let Err(e) = std::fs::create_dir_all(&sub) {
+                self.log.error(&format!("取り出し先ディレクトリの作成に失敗しました（{stem}）：{e}"));
+                return Ok(());
+            }
+            dst_dir = sub;
+        }
+        self.start_extract(archive, inner, names, dst_dir, reload_dir)
     }
 
     /// 実FS の選択項目を反対側ペイン（書庫）へ追加する。move なら追加成功後に実FS の元を消す。

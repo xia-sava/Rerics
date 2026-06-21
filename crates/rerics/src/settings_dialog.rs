@@ -1564,10 +1564,11 @@ fn build_cursor(parent: &gui::WindowControl, shared: &Rc<Shared>) {
 /// 「ファイル操作」ページ（コピー/移動/削除前の確認ダイアログ）。各操作を即 `Shared` へ反映する。
 fn build_fileops(parent: &gui::WindowControl, shared: &Rc<Shared>) {
     let f = shared.cfg.borrow().file_ops;
-    let rows: [(&str, i32, bool, fn(&mut FileOpSettings, bool)); 3] = [
+    let rows: [(&str, i32, bool, fn(&mut FileOpSettings, bool)); 4] = [
         ("コピーの前に確認する(&C)", 16, f.ask_before_copy, |s, v| s.ask_before_copy = v),
         ("移動の前に確認する(&M)", 50, f.ask_before_move, |s, v| s.ask_before_move = v),
         ("削除・ゴミ箱送りの前に確認する(&D)", 84, f.ask_before_delete, |s, v| s.ask_before_delete = v),
+        ("書庫の展開時に書庫名のフォルダを作る(&E)", 118, f.extract_create_directory, |s, v| s.extract_create_directory = v),
     ];
     for (text, y, init, set) in rows {
         let check = gui::CheckBox::new(
@@ -1587,7 +1588,7 @@ fn build_fileops(parent: &gui::WindowControl, shared: &Rc<Shared>) {
             Ok(())
         });
     }
-    label(parent, "（オフにした操作は確認なしで即実行します）", 16, 128, 360);
+    label(parent, "（オフにした操作は確認なしで即実行します）", 16, 158, 380);
 }
 
 /// ラベル付きのグループ枠を置く（Win32 の BS_GROUPBOX ボタン）。

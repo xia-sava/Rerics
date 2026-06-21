@@ -282,11 +282,18 @@ pub struct FileOpSettings {
     pub ask_before_move: bool,
     /// 削除・ゴミ箱送りの前に確認する（既定オン）。
     pub ask_before_delete: bool,
+    /// 書庫の展開時、書庫名のディレクトリを作ってその中へ取り出す（既定オフ）。
+    pub extract_create_directory: bool,
 }
 
 impl Default for FileOpSettings {
     fn default() -> Self {
-        Self { ask_before_copy: false, ask_before_move: false, ask_before_delete: true }
+        Self {
+            ask_before_copy: false,
+            ask_before_move: false,
+            ask_before_delete: true,
+            extract_create_directory: false,
+        }
     }
 }
 

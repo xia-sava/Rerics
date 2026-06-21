@@ -295,6 +295,7 @@ impl MainWindow {
         inner: String,
         names: Vec<String>,
         dst_dir: PathBuf,
+        reload_dir: PathBuf,
     ) -> w::AnyResult<()> {
         let control = Arc::new(TaskControl::new());
         let host = ChannelHost::new(
@@ -306,7 +307,9 @@ impl MainWindow {
         let id = self.next_id();
         let desc = format!("{} -> {}", short_desc(&names), dst_dir.display());
         self.register_task(id, "取り出し", desc, control)?;
-        let dst_done = dst_dir.clone();
+        // 取り出しは dst_dir で行い、完了後は表示中のペイン（reload_dir）を再読込する
+        // （書庫名フォルダを作る設定では dst_dir はその下層になり表示ペインと一致しないため）。
+        let dst_done = reload_dir;
         std::thread::spawn(move || {
             match rerics_core::open_archive(&archive) {
                 Ok(backend) => match backend.list() {
