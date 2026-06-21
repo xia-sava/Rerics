@@ -217,15 +217,15 @@ fn apply_dir_metadata(src: &Path, dst: &Path, opts: CopyOptions) {
             sec: *mut core::ffi::c_void,
             disposition: u32,
             flags: u32,
-            template: *mut core::ffi::c_void,
-        ) -> *mut core::ffi::c_void;
+            template: isize,
+        ) -> isize;
         fn SetFileTime(
-            handle: *mut core::ffi::c_void,
+            handle: isize,
             creation: *const Filetime,
             access: *const Filetime,
             write: *const Filetime,
         ) -> i32;
-        fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
+        fn CloseHandle(handle: isize) -> i32;
     }
 
     if opts.copy_attribute {
@@ -253,11 +253,11 @@ fn apply_dir_metadata(src: &Path, dst: &Path, opts: CopyOptions) {
                 core::ptr::null_mut(),
                 OPEN_EXISTING,
                 FILE_FLAG_BACKUP_SEMANTICS,
-                core::ptr::null_mut(),
+                0,
             )
         };
         // INVALID_HANDLE_VALUE == -1。
-        if handle as isize != -1 {
+        if handle != -1 {
             let to_ft = |t: Result<SystemTime, _>| -> Option<Filetime> {
                 let dur = t.ok()?.duration_since(SystemTime::UNIX_EPOCH).ok()?;
                 let ticks = dur.as_secs() * 10_000_000
