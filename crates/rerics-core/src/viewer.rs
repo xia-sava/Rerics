@@ -69,6 +69,29 @@ impl Encoding {
     }
 }
 
+/// BOM 無しテキストの文字コードを推定する。候補（UTF-8/Shift_JIS/EUC-JP/ISO-2022-JP）で
+/// デコードして「表示不可文字」が最も少ないものを選ぶ軽量判定。同率なら先頭（UTF-8）優先。
+fn detect_encoding(bytes: &[u8]) -> Encoding {
+    const SNIFF: usize = 64 * 1024;
+    let chunk = &bytes[..bytes.len().min(SNIFF)];
+    const CANDIDATES: [Encoding; 4] = [
+        Encoding::Utf8,
+        Encoding::ShiftJis,
+        Encoding::EucJp,
+        Encoding::Iso2022Jp,
+    ];
+    let mut best = Encoding::Utf8;
+    let mut best_ratio = f32::INFINITY;
+    for enc in CANDIDATES {
+        let ratio = undisplayable_ratio(&enc.decode(chunk));
+        if ratio < best_ratio {
+            best_ratio = ratio;
+            best = enc;
+        }
+    }
+    best
+}
+
 /// 先頭の BOM からエンコーディングを判定する（無ければ `None`）。BOM 付きは確実にテキスト。
 fn detect_bom(bytes: &[u8]) -> Option<Encoding> {
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
@@ -175,10 +198,9 @@ impl ViewerModel {
         // BOM があれば確実にテキスト（UTF-16 は NUL を含むのでバイナリ判定に頼れない）。
         let (mode, encoding) = match detect_bom(&bytes) {
             Some(enc) => (ViewMode::Text, enc),
-            None => {
-                let mode = if looks_binary(&bytes) { ViewMode::Binary } else { ViewMode::Text };
-                (mode, Encoding::Utf8)
-            }
+            None if looks_binary(&bytes) => (ViewMode::Binary, Encoding::Utf8),
+            // BOM 無しテキストは文字コードを推定して開く（SJIS 等が化けないように）。
+            None => (ViewMode::Text, detect_encoding(&bytes)),
         };
         Self { bytes, encoding, mode, ext: None, dark: false }
     }
@@ -554,6 +576,20 @@ mod tests {
         let m = ViewerModel::open(utf8bom);
         assert_eq!(m.mode, ViewMode::Text);
         assert_eq!(m.lines(80, 4)[0].body, "Ok");
+    }
+
+    #[test]
+    fn open_detects_shiftjis_encoding() {
+        // ASCII ＋ Shift_JIS「あ」(0x82 0xA0)。UTF-8 では化けるので Shift_JIS が選ばれる。
+        let mut sjis = b"menu ".to_vec();
+        sjis.extend_from_slice(&[0x82, 0xA0]);
+        let m = ViewerModel::open(sjis);
+        assert_eq!(m.mode, ViewMode::Text);
+        assert_eq!(m.encoding, Encoding::ShiftJis);
+        assert!(m.lines(80, 4)[0].body.contains('あ'));
+        // 純 ASCII・正当な UTF-8 は UTF-8 のまま（同率は UTF-8 優先）。
+        assert_eq!(ViewerModel::open(b"hello world".to_vec()).encoding, Encoding::Utf8);
+        assert_eq!(ViewerModel::open("日本語テキスト".as_bytes().to_vec()).encoding, Encoding::Utf8);
     }
 
     #[test]
