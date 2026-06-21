@@ -48,6 +48,8 @@ impl MainWindow {
         *self.keymap.borrow_mut() = km;
         let vkm = self.config.borrow().keymap_textviewer();
         *self.viewer_keymap.borrow_mut() = vkm;
+        let mkm = self.config.borrow().keymap_imageviewer();
+        *self.media_keymap.borrow_mut() = mkm;
         {
             let cfg = self.config.borrow();
             self.left.apply_config(&cfg);

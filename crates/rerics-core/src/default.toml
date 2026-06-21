@@ -195,6 +195,29 @@ PageUp = "ViewerPageUp"
 Q = "ViewerClose"
 Up = "ViewerScrollUp"
 
+[keybinds_imageviewer]
+- = "ImageZoomOut"
+0 = "ImageFitWindow"
+1 = "ImageActualSize"
+";" = "ImageZoomIn"
+"Ctrl+C" = "ImageCopy"
+Down = "ImageNext"
+Enter = "ViewerClose"
+Esc = "ViewerClose"
+H = "ImageFlipVertical"
+L = "ImageRotateLeft"
+Left = "ImagePrevious"
+"NumPad+" = "ImageZoomIn"
+NumPad- = "ImageZoomOut"
+PageDown = "ImageNext"
+PageUp = "ImagePrevious"
+Q = "ViewerClose"
+R = "ImageRotateRight"
+Right = "ImageNext"
+Space = "MediaTogglePlay"
+Up = "ImagePrevious"
+V = "ImageFlipHorizontal"
+
 [cursor]
 history = false
 history_count = 100

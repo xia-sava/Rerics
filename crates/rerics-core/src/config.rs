@@ -293,6 +293,8 @@ pub struct Config {
     pub keybinds: BTreeMap<String, String>,
     /// テキストビューア用キーバインド（チョード文字列 → コマンドトークン）。
     pub keybinds_textviewer: BTreeMap<String, String>,
+    /// 画像・動画ビューア用キーバインド（チョード文字列 → コマンドトークン）。
+    pub keybinds_imageviewer: BTreeMap<String, String>,
     /// 登録ディレクトリ（ジャンプ先）。
     pub bookmarks: Vec<Bookmark>,
     /// Edit コマンドで開く外部エディタ（実行ファイル名 or パス）。
@@ -323,6 +325,7 @@ impl Default for Config {
             progress_delay_ms: 1000,
             keybinds: KeyMap::default().to_string_map(),
             keybinds_textviewer: KeyMap::default_textviewer().to_string_map(),
+            keybinds_imageviewer: KeyMap::default_imageviewer().to_string_map(),
             bookmarks: Vec::new(),
             editor: "notepad.exe".to_owned(),
             cursor: CursorSettings::default(),
@@ -460,6 +463,11 @@ impl Config {
     /// 設定からテキストビューア用キーマップを組む。
     pub fn keymap_textviewer(&self) -> KeyMap {
         KeyMap::from_string_map(&self.keybinds_textviewer)
+    }
+
+    /// 設定から画像・動画ビューア用キーマップを組む。
+    pub fn keymap_imageviewer(&self) -> KeyMap {
+        KeyMap::from_string_map(&self.keybinds_imageviewer)
     }
 
     /// OS のライト判定（`system_is_light`）を渡して実テーマを解決する。

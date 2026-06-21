@@ -43,6 +43,8 @@ pub mod vk {
     pub const NUMPAD7: u16 = 0x67;
     pub const NUMPAD8: u16 = 0x68;
     pub const NUMPAD9: u16 = 0x69;
+    pub const ADD: u16 = 0x6B; // テンキー +
+    pub const SUBTRACT: u16 = 0x6D; // テンキー -
     pub const DIVIDE: u16 = 0x6F;
     pub const TAB: u16 = 0x09;
     pub const A: u16 = 0x41;
@@ -51,6 +53,7 @@ pub mod vk {
     pub const D: u16 = 0x44;
     pub const E: u16 = 0x45;
     pub const F: u16 = 0x46;
+    pub const H: u16 = 0x48;
     pub const I: u16 = 0x49;
     pub const J: u16 = 0x4A;
     pub const K: u16 = 0x4B;
@@ -77,6 +80,7 @@ pub mod vk {
     // 実機の VK を確認してから割り当てる）。
     pub const OEM_1: u16 = 0xBA; // JIS: ":" "*"
     pub const OEM_PLUS: u16 = 0xBB; // JIS: ";" "+"
+    pub const OEM_MINUS: u16 = 0xBD; // "-" "="
     pub const OEM_3: u16 = 0xC0; // JIS: "@" "`"
     pub const OEM_4: u16 = 0xDB; // JIS: "[" "{"
     pub const OEM_5: u16 = 0xDC; // JIS: "\\" "|"（￥）
@@ -191,6 +195,19 @@ pub enum Command {
     ViewerChangeEncoding,
     ViewerCopy,
     ViewerContextMenu,
+    // 画像・動画ビューア
+    ImageNext,
+    ImagePrevious,
+    ImageZoomIn,
+    ImageZoomOut,
+    ImageFitWindow,
+    ImageActualSize,
+    ImageRotateRight,
+    ImageRotateLeft,
+    ImageFlipHorizontal,
+    ImageFlipVertical,
+    ImageCopy,
+    MediaTogglePlay,
 }
 
 /// コマンドが有効な文脈。設定 UI のキー編集ページをこの単位で分ける。
@@ -310,6 +327,18 @@ impl Command {
             (ViewerChangeEncoding, "ViewerChangeEncoding"),
             (ViewerCopy, "ViewerCopy"),
             (ViewerContextMenu, "ViewerContextMenu"),
+            (ImageNext, "ImageNext"),
+            (ImagePrevious, "ImagePrevious"),
+            (ImageZoomIn, "ImageZoomIn"),
+            (ImageZoomOut, "ImageZoomOut"),
+            (ImageFitWindow, "ImageFitWindow"),
+            (ImageActualSize, "ImageActualSize"),
+            (ImageRotateRight, "ImageRotateRight"),
+            (ImageRotateLeft, "ImageRotateLeft"),
+            (ImageFlipHorizontal, "ImageFlipHorizontal"),
+            (ImageFlipVertical, "ImageFlipVertical"),
+            (ImageCopy, "ImageCopy"),
+            (MediaTogglePlay, "MediaTogglePlay"),
         ]
     };
 
@@ -345,6 +374,9 @@ impl Command {
             | ViewerSelectAll | ViewerToggleMode | ViewerChangeEncoding | ViewerCopy
             | ViewerContextMenu => &[TextViewer],
             ViewerClose => &[TextViewer, ImageViewer],
+            ImageNext | ImagePrevious | ImageZoomIn | ImageZoomOut | ImageFitWindow
+            | ImageActualSize | ImageRotateRight | ImageRotateLeft | ImageFlipHorizontal
+            | ImageFlipVertical | ImageCopy | MediaTogglePlay => &[ImageViewer],
             Edit | OpenSettings => &[Filer, TextViewer],
             _ => &[Filer],
         }
@@ -496,10 +528,13 @@ const KEY_NAMES: &[(u16, &str)] = &[
     (vk::NUMPAD7, "NumPad7"),
     (vk::NUMPAD8, "NumPad8"),
     (vk::NUMPAD9, "NumPad9"),
+    (vk::ADD, "NumPad+"),
+    (vk::SUBTRACT, "NumPad-"),
     (vk::DIVIDE, "NumPad/"),
     (vk::TAB, "Tab"),
     (vk::OEM_1, ":"),
     (vk::OEM_PLUS, ";"),
+    (vk::OEM_MINUS, "-"),
     (vk::OEM_3, "@"),
     (vk::OEM_4, "["),
     (vk::OEM_5, "\\"),
@@ -557,19 +592,31 @@ impl KeyChord {
     }
 
     /// `"Ctrl+Shift+Tab"` のような設定トークンを解釈する（修飾子は順不同・大小無視）。
+    /// 先頭から既知の修飾子（`Ctrl+`/`Shift+`/`Alt+`）だけを順に剥がし、残りをキー名とする
+    /// （キー名自体が `+` を含む `NumPad+` 等を `+` で割らないため）。
     pub fn parse(s: &str) -> Option<Self> {
-        let parts: Vec<&str> = s.split('+').map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
-        let (key, mods) = parts.split_last()?;
-        let mut chord = Self::key(name_to_vk(key)?);
-        for m in mods {
-            match m.to_ascii_lowercase().as_str() {
-                "ctrl" | "control" => chord.ctrl = true,
-                "shift" => chord.shift = true,
-                "alt" => chord.alt = true,
-                _ => return None,
+        let mut rest = s.trim();
+        let (mut ctrl, mut shift, mut alt) = (false, false, false);
+        loop {
+            let lower = rest.to_ascii_lowercase();
+            if lower.starts_with("ctrl+") {
+                ctrl = true;
+                rest = rest[5..].trim_start();
+            } else if lower.starts_with("control+") {
+                ctrl = true;
+                rest = rest[8..].trim_start();
+            } else if lower.starts_with("shift+") {
+                shift = true;
+                rest = rest[6..].trim_start();
+            } else if lower.starts_with("alt+") {
+                alt = true;
+                rest = rest[4..].trim_start();
+            } else {
+                break;
             }
         }
-        Some(chord)
+        let vk = name_to_vk(rest.trim())?;
+        Some(Self { vk, ctrl, shift, alt })
     }
 
     /// `"Ctrl+Shift+Tab"` のような設定トークンへ変換する（未知キーは `None`）。
@@ -744,6 +791,42 @@ impl KeyMap {
         m.bind(KeyChord::key(vk::P), ViewerFindPrevious);
         // エディタ起動（E）。
         m.bind(KeyChord::key(vk::E), Edit);
+        m
+    }
+
+    /// 画像・動画ビューアの既定キーバインド。個人設定は config.toml の
+    /// `[keybinds_imageviewer]` で上乗せする。
+    pub fn default_imageviewer() -> Self {
+        use Command::*;
+        let mut m = Self::new();
+        // 終了（Enter / Esc / Q）。
+        m.bind(KeyChord::key(vk::RETURN), ViewerClose);
+        m.bind(KeyChord::key(vk::ESCAPE), ViewerClose);
+        m.bind(KeyChord::key(vk::Q), ViewerClose);
+        // 再生／一時停止（動画・Space）。
+        m.bind(KeyChord::key(vk::SPACE), MediaTogglePlay);
+        // 前後送り（←↑PageUp＝前・→↓PageDown＝次）。
+        m.bind(KeyChord::key(vk::LEFT), ImagePrevious);
+        m.bind(KeyChord::key(vk::UP), ImagePrevious);
+        m.bind(KeyChord::key(vk::PRIOR), ImagePrevious);
+        m.bind(KeyChord::key(vk::RIGHT), ImageNext);
+        m.bind(KeyChord::key(vk::DOWN), ImageNext);
+        m.bind(KeyChord::key(vk::NEXT), ImageNext);
+        // 拡大・縮小（+ / -、テンキー +/- も）。
+        m.bind(KeyChord::key(vk::OEM_PLUS), ImageZoomIn);
+        m.bind(KeyChord::key(vk::ADD), ImageZoomIn);
+        m.bind(KeyChord::key(vk::OEM_MINUS), ImageZoomOut);
+        m.bind(KeyChord::key(vk::SUBTRACT), ImageZoomOut);
+        // 表示倍率（0＝ウィンドウに合わせる・1＝原寸）。
+        m.bind(KeyChord::key(vk::D0), ImageFitWindow);
+        m.bind(KeyChord::key(vk::D1), ImageActualSize);
+        // 回転・反転（R＝右回転・L＝左回転・V＝左右反転・H＝上下反転）。
+        m.bind(KeyChord::key(vk::R), ImageRotateRight);
+        m.bind(KeyChord::key(vk::L), ImageRotateLeft);
+        m.bind(KeyChord::key(vk::V), ImageFlipHorizontal);
+        m.bind(KeyChord::key(vk::H), ImageFlipVertical);
+        // クリップボードへコピー（Ctrl+C）。
+        m.bind(KeyChord::new(vk::C, true, false, false), ImageCopy);
         m
     }
 
@@ -1108,6 +1191,35 @@ mod tests {
         // 横スクロールは割り当てない（折返し表示のため）。
         assert_eq!(m.resolve(&KeyChord::key(vk::LEFT)), None);
         assert_eq!(m.resolve(&KeyChord::key(vk::RIGHT)), None);
+    }
+
+    #[test]
+    fn default_imageviewer_binds_current_keys() {
+        let m = KeyMap::default_imageviewer();
+        assert_eq!(m.resolve(&KeyChord::key(vk::SPACE)), Some(Command::MediaTogglePlay));
+        assert_eq!(m.resolve(&KeyChord::key(vk::LEFT)), Some(Command::ImagePrevious));
+        assert_eq!(m.resolve(&KeyChord::key(vk::RIGHT)), Some(Command::ImageNext));
+        assert_eq!(m.resolve(&KeyChord::key(vk::ADD)), Some(Command::ImageZoomIn));
+        assert_eq!(m.resolve(&KeyChord::key(vk::SUBTRACT)), Some(Command::ImageZoomOut));
+        assert_eq!(m.resolve(&KeyChord::key(vk::R)), Some(Command::ImageRotateRight));
+        assert_eq!(m.resolve(&KeyChord::key(vk::H)), Some(Command::ImageFlipVertical));
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::C, true, false, false)),
+            Some(Command::ImageCopy)
+        );
+        // 終了は両ビューア共有コマンド。
+        assert_eq!(m.resolve(&KeyChord::key(vk::ESCAPE)), Some(Command::ViewerClose));
+    }
+
+    #[test]
+    fn imageviewer_string_map_roundtrip() {
+        // テンキー +/- や OEM_- もトークン往復できる（落ちると default.toml 検証が壊れる）。
+        let m = KeyMap::default_imageviewer();
+        let sm = m.to_string_map();
+        assert!(sm.contains_key("NumPad+"));
+        assert!(sm.contains_key("NumPad-"));
+        let back = KeyMap::from_string_map(&sm);
+        assert_eq!(back.to_string_map(), sm);
     }
 
     #[test]

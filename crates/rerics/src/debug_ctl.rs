@@ -93,10 +93,18 @@ impl MainWindow {
         };
         let inv = Invocation::new(cmd, args);
         let is_left = !self.active_right.get();
-        // テキストビューア表示中のビューアコマンドはビューア文脈で実行する。
-        if self.active_view.get() == ActiveView::Text && cmd.available_in(CommandContext::TextViewer)
-        {
-            let r = match self.exec_viewer(&inv) {
+        // 表示中ビューアのコマンドはそのビューア文脈で実行する。
+        let viewer_exec = match self.active_view.get() {
+            ActiveView::Text if cmd.available_in(CommandContext::TextViewer) => {
+                Some(self.exec_viewer(&inv))
+            }
+            ActiveView::Media if cmd.available_in(CommandContext::ImageViewer) => {
+                Some(self.exec_media(&inv))
+            }
+            _ => None,
+        };
+        if let Some(result) = viewer_exec {
+            let r = match result {
                 Ok(()) => {
                     self.settle_pending_jobs();
                     debug_server::Response::Json(self.debug_state_value().to_string())

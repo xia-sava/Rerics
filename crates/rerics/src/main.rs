@@ -218,6 +218,7 @@ struct MainWindow {
     right_pane: Rc<RefCell<Pane>>,
     keymap: Rc<RefCell<KeyMap>>,
     viewer_keymap: Rc<RefCell<KeyMap>>,
+    media_keymap: Rc<RefCell<KeyMap>>,
     initial_window: Option<WindowState>,
     active_right: Rc<Cell<bool>>,
     /// 左ペインの幅比（0.0〜1.0）。スプリッタのドラッグ／最大化／境界移動で変わる。
@@ -451,6 +452,7 @@ impl MainWindow {
 
         let keymap = config.keymap();
         let viewer_keymap = config.keymap_textviewer();
+        let media_keymap = config.keymap_imageviewer();
 
         let (menu_bar, menu_cmds) = menu::build().expect("メニューバーの構築");
 
@@ -477,6 +479,7 @@ impl MainWindow {
             right_pane,
             keymap: Rc::new(RefCell::new(keymap)),
             viewer_keymap: Rc::new(RefCell::new(viewer_keymap)),
+            media_keymap: Rc::new(RefCell::new(media_keymap)),
             initial_window,
             active_right: Rc::new(Cell::new(active_right)),
             split_ratio: Rc::new(Cell::new(initial_split)),

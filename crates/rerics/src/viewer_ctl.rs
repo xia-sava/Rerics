@@ -300,38 +300,32 @@ impl MainWindow {
         Ok(())
     }
 
-    /// ビューア表示中の画像/動画キー操作（固定キー・設定対象外）。
-    pub(crate) fn media_key(&self, vk: u16, ctrl: bool, _shift: bool) -> w::AnyResult<()> {
-        use rerics_core::vk;
-        const VK_Q: u16 = 0x51;
-        const VK_R: u16 = 0x52;
-        const VK_L: u16 = 0x4C;
-        const VK_V: u16 = 0x56;
-        const VK_H: u16 = 0x48;
-        const VK_0: u16 = 0x30;
-        const VK_1: u16 = 0x31;
-        const VK_OEM_PLUS: u16 = 0xBB;
-        const VK_OEM_MINUS: u16 = 0xBD;
-        const VK_ADD: u16 = 0x6B;
-        const VK_SUBTRACT: u16 = 0x6D;
-        // Ctrl+C＝表示中の画像をクリップボードへコピー（原作 ImageCopy）。
-        if ctrl && vk == vk::C {
-            self.media.copy_to_clipboard()?;
-            return Ok(());
+    /// ビューア表示中の画像/動画キー操作。
+    pub(crate) fn media_key(&self, vk: u16, ctrl: bool, shift: bool) -> w::AnyResult<()> {
+        let chord = KeyChord::new(vk, ctrl, shift, false);
+        let resolved = self.media_keymap.borrow().resolve_inv(&chord).cloned();
+        if let Some(inv) = resolved {
+            self.exec_media(&inv)?;
         }
-        match vk {
-            vk::ESCAPE | VK_Q | vk::RETURN => self.close_viewer()?,
-            vk::SPACE => self.media.toggle_play()?,
-            vk::LEFT | vk::UP | vk::PRIOR => self.media.navigate(-1)?,
-            vk::RIGHT | vk::DOWN | vk::NEXT => self.media.navigate(1)?,
-            VK_OEM_PLUS | VK_ADD => self.media.zoom_by(1.25)?,
-            VK_OEM_MINUS | VK_SUBTRACT => self.media.zoom_by(0.8)?,
-            VK_0 => self.media.fit_to_window()?,
-            VK_1 => self.media.actual_size()?,
-            VK_R => self.media.rotate()?,
-            VK_L => self.media.rotate_left()?,
-            VK_V => self.media.flip_horizontal()?, // 左右反転（原作 ImageVerticalFlip）
-            VK_H => self.media.flip_vertical()?,   // 上下反転（原作 ImageHorizonFlip）
+        Ok(())
+    }
+
+    /// 画像・動画ビューアのコマンドを実行する（キーバインドの共通入口）。
+    pub(crate) fn exec_media(&self, inv: &Invocation) -> w::AnyResult<()> {
+        match inv.command {
+            Command::ViewerClose => self.close_viewer()?,
+            Command::MediaTogglePlay => self.media.toggle_play()?,
+            Command::ImagePrevious => self.media.navigate(-1)?,
+            Command::ImageNext => self.media.navigate(1)?,
+            Command::ImageZoomIn => self.media.zoom_by(1.25)?,
+            Command::ImageZoomOut => self.media.zoom_by(0.8)?,
+            Command::ImageFitWindow => self.media.fit_to_window()?,
+            Command::ImageActualSize => self.media.actual_size()?,
+            Command::ImageRotateRight => self.media.rotate()?,
+            Command::ImageRotateLeft => self.media.rotate_left()?,
+            Command::ImageFlipHorizontal => self.media.flip_horizontal()?,
+            Command::ImageFlipVertical => self.media.flip_vertical()?,
+            Command::ImageCopy => self.media.copy_to_clipboard()?,
             _ => {}
         }
         Ok(())
