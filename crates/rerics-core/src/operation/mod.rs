@@ -128,6 +128,19 @@ fn file_name(path: &Path) -> String {
 }
 
 
+/// 操作の締めくくりに、結果に応じた枠ログ（終了/警告終了/中止）を出す。`verb` は
+/// `コピー`/`移動`/`削除`。
+fn log_op_end(host: &dyn OperationHost, verb: &str, sum: &OpSummary) {
+    let (level, line) = if sum.cancelled {
+        (LogLevel::Warning, crate::messages::op_aborted(verb))
+    } else if sum.err > 0 {
+        (LogLevel::Error, crate::messages::op_finished_with_errors(verb))
+    } else {
+        (LogLevel::Info, crate::messages::op_finished(verb))
+    };
+    host.log(level, &line);
+}
+
 /// dst の読み込み専用/隠し/システム属性を解除する（強制上書き用）。
 #[cfg(windows)]
 fn clear_attributes(path: &Path) {

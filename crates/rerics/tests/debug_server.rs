@@ -628,6 +628,10 @@ fn ask_before_delete_off_skips_confirm() {
     // モーダルは出ていない。
     let modal = server.req("GET", "/state/modal", "").expect("modal").1;
     assert!(modal.trim() == "null", "no confirm modal when ask_before_delete is off: {modal}");
+    // 開始/終了の枠ログが実ログに出る。
+    let log = poll(&server, "/state/log", |b| b.contains("削除終了"));
+    assert!(log.contains("削除開始"), "start frame should be logged: {log}");
+    assert!(log.contains("削除終了"), "end frame should be logged: {log}");
 }
 
 /// 書庫内エントリの改名（リビルド）と、衝突時のエラーを検証する。

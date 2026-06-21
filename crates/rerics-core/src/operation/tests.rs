@@ -129,6 +129,56 @@
     }
 
     #[test]
+    fn copy_logs_start_and_end_frames() {
+        let src = TempDir::new();
+        let dst = TempDir::new();
+        src.write_file("a.txt", "hello");
+        let host = FakeHost::new();
+        run_copy(&host, &src.path, &dst.path, &["a.txt".to_owned()], false);
+        let lines = host.lines();
+        assert_eq!(lines.first().map(String::as_str), Some("コピー開始"));
+        assert_eq!(lines.last().map(String::as_str), Some("コピー終了"));
+
+        // 移動は「移動開始」/「移動終了」。
+        src.write_file("b.txt", "x");
+        let host2 = FakeHost::new();
+        run_copy(&host2, &src.path, &dst.path, &["b.txt".to_owned()], true);
+        let l2 = host2.lines();
+        assert_eq!(l2.first().map(String::as_str), Some("移動開始"));
+        assert_eq!(l2.last().map(String::as_str), Some("移動終了"));
+    }
+
+    #[test]
+    fn copy_error_ends_with_warning_frame() {
+        let src = TempDir::new();
+        let dst = TempDir::new();
+        let host = FakeHost::new();
+        run_copy(&host, &src.path, &dst.path, &["nope.txt".to_owned()], false);
+        assert_eq!(host.lines().last().map(String::as_str), Some("コピー警告終了"));
+    }
+
+    #[test]
+    fn copy_cancel_ends_with_abort_frame() {
+        let src = TempDir::new();
+        let dst = TempDir::new();
+        src.write_file("a.txt", "x");
+        let host = FakeHost::cancelling(0);
+        run_copy(&host, &src.path, &dst.path, &["a.txt".to_owned()], false);
+        assert_eq!(host.lines().last().map(String::as_str), Some("コピー中止"));
+    }
+
+    #[test]
+    fn delete_logs_start_and_end_frames() {
+        let dir = TempDir::new();
+        dir.write_file("a.txt", "x");
+        let host = FakeHost::new();
+        run_delete(&host, &dir.path, &["a.txt".to_owned()]);
+        let lines = host.lines();
+        assert_eq!(lines.first().map(String::as_str), Some("削除開始"));
+        assert_eq!(lines.last().map(String::as_str), Some("削除終了"));
+    }
+
+    #[test]
     fn calc_size_counts_files_dirs_and_bytes() {
         let base = TempDir::new();
         base.write_file("a.txt", "12345"); // 5 bytes

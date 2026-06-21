@@ -56,6 +56,26 @@ pub fn copy_result(ok: usize, skip: usize, err: usize) -> String {
     format!("{ok} Success, {skip} Skip, {err} Error")
 }
 
+/// 操作開始の枠ログ（例: `コピー開始`）。`verb` は `コピー`/`移動`/`削除`。
+pub fn op_started(verb: &str) -> String {
+    format!("{verb}開始")
+}
+
+/// 操作の正常終了の枠ログ（例: `コピー終了`）。
+pub fn op_finished(verb: &str) -> String {
+    format!("{verb}終了")
+}
+
+/// エラーを含む終了の枠ログ（例: `コピー警告終了`）。
+pub fn op_finished_with_errors(verb: &str) -> String {
+    format!("{verb}警告終了")
+}
+
+/// ユーザ中止の枠ログ（例: `コピー中止`）。
+pub fn op_aborted(verb: &str) -> String {
+    format!("{verb}中止")
+}
+
 /// `Compress {0}`（圧縮への追加の逐次ログ）。
 pub fn compress(name: &str) -> String {
     format!("Compress {name}")

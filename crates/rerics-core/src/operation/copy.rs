@@ -11,6 +11,8 @@ pub fn run_copy(
     names: &[String],
     move_it: bool,
 ) -> OpSummary {
+    let verb = if move_it { "移動" } else { "コピー" };
+    host.log(LogLevel::Info, &messages::op_started(verb));
     let mut sum = OpSummary::default();
     for name in names {
         if should_stop(host) {
@@ -37,6 +39,7 @@ pub fn run_copy(
     let line = messages::copy_result(sum.ok, sum.skip, sum.err);
     let level = if sum.err == 0 { LogLevel::Info } else { LogLevel::Error };
     host.log(level, &line);
+    log_op_end(host, verb, &sum);
     sum
 }
 

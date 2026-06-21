@@ -5,6 +5,7 @@ use super::*;
 
 /// 削除を実行する。
 pub fn run_delete(host: &dyn OperationHost, dir: &Path, names: &[String]) -> OpSummary {
+    host.log(LogLevel::Info, &messages::op_started("削除"));
     let mut sum = OpSummary::default();
     for name in names {
         if should_stop(host) {
@@ -45,6 +46,7 @@ pub fn run_delete(host: &dyn OperationHost, dir: &Path, names: &[String]) -> OpS
     let line = messages::delete_result(sum.ok, sum.err);
     let level = if sum.err == 0 { LogLevel::Info } else { LogLevel::Error };
     host.log(level, &line);
+    log_op_end(host, "削除", &sum);
     sum
 }
 
