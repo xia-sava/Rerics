@@ -949,6 +949,9 @@ impl FileListView {
                             cache.draw_generic(
                                 dc, item.is_dir, &item.extension, text_left, iy, icon_px,
                             );
+                            if item.is_parent {
+                                let _ = draw_parent_arrow(dc, text_left, iy, icon_px);
+                            }
                         }
                         text_left += icon_px + gui::dpi_x(2);
                     }
@@ -1111,6 +1114,26 @@ fn wheel_lines(notches: i32, per_notch: u32, page_rows: usize) -> i32 {
     } else {
         notches * per_notch as i32
     }
+}
+
+/// 親（..）行のフォルダアイコンへ「上の階層」を表す上向き三角を重ねて描く。
+/// 白塗り＋濃い縁取りで、フォルダ色・背景色のどちらでも視認できるようにする。
+fn draw_parent_arrow(dc: &w::HDC, x: i32, y: i32, size: i32) -> w::AnyResult<()> {
+    let cx = x + size / 2;
+    let half = (size * 28 / 100).max(2);
+    let top = y + size * 30 / 100;
+    let bottom = y + size * 70 / 100;
+    let pts = [
+        w::POINT::with(cx, top),
+        w::POINT::with(cx - half, bottom),
+        w::POINT::with(cx + half, bottom),
+    ];
+    let fill = w::HBRUSH::CreateSolidBrush(w::COLORREF::from_rgb(0xFF, 0xFF, 0xFF))?;
+    let pen = w::HPEN::CreatePen(co::PS::SOLID, 1, w::COLORREF::from_rgb(0x20, 0x20, 0x20))?;
+    let _fill_sel = dc.SelectObject(&*fill)?;
+    let _pen_sel = dc.SelectObject(&*pen)?;
+    dc.Polygon(&pts)?;
+    Ok(())
 }
 
 #[cfg(test)]
