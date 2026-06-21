@@ -69,6 +69,19 @@ impl Encoding {
     }
 }
 
+/// 先頭の BOM からエンコーディングを判定する（無ければ `None`）。BOM 付きは確実にテキスト。
+fn detect_bom(bytes: &[u8]) -> Option<Encoding> {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        Some(Encoding::Utf8)
+    } else if bytes.starts_with(&[0xFF, 0xFE]) {
+        Some(Encoding::Utf16Le)
+    } else if bytes.starts_with(&[0xFE, 0xFF]) {
+        Some(Encoding::Utf16Be)
+    } else {
+        None
+    }
+}
+
 /// 先頭の一定範囲を見て、テキストとして表示できそうになければ true（バイナリ）。
 /// NUL を含むか、どのエンコーディングで解釈しても表示不可文字が多いならバイナリとみなす（軽量判定）。
 pub fn looks_binary(bytes: &[u8]) -> bool {
@@ -157,10 +170,17 @@ impl ViewerModel {
         Self { bytes, encoding: Encoding::Utf8, mode: ViewMode::Text, ext: None, dark: false }
     }
 
-    /// ファイルを開く。バイナリらしければバイナリモードで開始する（原作准拠）。
+    /// ファイルを開く。先頭の BOM で UTF-16/UTF-8 を判定し、無ければバイナリらしさで判定する。
     pub fn open(bytes: Vec<u8>) -> Self {
-        let mode = if looks_binary(&bytes) { ViewMode::Binary } else { ViewMode::Text };
-        Self { bytes, encoding: Encoding::Utf8, mode, ext: None, dark: false }
+        // BOM があれば確実にテキスト（UTF-16 は NUL を含むのでバイナリ判定に頼れない）。
+        let (mode, encoding) = match detect_bom(&bytes) {
+            Some(enc) => (ViewMode::Text, enc),
+            None => {
+                let mode = if looks_binary(&bytes) { ViewMode::Binary } else { ViewMode::Text };
+                (mode, Encoding::Utf8)
+            }
+        };
+        Self { bytes, encoding, mode, ext: None, dark: false }
     }
 
     /// 構文ハイライトの文脈（拡張子・ダーク/ライト）を設定する。
@@ -513,6 +533,27 @@ mod tests {
     fn open_starts_in_binary_for_binary_bytes() {
         assert_eq!(ViewerModel::open(b"plain text\n".to_vec()).mode, ViewMode::Text);
         assert_eq!(ViewerModel::open(vec![0x00, 0x01, 0x02, 0x03]).mode, ViewMode::Binary);
+    }
+
+    #[test]
+    fn open_bom_utf16_is_text_not_binary() {
+        // UTF-16 LE（BOM ff fe ＋ "Hi"）。NUL を含むがテキストとして開き、正しく復号する。
+        let utf16le = vec![0xFF, 0xFE, b'H', 0x00, b'i', 0x00];
+        let m = ViewerModel::open(utf16le);
+        assert_eq!(m.mode, ViewMode::Text);
+        assert_eq!(m.encoding, Encoding::Utf16Le);
+        assert_eq!(m.lines(80, 4)[0].body, "Hi");
+        // UTF-16 BE（BOM fe ff）。
+        let utf16be = vec![0xFE, 0xFF, 0x00, b'H', 0x00, b'i'];
+        let m = ViewerModel::open(utf16be);
+        assert_eq!(m.mode, ViewMode::Text);
+        assert_eq!(m.encoding, Encoding::Utf16Be);
+        assert_eq!(m.lines(80, 4)[0].body, "Hi");
+        // UTF-8 BOM。
+        let utf8bom = vec![0xEF, 0xBB, 0xBF, b'O', b'k'];
+        let m = ViewerModel::open(utf8bom);
+        assert_eq!(m.mode, ViewMode::Text);
+        assert_eq!(m.lines(80, 4)[0].body, "Ok");
     }
 
     #[test]
