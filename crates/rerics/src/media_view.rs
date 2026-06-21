@@ -82,6 +82,8 @@ struct Inner {
     colors: Colors,
     font_family: String,
     font_size: i32,
+    /// ズーム1段あたりの拡大率（倍率係数）。設定の `zoom_step_percent` から決まる。
+    zoom_step: f64,
     /// 右クリック時に呼ぶコールバック（画面座標）。コンテキストメニュー表示は MainWindow が担う。
     on_menu: RefCell<Option<Box<dyn Fn(w::POINT)>>>,
 }
@@ -140,6 +142,7 @@ impl MediaView {
             colors: cfg.active_colors(),
             font_family: cfg.font.family.clone(),
             font_size: cfg.font.size,
+            zoom_step: 1.0 + cfg.image.zoom_step_percent.max(1) as f64 / 100.0,
             on_menu: RefCell::new(None),
         });
         let me = Self { wnd, inner };
@@ -361,20 +364,23 @@ impl MediaView {
         !self.inner.bgra.borrow().is_empty()
     }
 
-    /// ホイール 1 ノッチでズームする。
+    /// ホイール 1 ノッチでズームする（上＝拡大）。
     pub fn on_wheel(&self, distance: i16) -> w::AnyResult<()> {
-        if !self.has_image() {
-            return Ok(());
-        }
-        self.zoom_by(if distance > 0 { 1.25 } else { 0.8 })
+        self.zoom(distance > 0)
     }
 
-    /// 現在倍率に `factor` を掛けてズームする（手動モードへ移る）。
-    pub fn zoom_by(&self, factor: f64) -> w::AnyResult<()> {
+    /// 1 段ズームする（`zoom_in` が真で拡大）。現在倍率に設定の増減率を掛け、
+    /// 等倍（1.0）をまたぐときは 1.0 へスナップする。フィットを解いて手動モードへ移る。
+    pub fn zoom(&self, zoom_in: bool) -> w::AnyResult<()> {
         if !self.has_image() {
             return Ok(());
         }
-        let next = (self.inner.scale.get() * factor).clamp(MIN_SCALE, MAX_SCALE);
+        let prev = self.inner.scale.get();
+        let factor = if zoom_in { self.inner.zoom_step } else { 1.0 / self.inner.zoom_step };
+        let mut next = (prev * factor).clamp(MIN_SCALE, MAX_SCALE);
+        if (prev < 1.0 && next > 1.0) || (prev > 1.0 && next < 1.0) {
+            next = 1.0;
+        }
         self.inner.scale.set(next);
         self.inner.fit.set(false);
         self.refresh()

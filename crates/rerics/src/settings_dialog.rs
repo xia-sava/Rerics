@@ -1771,6 +1771,45 @@ fn build_viewer(parent: &gui::WindowControl, shared: &Rc<Shared>) {
         });
     }
 
+    label(parent, "ズーム増減（%）", 28, 62, 110);
+    let zoom_step = shared.cfg.borrow().image.zoom_step_percent;
+    let zoom_edit = gui::Edit::new(
+        parent,
+        gui::EditOpts {
+            text: &zoom_step.to_string(),
+            control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
+            position: gui::dpi(142, 60),
+            width: gui::dpi_x(60),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+    let _zoom_spin = gui::UpDown::new(
+        parent,
+        gui::UpDownOpts {
+            position: gui::dpi(202, 60),
+            height: gui::dpi_y(22),
+            range: (1, 400),
+            value: zoom_step.clamp(1, 400) as i32,
+            control_style: co::UDS::AUTOBUDDY
+                | co::UDS::SETBUDDYINT
+                | co::UDS::ALIGNRIGHT
+                | co::UDS::ARROWKEYS,
+            ..Default::default()
+        },
+    );
+    label(parent, "（1 段あたりの拡大率。例 25 で 1.25 倍ずつ）", 268, 62, 280);
+    {
+        let shared = shared.clone();
+        let ze = zoom_edit.clone();
+        zoom_edit.on().en_change(move || {
+            let cur = shared.cfg.borrow().image.zoom_step_percent as i32;
+            let v = parse_or(&ze, cur).clamp(1, 400);
+            shared.cfg.borrow_mut().image.zoom_step_percent = v as u32;
+            Ok(())
+        });
+    }
+
     // テキストセクション（設定項目は今後追加）。
     group_box(parent, "テキスト", 12, 96, 752, 76);
 }

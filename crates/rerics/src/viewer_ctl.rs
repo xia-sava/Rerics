@@ -317,8 +317,8 @@ impl MainWindow {
             Command::MediaTogglePlay => self.media.toggle_play()?,
             Command::ImagePrevious => self.media.navigate(-1)?,
             Command::ImageNext => self.media.navigate(1)?,
-            Command::ImageZoomIn => self.media.zoom_by(1.25)?,
-            Command::ImageZoomOut => self.media.zoom_by(0.8)?,
+            Command::ImageZoomIn => self.media.zoom(true)?,
+            Command::ImageZoomOut => self.media.zoom(false)?,
             Command::ImageFitWindow => self.media.fit_to_window()?,
             Command::ImageActualSize => self.media.actual_size()?,
             Command::ImageRotateRight => self.media.rotate()?,
@@ -369,8 +369,8 @@ impl MainWindow {
         };
         match id {
             COPY => self.media.copy_to_clipboard()?,
-            ZOOM_IN => self.media.zoom_by(1.25)?,
-            ZOOM_OUT => self.media.zoom_by(0.8)?,
+            ZOOM_IN => self.media.zoom(true)?,
+            ZOOM_OUT => self.media.zoom(false)?,
             FIT => self.media.fit_to_window()?,
             ACTUAL => self.media.actual_size()?,
             ROT_R => self.media.rotate()?,

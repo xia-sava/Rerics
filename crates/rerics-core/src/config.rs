@@ -241,11 +241,13 @@ pub enum WheelAction {
 pub struct ImageSettings {
     /// マウスホイールの動作（既定＝送り・原作准拠）。
     pub wheel: WheelAction,
+    /// ズーム1段あたりの拡大率（%）。25 なら 1 段で 1.25 倍ずつ拡大／縮小する。
+    pub zoom_step_percent: u32,
 }
 
 impl Default for ImageSettings {
     fn default() -> Self {
-        Self { wheel: WheelAction::Navigate }
+        Self { wheel: WheelAction::Navigate, zoom_step_percent: 25 }
     }
 }
 

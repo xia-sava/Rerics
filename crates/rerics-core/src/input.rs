@@ -71,6 +71,7 @@ pub mod vk {
     pub const W: u16 = 0x57;
     pub const X: u16 = 0x58;
     pub const Y: u16 = 0x59;
+    pub const Z: u16 = 0x5A;
     pub const D0: u16 = 0x30;
     pub const D1: u16 = 0x31;
     pub const D2: u16 = 0x32;
@@ -815,6 +816,8 @@ impl KeyMap {
         m.bind(KeyChord::key(vk::ADD), ImageZoomIn);
         m.bind(KeyChord::key(vk::OEM_MINUS), ImageZoomOut);
         m.bind(KeyChord::key(vk::SUBTRACT), ImageZoomOut);
+        m.bind(KeyChord::key(vk::Z), ImageZoomIn);
+        m.bind(KeyChord::key(vk::X), ImageZoomOut);
         // 表示倍率（0＝ウィンドウに合わせる・1＝原寸）。
         m.bind(KeyChord::key(vk::D0), ImageFitWindow);
         m.bind(KeyChord::key(vk::D1), ImageActualSize);
