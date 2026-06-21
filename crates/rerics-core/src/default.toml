@@ -171,6 +171,30 @@ V = "ViewFile"
 Y = "PathMask"
 '\' = "ToRoot"
 
+[keybinds_textviewer]
+B = "ViewerToggleMode"
+C = "ViewerChangeEncoding"
+"Ctrl+A" = "ViewerSelectAll"
+"Ctrl+C" = "ViewerCopy"
+"Ctrl+End" = "ViewerScrollBottom"
+"Ctrl+F" = "ViewerSearchDialog"
+"Ctrl+Home" = "ViewerScrollTop"
+"Ctrl+PageDown" = "ViewerScrollBottom"
+"Ctrl+PageUp" = "ViewerScrollTop"
+"Ctrl+S" = "ViewerSearchDialog"
+Down = "ViewerScrollDown"
+E = "Edit"
+End = "ViewerScrollBottom"
+Enter = "ViewerClose"
+Esc = "ViewerClose"
+Home = "ViewerScrollTop"
+N = "ViewerFindNext"
+P = "ViewerFindPrevious"
+PageDown = "ViewerPageDown"
+PageUp = "ViewerPageUp"
+Q = "ViewerClose"
+Up = "ViewerScrollUp"
+
 [cursor]
 history = false
 history_count = 100

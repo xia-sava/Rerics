@@ -38,7 +38,7 @@ pub use file_list::{
     auto_adjust_columns, column_sample, default_columns, find_match, glob_match, read_items,
     sequence_rename,
 };
-pub use input::{Command, Invocation, KeyChord, KeyMap, vk};
+pub use input::{Command, CommandContext, Invocation, KeyChord, KeyMap, vk};
 pub use log::{LogLevel, LogLine, LogState};
 pub use macros::{MacroAbort, MacroCtx, MacroHost, expand_macros};
 pub use media::{

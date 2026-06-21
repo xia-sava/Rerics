@@ -1027,6 +1027,28 @@ fn view_command_opens_internal_viewer_for_file() {
     assert_eq!(av2.trim(), "\"none\"", "closing the viewer returns to the list");
 }
 
+/// テキストビューア表示中はビューア用コマンドがビューア文脈で実行される。
+#[test]
+fn viewer_commands_dispatch_in_text_context() {
+    let server = Server::start(&["note.txt"], "");
+    server
+        .req("POST", "/command/SetCursorPosition", r#"["note.txt"]"#)
+        .unwrap();
+    server.req("POST", "/command/View", "").unwrap();
+    poll(&server, "/state/active_view", |b| b.trim() == "\"text\"");
+    // バイナリ/テキスト切替は表示モードだけ変え、ビューアは開いたまま。
+    let (st, _) = server
+        .req("POST", "/command/ViewerToggleMode", "")
+        .expect("ViewerToggleMode");
+    assert_eq!(st, 200, "ViewerToggleMode はテキストビューア文脈で実行される");
+    let av = server.req("GET", "/state/active_view", "").unwrap().1;
+    assert_eq!(av.trim(), "\"text\"", "モード切替後もテキストビューアは開いたまま");
+    // 実キー経路（キーマップ解決→コマンド実行）で Esc を送ると閉じる。
+    server.req("POST", "/view/key/Esc", "").unwrap();
+    let av2 = poll(&server, "/state/active_view", |b| b.trim() == "\"none\"");
+    assert_eq!(av2.trim(), "\"none\"", "Esc の実キー経路で一覧へ戻る");
+}
+
 /// RegisterPath で現在地を登録し、JumpDialog でそこへ戻る。
 #[test]
 fn nav_register_and_jump() {

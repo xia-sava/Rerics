@@ -46,6 +46,8 @@ impl MainWindow {
         *self.config.borrow_mut() = new;
         let km = self.config.borrow().keymap();
         *self.keymap.borrow_mut() = km;
+        let vkm = self.config.borrow().keymap_textviewer();
+        *self.viewer_keymap.borrow_mut() = vkm;
         {
             let cfg = self.config.borrow();
             self.left.apply_config(&cfg);

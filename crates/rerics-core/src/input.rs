@@ -22,11 +22,16 @@ pub mod vk {
     pub const ESCAPE: u16 = 0x1B;
     pub const F1: u16 = 0x70;
     pub const F2: u16 = 0x71;
+    pub const F3: u16 = 0x72;
     pub const F4: u16 = 0x73;
     pub const F5: u16 = 0x74;
+    pub const F6: u16 = 0x75;
     pub const F7: u16 = 0x76;
+    pub const F8: u16 = 0x77;
     pub const F9: u16 = 0x78;
     pub const F10: u16 = 0x79;
+    pub const F11: u16 = 0x7A;
+    pub const F12: u16 = 0x7B;
     // テンキー（NumPad）。`NUMPAD0..9` は 0x60..0x69、除算は DIVIDE。
     pub const NUMPAD0: u16 = 0x60;
     pub const NUMPAD1: u16 = 0x61;
@@ -41,6 +46,7 @@ pub mod vk {
     pub const DIVIDE: u16 = 0x6F;
     pub const TAB: u16 = 0x09;
     pub const A: u16 = 0x41;
+    pub const B: u16 = 0x42;
     pub const C: u16 = 0x43;
     pub const D: u16 = 0x44;
     pub const E: u16 = 0x45;
@@ -50,6 +56,7 @@ pub mod vk {
     pub const K: u16 = 0x4B;
     pub const L: u16 = 0x4C;
     pub const M: u16 = 0x4D;
+    pub const N: u16 = 0x4E;
     pub const O: u16 = 0x4F;
     pub const P: u16 = 0x50;
     pub const Q: u16 = 0x51;
@@ -168,6 +175,30 @@ pub enum Command {
     End,
     Restart,
     Quit,
+    // テキストビューア
+    ViewerClose,
+    ViewerScrollUp,
+    ViewerScrollDown,
+    ViewerPageUp,
+    ViewerPageDown,
+    ViewerScrollTop,
+    ViewerScrollBottom,
+    ViewerSearchDialog,
+    ViewerFindNext,
+    ViewerFindPrevious,
+    ViewerSelectAll,
+    ViewerToggleMode,
+    ViewerChangeEncoding,
+    ViewerCopy,
+    ViewerContextMenu,
+}
+
+/// コマンドが有効な文脈。設定 UI のキー編集ページをこの単位で分ける。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandContext {
+    Filer,
+    TextViewer,
+    ImageViewer,
 }
 
 impl Command {
@@ -264,6 +295,21 @@ impl Command {
             (End, "End"),
             (Restart, "Restart"),
             (Quit, "Quit"),
+            (ViewerClose, "ViewerClose"),
+            (ViewerScrollUp, "ViewerScrollUp"),
+            (ViewerScrollDown, "ViewerScrollDown"),
+            (ViewerPageUp, "ViewerPageUp"),
+            (ViewerPageDown, "ViewerPageDown"),
+            (ViewerScrollTop, "ViewerScrollTop"),
+            (ViewerScrollBottom, "ViewerScrollBottom"),
+            (ViewerSearchDialog, "ViewerSearchDialog"),
+            (ViewerFindNext, "ViewerFindNext"),
+            (ViewerFindPrevious, "ViewerFindPrevious"),
+            (ViewerSelectAll, "ViewerSelectAll"),
+            (ViewerToggleMode, "ViewerToggleMode"),
+            (ViewerChangeEncoding, "ViewerChangeEncoding"),
+            (ViewerCopy, "ViewerCopy"),
+            (ViewerContextMenu, "ViewerContextMenu"),
         ]
     };
 
@@ -287,6 +333,26 @@ impl Command {
     /// 全コマンドを列挙する（設定 UI 用）。
     pub fn all() -> impl Iterator<Item = Command> {
         Self::ALL.iter().map(|(c, _)| *c)
+    }
+
+    /// このコマンドが有効な文脈を返す。設定 UI はこれでページごとに候補を絞る。
+    pub fn contexts(self) -> &'static [CommandContext] {
+        use Command::*;
+        use CommandContext::*;
+        match self {
+            ViewerScrollUp | ViewerScrollDown | ViewerPageUp | ViewerPageDown | ViewerScrollTop
+            | ViewerScrollBottom | ViewerSearchDialog | ViewerFindNext | ViewerFindPrevious
+            | ViewerSelectAll | ViewerToggleMode | ViewerChangeEncoding | ViewerCopy
+            | ViewerContextMenu => &[TextViewer],
+            ViewerClose => &[TextViewer, ImageViewer],
+            Edit | OpenSettings => &[Filer, TextViewer],
+            _ => &[Filer],
+        }
+    }
+
+    /// このコマンドが指定文脈で有効か。
+    pub fn available_in(self, ctx: CommandContext) -> bool {
+        self.contexts().contains(&ctx)
     }
 }
 
@@ -410,11 +476,16 @@ const KEY_NAMES: &[(u16, &str)] = &[
     (vk::ESCAPE, "Esc"),
     (vk::F1, "F1"),
     (vk::F2, "F2"),
+    (vk::F3, "F3"),
     (vk::F4, "F4"),
     (vk::F5, "F5"),
+    (vk::F6, "F6"),
     (vk::F7, "F7"),
+    (vk::F8, "F8"),
     (vk::F9, "F9"),
     (vk::F10, "F10"),
+    (vk::F11, "F11"),
+    (vk::F12, "F12"),
     (vk::NUMPAD0, "NumPad0"),
     (vk::NUMPAD1, "NumPad1"),
     (vk::NUMPAD2, "NumPad2"),
@@ -637,6 +708,43 @@ impl KeyMap {
     /// バインドが空のマップを作る。
     pub fn new() -> Self {
         Self { map: HashMap::new() }
+    }
+
+    /// テキストビューアの既定キーバインド（実装済みコマンド分）。
+    /// 横スクロール（Left/Right）は折返し表示のため割り当てない。個人設定は
+    /// config.toml の `[keybinds_textviewer]` で上乗せする。
+    pub fn default_textviewer() -> Self {
+        use Command::*;
+        let mut m = Self::new();
+        // 終了（Enter / Esc / Q）。
+        m.bind(KeyChord::key(vk::RETURN), ViewerClose);
+        m.bind(KeyChord::key(vk::ESCAPE), ViewerClose);
+        m.bind(KeyChord::key(vk::Q), ViewerClose);
+        // スクロール（↑↓ / PageUp/Down / Home/End、Ctrl で先頭・末尾）。
+        m.bind(KeyChord::key(vk::UP), ViewerScrollUp);
+        m.bind(KeyChord::key(vk::DOWN), ViewerScrollDown);
+        m.bind(KeyChord::key(vk::PRIOR), ViewerPageUp);
+        m.bind(KeyChord::key(vk::NEXT), ViewerPageDown);
+        m.bind(KeyChord::new(vk::PRIOR, true, false, false), ViewerScrollTop);
+        m.bind(KeyChord::new(vk::NEXT, true, false, false), ViewerScrollBottom);
+        m.bind(KeyChord::key(vk::HOME), ViewerScrollTop);
+        m.bind(KeyChord::new(vk::HOME, true, false, false), ViewerScrollTop);
+        m.bind(KeyChord::key(vk::END), ViewerScrollBottom);
+        m.bind(KeyChord::new(vk::END, true, false, false), ViewerScrollBottom);
+        // 選択・コピー（Ctrl+A / Ctrl+C）。
+        m.bind(KeyChord::new(vk::A, true, false, false), ViewerSelectAll);
+        m.bind(KeyChord::new(vk::C, true, false, false), ViewerCopy);
+        // 表示モード・文字コード（B / C）。
+        m.bind(KeyChord::key(vk::B), ViewerToggleMode);
+        m.bind(KeyChord::key(vk::C), ViewerChangeEncoding);
+        // 検索（Ctrl+F / Ctrl+S・次=N・前=P）。
+        m.bind(KeyChord::new(vk::F, true, false, false), ViewerSearchDialog);
+        m.bind(KeyChord::new(vk::S, true, false, false), ViewerSearchDialog);
+        m.bind(KeyChord::key(vk::N), ViewerFindNext);
+        m.bind(KeyChord::key(vk::P), ViewerFindPrevious);
+        // エディタ起動（E）。
+        m.bind(KeyChord::key(vk::E), Edit);
+        m
     }
 
     /// 引数なしコマンドを割り当てる（既定マップ記述用の簡易版）。
@@ -969,6 +1077,63 @@ mod tests {
         assert_eq!(m.resolve(&KeyChord::key(vk::DOWN)), None);
         // 空にしていない他キーは残る。
         assert_eq!(m.resolve(&KeyChord::key(vk::UP)), Some(Command::CursorUp));
+    }
+
+    #[test]
+    fn default_textviewer_binds_origin_keys() {
+        let m = KeyMap::default_textviewer();
+        assert_eq!(m.resolve(&KeyChord::key(vk::UP)), Some(Command::ViewerScrollUp));
+        assert_eq!(m.resolve(&KeyChord::key(vk::DOWN)), Some(Command::ViewerScrollDown));
+        assert_eq!(m.resolve(&KeyChord::key(vk::RETURN)), Some(Command::ViewerClose));
+        assert_eq!(m.resolve(&KeyChord::key(vk::ESCAPE)), Some(Command::ViewerClose));
+        assert_eq!(m.resolve(&KeyChord::key(vk::Q)), Some(Command::ViewerClose));
+        assert_eq!(m.resolve(&KeyChord::key(vk::B)), Some(Command::ViewerToggleMode));
+        assert_eq!(m.resolve(&KeyChord::key(vk::C)), Some(Command::ViewerChangeEncoding));
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::C, true, false, false)),
+            Some(Command::ViewerCopy)
+        );
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::A, true, false, false)),
+            Some(Command::ViewerSelectAll)
+        );
+        // 検索は Ctrl+F / Ctrl+S、次=N・前=P。
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::F, true, false, false)),
+            Some(Command::ViewerSearchDialog)
+        );
+        assert_eq!(m.resolve(&KeyChord::key(vk::N)), Some(Command::ViewerFindNext));
+        assert_eq!(m.resolve(&KeyChord::key(vk::P)), Some(Command::ViewerFindPrevious));
+        assert_eq!(m.resolve(&KeyChord::key(vk::E)), Some(Command::Edit));
+        // 横スクロールは割り当てない（折返し表示のため）。
+        assert_eq!(m.resolve(&KeyChord::key(vk::LEFT)), None);
+        assert_eq!(m.resolve(&KeyChord::key(vk::RIGHT)), None);
+    }
+
+    #[test]
+    fn command_contexts_partition() {
+        use CommandContext::*;
+        // ファイラー専用コマンドはテキストビューアでは無効。
+        assert!(Command::CursorDown.available_in(Filer));
+        assert!(!Command::CursorDown.available_in(TextViewer));
+        // ビューア専用はビューアのみ。
+        assert!(Command::ViewerToggleMode.available_in(TextViewer));
+        assert!(!Command::ViewerToggleMode.available_in(Filer));
+        // 共有コマンドは両方で有効。
+        assert!(Command::Edit.available_in(Filer));
+        assert!(Command::Edit.available_in(TextViewer));
+        // 終了は両ビューアで有効。
+        assert!(Command::ViewerClose.available_in(TextViewer));
+        assert!(Command::ViewerClose.available_in(ImageViewer));
+    }
+
+    #[test]
+    fn textviewer_string_map_roundtrip() {
+        let m = KeyMap::default_textviewer();
+        let sm = m.to_string_map();
+        let back = KeyMap::from_string_map(&sm);
+        assert_eq!(back.to_string_map(), sm);
+        assert_eq!(back.resolve(&KeyChord::key(vk::B)), Some(Command::ViewerToggleMode));
     }
 
     #[test]

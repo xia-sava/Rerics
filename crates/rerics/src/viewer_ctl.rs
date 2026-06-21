@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use winsafe::{self as w, co, prelude::*};
-use rerics_core::{Location, MediaKind, open_archive};
+use rerics_core::{Command, Invocation, KeyChord, Location, MediaKind, open_archive};
 use crate::media_view::NavResolver;
 use crate::file_list::FileListView;
 use crate::{ActiveView, MainWindow, dialog, join_inner_path, viewer};
@@ -241,35 +241,44 @@ impl MainWindow {
 
     /// ビューア表示中のキー操作。固定キー（設定対象外）。
     pub(crate) fn viewer_key(&self, vk: u16, ctrl: bool, shift: bool) -> w::AnyResult<()> {
-        use rerics_core::vk;
-        const VK_F: u16 = 0x46;
-        const VK_F3: u16 = 0x72;
-        const VK_Q: u16 = 0x51;
-        const VK_B: u16 = 0x42;
-        // Ctrl+C は選択コピー（C 単独はエンコーディング切替）。
-        if ctrl && vk == vk::C {
-            self.viewer.copy_selection()?;
-            return Ok(());
+        let chord = KeyChord::new(vk, ctrl, shift, false);
+        let resolved = self.viewer_keymap.borrow().resolve_inv(&chord).cloned();
+        if let Some(inv) = resolved {
+            self.exec_viewer(&inv)?;
         }
-        // Ctrl+A は全選択。
-        if ctrl && vk == vk::A {
-            self.viewer.select_all();
-            self.viewer.refresh()?;
-            return Ok(());
-        }
-        match vk {
-            vk::ESCAPE | VK_Q | vk::RETURN => self.close_viewer()?,
-            vk::UP => self.viewer.scroll_by(-1)?,
-            vk::DOWN => self.viewer.scroll_by(1)?,
-            vk::PRIOR => self.viewer.scroll_page(false)?,
-            vk::NEXT => self.viewer.scroll_page(true)?,
-            vk::HOME => self.viewer.scroll_home()?,
-            vk::END => self.viewer.scroll_end()?,
-            vk::C => self.viewer.cycle_encoding(true)?,
-            VK_B => self.viewer.toggle_mode()?,
-            VK_F => self.viewer_search()?,
-            // F3=次, Shift+F3=前。
-            VK_F3 => self.viewer.find_next(!shift)?,
+        Ok(())
+    }
+
+    /// テキストビューアのコマンドを実行する（キーバインド・メニューの共通入口）。
+    pub(crate) fn exec_viewer(&self, inv: &Invocation) -> w::AnyResult<()> {
+        match inv.command {
+            Command::ViewerClose => self.close_viewer()?,
+            Command::ViewerScrollUp => self.viewer.scroll_by(-1)?,
+            Command::ViewerScrollDown => self.viewer.scroll_by(1)?,
+            Command::ViewerPageUp => self.viewer.scroll_page(false)?,
+            Command::ViewerPageDown => self.viewer.scroll_page(true)?,
+            Command::ViewerScrollTop => self.viewer.scroll_home()?,
+            Command::ViewerScrollBottom => self.viewer.scroll_end()?,
+            Command::ViewerChangeEncoding => self.viewer.cycle_encoding(true)?,
+            Command::ViewerToggleMode => self.viewer.toggle_mode()?,
+            Command::ViewerSearchDialog => self.viewer_search()?,
+            Command::ViewerFindNext => self.viewer.find_next(true)?,
+            Command::ViewerFindPrevious => self.viewer.find_next(false)?,
+            Command::ViewerCopy => self.viewer.copy_selection()?,
+            Command::ViewerSelectAll => {
+                self.viewer.select_all();
+                self.viewer.refresh()?;
+            }
+            Command::ViewerContextMenu => {
+                let pt = self
+                    .viewer
+                    .hwnd()
+                    .ClientToScreen(w::POINT::default())
+                    .unwrap_or_default();
+                self.show_text_menu(pt)?;
+            }
+            Command::Edit => self.edit(!self.active_right.get())?,
+            Command::OpenSettings => self.open_settings()?,
             _ => {}
         }
         Ok(())

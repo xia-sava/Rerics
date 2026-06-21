@@ -289,8 +289,10 @@ pub struct Config {
     /// 読込・展開の待機スピナーを出すまでの遅延（ミリ秒）。これより速く終わる処理では
     /// スピナーを出さずチラつかせない。0 で即時表示。
     pub progress_delay_ms: u64,
-    /// キーバインド（チョード文字列 → コマンドトークン）。
+    /// キーバインド（チョード文字列 → コマンドトークン）。ファイラー用。
     pub keybinds: BTreeMap<String, String>,
+    /// テキストビューア用キーバインド（チョード文字列 → コマンドトークン）。
+    pub keybinds_textviewer: BTreeMap<String, String>,
     /// 登録ディレクトリ（ジャンプ先）。
     pub bookmarks: Vec<Bookmark>,
     /// Edit コマンドで開く外部エディタ（実行ファイル名 or パス）。
@@ -320,6 +322,7 @@ impl Default for Config {
             reverse_sort_date: false,
             progress_delay_ms: 1000,
             keybinds: KeyMap::default().to_string_map(),
+            keybinds_textviewer: KeyMap::default_textviewer().to_string_map(),
             bookmarks: Vec::new(),
             editor: "notepad.exe".to_owned(),
             cursor: CursorSettings::default(),
@@ -452,6 +455,11 @@ impl Config {
     /// 設定からキーマップを組む。
     pub fn keymap(&self) -> KeyMap {
         KeyMap::from_string_map(&self.keybinds)
+    }
+
+    /// 設定からテキストビューア用キーマップを組む。
+    pub fn keymap_textviewer(&self) -> KeyMap {
+        KeyMap::from_string_map(&self.keybinds_textviewer)
     }
 
     /// OS のライト判定（`system_is_light`）を渡して実テーマを解決する。

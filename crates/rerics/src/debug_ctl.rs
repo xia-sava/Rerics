@@ -2,7 +2,7 @@
 
 use std::sync::mpsc::Sender;
 use winsafe::{self as w, co, prelude::*};
-use rerics_core::{Command, Invocation};
+use rerics_core::{Command, CommandContext, Invocation};
 use crate::{ActiveView, DebugCmdClass, MainWindow, debug_command_class, debug_json, debug_server, parse_region};
 
 impl MainWindow {
@@ -93,6 +93,19 @@ impl MainWindow {
         };
         let inv = Invocation::new(cmd, args);
         let is_left = !self.active_right.get();
+        // テキストビューア表示中のビューアコマンドはビューア文脈で実行する。
+        if self.active_view.get() == ActiveView::Text && cmd.available_in(CommandContext::TextViewer)
+        {
+            let r = match self.exec_viewer(&inv) {
+                Ok(()) => {
+                    self.settle_pending_jobs();
+                    debug_server::Response::Json(self.debug_state_value().to_string())
+                }
+                Err(e) => debug_server::Response::Error(format!("exec error: {e}")),
+            };
+            let _ = tx.send(r);
+            return;
+        }
         match debug_command_class(cmd) {
             DebugCmdClass::NonModal => {
                 let r = match self.exec(is_left, &inv) {
@@ -304,7 +317,9 @@ impl MainWindow {
         debug_server::Response::Json(self.debug_state_value().to_string())
     }
 
-    /// `POST /view/key/<action>`：重ね表示中ビューアの操作（next/prev/close）。
+    /// `POST /view/key/<action>`：重ね表示中ビューアの操作。`next`/`prev`/`close` の特殊操作のほか、
+    /// キーチョード名（`Esc`・`B`・`Ctrl+F` 等）を渡すと、表示中のビューアの実キー経路
+    /// （キーマップ解決→コマンド実行）へそのまま流す。
     #[cfg(feature = "debug-server")]
     pub(crate) fn debug_view_key(&self, action: &str) -> debug_server::Response {
         let r = match action {
@@ -312,7 +327,18 @@ impl MainWindow {
             "prev" => self.media.navigate(-1),
             "close" => self.close_viewer(),
             _ => {
-                return debug_server::Response::BadRequest(format!("unknown view action: {action}"));
+                let Some(chord) = rerics_core::KeyChord::parse(action) else {
+                    return debug_server::Response::BadRequest(format!(
+                        "unknown view action: {action}"
+                    ));
+                };
+                match self.active_view.get() {
+                    ActiveView::Text => self.viewer_key(chord.vk, chord.ctrl, chord.shift),
+                    ActiveView::Media => self.media_key(chord.vk, chord.ctrl, chord.shift),
+                    ActiveView::None => {
+                        return debug_server::Response::BadRequest("no viewer active".to_string());
+                    }
+                }
             }
         };
         match r {
