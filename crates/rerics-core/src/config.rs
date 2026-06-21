@@ -271,8 +271,8 @@ impl Default for IconSettings {
     }
 }
 
-/// ファイル操作の事前確認ダイアログ設定（原作 FileOperation/AskBefore*）。各操作の前に
-/// 確認ダイアログを出すかどうかを切り替える。
+/// ファイル操作の事前確認ダイアログ設定。各操作の前に確認ダイアログを出すかどうかを
+/// 切り替える。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FileOpSettings {
@@ -284,6 +284,10 @@ pub struct FileOpSettings {
     pub ask_before_delete: bool,
     /// 書庫の展開時、書庫名のディレクトリを作ってその中へ取り出す（既定オフ）。
     pub extract_create_directory: bool,
+    /// ディレクトリのコピー時、コピー先ディレクトリへ元の属性も複製する（既定オン）。
+    pub copy_attribute: bool,
+    /// ディレクトリのコピー時、コピー先ディレクトリへ元の作成/更新日時も複製する（既定オン）。
+    pub copy_date: bool,
 }
 
 impl Default for FileOpSettings {
@@ -293,6 +297,8 @@ impl Default for FileOpSettings {
             ask_before_move: false,
             ask_before_delete: true,
             extract_create_directory: false,
+            copy_attribute: true,
+            copy_date: true,
         }
     }
 }

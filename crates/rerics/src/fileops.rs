@@ -350,12 +350,20 @@ impl MainWindow {
         move_it: bool,
     ) -> w::AnyResult<()> {
         let control = Arc::new(TaskControl::new());
+        let copy_opts = {
+            let f = self.config.borrow().file_ops;
+            rerics_core::CopyOptions {
+                copy_attribute: f.copy_attribute,
+                copy_date: f.copy_date,
+            }
+        };
         let host = ChannelHost::new(
             self.task_tx.clone(),
             self.shutdown.clone(),
             control.clone(),
             self.progress_seq.clone(),
-        );
+        )
+        .with_copy_options(copy_opts);
         let kind = if move_it { OpKind::Move } else { OpKind::Copy };
         let id = self.next_id();
         let text = if move_it { "移動" } else { "コピー" };

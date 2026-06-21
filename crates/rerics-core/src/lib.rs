@@ -47,7 +47,8 @@ pub use media::{
     rgba_to_bgra, rgba_to_clipboard_dib, rotate_rgba, rotated_dims,
 };
 pub use operation::{
-    ConflictResolution, DeleteWarnChoice, DirInfo, OpSummary, OperationHost, ProgressHandle,
+    ConflictResolution, CopyOptions, DeleteWarnChoice, DirInfo, OpSummary, OperationHost,
+    ProgressHandle,
     run_archive_add, run_archive_delete, run_archive_rebuild, run_archive_rename, run_calc_size,
     run_compress, run_copy, run_delete, run_extract,
 };

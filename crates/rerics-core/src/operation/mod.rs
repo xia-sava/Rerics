@@ -80,6 +80,19 @@ pub trait OperationHost {
     fn update_progress(&self, handle: ProgressHandle, text: &str) {
         let _ = (handle, text);
     }
+
+    /// ディレクトリコピー時に元ディレクトリの属性/日時を複製するかの設定。既定は複製しない
+    /// （設定を持たないホスト＝テスト等は従来どおり）。
+    fn copy_options(&self) -> CopyOptions {
+        CopyOptions::default()
+    }
+}
+
+/// ディレクトリのコピー時に、コピー先ディレクトリへ元の属性/作成・更新日時を複製するかの設定。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CopyOptions {
+    pub copy_attribute: bool,
+    pub copy_date: bool,
 }
 
 /// 操作の結果サマリ。
@@ -166,6 +179,109 @@ fn clear_attributes(path: &Path) {
         let _ = std::fs::set_permissions(path, perms);
     }
 }
+
+/// Win32 `FILETIME`（1601-01-01 からの 100ns 単位）。
+#[cfg(windows)]
+#[repr(C)]
+struct Filetime {
+    low: u32,
+    high: u32,
+}
+
+/// 新規作成したコピー先ディレクトリ `dst` へ、元ディレクトリ `src` の属性／作成・更新・
+/// アクセス日時を複製する（`opts` で有効な分だけ）。メタデータ複製はベストエフォートで、
+/// 失敗は無視する（コピー本体は既に成功している）。
+#[cfg(windows)]
+fn apply_dir_metadata(src: &Path, dst: &Path, opts: CopyOptions) {
+    use std::os::windows::ffi::OsStrExt;
+    use std::time::SystemTime;
+
+    if !opts.copy_attribute && !opts.copy_date {
+        return;
+    }
+    let Ok(meta) = std::fs::metadata(src) else {
+        return;
+    };
+    let wide = |p: &Path| -> Vec<u16> {
+        p.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
+    };
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetFileAttributesW(path: *const u16) -> u32;
+        fn SetFileAttributesW(path: *const u16, attrs: u32) -> i32;
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            sec: *mut core::ffi::c_void,
+            disposition: u32,
+            flags: u32,
+            template: *mut core::ffi::c_void,
+        ) -> *mut core::ffi::c_void;
+        fn SetFileTime(
+            handle: *mut core::ffi::c_void,
+            creation: *const Filetime,
+            access: *const Filetime,
+            write: *const Filetime,
+        ) -> i32;
+        fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
+    }
+
+    if opts.copy_attribute {
+        let s = wide(src);
+        let attrs = unsafe { GetFileAttributesW(s.as_ptr()) };
+        if attrs != u32::MAX {
+            let d = wide(dst);
+            unsafe {
+                SetFileAttributesW(d.as_ptr(), attrs);
+            }
+        }
+    }
+
+    if opts.copy_date {
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+        const FILE_SHARE_ALL: u32 = 0x7;
+        const OPEN_EXISTING: u32 = 3;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        let d = wide(dst);
+        let handle = unsafe {
+            CreateFileW(
+                d.as_ptr(),
+                FILE_WRITE_ATTRIBUTES,
+                FILE_SHARE_ALL,
+                core::ptr::null_mut(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                core::ptr::null_mut(),
+            )
+        };
+        // INVALID_HANDLE_VALUE == -1。
+        if handle as isize != -1 {
+            let to_ft = |t: Result<SystemTime, _>| -> Option<Filetime> {
+                let dur = t.ok()?.duration_since(SystemTime::UNIX_EPOCH).ok()?;
+                let ticks = dur.as_secs() * 10_000_000
+                    + (dur.subsec_nanos() / 100) as u64
+                    + 116_444_736_000_000_000;
+                Some(Filetime { low: ticks as u32, high: (ticks >> 32) as u32 })
+            };
+            let cre = to_ft(meta.created());
+            let acc = to_ft(meta.accessed());
+            let wri = to_ft(meta.modified());
+            let ptr = |o: &Option<Filetime>| {
+                o.as_ref().map_or(core::ptr::null(), |f| f as *const Filetime)
+            };
+            unsafe {
+                SetFileTime(handle, ptr(&cre), ptr(&acc), ptr(&wri));
+                CloseHandle(handle);
+            }
+        }
+    }
+}
+
+/// 非 Windows ではディレクトリの更新日時のみベストエフォートで複製する（属性・作成日時は対象外）。
+#[cfg(not(windows))]
+fn apply_dir_metadata(_src: &Path, _dst: &Path, _opts: CopyOptions) {}
 
 /// コピー進捗の「3秒経過後、％が変わったときだけ通知する」判定器。
 struct ProgressTracker {

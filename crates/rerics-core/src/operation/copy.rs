@@ -70,6 +70,7 @@ fn copy_item(
     }
 
     if src.is_dir() {
+        let mut created = false;
         if dst.exists() {
             host.log(LogLevel::Warning, &messages::all_ready_exists(&name));
             sum.skip += 1;
@@ -80,6 +81,7 @@ fn copy_item(
         } else {
             host.log(LogLevel::Normal, &messages::create_directory(&name));
             sum.ok += 1;
+            created = true;
         }
         let entries = match std::fs::read_dir(src) {
             Ok(e) => e,
@@ -98,6 +100,11 @@ fn copy_item(
             if let Flow::Cancel = copy_item(host, &entry.path(), &child_dst, move_it, sum) {
                 return Flow::Cancel;
             }
+        }
+        // 配下を入れ終えてからディレクトリ自身の属性/日時を複製する（子の書き込みで更新日時が
+        // 変わるため最後に行う）。新規作成したディレクトリにだけ適用する。
+        if created {
+            apply_dir_metadata(src, dst, host.copy_options());
         }
         if move_it {
             let _ = std::fs::remove_dir(src);

@@ -41,6 +41,7 @@
         cancel_after: isize,
         conflict: ConflictResolution,
         delete_warn: DeleteWarnChoice,
+        copy_opts: CopyOptions,
     }
 
     impl FakeHost {
@@ -50,6 +51,7 @@
                 cancel_after: -1,
                 conflict: ConflictResolution::Overwrite,
                 delete_warn: DeleteWarnChoice::Yes,
+                copy_opts: CopyOptions::default(),
             }
         }
 
@@ -101,6 +103,10 @@
 
         fn confirm_delete_attr(&self, _name: &str, _attr: &str) -> DeleteWarnChoice {
             self.delete_warn
+        }
+
+        fn copy_options(&self) -> CopyOptions {
+            self.copy_opts
         }
     }
 
@@ -230,6 +236,39 @@
         assert_eq!(sum.ok, 0);
         assert!(host.lines().iter().any(|l| l.contains("ディレクトリ属性が異なる")));
         assert!(dst.join("a").is_file(), "既存ファイルは残る");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn copy_dir_replicates_modified_date() {
+        // copy_date を有効にすると、コピー先ディレクトリの更新日時が元と一致する。
+        let src = TempDir::new();
+        let dst = TempDir::new();
+        std::fs::create_dir_all(src.join("d")).unwrap();
+        src.write_file("d/inner.txt", "x");
+        let src_mtime = std::fs::metadata(src.join("d")).unwrap().modified().unwrap();
+        let host = FakeHost {
+            copy_opts: CopyOptions { copy_attribute: true, copy_date: true },
+            ..FakeHost::new()
+        };
+        run_copy(&host, &src.path, &dst.path, &["d".to_owned()], false);
+        let dst_mtime = std::fs::metadata(dst.join("d")).unwrap().modified().unwrap();
+        assert_eq!(dst_mtime, src_mtime, "コピー先ディレクトリの更新日時が元と一致するはず");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn copy_dir_without_copy_date_uses_fresh_time() {
+        // copy_date を無効（既定）にすると、コピー先の更新日時は元と一致しない（新規作成時刻）。
+        let src = TempDir::new();
+        let dst = TempDir::new();
+        std::fs::create_dir_all(src.join("d")).unwrap();
+        src.write_file("d/inner.txt", "x");
+        let src_mtime = std::fs::metadata(src.join("d")).unwrap().modified().unwrap();
+        let host = FakeHost::new(); // copy_opts 既定＝複製しない
+        run_copy(&host, &src.path, &dst.path, &["d".to_owned()], false);
+        let dst_mtime = std::fs::metadata(dst.join("d")).unwrap().modified().unwrap();
+        assert_ne!(dst_mtime, src_mtime, "複製しない設定では元の日時を引き継がない");
     }
 
     #[test]

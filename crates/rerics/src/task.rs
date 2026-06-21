@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::Instant;
 
-use rerics_core::{ConflictResolution, DeleteWarnChoice, LogLevel, OperationHost, ProgressHandle};
+use rerics_core::{
+    ConflictResolution, CopyOptions, DeleteWarnChoice, LogLevel, OperationHost, ProgressHandle,
+};
 
 use crate::dialog::MessageResult;
 
@@ -169,6 +171,8 @@ pub struct ChannelHost {
     pub progress_seq: Arc<AtomicU64>,
     pub conflict_cache: RefCell<Option<ConflictResolution>>,
     pub delete_warn_cache: RefCell<Option<DeleteWarnChoice>>,
+    /// ディレクトリコピー時の属性/日時複製の設定。既定は複製しない。
+    pub copy_opts: CopyOptions,
 }
 
 impl ChannelHost {
@@ -185,13 +189,24 @@ impl ChannelHost {
             progress_seq,
             conflict_cache: RefCell::new(None),
             delete_warn_cache: RefCell::new(None),
+            copy_opts: CopyOptions::default(),
         }
+    }
+
+    /// ディレクトリコピー時の属性/日時複製の設定を与える（コピー/移動の起動時に config から）。
+    pub fn with_copy_options(mut self, opts: CopyOptions) -> Self {
+        self.copy_opts = opts;
+        self
     }
 }
 
 impl OperationHost for ChannelHost {
     fn log(&self, level: LogLevel, text: &str) {
         let _ = self.tx.send(WorkerEvent::Log { level, text: text.to_owned() });
+    }
+
+    fn copy_options(&self) -> CopyOptions {
+        self.copy_opts
     }
 
     fn cancelled(&self) -> bool {
