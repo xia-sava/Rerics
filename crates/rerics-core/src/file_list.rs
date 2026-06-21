@@ -462,6 +462,27 @@ pub enum ColumnKind {
 }
 
 impl ColumnKind {
+    /// この列のヘッダクリックで適用するソート種別。ファイル名・拡張子は、
+    /// 現在のソートが自然順（ExpLike）であればその自然順版を維持する。
+    pub fn sort_target(self, current: SortType) -> SortType {
+        let exp_like = matches!(
+            current,
+            SortType::FileNameExpLike | SortType::ExtensionExpLike
+        );
+        match self {
+            ColumnKind::FileName | ColumnKind::FileBaseName => {
+                if exp_like { SortType::FileNameExpLike } else { SortType::FileName }
+            }
+            ColumnKind::FileExtension => {
+                if exp_like { SortType::ExtensionExpLike } else { SortType::Extension }
+            }
+            ColumnKind::Length => SortType::Length,
+            ColumnKind::CreateTime | ColumnKind::CreateTimeS => SortType::CreateTime,
+            ColumnKind::LastWriteTime | ColumnKind::LastWriteTimeS => SortType::LastWriteTime,
+            ColumnKind::Attribute => SortType::Attribute,
+        }
+    }
+
     /// 列見出しの既定ラベル（日付の桁数違いは同じ見出し）。
     pub fn header_label(self) -> &'static str {
         match self {
@@ -1583,6 +1604,38 @@ mod tests {
         s.sort(SortType::FileNameExpLike, false);
         let names: Vec<&str> = s.items.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, vec!["file1", "file2", "file10"]);
+    }
+
+    #[test]
+    fn header_sort_target_follows_explike_mode() {
+        // 通常ソート中は名前・拡張子とも通常版。
+        assert_eq!(ColumnKind::FileName.sort_target(SortType::FileName), SortType::FileName);
+        assert_eq!(
+            ColumnKind::FileExtension.sort_target(SortType::FileName),
+            SortType::Extension
+        );
+        // 自然順ソート中は名前・拡張子とも自然順版を維持する。
+        assert_eq!(
+            ColumnKind::FileName.sort_target(SortType::FileNameExpLike),
+            SortType::FileNameExpLike
+        );
+        assert_eq!(
+            ColumnKind::FileExtension.sort_target(SortType::FileNameExpLike),
+            SortType::ExtensionExpLike
+        );
+        assert_eq!(
+            ColumnKind::FileBaseName.sort_target(SortType::ExtensionExpLike),
+            SortType::FileNameExpLike
+        );
+        // 名前以外の列は ExpLike モードに左右されない。
+        assert_eq!(
+            ColumnKind::Length.sort_target(SortType::FileNameExpLike),
+            SortType::Length
+        );
+        assert_eq!(
+            ColumnKind::CreateTimeS.sort_target(SortType::FileNameExpLike),
+            SortType::CreateTime
+        );
     }
 
     #[test]

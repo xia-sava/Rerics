@@ -754,19 +754,12 @@ impl FileListView {
         Ok(())
     }
 
-    /// 列のソート種別へ切替える（同種別なら reverse 反転）。
+    /// 列のソート種別へ切替える。現在のソートが自然順なら名前・拡張子は自然順を
+    /// 維持し、同じ種別への再クリックなら reverse を反転する。
     fn sort_by_column(&self, col: usize) -> w::AnyResult<()> {
-        let kind = self.inner.state.borrow().columns[col].kind;
-        let target = match kind {
-            ColumnKind::FileName | ColumnKind::FileBaseName => SortType::FileName,
-            ColumnKind::FileExtension => SortType::Extension,
-            ColumnKind::Length => SortType::Length,
-            ColumnKind::CreateTime | ColumnKind::CreateTimeS => SortType::CreateTime,
-            ColumnKind::LastWriteTime | ColumnKind::LastWriteTimeS => SortType::LastWriteTime,
-            ColumnKind::Attribute => SortType::Attribute,
-        };
         {
             let mut s = self.inner.state.borrow_mut();
+            let target = s.columns[col].kind.sort_target(s.sort_type);
             let reverse = if s.sort_type == target { !s.sort_reverse } else { false };
             s.sort(target, reverse);
         }
