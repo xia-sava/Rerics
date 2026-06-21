@@ -204,6 +204,35 @@
     }
 
     #[test]
+    fn copy_file_onto_existing_dir_skips() {
+        // src に file a、dst に同名 dir a が既存＝種別不一致 → 上書きせずスキップ。
+        let src = TempDir::new();
+        let dst = TempDir::new();
+        src.write_file("a", "hello");
+        std::fs::create_dir_all(dst.join("a")).unwrap();
+        let host = FakeHost::new();
+        let sum = run_copy(&host, &src.path, &dst.path, &["a".to_owned()], false);
+        assert_eq!(sum, OpSummary { ok: 0, skip: 1, err: 0, cancelled: false });
+        assert!(host.lines().iter().any(|l| l.contains("ディレクトリ属性が異なる")));
+        assert!(dst.join("a").is_dir(), "既存ディレクトリは上書きされない");
+    }
+
+    #[test]
+    fn copy_dir_onto_existing_file_skips() {
+        // src に dir a、dst に同名 file a が既存＝種別不一致 → スキップ。
+        let src = TempDir::new();
+        let dst = TempDir::new();
+        std::fs::create_dir_all(src.join("a")).unwrap();
+        dst.write_file("a", "x");
+        let host = FakeHost::new();
+        let sum = run_copy(&host, &src.path, &dst.path, &["a".to_owned()], false);
+        assert_eq!(sum.skip, 1);
+        assert_eq!(sum.ok, 0);
+        assert!(host.lines().iter().any(|l| l.contains("ディレクトリ属性が異なる")));
+        assert!(dst.join("a").is_file(), "既存ファイルは残る");
+    }
+
+    #[test]
     fn copy_same_path_guarded() {
         let dir = TempDir::new();
         dir.write_file("a.txt", "x");

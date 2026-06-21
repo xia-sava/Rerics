@@ -166,6 +166,12 @@ pub fn same_move_path(name: &str) -> String {
     format!("移動先が同じです。- {name}")
 }
 
+/// `ディレクトリ属性が異なるため{0}出来ません。- {1}`（ファイルとディレクトリの種別不一致で
+/// スキップ）。`verb` は `コピー`/`移動`。
+pub fn unmatch_attribute(verb: &str, name: &str) -> String {
+    format!("ディレクトリ属性が異なるため{verb}出来ません。- {name}")
+}
+
 /// `すでに存在します。- {0}`。
 pub fn all_ready_exists(name: &str) -> String {
     format!("すでに存在します。- {name}")

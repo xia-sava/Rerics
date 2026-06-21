@@ -60,6 +60,15 @@ fn copy_item(
         return Flow::Continue;
     }
 
+    // 同名があり、片方がディレクトリで片方がファイル＝種別不一致はスキップする
+    // （上書きや無駄な衝突確認をせず、その項目だけ飛ばす）。
+    if dst.exists() && src.is_dir() != dst.is_dir() {
+        let verb = if move_it { "移動" } else { "コピー" };
+        host.log(LogLevel::Warning, &messages::unmatch_attribute(verb, &name));
+        sum.skip += 1;
+        return Flow::Continue;
+    }
+
     if src.is_dir() {
         if dst.exists() {
             host.log(LogLevel::Warning, &messages::all_ready_exists(&name));
