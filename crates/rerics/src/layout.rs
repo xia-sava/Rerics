@@ -110,10 +110,36 @@ impl MainWindow {
         self.layout()
     }
 
-    /// 境界を `delta`（物理px・左ペインが正で広がる）だけ動かす。
+    /// 境界を `delta`（物理px・左ペインが正で広がる）だけ動かす。中央（50%）を
+    /// またぐ移動は中央へ吸着させる。
     pub(crate) fn border_move(&self, delta: i32) -> w::AnyResult<()> {
         let pt = self.panes_total()?;
         let cur_left = (pt as f64 * self.split_ratio.get()).round() as i32;
-        self.set_left_width(cur_left + delta)
+        let next = snap_to_center(cur_left, cur_left + delta, pt / 2);
+        self.set_left_width(next)
+    }
+}
+
+/// 左ペイン幅 `cur` から `next` への移動が中央 `center` をまたぐとき、中央へ吸着させる。
+/// またがない移動はそのまま `next` を返す（中央ちょうどからは外へ出られる）。
+fn snap_to_center(cur: i32, next: i32, center: i32) -> i32 {
+    if (cur < center && next > center) || (cur > center && next < center) {
+        center
+    } else {
+        next
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::snap_to_center;
+
+    #[test]
+    fn center_snap_catches_only_crossing() {
+        assert_eq!(snap_to_center(40, 60, 50), 50); // 左→右でまたぐ
+        assert_eq!(snap_to_center(60, 40, 50), 50); // 右→左でまたぐ
+        assert_eq!(snap_to_center(40, 48, 50), 48); // またがない
+        assert_eq!(snap_to_center(50, 70, 50), 70); // 中央からは外へ出られる
+        assert_eq!(snap_to_center(80, 60, 50), 60); // 同じ側の移動はそのまま
     }
 }
