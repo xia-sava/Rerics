@@ -1439,6 +1439,10 @@ fn shell_send_to_recycled() {
     let items = poll(&server, "/state/panes/left/items", |b| !b.contains("a_del.txt"));
     assert!(!items.contains("\"name\":\"a_del.txt\""), "recycled file should leave the pane: {items}");
     assert!(items.contains("\"name\":\"z_keep.txt\""), "other files remain: {items}");
+
+    // 項目別の逐次ログが出る。
+    let log = poll(&server, "/state/log", |b| b.contains("SendToRecycled"));
+    assert!(log.contains("SendToRecycled a_del.txt"), "per-item recycle log should appear: {log}");
 }
 
 /// CreateShortcut＝カーソル項目を指す .lnk を同じ場所に作る。

@@ -680,10 +680,12 @@ impl MainWindow {
             }
         }
         let dir = self.pane(is_left).borrow().path().to_path_buf();
-        let paths: Vec<PathBuf> = names.iter().map(|n| dir.join(n)).collect();
-        match shell::send_to_recycle(&paths) {
-            Ok(()) => self.log.normal(&format!("ゴミ箱へ送りました: {} 件", names.len())),
-            Err(e) => self.log.error(&format!("ゴミ箱送りに失敗しました: {e}")),
+        for name in &names {
+            self.log.normal(&messages::send_to_recycled(name));
+            let path = dir.join(name);
+            if let Err(e) = shell::send_to_recycle(std::slice::from_ref(&path)) {
+                self.log.error(&messages::send_to_recycled_failure(name, &e));
+            }
         }
         self.reload_side(is_left)?;
         Ok(())

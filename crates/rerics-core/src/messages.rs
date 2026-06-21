@@ -36,6 +36,16 @@ pub fn delete_directory(name: &str) -> String {
     format!("DeleteDirectory {name}")
 }
 
+/// `SendToRecycled {0}`（ゴミ箱送りの逐次ログ）。
+pub fn send_to_recycled(name: &str) -> String {
+    format!("SendToRecycled {name}")
+}
+
+/// `ゴミ箱送りに失敗しました。- {0}`（{0}=ファイル名。理由も併記する）。
+pub fn send_to_recycled_failure(name: &str, reason: &str) -> String {
+    format!("ゴミ箱送りに失敗しました。- {name} ({reason})")
+}
+
 /// `Skip {0}`（スキップの逐次ログ）。
 pub fn skip(name: &str) -> String {
     format!("Skip {name}")
