@@ -286,6 +286,19 @@ impl MainWindow {
         // 子宛メッセージでないと発動しないため、フォーカス中の窓へ送る（無ければモーダルへ）。
         let send_down = phase != Some("up");
         let send_up = phase != Some("down");
+        // フォーカスがモーダル内に無いと IsDialogMessage が enter/esc/矢印を翻訳できず、
+        // 一発勝負の合成キーが取りこぼされる（非アクティブ・オフスクリーン時に稀に起きる）。
+        // UI スレッドのこのタイミングで先頭タブストップへフォーカスを寄せ、確実に届かせる。
+        let focus_in_modal = w::HWND::GetFocus()
+            .map(|f| f.ptr() == modal.ptr() || modal.IsChild(&f))
+            .unwrap_or(false);
+        if !focus_in_modal {
+            if let Ok(first) = modal.GetNextDlgTabItem(&w::HWND::NULL, false) {
+                if !first.ptr().is_null() {
+                    first.SetFocus();
+                }
+            }
+        }
         let focus = w::HWND::GetFocus();
         let target = focus.as_ref().unwrap_or(&modal);
         unsafe {
