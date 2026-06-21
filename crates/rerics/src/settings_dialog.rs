@@ -917,7 +917,9 @@ const NAV_ROWS: &[NavRow] = &[
     NavRow::Header("登録"),
     NavRow::Page { label: "登録ディレクトリ", pane: 4 },
     NavRow::Header("キー"),
-    NavRow::Page { label: "キー割り当て", pane: 5 },
+    NavRow::Page { label: "ファイラー", pane: 5 },
+    NavRow::Page { label: "テキストビューア", pane: 10 },
+    NavRow::Page { label: "画像ビューア", pane: 11 },
 ];
 
 struct NavInner {
@@ -2330,7 +2332,15 @@ impl RegisteredPane {
     }
 }
 
-/// 「キー」ページ（割り当ての一覧表示）。
+/// 「キー」ページが表示する対象のキーマップ。
+#[derive(Clone, Copy)]
+enum KeyCategory {
+    Filer,
+    TextViewer,
+    ImageViewer,
+}
+
+/// 「キー」ページ（割り当ての一覧表示・読み取り専用）。
 #[derive(Clone)]
 struct KeysPane {
     list: gui::ListBox,
@@ -2338,8 +2348,14 @@ struct KeysPane {
 }
 
 impl KeysPane {
-    fn new(parent: &gui::WindowControl, shared: &Rc<Shared>) -> Self {
-        label(parent, "現在のキー割り当て（変更は config.toml で行います）", 16, 12, 400);
+    fn new(parent: &gui::WindowControl, shared: &Rc<Shared>, category: KeyCategory) -> Self {
+        label(
+            parent,
+            "現在のキー割り当て（変更は config.toml で行います）",
+            16,
+            12,
+            500,
+        );
         let list = gui::ListBox::new(
             parent,
             gui::ListBoxOpts {
@@ -2348,13 +2364,13 @@ impl KeysPane {
                 ..Default::default()
             },
         );
-        let rows: Vec<String> = shared
-            .cfg
-            .borrow()
-            .keybinds
-            .iter()
-            .map(|(k, v)| format!("{k:<16} {v}"))
-            .collect();
+        let cfg = shared.cfg.borrow();
+        let map = match category {
+            KeyCategory::Filer => &cfg.keybinds,
+            KeyCategory::TextViewer => &cfg.keybinds_textviewer,
+            KeyCategory::ImageViewer => &cfg.keybinds_imageviewer,
+        };
+        let rows: Vec<String> = map.iter().map(|(k, v)| format!("{k:<16} {v}")).collect();
         Self { list, rows: Rc::new(rows) }
     }
 
@@ -2393,6 +2409,8 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     let pane_list = make_pane(&wnd, pane_pos, pane_wide); // 7
     let pane_behavior = make_pane(&wnd, pane_pos, pane_wide); // 8
     let pane_viewer_colors = make_pane(&wnd, pane_pos, pane_size); // 9
+    let pane_keys_text = make_pane(&wnd, pane_pos, pane_wide); // 10
+    let pane_keys_image = make_pane(&wnd, pane_pos, pane_wide); // 11
     let panes = vec![
         pane_appearance.clone(),
         pane_colors.clone(),
@@ -2404,6 +2422,8 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         pane_list.clone(),
         pane_behavior.clone(),
         pane_viewer_colors.clone(),
+        pane_keys_text.clone(),
+        pane_keys_image.clone(),
     ];
 
     // 右カラム：プレビュー（外観カテゴリ選択中だけ表示）。表示テーマは「配色テーマ」に追従する
@@ -2431,7 +2451,9 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     build_list(&pane_list, &shared);
     let columns_editor = ColumnsEditor::new(&pane_list, &shared);
     let registered = RegisteredPane::new(&pane_registered, &shared);
-    let keys = KeysPane::new(&pane_keys, &shared);
+    let keys = KeysPane::new(&pane_keys, &shared, KeyCategory::Filer);
+    let keys_text = KeysPane::new(&pane_keys_text, &shared, KeyCategory::TextViewer);
+    let keys_image = KeysPane::new(&pane_keys_image, &shared, KeyCategory::ImageViewer);
 
     // 配色 pane（ファイル一覧・ログ）とテキストビューア pane（ビューア専用色）。
     // 色変更後はそれぞれ対応するプレビューだけを再描画する。
@@ -2487,6 +2509,8 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         let nav = nav.clone();
         let panes = panes.clone();
         let keys = keys.clone();
+        let keys_text = keys_text.clone();
+        let keys_image = keys_image.clone();
         let registered = registered.clone();
         let columns_editor = columns_editor.clone();
         #[cfg(feature = "debug-server")]
@@ -2500,6 +2524,8 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
             nav.hwnd().SetFocus();
             registered.populate();
             keys.populate();
+            keys_text.populate();
+            keys_image.populate();
             columns_editor.populate();
             #[cfg(feature = "debug-server")]
             crate::debug_server::modal_registry::push(
@@ -2569,7 +2595,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     let _ = wnd.show_modal(parent);
     #[cfg(feature = "debug-server")]
     crate::debug_server::modal_registry::pop();
-    let _ = (nav, panes, keys, registered, ok, cancel, apply, preview_label, preview, viewer_preview);
+    let _ = (nav, panes, keys, keys_text, keys_image, registered, ok, cancel, apply, preview_label, preview, viewer_preview);
 }
 
 #[cfg(test)]
