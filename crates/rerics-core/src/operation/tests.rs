@@ -324,6 +324,63 @@
     }
 
     #[test]
+    fn delete_directory_recurses_and_counts_each_item() {
+        let root = TempDir::new();
+        let d = root.join("d");
+        let sub = d.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(d.join("c.txt"), "c").unwrap();
+        std::fs::write(sub.join("a.txt"), "a").unwrap();
+        std::fs::write(sub.join("b.txt"), "b").unwrap();
+        let host = FakeHost::new();
+        let sum = run_delete(&host, &root.path, &["d".to_owned()]);
+        // ファイル3＋ディレクトリ2（sub・d）の計5件。
+        assert_eq!(sum.ok, 5);
+        assert_eq!(sum.err, 0);
+        assert!(!d.exists());
+    }
+
+    #[test]
+    fn delete_keeps_directory_when_child_kept() {
+        let root = TempDir::new();
+        let d = root.join("d");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("plain.txt"), "p").unwrap();
+        let ro = d.join("ro.txt");
+        std::fs::write(&ro, "r").unwrap();
+        let mut perms = std::fs::metadata(&ro).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&ro, perms).unwrap();
+        // 属性ファイルは「いいえ」で残す → 親ディレクトリも空にならず残る。
+        let host = FakeHost::with_delete_warn(DeleteWarnChoice::No);
+        let sum = run_delete(&host, &root.path, &["d".to_owned()]);
+        assert_eq!(sum.ok, 1); // plain.txt のみ削除。
+        assert!(ro.exists());
+        assert!(d.exists());
+        // 後始末。
+        let mut perms = std::fs::metadata(&ro).unwrap().permissions();
+        perms.set_readonly(false);
+        std::fs::set_permissions(&ro, perms).unwrap();
+    }
+
+    #[test]
+    fn delete_clears_nested_readonly_child_on_yes() {
+        let root = TempDir::new();
+        let d = root.join("d");
+        std::fs::create_dir_all(&d).unwrap();
+        let ro = d.join("ro.txt");
+        std::fs::write(&ro, "r").unwrap();
+        let mut perms = std::fs::metadata(&ro).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&ro, perms).unwrap();
+        let host = FakeHost::with_delete_warn(DeleteWarnChoice::Yes);
+        let sum = run_delete(&host, &root.path, &["d".to_owned()]);
+        assert_eq!(sum.ok, 2); // ro.txt ＋ d。
+        assert_eq!(sum.err, 0);
+        assert!(!d.exists());
+    }
+
+    #[test]
     fn cancel_stops_early() {
         let src = TempDir::new();
         let dst = TempDir::new();
