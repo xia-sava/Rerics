@@ -218,6 +218,11 @@ Space = "MediaTogglePlay"
 Up = "ImagePrevious"
 V = "ImageFlipHorizontal"
 
+[window]
+fixed_size = false
+width = 960
+height = 560
+
 [cursor]
 history = false
 history_count = 100

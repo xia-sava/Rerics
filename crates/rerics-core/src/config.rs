@@ -206,6 +206,24 @@ impl Default for CursorSettings {
     }
 }
 
+/// 既定ウィンドウサイズの設定。`fixed_size` が真のとき、前回サイズの復元の代わりに
+/// `width`×`height`（論理 px）で毎回起動する。位置は前回値があれば踏襲する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowSettings {
+    /// 毎回既定サイズで起動する（オフなら前回のサイズを復元する）。
+    pub fixed_size: bool,
+    /// 既定の幅（論理 px）。
+    pub width: i32,
+    /// 既定の高さ（論理 px）。
+    pub height: i32,
+}
+
+impl Default for WindowSettings {
+    fn default() -> Self {
+        Self { fixed_size: false, width: 960, height: 560 }
+    }
+}
+
 /// 画像ビューアのマウスホイール動作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -342,6 +360,8 @@ pub struct Config {
     pub icons: IconSettings,
     /// ファイル操作の事前確認ダイアログ設定。
     pub file_ops: FileOpSettings,
+    /// 既定ウィンドウサイズの設定（毎回固定サイズで起動するか）。
+    pub window: WindowSettings,
     /// 起動時に解決した実テーマ。ファイルには保存しない（`resolve_theme` で設定）。
     #[serde(skip)]
     pub resolved: ResolvedTheme,
@@ -369,6 +389,7 @@ impl Default for Config {
             image: ImageSettings::default(),
             icons: IconSettings::default(),
             file_ops: FileOpSettings::default(),
+            window: WindowSettings::default(),
             resolved: ResolvedTheme::default(),
         }
     }

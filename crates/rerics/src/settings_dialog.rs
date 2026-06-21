@@ -1411,6 +1411,81 @@ fn build_layout(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &Prev
             Ok(())
         });
     }
+
+    // 既定ウィンドウサイズ（毎回このサイズで起動するか）。
+    let (fixed_size, win_w, win_h) = {
+        let c = shared.cfg.borrow();
+        (c.window.fixed_size, c.window.width, c.window.height)
+    };
+    let fixed_check = gui::CheckBox::new(
+        parent,
+        gui::CheckBoxOpts {
+            text: "毎回既定サイズで起動する(&S)",
+            position: gui::dpi(16, 426),
+            size: gui::dpi(300, 22),
+            check_state: if fixed_size { co::BST::CHECKED } else { co::BST::UNCHECKED },
+            ..Default::default()
+        },
+    );
+    label(parent, "幅", 36, 460, 32);
+    let w_edit = gui::Edit::new(
+        parent,
+        gui::EditOpts {
+            text: &win_w.to_string(),
+            control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
+            position: gui::dpi(72, 458),
+            width: gui::dpi_x(60),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+    label(parent, "高さ", 148, 460, 36);
+    let h_edit = gui::Edit::new(
+        parent,
+        gui::EditOpts {
+            text: &win_h.to_string(),
+            control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
+            position: gui::dpi(192, 458),
+            width: gui::dpi_x(60),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+    let _ = w_edit.hwnd().EnableWindow(fixed_size);
+    let _ = h_edit.hwnd().EnableWindow(fixed_size);
+    {
+        let shared = shared.clone();
+        let fc = fixed_check.clone();
+        let we = w_edit.clone();
+        let he = h_edit.clone();
+        fixed_check.on().bn_clicked(move || {
+            let on = fc.is_checked();
+            shared.cfg.borrow_mut().window.fixed_size = on;
+            let _ = we.hwnd().EnableWindow(on);
+            let _ = he.hwnd().EnableWindow(on);
+            Ok(())
+        });
+    }
+    {
+        let shared = shared.clone();
+        let we = w_edit.clone();
+        w_edit.on().en_change(move || {
+            let cur = shared.cfg.borrow().window.width;
+            let v = parse_or(&we, cur).max(1);
+            shared.cfg.borrow_mut().window.width = v;
+            Ok(())
+        });
+    }
+    {
+        let shared = shared.clone();
+        let he = h_edit.clone();
+        h_edit.on().en_change(move || {
+            let cur = shared.cfg.borrow().window.height;
+            let v = parse_or(&he, cur).max(1);
+            shared.cfg.borrow_mut().window.height = v;
+            Ok(())
+        });
+    }
 }
 
 /// 「動作」ページ（全般の動作設定）。今は待機表示の遅延のみ。操作を即 `Shared` へ反映する。

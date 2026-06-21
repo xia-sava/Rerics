@@ -608,7 +608,27 @@ impl MainWindow {
             let debug_minimized = this.debug.port.is_some();
             #[cfg(not(feature = "debug-server"))]
             let debug_minimized = false;
-            if let Some(ws) = &this.initial_window {
+            let effective_window = {
+                let win = this.config.borrow().window;
+                if win.fixed_size {
+                    // 毎回既定サイズで起動する。位置は前回値があれば踏襲し、無ければ既定。
+                    let (x, y) = this
+                        .initial_window
+                        .as_ref()
+                        .map(|w| (w.x, w.y))
+                        .unwrap_or((0, 0));
+                    Some(WindowState {
+                        x,
+                        y,
+                        width: win.width.max(1),
+                        height: win.height.max(1),
+                        maximized: false,
+                    })
+                } else {
+                    this.initial_window.clone()
+                }
+            };
+            if let Some(ws) = &effective_window {
                 let applied = window_state::apply(&this.wnd.hwnd(), ws);
                 // 最小化起動時は最大化復元を抑止する（最小化が打ち消されないように）。
                 if applied && ws.maximized && !debug_minimized {
