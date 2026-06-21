@@ -629,9 +629,9 @@ impl Colors {
             cursor: Rgb::new(0x00, 0xff, 0x80),
             log_background: Rgb::new(0x00, 0x00, 0x00),
             log_normal: Rgb::new(0xff, 0xff, 0xff),
-            log_info: Rgb::new(0xc8, 0xc8, 0xc8),
-            log_warning: Rgb::new(0xff, 0xd0, 0x40),
-            log_error: Rgb::new(0xff, 0x70, 0x70),
+            log_info: Rgb::new(0xad, 0xd8, 0xe6),
+            log_warning: Rgb::new(0x90, 0xee, 0x90),
+            log_error: Rgb::new(0xff, 0x00, 0x00),
             // テキストビューアの既定色（ダークは背景＝黒・本文＝白）。
             viewer_background: Rgb::new(0x00, 0x00, 0x00),
             viewer_text: Rgb::new(0xff, 0xff, 0xff),
