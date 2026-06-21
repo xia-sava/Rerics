@@ -9,3 +9,9 @@ edition = "2024"
 [workspace.dependencies]
 winsafe = { version = "0.0.27", features = ["gui", "gdi", "shell"] }
 rerics-core = { path = "crates/rerics-core" }
+
+# モーダルを閉じる際の use-after-free（WM_NCDESTROY が実行中のクローズ処理の
+# クロージャを解放した後に参照する）を修正したローカル版に差し替える。
+# 上流（crates.io）で修正されたら vendor/winsafe ごとこの節を外す。
+[patch.crates-io]
+winsafe = { path = "vendor/winsafe" }
