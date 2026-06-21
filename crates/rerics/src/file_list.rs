@@ -528,10 +528,11 @@ impl FileListView {
 
     /// ホイール回転分だけスクロールする（正＝上方向）。
     pub fn scroll_by_wheel(&self, distance: i16) -> w::AnyResult<()> {
-        let lines = (distance as i32 / 120) * 3;
+        let notches = distance as i32 / 120;
         {
             let mut s = self.inner.state.borrow_mut();
             let pr = self.page_rows();
+            let lines = wheel_lines(notches, os_wheel_scroll_lines(), pr);
             let top = s.scroll_top as isize - lines as isize;
             s.set_scroll_top(top, pr);
             s.cursor_into_view(pr);
@@ -1078,6 +1079,52 @@ impl FileListView {
 // winsafe 0.0.27 は `SetCursor` を公開していないので生 FFI で叩く（`SetSystemCursor` は別物）。
 unsafe extern "system" {
     fn SetCursor(hcursor: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+    fn SystemParametersInfoW(
+        action: u32,
+        uiparam: u32,
+        pvparam: *mut std::ffi::c_void,
+        winini: u32,
+    ) -> i32;
+}
+
+/// OS のホイール1ノッチあたりのスクロール行数（既定3）。`WHEEL_PAGESCROLL`
+/// （= u32::MAX）のときは「1画面分」を表す。
+fn os_wheel_scroll_lines() -> u32 {
+    const SPI_GETWHEELSCROLLLINES: u32 = 0x0068;
+    let mut lines: u32 = 3;
+    unsafe {
+        SystemParametersInfoW(
+            SPI_GETWHEELSCROLLLINES,
+            0,
+            &mut lines as *mut u32 as *mut std::ffi::c_void,
+            0,
+        );
+    }
+    lines
+}
+
+/// ノッチ数と OS 設定からスクロール行数を求める。`per_notch` が `WHEEL_PAGESCROLL`
+/// （u32::MAX）なら 1 ノッチ＝1 画面（`page_rows` 行）として扱う。
+fn wheel_lines(notches: i32, per_notch: u32, page_rows: usize) -> i32 {
+    if per_notch == u32::MAX {
+        notches * page_rows.max(1) as i32
+    } else {
+        notches * per_notch as i32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wheel_lines;
+
+    #[test]
+    fn wheel_lines_uses_os_setting() {
+        assert_eq!(wheel_lines(1, 3, 20), 3);
+        assert_eq!(wheel_lines(-2, 3, 20), -6);
+        assert_eq!(wheel_lines(1, 0, 20), 0); // 0 行設定なら動かさない
+        assert_eq!(wheel_lines(1, u32::MAX, 20), 20); // ページスクロール = 1 画面
+        assert_eq!(wheel_lines(-1, u32::MAX, 20), -20);
+    }
 }
 
 /// `Rgb` を COLORREF へ変換する。
