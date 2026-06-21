@@ -230,3 +230,8 @@ wheel = "navigate"
 [icons]
 show = true
 size = "auto"
+
+[file_ops]
+ask_before_copy = false
+ask_before_move = false
+ask_before_delete = true

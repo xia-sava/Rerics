@@ -827,19 +827,17 @@ impl MainWindow {
             self.log.error(&messages::not_selected_error());
             return Ok(());
         }
-        let short = if names.len() > 1 {
-            format!("{}他", names[0])
-        } else {
-            names[0].clone()
-        };
-        let ans = dialog::message_box(
-            &self.wnd,
-            "削除",
-            &messages::delete_question(&short),
-            dialog::MessageStyle::YesNo,
-        );
-        if ans != dialog::MessageResult::Yes {
-            return Ok(());
+        if self.config.borrow().file_ops.ask_before_delete {
+            let short = crate::short_desc(&names);
+            let ans = dialog::message_box(
+                &self.wnd,
+                "削除",
+                &messages::delete_question(&short),
+                dialog::MessageStyle::YesNo,
+            );
+            if ans != dialog::MessageResult::Yes {
+                return Ok(());
+            }
         }
         self.start_archive_op(archive, inner, ArchiveOp::Delete(names), is_left)
     }

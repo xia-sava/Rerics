@@ -196,6 +196,23 @@ impl MainWindow {
             self.log.error(&messages::not_selected_error());
             return Ok(());
         }
+        // 設定で有効なら、コピー/移動の前に確認する（既定はどちらもオフ）。
+        let ask = {
+            let f = self.config.borrow().file_ops;
+            if move_it { f.ask_before_move } else { f.ask_before_copy }
+        };
+        if ask {
+            let short = short_desc(&names);
+            let (title, question) = if move_it {
+                ("移動", messages::move_question(&short))
+            } else {
+                ("コピー", messages::copy_question(&short))
+            };
+            let ans = dialog::message_box(&self.wnd, title, &question, dialog::MessageStyle::YesNo);
+            if ans != dialog::MessageResult::Yes {
+                return Ok(());
+            }
+        }
         let src_dir = self.pane(is_left).borrow().path().to_path_buf();
         let dst_dir = self.pane(!is_left).borrow().path().to_path_buf();
         self.start_copy(src_dir, dst_dir, names, move_it)
@@ -563,19 +580,17 @@ impl MainWindow {
             self.log.error(&messages::not_selected_error());
             return Ok(());
         }
-        let short = if names.len() > 1 {
-            format!("{}他", names[0])
-        } else {
-            names[0].clone()
-        };
-        let ans = dialog::message_box(
-            &self.wnd,
-            "削除",
-            &messages::delete_question(&short),
-            dialog::MessageStyle::YesNo,
-        );
-        if ans != dialog::MessageResult::Yes {
-            return Ok(());
+        if self.config.borrow().file_ops.ask_before_delete {
+            let short = short_desc(&names);
+            let ans = dialog::message_box(
+                &self.wnd,
+                "削除",
+                &messages::delete_question(&short),
+                dialog::MessageStyle::YesNo,
+            );
+            if ans != dialog::MessageResult::Yes {
+                return Ok(());
+            }
         }
         let dir = self.pane(is_left).borrow().path().to_path_buf();
         self.start_delete(dir, names)
@@ -592,19 +607,17 @@ impl MainWindow {
             self.log.error(&messages::not_selected_error());
             return Ok(());
         }
-        let short = if names.len() > 1 {
-            format!("{}他", names[0])
-        } else {
-            names[0].clone()
-        };
-        let ans = dialog::message_box(
-            &self.wnd,
-            "ゴミ箱へ送る",
-            &format!("{short}をゴミ箱へ送りますか？"),
-            dialog::MessageStyle::YesNo,
-        );
-        if ans != dialog::MessageResult::Yes {
-            return Ok(());
+        if self.config.borrow().file_ops.ask_before_delete {
+            let short = short_desc(&names);
+            let ans = dialog::message_box(
+                &self.wnd,
+                "ゴミ箱へ送る",
+                &format!("{short}をゴミ箱へ送りますか？"),
+                dialog::MessageStyle::YesNo,
+            );
+            if ans != dialog::MessageResult::Yes {
+                return Ok(());
+            }
         }
         let dir = self.pane(is_left).borrow().path().to_path_buf();
         let paths: Vec<PathBuf> = names.iter().map(|n| dir.join(n)).collect();

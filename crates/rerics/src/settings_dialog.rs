@@ -11,8 +11,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rerics_core::{
-    Bookmark, Colors, Column, ColumnKind, Config, IconSize, Layout, Rgb, ResolvedTheme,
-    SizeFormat, SortType, Theme, WheelAction,
+    Bookmark, Colors, Column, ColumnKind, Config, FileOpSettings, IconSize, Layout, Rgb,
+    ResolvedTheme, SizeFormat, SortType, Theme, WheelAction,
 };
 use winsafe::{self as w, co, gui, msg::lb, prelude::*};
 
@@ -915,6 +915,7 @@ const NAV_ROWS: &[NavRow] = &[
     NavRow::Page { label: "一覧", pane: 7 },
     NavRow::Header("動作"),
     NavRow::Page { label: "全般", pane: 8 },
+    NavRow::Page { label: "ファイル操作", pane: 12 },
     NavRow::Page { label: "カーソル", pane: 3 },
     NavRow::Page { label: "ビューア", pane: 6 },
     NavRow::Header("登録"),
@@ -1558,6 +1559,35 @@ fn build_cursor(parent: &gui::WindowControl, shared: &Rc<Shared>) {
             Ok(())
         });
     }
+}
+
+/// 「ファイル操作」ページ（コピー/移動/削除前の確認ダイアログ）。各操作を即 `Shared` へ反映する。
+fn build_fileops(parent: &gui::WindowControl, shared: &Rc<Shared>) {
+    let f = shared.cfg.borrow().file_ops;
+    let rows: [(&str, i32, bool, fn(&mut FileOpSettings, bool)); 3] = [
+        ("コピーの前に確認する(&C)", 16, f.ask_before_copy, |s, v| s.ask_before_copy = v),
+        ("移動の前に確認する(&M)", 50, f.ask_before_move, |s, v| s.ask_before_move = v),
+        ("削除・ゴミ箱送りの前に確認する(&D)", 84, f.ask_before_delete, |s, v| s.ask_before_delete = v),
+    ];
+    for (text, y, init, set) in rows {
+        let check = gui::CheckBox::new(
+            parent,
+            gui::CheckBoxOpts {
+                text,
+                position: gui::dpi(16, y),
+                size: gui::dpi(360, 22),
+                check_state: if init { co::BST::CHECKED } else { co::BST::UNCHECKED },
+                ..Default::default()
+            },
+        );
+        let shared = shared.clone();
+        let c = check.clone();
+        check.on().bn_clicked(move || {
+            set(&mut shared.cfg.borrow_mut().file_ops, c.is_checked());
+            Ok(())
+        });
+    }
+    label(parent, "（オフにした操作は確認なしで即実行します）", 16, 128, 360);
 }
 
 /// ラベル付きのグループ枠を置く（Win32 の BS_GROUPBOX ボタン）。
@@ -2414,6 +2444,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     let pane_viewer_colors = make_pane(&wnd, pane_pos, pane_size); // 9
     let pane_keys_text = make_pane(&wnd, pane_pos, pane_wide); // 10
     let pane_keys_image = make_pane(&wnd, pane_pos, pane_wide); // 11
+    let pane_fileops = make_pane(&wnd, pane_pos, pane_wide); // 12
     let panes = vec![
         pane_appearance.clone(),
         pane_colors.clone(),
@@ -2427,6 +2458,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         pane_viewer_colors.clone(),
         pane_keys_text.clone(),
         pane_keys_image.clone(),
+        pane_fileops.clone(),
     ];
 
     // 右カラム：プレビュー（外観カテゴリ選択中だけ表示）。表示テーマは「配色テーマ」に追従する
@@ -2451,6 +2483,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     build_cursor(&pane_cursor, &shared);
     build_viewer(&pane_image, &shared);
     build_behavior(&pane_behavior, &shared);
+    build_fileops(&pane_fileops, &shared);
     build_list(&pane_list, &shared);
     let columns_editor = ColumnsEditor::new(&pane_list, &shared);
     let registered = RegisteredPane::new(&pane_registered, &shared);

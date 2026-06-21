@@ -115,6 +115,33 @@ impl Server {
         Server { child, port, base }
     }
 
+    /// `start_writable` と同じだが、差分 config.toml を併せて書いて起動する。
+    /// （ファイル操作の確認ダイアログ設定など、config 駆動の挙動を書込み許可下で検証する用。）
+    fn start_writable_cfg(sandbox_files: &[&str], config_toml: &str) -> Server {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("rerics_it_{}_{}", std::process::id(), n));
+        let data = base.join("data");
+        let sbx = base.join("sbx");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&sbx).unwrap();
+        for f in sandbox_files {
+            std::fs::write(sbx.join(f), b"x").unwrap();
+        }
+        std::fs::write(
+            data.join("state.toml"),
+            format!(
+                "active_tab = 0\nsplit_ratio = 0.5\n[[tabs]]\nleft = '{p}'\nright = '{p}'\nactive_right = false\n",
+                p = sbx.display()
+            ),
+        )
+        .unwrap();
+        if !config_toml.is_empty() {
+            std::fs::write(data.join("config.toml"), config_toml).unwrap();
+        }
+        let (child, port) = spawn_and_wait(&data, true);
+        Server { child, port, base }
+    }
+
     /// HTTP リクエストを投げる。`(status, body)` を返す。
     fn req(&self, method: &str, path: &str, body: &str) -> Option<(u16, String)> {
         req(self.port, method, path, body)
@@ -568,6 +595,39 @@ fn archive_delete() {
         r.contains("\"name\":\"b.txt\"") && r.contains("\"name\":\"keep.txt\""),
         "other entries must remain: {r}"
     );
+}
+
+/// ask_before_copy=true のとき、Copy の前に確認モーダルが出てキャンセルで中止できる。
+#[test]
+fn ask_before_copy_confirms() {
+    let server = Server::start_writable_cfg(&["a.txt"], "[file_ops]\nask_before_copy = true\n");
+    // 左 items は [.., a.txt]。CursorDown×1 で a.txt にカーソル。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/Copy", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"message\""), "copy should confirm first: {modal}");
+    assert!(modal.contains("コピー"), "confirm dialog titled コピー: {modal}");
+    // キャンセルで中止＝ファイルはそのまま残る。
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    let items = server.req("GET", "/state/panes/left/items", "").expect("items").1;
+    assert!(items.contains("\"name\":\"a.txt\""), "cancel leaves the file: {items}");
+}
+
+/// ask_before_delete=false のとき、Delete は確認モーダルを出さず即削除する。
+#[test]
+fn ask_before_delete_off_skips_confirm() {
+    let server = Server::start_writable_cfg(&["a.txt", "b.txt"], "[file_ops]\nask_before_delete = false\n");
+    // 左 items は [.., a.txt, b.txt]。CursorDown×1 で a.txt にカーソル。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/Delete", "").unwrap();
+    // 確認なしで a.txt が消える。
+    let items = poll(&server, "/state/panes/left/items", |b| !b.contains("\"name\":\"a.txt\""));
+    assert!(!items.contains("\"name\":\"a.txt\""), "a.txt should be deleted directly: {items}");
+    assert!(items.contains("\"name\":\"b.txt\""), "b.txt must remain: {items}");
+    // モーダルは出ていない。
+    let modal = server.req("GET", "/state/modal", "").expect("modal").1;
+    assert!(modal.trim() == "null", "no confirm modal when ask_before_delete is off: {modal}");
 }
 
 /// 書庫内エントリの改名（リビルド）と、衝突時のエラーを検証する。

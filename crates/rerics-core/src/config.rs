@@ -271,6 +271,25 @@ impl Default for IconSettings {
     }
 }
 
+/// ファイル操作の事前確認ダイアログ設定（原作 FileOperation/AskBefore*）。各操作の前に
+/// 確認ダイアログを出すかどうかを切り替える。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FileOpSettings {
+    /// コピーの前に確認する（既定オフ）。
+    pub ask_before_copy: bool,
+    /// 移動の前に確認する（既定オフ）。
+    pub ask_before_move: bool,
+    /// 削除・ゴミ箱送りの前に確認する（既定オン）。
+    pub ask_before_delete: bool,
+}
+
+impl Default for FileOpSettings {
+    fn default() -> Self {
+        Self { ask_before_copy: false, ask_before_move: false, ask_before_delete: true }
+    }
+}
+
 /// アプリ全体の設定。デフォルトは埋め込み `default.toml`、ユーザ `config.toml` は
 /// デフォルトとの差分のみを記録し、適用時に再帰マージする。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -308,6 +327,8 @@ pub struct Config {
     pub image: ImageSettings,
     /// ファイル一覧アイコンの表示設定。
     pub icons: IconSettings,
+    /// ファイル操作の事前確認ダイアログ設定。
+    pub file_ops: FileOpSettings,
     /// 起動時に解決した実テーマ。ファイルには保存しない（`resolve_theme` で設定）。
     #[serde(skip)]
     pub resolved: ResolvedTheme,
@@ -334,6 +355,7 @@ impl Default for Config {
             cursor: CursorSettings::default(),
             image: ImageSettings::default(),
             icons: IconSettings::default(),
+            file_ops: FileOpSettings::default(),
             resolved: ResolvedTheme::default(),
         }
     }

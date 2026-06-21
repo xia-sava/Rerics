@@ -26,7 +26,7 @@ pub use attrs::{
     read_attrs, set_created_time, set_modified_time, write_attrs,
 };
 pub use config::{
-    Bookmark, Config, DEFAULT_CONFIG_TOML, FontSpec, IconSettings, IconSize, ImageSettings,
+    Bookmark, Config, DEFAULT_CONFIG_TOML, FileOpSettings, FontSpec, IconSettings, IconSize, ImageSettings,
     InputHistory, Layout, PATH_HISTORY_CAP, PATH_HISTORY_KEY, ResolvedTheme, State, TabState,
     Theme, ThemeColors,
     WheelAction, WindowState, clamp_to_work, config_path, data_dir, history_path, load_toml,
