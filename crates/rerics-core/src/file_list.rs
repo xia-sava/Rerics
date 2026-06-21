@@ -219,14 +219,65 @@ impl SortType {
     }
 }
 
+/// ファイル名同士を比較する。Windows ではユーザの既定ロケールの言語的照合
+/// （エクスプローラと同様に記号が英数字より前に並ぶ）を用い、それ以外の
+/// プラットフォームではコードポイント順にフォールバックする。
+/// 引数は大文字小文字を畳んだうえで渡される前提で、フラグは無指定にする。
+#[cfg(windows)]
+fn locale_compare(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CompareStringEx(
+            locale: *const u16,
+            flags: u32,
+            str1: *const u16,
+            len1: i32,
+            str2: *const u16,
+            len2: i32,
+            version: *const core::ffi::c_void,
+            reserved: *const core::ffi::c_void,
+            param: isize,
+        ) -> i32;
+    }
+    let w1: Vec<u16> = a.encode_utf16().collect();
+    let w2: Vec<u16> = b.encode_utf16().collect();
+    // locale=NULL はユーザ既定ロケール。戻り値 1/2/3 が Less/Equal/Greater、
+    // 0 は失敗なのでコードポイント順へフォールバックする。
+    let r = unsafe {
+        CompareStringEx(
+            core::ptr::null(),
+            0,
+            w1.as_ptr(),
+            w1.len() as i32,
+            w2.as_ptr(),
+            w2.len() as i32,
+            core::ptr::null(),
+            core::ptr::null(),
+            0,
+        )
+    };
+    match r {
+        1 => Ordering::Less,
+        3 => Ordering::Greater,
+        2 => Ordering::Equal,
+        _ => a.cmp(b),
+    }
+}
+
+#[cfg(not(windows))]
+fn locale_compare(a: &str, b: &str) -> std::cmp::Ordering {
+    a.cmp(b)
+}
+
 /// 2エントリをソート種別で比較する（reverse なし）。親優先・dir 優先は呼び出し側で先に判定済み。
 fn compare_kind(a: &FileItem, b: &FileItem, sort: SortType) -> std::cmp::Ordering {
     use std::cmp::Ordering;
-    let by_name = || a.name.to_uppercase().cmp(&b.name.to_uppercase());
+    let by_name = || locale_compare(&a.name.to_uppercase(), &b.name.to_uppercase());
     match sort {
         SortType::FileName => by_name(),
         SortType::Extension => {
-            let o = a.extension.to_uppercase().cmp(&b.extension.to_uppercase());
+            let o = locale_compare(&a.extension.to_uppercase(), &b.extension.to_uppercase());
             if o == Ordering::Equal { by_name() } else { o }
         }
         SortType::Length => {
@@ -330,12 +381,12 @@ fn exp_like_compare(input1: &str, input2: &str) -> std::cmp::Ordering {
                         b = nb2;
                         continue;
                     }
-                    _ => return rest1.cmp(rest2),
+                    _ => return locale_compare(rest1, rest2),
                 }
             }
         }
     }
-    input1.cmp(input2)
+    locale_compare(input1, input2)
 }
 
 /// 1回分の「非数字プレフィクス＋数字列」マッチ結果。
@@ -1510,11 +1561,8 @@ mod tests {
         assert_eq!(exp_like_compare("FILE2", "FILE2"), Ordering::Equal);
         // 等値プレフィクスで複数数字列。
         assert_eq!(exp_like_compare("V1-2", "V1-10"), Ordering::Less);
-        // 9桁以上は通常文字列比較へフォールバック。
-        assert_eq!(
-            exp_like_compare("X1000000000", "X2"),
-            "X1000000000".cmp("X2")
-        );
+        // 9桁以上は数値比較せず通常の文字列比較へフォールバックする。
+        assert_eq!(exp_like_compare("X1000000000", "X2"), Ordering::Less);
     }
 
     #[test]
@@ -1544,6 +1592,28 @@ mod tests {
         s.sort(SortType::FileNameExpLike, false);
         let names: Vec<&str> = s.items.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, vec!["画像１", "画像２", "画像１０"]);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn locale_compare_orders_symbols_before_letters() {
+        use std::cmp::Ordering;
+        // ユーザロケールの言語的照合では記号がアルファベットより前に並ぶ。
+        assert_eq!(locale_compare("_NEW", "APPLE"), Ordering::Less);
+        assert_eq!(locale_compare("APPLE", "BANANA"), Ordering::Less);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn sort_symbol_prefix_before_letters() {
+        // 通常ソートでも ExpLike でも記号始まりが先頭へ来る（エクスプローラ準拠）。
+        for sort in [SortType::FileName, SortType::FileNameExpLike] {
+            let mut s = FileListState::new();
+            s.items = vec![file("apple"), file("_new"), file("Banana")];
+            s.sort(sort, false);
+            let names: Vec<&str> = s.items.iter().map(|i| i.name.as_str()).collect();
+            assert_eq!(names, vec!["_new", "apple", "Banana"], "sort={sort:?}");
+        }
     }
 
     #[test]
