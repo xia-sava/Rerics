@@ -618,10 +618,10 @@ impl Colors {
     pub fn dark() -> Self {
         Self {
             file_normal: Rgb::new(255, 255, 255),
-            directory: Rgb::new(0xff, 0xff, 0xe8),
-            readonly: Rgb::new(0x80, 0xff, 0x80),
-            system: Rgb::new(0x80, 0xff, 0xff),
-            hidden: Rgb::new(0x80, 0x80, 0xff),
+            directory: Rgb::new(0xff, 0xff, 0xff),
+            readonly: Rgb::new(0x90, 0xee, 0x90),
+            system: Rgb::new(0xf0, 0x80, 0x80),
+            hidden: Rgb::new(0xad, 0xd8, 0xe6),
             background: Rgb::new(0, 0, 0),
             background2: Rgb::new(0x20, 0x20, 0x20),
             selected_file: Rgb::new(255, 255, 255),
