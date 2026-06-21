@@ -102,19 +102,25 @@ impl MainWindow {
                 .unwrap_or_else(|| "archive".to_owned());
             format!("{base}.zip")
         };
-        let name = self.input_with_history(
-            "圧縮",
-            "圧縮ファイル名を入力して下さい。",
-            &default_name,
-            "compress",
-        );
-        let Some(name) = name else {
+        // 履歴付きの圧縮ダイアログ（書庫名＋個別圧縮の選択）。
+        let mut hist = rerics_core::InputHistory::load();
+        let items = hist.get("compress");
+        let refs: Vec<&str> = items.iter().map(String::as_str).collect();
+        let Some(choice) = dialog::compress_box(&self.wnd, &default_name, &refs) else {
             return Ok(());
         };
-        let name = name.trim();
+
+        if choice.one_by_one {
+            // 各項目を `<項目名>.zip` へ個別圧縮する（書庫名欄は使わない）。
+            return self.start_compress_each(dir, names);
+        }
+
+        let name = choice.name.trim();
         if name.is_empty() {
             return Ok(());
         }
+        hist.add("compress", name);
+        let _ = hist.save();
         let dst_zip = dir.join(name);
         if dst_zip.exists() {
             let r = dialog::message_box(
@@ -159,6 +165,49 @@ impl MainWindow {
         let src_dir = dir.clone();
         std::thread::spawn(move || {
             rerics_core::run_compress(&host, &src_dir, &names, &dst_zip);
+            let _ = host.tx.send(WorkerEvent::Done {
+                id,
+                kind: OpKind::Copy,
+                src_dir: src_dir.clone(),
+                dst_dir: src_dir,
+            });
+        });
+        Ok(())
+    }
+
+    /// 選択項目をそれぞれ `<項目名>.zip` へ個別圧縮する（OneByOne）。同名の zip が既に
+    /// あれば上書きせずスキップする。完了で出力先（＝src と同じ dir）を再読込する。
+    pub(crate) fn start_compress_each(
+        &self,
+        dir: PathBuf,
+        names: Vec<String>,
+    ) -> w::AnyResult<()> {
+        let control = Arc::new(TaskControl::new());
+        let host = ChannelHost::new(
+            self.task_tx.clone(),
+            self.shutdown.clone(),
+            control.clone(),
+            self.progress_seq.clone(),
+        );
+        let id = self.next_id();
+        let desc = format!("{} (個別)", short_desc(&names));
+        self.register_task(id, "圧縮", desc, control)?;
+        let src_dir = dir.clone();
+        std::thread::spawn(move || {
+            for name in &names {
+                let dst = src_dir.join(format!("{name}.zip"));
+                if dst.exists() {
+                    let _ = host.tx.send(WorkerEvent::Log {
+                        level: LogLevel::Warning,
+                        text: messages::all_ready_exists(&format!("{name}.zip")),
+                    });
+                    continue;
+                }
+                let sum = rerics_core::run_compress(&host, &src_dir, std::slice::from_ref(name), &dst);
+                if sum.cancelled {
+                    break;
+                }
+            }
             let _ = host.tx.send(WorkerEvent::Done {
                 id,
                 kind: OpKind::Copy,

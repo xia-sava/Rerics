@@ -72,6 +72,9 @@ impl MainWindow {
                 debug_server::Request::ModalSelect { index } => {
                     let _ = tx.send(self.debug_modal_select(index));
                 }
+                debug_server::Request::ModalCheck => {
+                    let _ = tx.send(self.debug_modal_check());
+                }
             }
         }
     }
@@ -170,6 +173,41 @@ impl MainWindow {
             }
         });
         found
+    }
+
+    /// モーダル内の最初のチェックボックスへクリックを送り、チェック状態をトグルする
+    /// （`POST /modal/check`）。BM_CLICK なので状態反転＋親への BN_CLICKED 通知まで起きる。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn debug_modal_check(&self) -> debug_server::Response {
+        let Some(modal) = self.debug_modal_hwnd() else {
+            return debug_server::Response::BadRequest("no modal open".into());
+        };
+        let mut found: Option<w::HWND> = None;
+        modal.EnumChildWindows(|c| {
+            let is_btn =
+                c.GetClassName().map(|s| s.eq_ignore_ascii_case("Button")).unwrap_or(false);
+            let style = c.GetWindowLongPtr(co::GWLP::STYLE) as u32;
+            // BS_CHECKBOX(2)/BS_AUTOCHECKBOX(3) の下位ビット一致でチェックボックスを拾う
+            // （押しボタン=0/1・ラジオ=9 は除外）。
+            if is_btn && matches!(style & 0xF, 2 | 3) {
+                found = Some(c);
+                false
+            } else {
+                true
+            }
+        });
+        let Some(cb) = found else {
+            return debug_server::Response::BadRequest("modal has no checkbox".into());
+        };
+        const BM_CLICK: u32 = 0x00F5;
+        unsafe {
+            let _ = cb.PostMessage(w::msg::WndMsg {
+                msg_id: co::WM::from_raw(BM_CLICK),
+                wparam: 0,
+                lparam: 0,
+            });
+        }
+        debug_server::Response::Json(self.debug_state_value().to_string())
     }
 
     /// モーダル内の最初の ListBox 子コントロールを探す。

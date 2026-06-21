@@ -634,6 +634,43 @@ fn ask_before_delete_off_skips_confirm() {
     assert!(log.contains("削除終了"), "end frame should be logged: {log}");
 }
 
+/// 圧縮ダイアログで名前を入れて OK すると、その名前の zip が作られる（まとめて1つ）。
+#[test]
+fn compress_creates_named_zip() {
+    let server = Server::start_writable(&["a.txt", "b.txt"]);
+    server.req("POST", "/command/CursorDown", "").unwrap(); // .. -> a.txt
+    server.req("POST", "/command/Compress", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"compress\""), "compress dialog should open: {modal}");
+    server.req("POST", "/modal/text", "out.zip").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    let items = poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"out.zip\""));
+    assert!(items.contains("\"name\":\"out.zip\""), "out.zip should be created: {items}");
+}
+
+/// 個別圧縮（OneByOne）にチェックすると、マークした各項目が `<名前>.zip` になる。
+#[test]
+fn compress_one_by_one_makes_per_item_zips() {
+    let server = Server::start_writable(&["a.txt", "b.txt"]);
+    // a.txt と b.txt を両方マーク（Space=MarkToggle はマーク後カーソルを下へ）。
+    server.req("POST", "/command/CursorDown", "").unwrap(); // .. -> a.txt
+    server.req("POST", "/command/MarkToggle", "").unwrap(); // mark a.txt -> b.txt
+    server.req("POST", "/command/MarkToggle", "").unwrap(); // mark b.txt
+    server.req("POST", "/command/Compress", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"compress\""), "compress dialog should open: {modal}");
+    // 個別圧縮にチェックして OK。
+    server.req("POST", "/modal/check", "").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    let items = poll(&server, "/state/panes/left/items", |b| {
+        b.contains("\"name\":\"a.txt.zip\"") && b.contains("\"name\":\"b.txt.zip\"")
+    });
+    assert!(
+        items.contains("\"name\":\"a.txt.zip\"") && items.contains("\"name\":\"b.txt.zip\""),
+        "each item should become its own zip: {items}"
+    );
+}
+
 /// 書庫内エントリの改名（リビルド）と、衝突時のエラーを検証する。
 #[test]
 fn archive_rename() {

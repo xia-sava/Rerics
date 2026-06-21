@@ -13,6 +13,7 @@ mod message;
 mod input;
 mod conflict;
 mod archive_add;
+mod compress;
 mod sort;
 mod rename;
 mod list;
@@ -20,6 +21,7 @@ pub use message::message_box;
 pub use input::{input_box, input_box_select, input_box_full};
 pub use conflict::conflict_box;
 pub use archive_add::archive_add_box;
+pub use compress::compress_box;
 pub use sort::sort_box;
 pub use rename::rename_box;
 pub use list::list_box;
@@ -480,6 +482,15 @@ pub enum ArchiveAddMode {
     Append,
     /// 全体を再構築して同名を置換する（CP932 名は UTF-8 へ近代化される）。
     Rebuild,
+}
+
+/// 圧縮ダイアログの結果（書庫名と圧縮方式）。
+#[derive(Clone, PartialEq, Eq)]
+pub struct CompressChoice {
+    /// 出力する zip 名（まとめて1つに圧縮する場合に使う）。
+    pub name: String,
+    /// 選択項目を個別に `<項目名>.zip` へ圧縮する（true）か、まとめて1つにする（false）か。
+    pub one_by_one: bool,
 }
 
 

@@ -161,6 +161,8 @@ pub enum Request {
     ModalCommand { role: String },
     /// `POST /modal/select/<index>`：リスト選択モーダルの選択行を index にする。
     ModalSelect { index: usize },
+    /// `POST /modal/check`：開いているモーダルの最初のチェックボックスをトグルする。
+    ModalCheck,
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -305,6 +307,8 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 let mut value = String::new();
                 let _ = std::io::Read::read_to_string(req.as_reader(), &mut value);
                 Some(Request::ModalText { value })
+            } else if path == "/modal/check" {
+                Some(Request::ModalCheck)
             } else {
                 None
             }
