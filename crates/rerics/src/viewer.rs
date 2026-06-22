@@ -293,9 +293,8 @@ impl ViewerView {
         edit.ShowWindow(co::SW::SHOW);
         self.layout_search_bar();
         edit.SetFocus();
-        // 前回の検索語を残したまま、カーソルを末尾に置いて続けて編集できるようにする。
-        let caret = term.encode_utf16().count() as i32;
-        self.inner.search_edit.set_selection(caret, caret);
+        // 前回の検索語を全選択して開く（中身があればそのまま打ち直しで置換できる）。
+        self.inner.search_edit.set_selection(0, -1);
         self.apply_search_from_edit()?;
         self.refresh()
     }
