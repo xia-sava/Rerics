@@ -225,7 +225,7 @@ pub struct WindowSettings {
 
 impl Default for WindowSettings {
     fn default() -> Self {
-        Self { fixed_size: false, width: 960, height: 560 }
+        Self { fixed_size: false, width: 960, height: 640 }
     }
 }
 

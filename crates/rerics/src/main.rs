@@ -346,7 +346,7 @@ impl MainWindow {
         }
         let wnd = gui::WindowMain::new(gui::WindowMainOpts {
             title: "Rerics",
-            size: gui::dpi(960, 560),
+            size: gui::dpi(960, 640),
             style,
             process_dlg_msgs: false,
             ..Default::default()

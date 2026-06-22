@@ -228,7 +228,7 @@ Z = "ImageZoomIn"
 [window]
 fixed_size = false
 width = 960
-height = 560
+height = 640
 
 [cursor]
 history = false
