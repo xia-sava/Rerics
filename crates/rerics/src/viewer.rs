@@ -26,6 +26,8 @@ const TAB_WIDTH: usize = 4;
 pub const MAX_VIEW_BYTES: usize = 4 * 1024 * 1024;
 /// 検索履歴の保持上限（決め打ち）。
 const HISTORY_CAP: usize = 32;
+/// 履歴ドロップダウンに一度に見せる最大行数（超過分はスクロール）。
+const HISTORY_DROPDOWN_ROWS: usize = 12;
 
 struct Inner {
     model: RefCell<ViewerModel>,
@@ -73,8 +75,12 @@ struct Inner {
     search_regex: gui::CheckBox,
     search_prev: gui::Button,
     search_next: gui::Button,
-    /// 入力欄右端の履歴ドロップダウン（▼）ボタン。クリック/Alt+↑↓ で履歴メニューを開く。
+    /// 入力欄右端の履歴ドロップダウン（▼）ボタン。クリック/Alt+↑↓ で履歴リストを開く。
     search_history: gui::Button,
+    /// 履歴ドロップダウンの本体（ボックス幅に合わせた ListBox）。非表示で生成し、開閉する。
+    search_list: gui::ListBox,
+    /// 履歴ドロップダウンが開いているか。
+    list_open: Cell<bool>,
     /// 検索バーを閉じたときに呼ぶコールバック（キー入力を本体へ戻す）。MainWindow が登録する。
     on_search_close: RefCell<Option<Box<dyn Fn()>>>,
     /// マウス選択の始点・終点（None なら選択なし）。
@@ -160,6 +166,17 @@ impl ViewerView {
         let search_prev = mk_btn("↑");
         let search_next = mk_btn("↓");
         let search_history = mk_btn("▼");
+        // 履歴リスト（非表示で生成・開いたとき入力欄の下へ出す）。
+        let search_list = gui::ListBox::new(
+            &wnd,
+            gui::ListBoxOpts {
+                control_style: co::LBS::NOTIFY | co::LBS::HASSTRINGS,
+                window_style: co::WS::CHILD | co::WS::BORDER | co::WS::VSCROLL,
+                position: gui::dpi(0, 0),
+                size: gui::dpi(160, 80),
+                ..Default::default()
+            },
+        );
         let inner = Rc::new(Inner {
             model: RefCell::new(ViewerModel::new(Vec::new())),
             title: RefCell::new(String::new()),
@@ -189,6 +206,8 @@ impl ViewerView {
             search_prev,
             search_next,
             search_history,
+            search_list,
+            list_open: Cell::new(false),
             on_search_close: RefCell::new(None),
             sel_anchor: Cell::new(None),
             sel_cursor: Cell::new(None),
@@ -237,6 +256,7 @@ impl ViewerView {
     /// 検索バーを登録解除なしで畳む（ファイルを開き直す/ビューアを閉じる際の後始末）。
     fn reset_search_bar(&self) {
         self.inner.search_active.set(false);
+        self.close_history_dropdown(false);
         for h in self.search_bar_controls() {
             h.ShowWindow(co::SW::HIDE);
         }
@@ -423,38 +443,65 @@ impl ViewerView {
         let _ = hist.save();
     }
 
-    /// 検索履歴のドロップダウン（ポップアップメニュー）を ▼ の下に開く。メニューは ↑↓ で項目を
-    /// 選び Enter で確定・Esc で取消できる（ネイティブ挙動）。選ぶと入力欄へ入れて検索する。
+    /// 検索履歴のドロップダウン（入力欄の下に、ボックス幅に合わせた ListBox）を開く。開いている
+    /// ときに再度呼ぶと閉じる（トグル）。リストは ↑↓ で項目選択・Enter/クリックで確定・Esc で取消。
     fn open_history_dropdown(&self) -> w::AnyResult<()> {
+        if self.inner.list_open.get() {
+            self.close_history_dropdown(true);
+            return Ok(());
+        }
         let items = rerics_core::InputHistory::load().get("search");
         if items.is_empty() {
             self.inner.search_edit.hwnd().SetFocus();
             return Ok(());
         }
-        let menu = w::HMENU::CreatePopupMenu()?;
-        for (i, it) in items.iter().enumerate() {
-            menu.AppendMenu(
-                co::MF::STRING,
-                w::IdMenu::Id((i + 1) as u16),
-                w::BmpPtrStr::from_str(it),
-            )?;
+        let list = self.inner.search_list.hwnd();
+        self.inner.search_list.items().delete_all();
+        self.inner.search_list.items().add(&items)?;
+        // 入力欄の左下に、ボックス（入力欄＋▼）の幅で出す。高さは項目数ぶん（上限あり）。
+        let cw = self.hwnd().GetClientRect().map(|r| r.right - r.left).unwrap_or(0);
+        let g = self.search_bar_geom(cw);
+        let (ex, ew) = g.edit;
+        let width = ew + g.history.1;
+        let item_h = unsafe { list.SendMessage(w::msg::lb::GetItemHeight { index: None }) }
+            .map(|h| h as i32)
+            .unwrap_or(gui::dpi_y(18))
+            .max(1);
+        let rows = items.len().min(HISTORY_DROPDOWN_ROWS) as i32;
+        let height = rows * item_h + gui::dpi_y(4);
+        let top = self.search_bar_height();
+        let _ = list.MoveWindow(w::POINT { x: ex, y: top }, w::SIZE { cx: width, cy: height }, true);
+        unsafe {
+            let _ = list.SendMessage(w::msg::lb::SetCurSel { index: Some(0) });
         }
-        // 入力欄の左下に出す（ドロップダウンらしく、ボックス左端に合わせる）。
-        let r = self.inner.search_edit.hwnd().GetWindowRect()?;
-        let pt = w::POINT { x: r.left, y: r.bottom };
-        let owner = self.hwnd();
-        let _ = owner.SetForegroundWindow();
-        let chosen = menu.TrackPopupMenu(
-            co::TPM::RETURNCMD | co::TPM::LEFTALIGN | co::TPM::TOPALIGN,
-            pt,
-            owner,
-        )?;
-        if let Some(id) = chosen {
-            if let Some(it) = items.get((id as usize).saturating_sub(1)) {
-                self.set_query(it)?;
-            }
+        list.ShowWindow(co::SW::SHOW);
+        list.BringWindowToTop()?;
+        self.inner.list_open.set(true);
+        list.SetFocus();
+        Ok(())
+    }
+
+    /// 履歴ドロップダウンを閉じる。`refocus` で入力欄へフォーカスを戻す。
+    fn close_history_dropdown(&self, refocus: bool) {
+        if !self.inner.list_open.get() {
+            return;
         }
-        self.inner.search_edit.hwnd().SetFocus();
+        self.inner.list_open.set(false);
+        self.inner.search_list.hwnd().ShowWindow(co::SW::HIDE);
+        if refocus {
+            self.inner.search_edit.hwnd().SetFocus();
+        }
+    }
+
+    /// ドロップダウンの現在選択項目を確定する（入力欄へ入れて検索）。
+    fn pick_history_selection(&self) -> w::AnyResult<()> {
+        let list = self.inner.search_list.hwnd();
+        let sel = unsafe { list.SendMessage(w::msg::lb::GetCurSel {}) };
+        let text = sel.and_then(|i| self.inner.search_list.items().text(i).ok());
+        self.close_history_dropdown(true);
+        if let Some(text) = text {
+            self.set_query(&text)?;
+        }
         Ok(())
     }
 
@@ -529,6 +576,28 @@ impl ViewerView {
     #[cfg(feature = "debug-server")]
     pub fn debug_history(&self) -> Vec<String> {
         rerics_core::InputHistory::load().get("search")
+    }
+
+    /// debug-server 用：履歴ドロップダウンが開いているか。
+    #[cfg(feature = "debug-server")]
+    pub fn debug_is_dropdown_open(&self) -> bool {
+        self.inner.list_open.get()
+    }
+
+    /// debug-server 用：履歴ドロップダウンを開く/閉じる（headless でも開閉を観測できるように）。
+    #[cfg(feature = "debug-server")]
+    pub fn debug_dropdown(&self, open: bool) -> w::AnyResult<()> {
+        if open {
+            if !self.inner.search_active.get() {
+                self.open_search_bar()?;
+            }
+            if !self.inner.list_open.get() {
+                self.open_history_dropdown()?;
+            }
+        } else {
+            self.close_history_dropdown(true);
+        }
+        Ok(())
     }
 
     /// debug-server 用：履歴の index 番目（新しい順）を入力欄へ入れて検索する。範囲外は `false`。
@@ -1052,6 +1121,33 @@ impl ViewerView {
                 }
                 _ => Ok(unsafe { this.inner.search_edit.hwnd().DefSubclassProc(p) }),
             }
+        });
+
+        // 履歴リスト内のキー：Enter で確定・Esc で取消（↑↓ はネイティブ選択移動に任せる）。
+        let this = self.clone();
+        self.inner.search_list.on_subclass().wm(co::WM::KEYDOWN, move |p| match p.wparam as u16 {
+            0x0D => {
+                this.pick_history_selection()?;
+                Ok(0)
+            }
+            0x1B => {
+                this.close_history_dropdown(true);
+                Ok(0)
+            }
+            _ => Ok(unsafe { this.inner.search_list.hwnd().DefSubclassProc(p) }),
+        });
+        // クリックで確定（ボタンアップで選択が確定した後に拾う）。
+        let this = self.clone();
+        self.inner.search_list.on_subclass().wm(co::WM::LBUTTONUP, move |p| {
+            let r = unsafe { this.inner.search_list.hwnd().DefSubclassProc(p) };
+            this.pick_history_selection()?;
+            Ok(r)
+        });
+        // リスト外をクリック等でフォーカスを失ったら閉じる。
+        let this = self.clone();
+        self.inner.search_list.on_subclass().wm(co::WM::KILLFOCUS, move |p| {
+            this.close_history_dropdown(false);
+            Ok(unsafe { this.inner.search_list.hwnd().DefSubclassProc(p) })
         });
     }
 

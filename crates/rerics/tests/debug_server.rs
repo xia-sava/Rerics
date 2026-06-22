@@ -1939,4 +1939,12 @@ fn text_viewer_search_history_records_on_enter() {
     let search = server.req("GET", "/state/viewer/search", "").expect("search").1;
     assert_eq!(search.trim(), "\"bar\"", "履歴1番目（bar）が入力欄へ: {search}");
     poll(&server, "/state/viewer/search_open", |b| b.trim() == "true");
+
+    // 履歴ドロップダウンの開閉が観測できる。
+    server.req("POST", "/view/search/dropdown/open", "").expect("open dropdown");
+    let lo = server.req("GET", "/state/viewer/list_open", "").expect("list_open").1;
+    assert_eq!(lo.trim(), "true", "ドロップダウンが開く");
+    server.req("POST", "/view/search/dropdown/close", "").expect("close dropdown");
+    let lc = server.req("GET", "/state/viewer/list_open", "").expect("list_open2").1;
+    assert_eq!(lc.trim(), "false", "ドロップダウンが閉じる");
 }

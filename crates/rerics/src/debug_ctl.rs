@@ -68,6 +68,9 @@ impl MainWindow {
                 debug_server::Request::ViewSearchHistory { index } => {
                     let _ = tx.send(self.debug_view_search_history(index));
                 }
+                debug_server::Request::ViewSearchDropdown { open } => {
+                    let _ = tx.send(self.debug_view_search_dropdown(open));
+                }
                 debug_server::Request::Snapshot { spec } => {
                     self.settle_pending_jobs();
                     let _ = tx.send(self.debug_snapshot(&spec));
@@ -481,6 +484,18 @@ impl MainWindow {
         }
     }
 
+    /// `POST /view/search/dropdown/<open|close>`：履歴ドロップダウンを開く/閉じる。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn debug_view_search_dropdown(&self, open: bool) -> debug_server::Response {
+        if !matches!(self.active_view.get(), ActiveView::Text) {
+            return debug_server::Response::BadRequest("text viewer not active".into());
+        }
+        match self.viewer.debug_dropdown(open) {
+            Ok(()) => debug_server::Response::Json(self.debug_state_value().to_string()),
+            Err(e) => debug_server::Response::Error(format!("view search dropdown error: {e}")),
+        }
+    }
+
     /// `GET /snapshot[/<spec>]`：画面 PNG を返す。spec は全体／名前付き要素／数値範囲／要素相対範囲。
     /// 名前付き要素の矩形は復帰後レイアウトで確定するため、撮影準備（復帰＋再レイアウト）を先に行う。
     #[cfg(feature = "debug-server")]
@@ -836,6 +851,7 @@ impl MainWindow {
                 "whole_word": opts.whole_word,
                 "regex": opts.regex,
                 "history": self.viewer.debug_history(),
+                "list_open": self.viewer.debug_is_dropdown_open(),
             })
         } else {
             serde_json::Value::Null
