@@ -94,7 +94,9 @@ impl ViewerView {
                 class_bg_brush: gui::Brush::None,
                 position,
                 size,
-                style: co::WS::CHILD | co::WS::CLIPSIBLINGS,
+                // 検索バーの子コントロール領域を親の描画から除外し、ミラーが本物コントロールを
+                // 上書きしてチラつかないようにする（自前描画の render_to はクリップ無視で全描画）。
+                style: co::WS::CHILD | co::WS::CLIPSIBLINGS | co::WS::CLIPCHILDREN,
                 ..Default::default()
             },
         );
@@ -342,6 +344,7 @@ impl ViewerView {
         self.inner.search_active.get()
     }
 
+
     /// インライン検索バーを開く。開始時のスクロール位置を控え（Esc 復帰用）、入力欄を前面に
     /// 出してフォーカスし、現在の検索語で一度検索する。既に開いていれば入力欄へ再フォーカスのみ。
     pub fn open_search_bar(&self) -> w::AnyResult<()> {
@@ -461,13 +464,9 @@ impl ViewerView {
         }
     }
 
-    /// 検索バーの入力欄と右側の操作列を配置する。右端から順にカウンタ領域・前/次ボタン・
-    /// トグル3つを並べ、残り幅を入力欄に割り当てる。
-    fn layout_search_bar(&self) {
-        if !self.inner.search_active.get() {
-            return;
-        }
-        let cw = self.hwnd().GetClientRect().map(|r| r.right - r.left).unwrap_or(0);
+    /// 検索バーの各要素の矩形（x, 幅）と共通の y・高さ。入力欄・トグル3・前後ボタン・
+    /// カウンタを、配置（layout）と自前ミラー描画（draw）で共有する。
+    fn search_bar_geom(&self, cw: i32) -> BarGeom {
         let bar_h = self.search_bar_height();
         let pad = gui::dpi_x(6);
         let gap = gui::dpi_x(4);
@@ -476,37 +475,70 @@ impl ViewerView {
         let counter_w = gui::dpi_x(72);
         let h = self.inner.line_height.get().max(gui::dpi_y(18));
         let y = ((bar_h - h) / 2).max(0);
-        let mv = |hwnd: &w::HWND, x: i32, w: i32| {
-            let _ = hwnd.MoveWindow(w::POINT { x, y }, w::SIZE { cx: w, cy: h }, true);
-        };
-        // 操作列（トグル3＋ボタン2）の左端。カウンタ領域ぶんを右に空ける。
         let cluster_w = cb_w * 3 + btn_w * 2 + gap * 4;
         let cluster_x = (cw - pad - counter_w - gap - cluster_w).max(pad);
-        let mut x = cluster_x;
-        for (hwnd, w) in [
-            (self.inner.search_case.hwnd(), cb_w),
-            (self.inner.search_word.hwnd(), cb_w),
-            (self.inner.search_regex.hwnd(), cb_w),
-            (self.inner.search_prev.hwnd(), btn_w),
-            (self.inner.search_next.hwnd(), btn_w),
-        ] {
-            mv(hwnd, x, w);
-            x += w + gap;
+        let case_x = cluster_x;
+        let word_x = case_x + cb_w + gap;
+        let regex_x = word_x + cb_w + gap;
+        let prev_x = regex_x + cb_w + gap;
+        let next_x = prev_x + btn_w + gap;
+        let counter_x = next_x + btn_w + gap;
+        let edit_w = (cluster_x - pad - gap).max(gui::dpi_x(40));
+        BarGeom {
+            y,
+            h,
+            edit: (pad, edit_w),
+            case: (case_x, cb_w),
+            word: (word_x, cb_w),
+            regex: (regex_x, cb_w),
+            prev: (prev_x, btn_w),
+            next: (next_x, btn_w),
+            counter: (counter_x, counter_w),
         }
-        // 入力欄は左端から操作列の手前まで。
-        let ew = (cluster_x - pad - gap).max(gui::dpi_x(40));
-        mv(self.inner.search_edit.hwnd(), pad, ew);
     }
 
-    /// 検索バーの帯（背景＋下境界＋一致カウンタ）を描く。入力欄自体は子コントロールが上に乗る。
+    /// 検索バーの入力欄と右側の操作列（トグル3＋前/次ボタン）を配置する。
+    fn layout_search_bar(&self) {
+        if !self.inner.search_active.get() {
+            return;
+        }
+        let cw = self.hwnd().GetClientRect().map(|r| r.right - r.left).unwrap_or(0);
+        let g = self.search_bar_geom(cw);
+        let mv = |hwnd: &w::HWND, (x, w): (i32, i32)| {
+            let _ = hwnd.MoveWindow(w::POINT { x, y: g.y }, w::SIZE { cx: w, cy: g.h }, true);
+        };
+        mv(self.inner.search_edit.hwnd(), g.edit);
+        mv(self.inner.search_case.hwnd(), g.case);
+        mv(self.inner.search_word.hwnd(), g.word);
+        mv(self.inner.search_regex.hwnd(), g.regex);
+        mv(self.inner.search_prev.hwnd(), g.prev);
+        mv(self.inner.search_next.hwnd(), g.next);
+    }
+
+    /// 検索バーの帯と、各コントロールの「ミラー」を自前描画する。実機では本物の子コントロールが
+    /// 同じ位置に重なって隠すが、子コントロールは自前描画でなくスナップショットに写らないため、
+    /// headless でも入力文字・トグル状態・件数が見えるようここで写し描きする。
     fn draw_search_bar(&self, dc: &w::HDC, cw: i32) -> w::AnyResult<()> {
         let bar_h = self.search_bar_height();
-        let face = chrome::face();
-        let brush = w::HBRUSH::CreateSolidBrush(face)?;
+        let brush = w::HBRUSH::CreateSolidBrush(chrome::face())?;
         dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: bar_h }, &brush)?;
         chrome::hline(dc, 0, cw, bar_h - 1, chrome::highlight())?;
-        // 右端に「現在 / 総数」を出す（語が空なら何も出さず、一致なしは 0 件）。
+
+        let g = self.search_bar_geom(cw);
+        let o = self.inner.search_opts.get();
         let term = self.inner.search_term.borrow().clone();
+        // 入力欄ミラー（白地・枠・検索語）。
+        self.draw_bar_input(dc, g.edit, g.y, g.h, &term)?;
+        // トグル3つ（[x]/[ ]＋ラベル）。「大小」は ON＝大小無視。
+        let sfont = self.create_font_sized((self.inner.font_size - 1).max(6))?;
+        let _sel = dc.SelectObject(&*sfont)?;
+        dc.SetTextColor(chrome::text())?;
+        self.draw_bar_toggle(dc, g.case, g.y, g.h, "大小", !o.case_sensitive)?;
+        self.draw_bar_toggle(dc, g.word, g.y, g.h, "単語", o.whole_word)?;
+        self.draw_bar_toggle(dc, g.regex, g.y, g.h, "正規", o.regex)?;
+        self.draw_bar_button(dc, g.prev, g.y, g.h, "↑")?;
+        self.draw_bar_button(dc, g.next, g.y, g.h, "↓")?;
+        // 一致カウンタ（語が空なら出さず・一致なしは 0 件）。
         if !term.is_empty() {
             let matches = self.all_matches();
             let total = matches.len();
@@ -522,17 +554,61 @@ impl ViewerView {
                     .unwrap_or(0);
                 format!("{cur} / {total}")
             };
-            let sfont = self.create_font_sized((self.inner.font_size - 1).max(6))?;
-            let _sel = dc.SelectObject(&*sfont)?;
-            dc.SetTextColor(chrome::text())?;
-            let pad = gui::dpi_x(8);
-            let rect = w::RECT { left: cw / 2, top: 0, right: cw - pad, bottom: bar_h };
+            let (cx, cwd) = g.counter;
+            let rect = w::RECT { left: cx, top: 0, right: cx + cwd, bottom: bar_h };
             dc.DrawText(
                 &text,
                 rect,
                 co::DT::SINGLELINE | co::DT::VCENTER | co::DT::RIGHT | co::DT::NOPREFIX,
             )?;
         }
+        Ok(())
+    }
+
+    /// 入力欄ミラー：白地＋枠＋検索語（左寄せ）。
+    fn draw_bar_input(&self, dc: &w::HDC, (x, w): (i32, i32), y: i32, h: i32, term: &str) -> w::AnyResult<()> {
+        let r = w::RECT { left: x, top: y, right: x + w, bottom: y + h };
+        let white = w::HBRUSH::CreateSolidBrush(chrome::window())?;
+        dc.FillRect(r, &white)?;
+        chrome::hline(dc, x, x + w, y, chrome::shadow())?;
+        chrome::hline(dc, x, x + w, y + h - 1, chrome::shadow())?;
+        chrome::vline(dc, x, y, y + h, chrome::shadow())?;
+        chrome::vline(dc, x + w - 1, y, y + h, chrome::shadow())?;
+        if !term.is_empty() {
+            let efont = self.create_font_sized((self.inner.font_size - 1).max(6))?;
+            let _sel = dc.SelectObject(&*efont)?;
+            dc.SetTextColor(chrome::text())?;
+            let pad = gui::dpi_x(4);
+            let tr = w::RECT { left: x + pad, top: y, right: x + w - pad, bottom: y + h };
+            dc.DrawText(term, tr, co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX | co::DT::END_ELLIPSIS)?;
+        }
+        Ok(())
+    }
+
+    /// トグルミラー：`[x] ラベル`／`[ ] ラベル`（ON で塗り枠を付けて目立たせる）。
+    fn draw_bar_toggle(&self, dc: &w::HDC, (x, w): (i32, i32), y: i32, h: i32, label: &str, on: bool) -> w::AnyResult<()> {
+        if on {
+            let r = w::RECT { left: x, top: y, right: x + w, bottom: y + h };
+            chrome::hline(dc, x, x + w, y, chrome::shadow())?;
+            chrome::hline(dc, x, x + w, y + h - 1, chrome::shadow())?;
+            chrome::vline(dc, x, y, y + h, chrome::shadow())?;
+            chrome::vline(dc, x + w - 1, y, y + h, chrome::shadow())?;
+            let _ = r;
+        }
+        let text = format!("[{}]{}", if on { "x" } else { " " }, label);
+        let r = w::RECT { left: x + gui::dpi_x(2), top: y, right: x + w, bottom: y + h };
+        dc.DrawText(&text, r, co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX)?;
+        Ok(())
+    }
+
+    /// ボタンミラー：枠付きの矢印。
+    fn draw_bar_button(&self, dc: &w::HDC, (x, w): (i32, i32), y: i32, h: i32, glyph: &str) -> w::AnyResult<()> {
+        chrome::hline(dc, x, x + w, y, chrome::shadow())?;
+        chrome::hline(dc, x, x + w, y + h - 1, chrome::shadow())?;
+        chrome::vline(dc, x, y, y + h, chrome::shadow())?;
+        chrome::vline(dc, x + w - 1, y, y + h, chrome::shadow())?;
+        let r = w::RECT { left: x, top: y, right: x + w, bottom: y + h };
+        dc.DrawText(glyph, r, co::DT::SINGLELINE | co::DT::VCENTER | co::DT::CENTER | co::DT::NOPREFIX)?;
         Ok(())
     }
 
@@ -1232,6 +1308,19 @@ impl ViewerView {
         )
     }
 
+}
+
+/// 検索バー各要素の配置（x, 幅）と共通の y・高さ。layout と自前ミラー描画で共有する。
+struct BarGeom {
+    y: i32,
+    h: i32,
+    edit: (i32, i32),
+    case: (i32, i32),
+    word: (i32, i32),
+    regex: (i32, i32),
+    prev: (i32, i32),
+    next: (i32, i32),
+    counter: (i32, i32),
 }
 
 fn rgb(c: Rgb) -> w::COLORREF {
