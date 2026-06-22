@@ -990,7 +990,7 @@ impl FileListView {
                 let max_top = count - page;
                 let pos = s.scroll_top.min(max_top);
                 let thumb_top = track_top + ((track_h - thumb_h) * pos as i32) / max_top as i32;
-                let thumb_brush = w::HBRUSH::CreateSolidBrush(w::COLORREF::from_rgb(0x55, 0x55, 0x55))?;
+                let thumb_brush = w::HBRUSH::CreateSolidBrush(rgb(colors.scrollbar_thumb()))?;
                 dc.FillRect(
                     w::RECT { left: bar_x + 1, top: thumb_top, right: cw - 1, bottom: thumb_top + thumb_h },
                     &thumb_brush,

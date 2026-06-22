@@ -167,12 +167,16 @@ fn parse_or(edit: &gui::Edit, cur: i32) -> i32 {
 }
 
 /// プレビュー一覧のフォント（設定のファミリ・サイズ）。実ファイル一覧と同じ生成条件。
-fn list_font(family: &str, size: i32) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
+fn list_font(
+    family: &str,
+    size: i32,
+    bold: bool,
+) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
     w::HFONT::CreateFont(
         w::SIZE { cx: 0, cy: -gui::dpi_y(size) },
         0,
         0,
-        co::FW::NORMAL,
+        if bold { co::FW::BOLD } else { co::FW::NORMAL },
         false,
         false,
         false,
@@ -267,6 +271,7 @@ fn draw_pane(
     icons_show: bool,
     icon_px: i32,
     c: &Colors,
+    active: bool,
 ) -> w::AnyResult<()> {
     if w <= 0 || h <= 0 {
         return Ok(());
@@ -294,7 +299,7 @@ fn draw_pane(
         let tr = x + w - sb_w;
         fill(dc, tr, list_y, x + w, list_b, c.background2)?;
         let th = ((list_b - list_y) / 3).max(1);
-        fill(dc, tr, list_y, x + w, (list_y + th).min(list_b), c.cursor)?;
+        fill(dc, tr, list_y, x + w, (list_y + th).min(list_b), c.scrollbar_thumb())?;
         tr
     } else {
         x + w
@@ -309,7 +314,8 @@ fn draw_pane(
         ("LICENSE", c.readonly, Deco::Plain),
         ("pagefile.sys", c.system, Deco::Plain),
         (".gitignore", c.hidden, Deco::Plain),
-        ("archive.zip", c.selected_file, Deco::Selected),
+        // archive.zip は通常ファイル＝自然色は file_normal（マーク時のみ選択色になる）。
+        ("archive.zip", c.file_normal, Deco::Selected),
     ];
     let mut ry = list_y;
     for (name, color, deco) in rows {
@@ -318,8 +324,15 @@ fn draw_pane(
         }
         match deco {
             Deco::Selected => {
-                fill(dc, x, ry, list_r, ry + row_h, c.selected_file_bg)?;
-                dc.SetTextColor(to_colorref(c.selected_file))?;
+                // 実リストと同じく、アクティブ側は選択色＋選択文字色、非アクティブ側は
+                // 選択背景を地色へ寄せて淡くし文字は自然色へ戻す（どちらが現側か一目で分かる）。
+                let (bg, text) = if active {
+                    (c.selected_file_bg, c.selected_file)
+                } else {
+                    (c.selected_file_bg.blend(c.background, 3, 5), color)
+                };
+                fill(dc, x, ry, list_r, ry + row_h, bg)?;
+                dc.SetTextColor(to_colorref(text))?;
             }
             _ => {
                 dc.SetTextColor(to_colorref(color))?;
@@ -332,8 +345,11 @@ fn draw_pane(
             text_left = left + icon_px + gui::dpi_x(2);
         }
         dc.TextOut(text_left, ry + (row_h - fh) / 2, name)?;
-        if matches!(deco, Deco::Cursor) {
-            frame(dc, x, ry, list_r, ry + row_h, c.cursor)?;
+        // カーソルはアクティブ側だけに出す（実リストも非アクティブ側にカーソルを描かない）。
+        // 実リストのカーソルは行全体の枠ではなく文字直下の下線（`colors.cursor`）。
+        if active && matches!(deco, Deco::Cursor) {
+            let uy = ry + (row_h - fh) / 2 + fh - 1;
+            fill(dc, x, uy, list_r, uy + 1, c.cursor)?;
         }
         ry += row_h;
     }
@@ -350,7 +366,18 @@ fn draw_pane(
 }
 
 /// ミニ・ログ（下端・全幅）を縮小描画する。
-fn draw_log(dc: &w::HDC, x: i32, y: i32, w: i32, h: i32, fh: i32, c: &Colors) -> w::AnyResult<()> {
+#[allow(clippy::too_many_arguments)]
+fn draw_log(
+    dc: &w::HDC,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    fh: i32,
+    c: &Colors,
+    font: &w::HFONT,
+    font_bold: &w::HFONT,
+) -> w::AnyResult<()> {
     if w <= 0 || h <= 0 {
         return Ok(());
     }
@@ -358,21 +385,24 @@ fn draw_log(dc: &w::HDC, x: i32, y: i32, w: i32, h: i32, fh: i32, c: &Colors) ->
     let pad = gui::dpi_y(2);
     let left = x + gui::dpi_x(4);
     let row_h = fh + pad;
-    let logs: [(&str, Rgb); 4] = [
-        ("コピーを開始します", c.log_normal),
-        ("3 個のファイルを選択しました", c.log_info),
-        ("空き容量が少なくなっています", c.log_warning),
-        ("アクセスが拒否されました", c.log_error),
+    // 実ログと同じく Info/Error は太字（log_view.rs paint_to と対応）。
+    let logs: [(&str, Rgb, bool); 4] = [
+        ("コピーを開始します", c.log_normal, false),
+        ("3 個のファイルを選択しました", c.log_info, true),
+        ("空き容量が少なくなっています", c.log_warning, false),
+        ("アクセスが拒否されました", c.log_error, true),
     ];
     let mut ly = y + pad;
-    for (text, color) in logs {
+    for (text, color, bold) in logs {
         if ly + row_h > y + h {
             break;
         }
+        dc.SelectObject(if bold { font_bold } else { font })?;
         dc.SetTextColor(to_colorref(color))?;
         dc.TextOut(left, ly, text)?;
         ly += row_h;
     }
+    dc.SelectObject(font)?;
     Ok(())
 }
 
@@ -454,7 +484,8 @@ impl Preview {
         };
         let colors = self.shared.target_colors();
 
-        let font = list_font(&family, fsize)?;
+        let font = list_font(&family, fsize, false)?;
+        let font_bold = list_font(&family, fsize, true)?;
         let _fsel = dc.SelectObject(&*font)?;
         let tm = dc.GetTextMetrics().ok();
         let fh = tm.as_ref().map(|t| t.tmHeight).unwrap_or(16);
@@ -493,9 +524,9 @@ impl Preview {
         // 余白・溝・スプリッタの地色。残りの矩形を上から punch していく。
         fill(dc, 0, 0, cw, ch, colors.background2)?;
         draw_tabs(dc, 0, 0, cw, tab_h, fh, &colors)?;
-        draw_pane(dc, left_x, pane_top, left_w, pane_h, bar_h, bar_gap, status_h, sb_w, fh, icons.show, icon_px, &colors)?;
-        draw_pane(dc, right_x, pane_top, right_w, pane_h, bar_h, bar_gap, status_h, sb_w, fh, icons.show, icon_px, &colors)?;
-        draw_log(dc, left_x, log_y, log_w, log_h, fh, &colors)?;
+        draw_pane(dc, left_x, pane_top, left_w, pane_h, bar_h, bar_gap, status_h, sb_w, fh, icons.show, icon_px, &colors, true)?;
+        draw_pane(dc, right_x, pane_top, right_w, pane_h, bar_h, bar_gap, status_h, sb_w, fh, icons.show, icon_px, &colors, false)?;
+        draw_log(dc, left_x, log_y, log_w, log_h, fh, &colors, &font, &font_bold)?;
         Ok(())
     }
 }

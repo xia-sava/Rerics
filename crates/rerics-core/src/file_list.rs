@@ -770,6 +770,13 @@ impl Colors {
         }
         c
     }
+
+    /// スクロールバーつまみの色。トラック（`background2`）を本文色へ寄せた中間グレーで、
+    /// dark/light どちらのテーマでも視認できる。リスト本体と設定プレビューで共通に使い、
+    /// 両者の見た目がずれないようにする（専用の設定色は持たない）。
+    pub fn scrollbar_thumb(&self) -> Rgb {
+        self.background2.blend(self.file_normal, 2, 5)
+    }
 }
 
 /// ファイル一覧コントロールの状態モデル（描画と完全分離）。

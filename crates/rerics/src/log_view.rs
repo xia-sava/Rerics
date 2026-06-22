@@ -432,14 +432,16 @@ impl LogView {
             }
         }
 
-        // 右端スクロールバー（トラックは背景同色・thumb はグレー）。
+        // 右端スクロールバー（トラックはログ背景同色・thumb はログ地色を本文色へ寄せた
+        // 中間グレーでテーマ追従＝リスト本体のつまみと同じ流儀）。
         if let Some((bar_x, track_top, _track_h, thumb_top, thumb_h)) = sb {
             let track_brush = w::HBRUSH::CreateSolidBrush(rgb(colors.log_background))?;
             dc.FillRect(
                 w::RECT { left: bar_x, top: track_top, right: cw, bottom: ch },
                 &track_brush,
             )?;
-            let thumb_brush = w::HBRUSH::CreateSolidBrush(w::COLORREF::from_rgb(0x55, 0x55, 0x55))?;
+            let thumb_brush =
+                w::HBRUSH::CreateSolidBrush(rgb(colors.log_background.blend(colors.log_normal, 2, 5)))?;
             dc.FillRect(
                 w::RECT { left: bar_x + 1, top: thumb_top, right: cw - 1, bottom: thumb_top + thumb_h },
                 &thumb_brush,
