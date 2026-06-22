@@ -52,6 +52,7 @@ const VIEWER_COLOR_FIELDS: ColorFields = &[
     ("記号(改行/EOF)", |c| c.viewer_symbol, |c, v| c.viewer_symbol = v),
     ("検索文字", |c| c.viewer_find_text, |c, v| c.viewer_find_text = v),
     ("検索背景", |c| c.viewer_find_bg, |c, v| c.viewer_find_bg = v),
+    ("検索カーソル行の下線", |c| c.viewer_cursor, |c, v| c.viewer_cursor = v),
 ];
 
 /// レイアウト寸法フィールドのラベルと get/set（すべて論理 px）。

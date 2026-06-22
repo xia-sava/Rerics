@@ -97,16 +97,20 @@ impl MainWindow {
         let inv = Invocation::new(cmd, args);
         let is_left = !self.active_right.get();
         // 表示中ビューアのコマンドはそのビューア文脈で実行する。
-        let viewer_exec = match self.active_view.get() {
-            ActiveView::Text if cmd.available_in(CommandContext::TextViewer) => {
-                Some(self.exec_viewer(&inv))
-            }
-            ActiveView::Media if cmd.available_in(CommandContext::ImageViewer) => {
-                Some(self.exec_media(&inv))
-            }
+        let viewer_is_text = match self.active_view.get() {
+            ActiveView::Text if cmd.available_in(CommandContext::TextViewer) => Some(true),
+            ActiveView::Media if cmd.available_in(CommandContext::ImageViewer) => Some(false),
             _ => None,
         };
-        if let Some(result) = viewer_exec {
+        if let Some(is_text) = viewer_is_text {
+            // 検索など、モーダルを開き得るビューアコマンドは exec がモーダルを閉じるまで
+            // ブロックする。単一スレッドの HTTP が `/modal/*` を捌けなくなるのを避け、先に応答する。
+            if !matches!(debug_command_class(cmd), DebugCmdClass::NonModal) {
+                let _ = tx.send(debug_server::Response::Json("{\"maybe_modal\":true}".to_string()));
+                let _ = if is_text { self.exec_viewer(&inv) } else { self.exec_media(&inv) };
+                return;
+            }
+            let result = if is_text { self.exec_viewer(&inv) } else { self.exec_media(&inv) };
             let r = match result {
                 Ok(()) => {
                     self.settle_pending_jobs();
@@ -750,6 +754,17 @@ impl MainWindow {
         } else {
             serde_json::Value::Null
         };
+        let viewer = if matches!(self.active_view.get(), ActiveView::Text) {
+            let (search, pos, count) = self.viewer.debug_search_state();
+            let len = search.chars().count();
+            json!({
+                "search": search,
+                "match": pos.map(|(l, c)| json!({ "line": l, "col": c, "len": len })),
+                "match_count": count,
+            })
+        } else {
+            serde_json::Value::Null
+        };
         let tabs: Vec<serde_json::Value> = self
             .tabs
             .borrow()
@@ -824,6 +839,7 @@ impl MainWindow {
             },
             "modal": modal,
             "media": media,
+            "viewer": viewer,
             "tab_bar": { "active": self.active.get(), "labels": self.tab_bar.labels() },
             "tabs": { "active": self.active.get(), "count": tabs.len(), "items": tabs },
             "log": { "lines": log_lines },

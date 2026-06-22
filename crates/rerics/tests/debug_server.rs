@@ -1776,3 +1776,53 @@ fn image_viewer_display_modes_switch_by_keys() {
     server.req("POST", "/view/key/0", "").expect("view key 0");
     assert_eq!(mode(&server), "fit_large", "0 は未バインドでモード不変");
 }
+
+/// テキストビューアの検索が、可視範囲の全一致を桁単位で捉え、N で一致箇所単位に
+/// 移動するのを debug-server で観測する（大小無視・同一行内の複数一致も辿る）。
+#[test]
+fn text_viewer_search_finds_all_occurrences_and_navigates() {
+    let server = Server::start(&["doc.txt"], "");
+    // 既定の placeholder を、複数一致を含む内容で上書きする（ViewFile は表示時に読み直す）。
+    std::fs::write(server.base.join("sbx").join("doc.txt"), "foo bar foo\nbaz\nFOO end\n").unwrap();
+
+    // doc.txt にカーソルを置いてテキストビューアで開く。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/ViewFile", "").expect("ViewFile");
+    poll(&server, "/state/active_view", |b| b.trim().trim_matches('"') == "text");
+    // 一度撮影してレイアウト＋描画を走らせ、表示行を実幅で確定させる（検索は表示行を走査する）。
+    req_bytes(server.port, "GET", "/snapshot").expect("warmup snapshot");
+
+    // 検索ダイアログを開いて "foo" を確定する（モーダルは先に応答が返る非ブロッキング経路）。
+    server.req("POST", "/command/ViewerSearchDialog", "").expect("open search");
+    wait_modal(&server);
+    server.req("POST", "/modal/text", "foo").unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+
+    let match_json = |s: &Server| s.req("GET", "/state/viewer/match", "").expect("match").1;
+
+    // 大小無視で全一致を数える（foo, foo, FOO ＝ 3）。
+    let count = server.req("GET", "/state/viewer/match_count", "").expect("count").1;
+    assert_eq!(count.trim(), "3", "大小無視で全一致を数える");
+    // 初期一致は 0 行 0 桁・長さ 3。
+    let m1 = match_json(&server);
+    assert!(
+        m1.contains("\"line\":0") && m1.contains("\"col\":0") && m1.contains("\"len\":3"),
+        "初期一致は 0 行 0 桁: {m1}"
+    );
+
+    // N で同一行内の次の一致（8 桁目）へ。
+    server.req("POST", "/view/key/N", "").expect("find next");
+    let m2 = match_json(&server);
+    assert!(m2.contains("\"col\":8"), "次の一致は同一行 8 桁: {m2}");
+
+    // さらに N で 3 行目の FOO（別行・0 桁）へ。
+    server.req("POST", "/view/key/N", "").expect("find next 2");
+    let m3 = match_json(&server);
+    assert!(m3.contains("\"line\":2") && m3.contains("\"col\":0"), "3 番目は 2 行目 0 桁: {m3}");
+
+    // ハイライト描画を撮れる（観測可能）。
+    let (st, png) = req_bytes(server.port, "GET", "/snapshot").expect("snapshot");
+    assert_eq!(st, 200, "/snapshot は 200");
+    assert!(png.starts_with(&[0x89, b'P', b'N', b'G']), "PNG 署名で始まる");
+}

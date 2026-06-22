@@ -415,9 +415,56 @@ fn rle_colors(seg: &[Styled]) -> Vec<(usize, Rgb)> {
     spans
 }
 
+/// 1 文字ずつ小文字へ畳んだ `Vec<char>`。文字数を変えない（1 文字→1 文字）ので、
+/// 結果の桁が元文字列の桁と 1:1 に対応する。大小無視のまま一致桁を求めるのに使う。
+fn lower_chars(s: &str) -> Vec<char> {
+    s.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect()
+}
+
+/// `line` 中に現れる `needle` の全一致の開始桁（文字単位・大小無視・非重複）を返す。
+/// 桁は `line.chars()` のインデックス。`needle` が空なら空。
+pub fn search_offsets(line: &str, needle: &str) -> Vec<usize> {
+    let needle = lower_chars(needle);
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let hay = lower_chars(line);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + needle.len() <= hay.len() {
+        if hay[i..i + needle.len()] == needle[..] {
+            out.push(i);
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_offsets_finds_all_case_insensitive() {
+        // 大小無視で全一致を桁単位に返す。
+        assert_eq!(search_offsets("Foo foo FOO", "foo"), vec![0, 4, 8]);
+        // 部分一致・記号交じり。
+        assert_eq!(search_offsets("a_bar_bar", "bar"), vec![2, 6]);
+        // 非重複（"aa" は "aaaa" に2回）。
+        assert_eq!(search_offsets("aaaa", "aa"), vec![0, 2]);
+        // 無し・空 needle。
+        assert_eq!(search_offsets("hello", "xyz"), Vec::<usize>::new());
+        assert_eq!(search_offsets("hello", ""), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn search_offsets_columns_align_with_fullwidth() {
+        // 全角を挟んでも桁は chars() インデックス（バイトでない）で揃う。
+        // "あいABCあい" の "abc" は 2 文字目から。
+        assert_eq!(search_offsets("あいABCあい", "abc"), vec![2]);
+    }
 
     #[test]
     fn encoding_cycle_wraps() {

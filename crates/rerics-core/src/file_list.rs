@@ -677,6 +677,8 @@ pub struct Colors {
     pub viewer_find_text: Rgb,
     /// テキストビューアの検索ヒット背景。
     pub viewer_find_bg: Rgb,
+    /// テキストビューアの検索カーソル行の下線。
+    pub viewer_cursor: Rgb,
 }
 
 impl Default for Colors {
@@ -712,6 +714,8 @@ impl Colors {
             viewer_symbol: Rgb::new(0x80, 0x00, 0x80),
             viewer_find_text: Rgb::new(0x00, 0x00, 0x00),
             viewer_find_bg: Rgb::new(0xff, 0xff, 0x00),
+            // 原作の Cursor=Blue。黒背景で沈まないよう明るい青に寄せる（意図準拠）。
+            viewer_cursor: Rgb::new(0x4a, 0x90, 0xff),
         }
     }
 
@@ -742,6 +746,8 @@ impl Colors {
             viewer_symbol: Rgb::new(0x80, 0x00, 0x80),
             viewer_find_text: Rgb::new(0x00, 0x00, 0x00),
             viewer_find_bg: Rgb::new(0xff, 0xff, 0x00),
+            // 原作の Cursor=Blue（白背景なのでそのまま）。
+            viewer_cursor: Rgb::new(0x00, 0x00, 0xff),
         }
     }
 }

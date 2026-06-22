@@ -8,7 +8,9 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use rerics_core::{Colors, Config, DisplayLine, LineEnding, Rgb, ViewMode, ViewerModel};
+use rerics_core::{
+    Colors, Config, DisplayLine, LineEnding, Rgb, ViewMode, ViewerModel, search_offsets,
+};
 use unicode_width::UnicodeWidthChar;
 use winsafe::{self as w, co, gui, prelude::*};
 
@@ -43,7 +45,8 @@ struct Inner {
     /// 検索語（小文字化はしない。一致は大小無視で判定）。
     search_term: RefCell<String>,
     /// 現在ヒットしている表示行（ハイライト対象）。
-    match_line: Cell<Option<usize>>,
+    /// 現在の検索一致（表示行 index, 行内の開始桁）。検索ハイライト/ナビの基準。
+    match_pos: Cell<Option<(usize, usize)>>,
     /// マウス選択の始点・終点（None なら選択なし）。
     sel_anchor: Cell<Option<Pos>>,
     sel_cursor: Cell<Option<Pos>>,
@@ -92,7 +95,7 @@ impl ViewerView {
             gutter_chars: Cell::new(1),
             dirty: Cell::new(true),
             search_term: RefCell::new(String::new()),
-            match_line: Cell::new(None),
+            match_pos: Cell::new(None),
             sel_anchor: Cell::new(None),
             sel_cursor: Cell::new(None),
             selecting: Cell::new(false),
@@ -131,7 +134,7 @@ impl ViewerView {
         self.inner.scroll_top.set(0);
         self.inner.dirty.set(true);
         *self.inner.search_term.borrow_mut() = String::new();
-        self.inner.match_line.set(None);
+        self.inner.match_pos.set(None);
         self.clear_selection();
         let _ = self.refresh();
     }
@@ -151,7 +154,7 @@ impl ViewerView {
     pub fn cycle_encoding(&self, forward: bool) -> w::AnyResult<()> {
         self.inner.model.borrow_mut().cycle_encoding(forward);
         self.inner.dirty.set(true);
-        self.inner.match_line.set(None);
+        self.inner.match_pos.set(None);
         self.clear_selection();
         self.refresh()
     }
@@ -161,7 +164,7 @@ impl ViewerView {
         self.inner.model.borrow_mut().toggle_mode();
         self.inner.scroll_top.set(0);
         self.inner.dirty.set(true);
-        self.inner.match_line.set(None);
+        self.inner.match_pos.set(None);
         self.clear_selection();
         self.refresh()
     }
@@ -171,70 +174,91 @@ impl ViewerView {
         self.inner.search_term.borrow().clone()
     }
 
-    /// 検索語を設定し、現在位置から最初の一致へジャンプする。空なら検索解除。
+    /// debug-server 観測用：検索語・現在一致 `(行, 桁)`・可視全体の一致総数。
+    #[cfg(feature = "debug-server")]
+    pub fn debug_search_state(&self) -> (String, Option<(usize, usize)>, usize) {
+        let term = self.inner.search_term.borrow().clone();
+        let pos = self.inner.match_pos.get();
+        let count = self.all_matches().len();
+        (term, pos, count)
+    }
+
+    /// 検索語を設定し、現在位置以降の最初の一致へジャンプする。空なら検索解除。
     pub fn set_search(&self, term: &str) -> w::AnyResult<()> {
         *self.inner.search_term.borrow_mut() = term.to_owned();
         if term.is_empty() {
-            self.inner.match_line.set(None);
+            self.inner.match_pos.set(None);
             return self.refresh();
         }
-        let start = self.inner.match_line.get().unwrap_or_else(|| self.inner.scroll_top.get());
-        if let Some(hit) = self.find_from(start, true) {
-            self.jump_to(hit);
-        } else {
-            self.inner.match_line.set(None);
+        let matches = self.all_matches();
+        if matches.is_empty() {
+            self.inner.match_pos.set(None);
+            return self.refresh();
         }
+        // 現在の一致（あれば）の行、無ければ表示先頭以降の最初の一致へ。無ければ巻き戻る。
+        let from = self.inner.match_pos.get().map(|(l, _)| l).unwrap_or_else(|| self.inner.scroll_top.get());
+        let hit = matches.iter().copied().find(|&(l, _)| l >= from).unwrap_or(matches[0]);
+        self.jump_to(hit.0, hit.1);
         self.refresh()
     }
 
-    /// 次（`forward=false` なら前）の一致へ移動する。
+    /// 次（`forward=false` なら前）の一致箇所へ移動する（同一行内の複数一致も順に辿る）。
     pub fn find_next(&self, forward: bool) -> w::AnyResult<()> {
         if self.inner.search_term.borrow().is_empty() {
             return Ok(());
         }
-        let total = self.inner.lines.borrow().len();
-        if total == 0 {
+        let matches = self.all_matches();
+        if matches.is_empty() {
             return Ok(());
         }
-        let cur = self.inner.match_line.get().unwrap_or_else(|| self.inner.scroll_top.get());
-        let start = if forward {
-            (cur + 1) % total
-        } else {
-            (cur + total - 1) % total
+        let n = matches.len();
+        let next = match self.inner.match_pos.get().and_then(|c| matches.iter().position(|&m| m == c)) {
+            Some(i) => {
+                if forward {
+                    (i + 1) % n
+                } else {
+                    (i + n - 1) % n
+                }
+            }
+            // 現在一致が一覧に無い（再ラップ等）。位置に近い一致から始める。
+            None => {
+                let from = self
+                    .inner
+                    .match_pos
+                    .get()
+                    .map(|(l, _)| l)
+                    .unwrap_or_else(|| self.inner.scroll_top.get());
+                if forward {
+                    matches.iter().position(|&(l, _)| l >= from).unwrap_or(0)
+                } else {
+                    matches.iter().rposition(|&(l, _)| l <= from).unwrap_or(n - 1)
+                }
+            }
         };
-        if let Some(hit) = self.find_from(start, forward) {
-            self.jump_to(hit);
-        }
+        let hit = matches[next];
+        self.jump_to(hit.0, hit.1);
         self.refresh()
     }
 
-    /// `start` から循環で一致行を探す（大小無視）。
-    fn find_from(&self, start: usize, forward: bool) -> Option<usize> {
+    /// 全表示行を走査して、検索語の全一致を `(行, 開始桁)` の昇順で集める。
+    fn all_matches(&self) -> Vec<(usize, usize)> {
+        let term = self.inner.search_term.borrow();
+        if term.is_empty() {
+            return Vec::new();
+        }
         let lines = self.inner.lines.borrow();
-        let n = lines.len();
-        if n == 0 {
-            return None;
-        }
-        let needle = self.inner.search_term.borrow().to_lowercase();
-        if needle.is_empty() {
-            return None;
-        }
-        for k in 0..n {
-            let i = if forward {
-                (start + k) % n
-            } else {
-                (start + n - k) % n
-            };
-            if lines[i].body.to_lowercase().contains(&needle) {
-                return Some(i);
+        let mut out = Vec::new();
+        for (li, line) in lines.iter().enumerate() {
+            for off in search_offsets(&line.body, &term) {
+                out.push((li, off));
             }
         }
-        None
+        out
     }
 
-    /// 指定表示行を可視範囲（できれば上から1/4の位置）へスクロールして強調する。
-    fn jump_to(&self, line: usize) {
-        self.inner.match_line.set(Some(line));
+    /// 指定の一致（行・桁）を現在一致にし、行が可視範囲（上から1/4の位置）に入るようスクロールする。
+    fn jump_to(&self, line: usize, col: usize) {
+        self.inner.match_pos.set(Some((line, col)));
         let page = self.page_rows();
         let total = self.inner.lines.borrow().len();
         let max_top = total.saturating_sub(page);
@@ -446,6 +470,61 @@ impl ViewerView {
         (line, col)
     }
 
+    /// 本文 1 行を描く。文字ごとに「構文色（無ければ本文色）→検索一致なら検索/選択色」で
+    /// 上書きした実効色を決め、同色の連なりごとにまとめて描画する。
+    #[allow(clippy::too_many_arguments)]
+    fn draw_body_line(
+        &self,
+        dc: &w::HDC,
+        line: &DisplayLine,
+        spans: &[usize],
+        needle_len: usize,
+        cur_off: Option<usize>,
+        y: i32,
+        content_left: i32,
+        cwd: i32,
+        colors: &Colors,
+    ) -> w::AnyResult<()> {
+        let chars: Vec<char> = line.body.chars().collect();
+        let n = chars.len();
+        if n == 0 {
+            return Ok(());
+        }
+        // 基本色（構文ハイライトがあれば各文字へ展開、無ければ本文色）。
+        let mut col = vec![colors.viewer_text; n];
+        if !line.colors.is_empty() {
+            for (r, &(start, c)) in line.colors.iter().enumerate() {
+                let end = line.colors.get(r + 1).map(|(s, _)| *s).unwrap_or(n).min(n);
+                for slot in col.iter_mut().take(end).skip(start) {
+                    *slot = c;
+                }
+            }
+        }
+        // 検索一致の桁を上書き（現在一致＝選択文字色・他＝検索文字色）。
+        for &off in spans {
+            let oc = if cur_off == Some(off) { colors.selected_file } else { colors.viewer_find_text };
+            let end = (off + needle_len).min(n);
+            for slot in col.iter_mut().take(end).skip(off) {
+                *slot = oc;
+            }
+        }
+        // 同色のランごとに TextOut。
+        let mut p = 0;
+        while p < n {
+            let c0 = col[p];
+            let mut q = p + 1;
+            while q < n && col[q] == c0 {
+                q += 1;
+            }
+            let sub: String = chars[p..q].iter().collect();
+            let x = self.col_x(&line.body, p, content_left, cwd);
+            dc.SetTextColor(rgb(c0))?;
+            dc.TextOut(x, y, &sub)?;
+            p = q;
+        }
+        Ok(())
+    }
+
     /// content 左端からの char オフセット col の x 座標（物理 px）。
     fn col_x(&self, body: &str, col: usize, content_left: i32, cwd: i32) -> i32 {
         let cells: i32 = body
@@ -589,7 +668,9 @@ impl ViewerView {
         let is_text = self.inner.model.borrow().mode == ViewMode::Text;
         let lines = self.inner.lines.borrow();
         let top = self.inner.scroll_top.get();
-        let match_line = self.inner.match_line.get();
+        let match_pos = self.inner.match_pos.get();
+        let term = self.inner.search_term.borrow();
+        let needle_len = term.chars().count();
         let sel_brush = w::HBRUSH::CreateSolidBrush(rgb(colors.selected_file_bg))?;
         let find_brush = w::HBRUSH::CreateSolidBrush(rgb(colors.viewer_find_bg))?;
         let mut y = 0i32;
@@ -608,9 +689,21 @@ impl ViewerView {
                     highlighted = true;
                 }
             }
-            let is_match = !highlighted && match_line == Some(i);
-            if is_match {
-                dc.FillRect(w::RECT { left: content_left, top: y, right: cw, bottom: y + lh }, &find_brush)?;
+            // 検索一致（選択していない行のみ）。行内の各一致を桁単位で塗り、現在一致は選択色で区別する。
+            let spans: Vec<usize> = if highlighted || needle_len == 0 {
+                Vec::new()
+            } else {
+                search_offsets(&line.body, &term)
+            };
+            let cur_off = match match_pos {
+                Some((ml, mc)) if ml == i => Some(mc),
+                _ => None,
+            };
+            for &off in &spans {
+                let left = self.col_x(&line.body, off, content_left, cwd);
+                let right = self.col_x(&line.body, off + needle_len, content_left, cwd);
+                let brush = if cur_off == Some(off) { &sel_brush } else { &find_brush };
+                dc.FillRect(w::RECT { left, top: y, right, bottom: y + lh }, brush)?;
             }
             if !line.gutter.is_empty() {
                 dc.SetTextColor(rgb(colors.viewer_line))?;
@@ -618,30 +711,11 @@ impl ViewerView {
                 dc.DrawText(&line.gutter, rect, co::DT::SINGLELINE | co::DT::RIGHT | co::DT::NOPREFIX)?;
             }
             if !line.body.is_empty() {
-                if is_match {
-                    // 検索ヒット行は構文色より検索色を優先（行全体を一色で塗る）。
-                    dc.SetTextColor(rgb(colors.viewer_find_text))?;
-                    let rect = w::RECT { left: content_left, top: y, right: cw, bottom: y + lh };
-                    dc.DrawText(&line.body, rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
-                } else if line.colors.is_empty() {
-                    // ハイライト無し：本文色で一括描画。
-                    dc.SetTextColor(rgb(colors.viewer_text))?;
-                    let rect = w::RECT { left: content_left, top: y, right: cw, bottom: y + lh };
-                    dc.DrawText(&line.body, rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
-                } else {
-                    // 構文ハイライト：色ランごとに描く。
-                    let chars: Vec<char> = line.body.chars().collect();
-                    for (r, &(start, color)) in line.colors.iter().enumerate() {
-                        let end = line.colors.get(r + 1).map(|(s, _)| *s).unwrap_or(chars.len());
-                        if end <= start {
-                            continue;
-                        }
-                        let sub: String = chars[start..end].iter().collect();
-                        let x = self.col_x(&line.body, start, content_left, cwd);
-                        dc.SetTextColor(rgb(color))?;
-                        dc.TextOut(x, y, &sub)?;
-                    }
-                }
+                self.draw_body_line(dc, line, &spans, needle_len, cur_off, y, content_left, cwd, &colors)?;
+            }
+            // 現在一致のある行に下線（検索カーソル行）。
+            if cur_off.is_some() {
+                chrome::hline(dc, content_left, cw, y + lh - 1, rgb(colors.viewer_cursor))?;
             }
             // 行末の改行マーク（記号色・本文とは別レイヤーなので選択・コピーには混ざらない）。
             if let Some(nl) = line.newline {
@@ -716,7 +790,7 @@ impl ViewerView {
             if term.is_empty() {
                 String::new()
             } else {
-                let hit = if self.inner.match_line.get().is_some() { "" } else { " (該当なし)" };
+                let hit = if self.inner.match_pos.get().is_some() { "" } else { " (該当なし)" };
                 format!("    検索:{}{}", term, hit)
             }
         };

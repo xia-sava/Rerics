@@ -56,7 +56,9 @@ pub use operation::{
 pub use spinner::{SPINNER_FRAMES, Spinner};
 pub use status::{format_drive, format_selected, format_size};
 pub use vfs::{Location, is_archive_path};
-pub use viewer::{DisplayLine, Encoding, LineEnding, ViewMode, ViewerModel, looks_binary};
+pub use viewer::{
+    DisplayLine, Encoding, LineEnding, ViewMode, ViewerModel, looks_binary, search_offsets,
+};
 
 use std::path::Path;
 
