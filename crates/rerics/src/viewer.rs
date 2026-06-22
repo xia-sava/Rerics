@@ -439,8 +439,8 @@ impl ViewerView {
                 w::BmpPtrStr::from_str(it),
             )?;
         }
-        // ▼ ボタンの左下に出す（画面座標）。
-        let r = self.inner.search_history.hwnd().GetWindowRect()?;
+        // 入力欄の左下に出す（ドロップダウンらしく、ボックス左端に合わせる）。
+        let r = self.inner.search_edit.hwnd().GetWindowRect()?;
         let pt = w::POINT { x: r.left, y: r.bottom };
         let owner = self.hwnd();
         let _ = owner.SetForegroundWindow();
