@@ -6,6 +6,8 @@ mod script;
 mod debug_json;
 #[cfg(feature = "debug-server")]
 mod debug_server;
+#[cfg(any(feature = "debug-server", feature = "scripting"))]
+mod ui_marshal;
 mod dialog;
 mod file_list;
 mod icons;

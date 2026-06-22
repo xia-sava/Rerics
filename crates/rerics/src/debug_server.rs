@@ -7,10 +7,7 @@
 //! 要求をキューへ積んで `winutil::msg::DEBUG_WAKE` を main 窓へ Post し、応答チャネルで待つ。
 //! 実際の状態読取/操作は UI スレッドの WM ハンドラ（main.rs）が行う。
 
-use std::collections::VecDeque;
-use std::ffi::c_void;
-use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use crate::ui_marshal;
 
 /// `--debug-server` の既定ポート。
 pub const DEFAULT_PORT: u16 = 8731;
@@ -195,7 +192,7 @@ pub enum Response {
 }
 
 /// UI スレッドと HTTP スレッドが共有する要求キュー。
-pub type SharedQueue = Arc<Mutex<VecDeque<(Request, Sender<Response>)>>>;
+pub type SharedQueue = ui_marshal::WakeQueue<Request, Response>;
 
 /// MainWindow が 1 フィールドとして保持するブリッジ（キュー＋起動ポート＋書込み許可）。
 #[derive(Clone)]
@@ -212,7 +209,7 @@ pub struct Bridge {
 impl Bridge {
     pub fn new(port: Option<u16>, allow_write: bool, headless: bool) -> Self {
         Self {
-            queue: Arc::new(Mutex::new(VecDeque::new())),
+            queue: ui_marshal::new_queue(),
             port,
             allow_write,
             headless,
@@ -370,10 +367,8 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
         let _ = req.respond(tiny_http::Response::from_string("not found").with_status_code(404));
         return;
     };
-    let (tx, rx) = std::sync::mpsc::channel();
-    queue.lock().unwrap().push_back((kind, tx));
-    post_wake(hwnd_ptr);
-    match rx.recv() {
+    let reply = ui_marshal::call(queue, hwnd_ptr, crate::winutil::msg::DEBUG_WAKE.raw(), kind);
+    match reply {
         Ok(Response::Json(s)) => {
             let _ = req.respond(json_response(s));
         }
@@ -428,15 +423,4 @@ fn json_response(body: String) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> 
         tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..])
             .expect("valid header");
     tiny_http::Response::from_string(body).with_header(header)
-}
-
-/// HTTP スレッドから main 窓を起こす（生ハンドルへ `PostMessageW`）。
-fn post_wake(hwnd_ptr: isize) {
-    #[link(name = "user32")]
-    unsafe extern "system" {
-        fn PostMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> i32;
-    }
-    unsafe {
-        PostMessageW(hwnd_ptr as *mut c_void, crate::winutil::msg::DEBUG_WAKE.raw(), 0, 0);
-    }
 }
