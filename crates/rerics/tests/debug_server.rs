@@ -1848,3 +1848,52 @@ fn text_viewer_search_finds_all_occurrences_and_navigates() {
     let m_esc = match_json(&server);
     assert_eq!(m_esc.trim(), "null", "Esc 後は現在一致をリセット: {m_esc}");
 }
+
+/// 検索バー右側のトグル（大小区別・単語一致・正規表現）が一致集合を変えるのを観測する。
+#[test]
+fn text_viewer_search_options_toggle_matches() {
+    let server = Server::start(&["doc.txt"], "");
+    std::fs::write(
+        server.base.join("sbx").join("doc.txt"),
+        "foo Foo FOO foobar\nfo fooo\n",
+    )
+    .unwrap();
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/ViewFile", "").expect("ViewFile");
+    poll(&server, "/state/active_view", |b| b.trim().trim_matches('"') == "text");
+    req_bytes(server.port, "GET", "/snapshot").expect("warmup snapshot");
+
+    let count = |s: &Server| s.req("GET", "/state/viewer/match_count", "").expect("count").1.trim().to_string();
+
+    server.req("POST", "/command/ViewerSearchDialog", "").expect("open");
+    poll(&server, "/state/viewer/search_open", |b| b.trim() == "true");
+
+    // 既定（大小無視・部分一致）：foo, Foo, FOO, foobar の foo, fooo の foo ＝ 5。
+    server.req("POST", "/view/search", "foo").expect("type foo");
+    assert_eq!(count(&server), "5", "既定は大小無視の部分一致で 5 件");
+
+    // 大小区別 ON：小文字 foo のみ（foo・foobar の foo・fooo の foo）＝ 3。
+    server.req("POST", "/view/search/option/case_sensitive/on", "").expect("case on");
+    assert_eq!(count(&server), "3", "大小区別で 3 件");
+    let cs = server.req("GET", "/state/viewer/case_sensitive", "").expect("cs").1;
+    assert_eq!(cs.trim(), "true", "case_sensitive が立つ");
+    server.req("POST", "/view/search/option/case_sensitive/off", "").expect("case off");
+
+    // 単語一致 ON：語境界の foo/Foo/FOO ＝ 3（foobar は外す）。
+    server.req("POST", "/view/search/option/whole_word/on", "").expect("word on");
+    assert_eq!(count(&server), "3", "単語一致で 3 件");
+    server.req("POST", "/view/search/option/whole_word/off", "").expect("word off");
+
+    // 正規表現 ON：fo+ は foo×3・foobar の foo・fooo ＝ 5（fo は除外＝o が1つ以上だが fo は o1つ…
+    // 実際 "fo " の fo は fo+ にマッチ）。ここでは可変長一致が動くことを確認する。
+    server.req("POST", "/view/search/option/regex/on", "").expect("regex on");
+    server.req("POST", "/view/search", "fo+").expect("type fo+");
+    let rc: i32 = count(&server).parse().unwrap();
+    assert!(rc >= 5, "正規表現 fo+ で複数一致（可変長）: {rc}");
+    let rx = server.req("GET", "/state/viewer/regex", "").expect("rx").1;
+    assert_eq!(rx.trim(), "true", "regex が立つ");
+
+    // 不正な正規表現は 0 件扱い（落ちない）。
+    server.req("POST", "/view/search", "fo(").expect("type bad");
+    assert_eq!(count(&server), "0", "不正な正規表現は 0 件");
+}

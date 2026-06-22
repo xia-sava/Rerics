@@ -56,6 +56,13 @@ struct Inner {
     saved_scroll: Cell<usize>,
     /// 検索バーの入力欄（本物の Edit 子コントロール）。既定は非表示で生成し、開閉で出し入れする。
     search_edit: gui::Edit,
+    /// 検索バー右側の操作（マウス用）。大小無視・単語一致・正規表現のトグルと前/次ボタン。
+    /// いずれも非表示で生成し、バー開閉で出し入れする。
+    search_case: gui::CheckBox,
+    search_word: gui::CheckBox,
+    search_regex: gui::CheckBox,
+    search_prev: gui::Button,
+    search_next: gui::Button,
     /// 検索バーを閉じたときに呼ぶコールバック（キー入力を本体へ戻す）。MainWindow が登録する。
     on_search_close: RefCell<Option<Box<dyn Fn()>>>,
     /// マウス選択の始点・終点（None なら選択なし）。
@@ -104,6 +111,40 @@ impl ViewerView {
                 ..Default::default()
             },
         );
+        // 右側の操作（トグル3つ＋前/次ボタン）。非表示で生成。
+        let hidden_cb = co::WS::CHILD | co::WS::GROUP | co::WS::TABSTOP;
+        let hidden_btn = co::WS::CHILD | co::WS::TABSTOP;
+        let mk_check = |text: &str| {
+            gui::CheckBox::new(
+                &wnd,
+                gui::CheckBoxOpts {
+                    text,
+                    window_style: hidden_cb,
+                    position: gui::dpi(0, 0),
+                    size: gui::dpi(58, 22),
+                    ..Default::default()
+                },
+            )
+        };
+        let search_case = mk_check("大小");
+        let search_word = mk_check("単語");
+        let search_regex = mk_check("正規");
+        let mk_btn = |text: &str| {
+            gui::Button::new(
+                &wnd,
+                gui::ButtonOpts {
+                    text,
+                    control_style: co::BS::PUSHBUTTON,
+                    window_style: hidden_btn,
+                    position: gui::dpi(0, 0),
+                    width: gui::dpi_x(26),
+                    height: gui::dpi_y(22),
+                    ..Default::default()
+                },
+            )
+        };
+        let search_prev = mk_btn("↑");
+        let search_next = mk_btn("↓");
         let inner = Rc::new(Inner {
             model: RefCell::new(ViewerModel::new(Vec::new())),
             title: RefCell::new(String::new()),
@@ -124,6 +165,11 @@ impl ViewerView {
             search_active: Cell::new(false),
             saved_scroll: Cell::new(0),
             search_edit,
+            search_case,
+            search_word,
+            search_regex,
+            search_prev,
+            search_next,
             on_search_close: RefCell::new(None),
             sel_anchor: Cell::new(None),
             sel_cursor: Cell::new(None),
@@ -172,7 +218,21 @@ impl ViewerView {
     /// 検索バーを登録解除なしで畳む（ファイルを開き直す/ビューアを閉じる際の後始末）。
     fn reset_search_bar(&self) {
         self.inner.search_active.set(false);
-        self.inner.search_edit.hwnd().ShowWindow(co::SW::HIDE);
+        for h in self.search_bar_controls() {
+            h.ShowWindow(co::SW::HIDE);
+        }
+    }
+
+    /// 検索バーの子コントロール一式（入力欄＋トグル＋前後ボタン）。
+    fn search_bar_controls(&self) -> [&w::HWND; 6] {
+        [
+            self.inner.search_edit.hwnd(),
+            self.inner.search_case.hwnd(),
+            self.inner.search_word.hwnd(),
+            self.inner.search_regex.hwnd(),
+            self.inner.search_prev.hwnd(),
+            self.inner.search_next.hwnd(),
+        ]
     }
 
     /// MainWindow がキー入力先を本体へ戻すためのコールバックを登録する。
@@ -294,7 +354,15 @@ impl ViewerView {
         self.inner.search_active.set(true);
         let term = self.inner.search_term.borrow().clone();
         let _ = edit.SetWindowText(&term);
-        edit.ShowWindow(co::SW::SHOW);
+        for h in self.search_bar_controls() {
+            h.ShowWindow(co::SW::SHOW);
+        }
+        // チェック状態を現在のオプションへ同期（「大小」ON＝大小無視＝case_sensitive=false）。
+        let o = self.inner.search_opts.get();
+        self.inner.search_case.set_check(!o.case_sensitive);
+        self.inner.search_word.set_check(o.whole_word);
+        self.inner.search_regex.set_check(o.regex);
+        self.inner.search_word.hwnd().EnableWindow(!o.regex);
         self.layout_search_bar();
         edit.SetFocus();
         // 前回の検索語を全選択して開く（中身があればそのまま打ち直しで置換できる）。
@@ -349,6 +417,27 @@ impl ViewerView {
         self.apply_search_from_edit()
     }
 
+    /// debug-server 用：検索オプションを名前で切り替えて再検索する（headless は実クリックが
+    /// 届かないため直接適用）。未知の名前なら `false`。
+    #[cfg(feature = "debug-server")]
+    pub fn debug_set_option(&self, name: &str, on: bool) -> w::AnyResult<bool> {
+        let mut o = self.inner.search_opts.get();
+        match name {
+            "case_sensitive" | "case" => o.case_sensitive = on,
+            "whole_word" | "word" => o.whole_word = on,
+            "regex" => o.regex = on,
+            _ => return Ok(false),
+        }
+        self.inner.search_opts.set(o);
+        self.inner.search_case.set_check(!o.case_sensitive);
+        self.inner.search_word.set_check(o.whole_word);
+        self.inner.search_regex.set_check(o.regex);
+        self.inner.search_word.hwnd().EnableWindow(!o.regex);
+        let term = self.inner.search_term.borrow().clone();
+        self.set_search(&term)?;
+        Ok(true)
+    }
+
     /// 検索バーの高さ（本文をこのぶん下へずらす）。
     fn search_bar_height(&self) -> i32 {
         self.inner.line_height.get() + gui::dpi_y(12)
@@ -363,7 +452,8 @@ impl ViewerView {
         }
     }
 
-    /// 検索バーの入力欄をクライアント幅に合わせて配置する（右端の一致カウンタ領域を空ける）。
+    /// 検索バーの入力欄と右側の操作列を配置する。右端から順にカウンタ領域・前/次ボタン・
+    /// トグル3つを並べ、残り幅を入力欄に割り当てる。
     fn layout_search_bar(&self) {
         if !self.inner.search_active.get() {
             return;
@@ -371,15 +461,32 @@ impl ViewerView {
         let cw = self.hwnd().GetClientRect().map(|r| r.right - r.left).unwrap_or(0);
         let bar_h = self.search_bar_height();
         let pad = gui::dpi_x(6);
-        let counter_w = gui::dpi_x(96);
-        let eh = self.inner.line_height.get().max(gui::dpi_y(18));
-        let ey = ((bar_h - eh) / 2).max(0);
-        let ew = (cw - pad * 2 - counter_w).max(gui::dpi_x(40));
-        let _ = self.inner.search_edit.hwnd().MoveWindow(
-            w::POINT { x: pad, y: ey },
-            w::SIZE { cx: ew, cy: eh },
-            true,
-        );
+        let gap = gui::dpi_x(4);
+        let cb_w = gui::dpi_x(58);
+        let btn_w = gui::dpi_x(26);
+        let counter_w = gui::dpi_x(72);
+        let h = self.inner.line_height.get().max(gui::dpi_y(18));
+        let y = ((bar_h - h) / 2).max(0);
+        let mv = |hwnd: &w::HWND, x: i32, w: i32| {
+            let _ = hwnd.MoveWindow(w::POINT { x, y }, w::SIZE { cx: w, cy: h }, true);
+        };
+        // 操作列（トグル3＋ボタン2）の左端。カウンタ領域ぶんを右に空ける。
+        let cluster_w = cb_w * 3 + btn_w * 2 + gap * 4;
+        let cluster_x = (cw - pad - counter_w - gap - cluster_w).max(pad);
+        let mut x = cluster_x;
+        for (hwnd, w) in [
+            (self.inner.search_case.hwnd(), cb_w),
+            (self.inner.search_word.hwnd(), cb_w),
+            (self.inner.search_regex.hwnd(), cb_w),
+            (self.inner.search_prev.hwnd(), btn_w),
+            (self.inner.search_next.hwnd(), btn_w),
+        ] {
+            mv(hwnd, x, w);
+            x += w + gap;
+        }
+        // 入力欄は左端から操作列の手前まで。
+        let ew = (cluster_x - pad - gap).max(gui::dpi_x(40));
+        mv(self.inner.search_edit.hwnd(), pad, ew);
     }
 
     /// 検索バーの帯（背景＋下境界＋一致カウンタ）を描く。入力欄自体は子コントロールが上に乗る。
@@ -664,6 +771,52 @@ impl ViewerView {
                 Ok(unsafe { this.inner.search_edit.hwnd().DefSubclassProc(p) })
             }
         });
+
+        // 右側トグル（マウス用）。クリックでフラグを更新→再検索→入力欄へフォーカスを戻す。
+        // 「大小」ON＝大小無視（case_sensitive=false）。
+        let this = self.clone();
+        self.inner.search_case.on().bn_clicked(move || {
+            let mut o = this.inner.search_opts.get();
+            o.case_sensitive = !this.inner.search_case.is_checked();
+            this.inner.search_opts.set(o);
+            this.refocus_after_toggle()
+        });
+        let this = self.clone();
+        self.inner.search_word.on().bn_clicked(move || {
+            let mut o = this.inner.search_opts.get();
+            o.whole_word = this.inner.search_word.is_checked();
+            this.inner.search_opts.set(o);
+            this.refocus_after_toggle()
+        });
+        // 正規表現 ON の間は単語一致を無効化（グレーアウト）する。
+        let this = self.clone();
+        self.inner.search_regex.on().bn_clicked(move || {
+            let mut o = this.inner.search_opts.get();
+            o.regex = this.inner.search_regex.is_checked();
+            this.inner.search_opts.set(o);
+            this.inner.search_word.hwnd().EnableWindow(!o.regex);
+            this.refocus_after_toggle()
+        });
+        // 前/次ボタン（入力欄内の ↑↓ キーと同機能）。
+        let this = self.clone();
+        self.inner.search_prev.on().bn_clicked(move || {
+            this.find_next(false)?;
+            this.inner.search_edit.hwnd().SetFocus();
+            Ok(())
+        });
+        let this = self.clone();
+        self.inner.search_next.on().bn_clicked(move || {
+            this.find_next(true)?;
+            this.inner.search_edit.hwnd().SetFocus();
+            Ok(())
+        });
+    }
+
+    /// トグル変更後の共通処理：現在の入力で再検索し、フォーカスを入力欄へ戻す。
+    fn refocus_after_toggle(&self) -> w::AnyResult<()> {
+        self.apply_search_from_edit()?;
+        self.inner.search_edit.hwnd().SetFocus();
+        Ok(())
     }
 
     /// 全選択（先頭から末尾まで）。

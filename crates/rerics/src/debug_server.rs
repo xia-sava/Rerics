@@ -155,6 +155,8 @@ pub enum Request {
     ViewSearch { value: String },
     /// `POST /view/search/key/<key>`：検索バーのキー操作（down/up＝一致移動・enter＝確定・esc＝取消）。
     ViewSearchKey { key: String },
+    /// `POST /view/search/option/<name>/<on|off>`：検索オプション（case/word/regex）を切り替える。
+    ViewSearchOption { name: String, on: bool },
     /// `GET /snapshot[/<spec>]`：画面 PNG。`spec` は ""（全体）・名前付き要素・
     /// `x,y-WxH`（数値範囲）・`<name>/<x,y-WxH>`（要素相対のサブ範囲）。
     Snapshot { spec: String },
@@ -296,6 +298,14 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                             .respond(tiny_http::Response::from_string(msg).with_status_code(400));
                         return;
                     }
+                }
+            } else if let Some(rest) = path.strip_prefix("/view/search/option/") {
+                match rest.trim_end_matches('/').rsplit_once('/') {
+                    Some((name, val)) => Some(Request::ViewSearchOption {
+                        name: name.to_string(),
+                        on: val.eq_ignore_ascii_case("on"),
+                    }),
+                    None => None,
                 }
             } else if let Some(key) = path.strip_prefix("/view/search/key/") {
                 Some(Request::ViewSearchKey { key: key.trim_end_matches('/').to_string() })

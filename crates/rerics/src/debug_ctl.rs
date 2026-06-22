@@ -62,6 +62,9 @@ impl MainWindow {
                 debug_server::Request::ViewSearchKey { key } => {
                     let _ = tx.send(self.debug_view_search_key(&key));
                 }
+                debug_server::Request::ViewSearchOption { name, on } => {
+                    let _ = tx.send(self.debug_view_search_option(&name, on));
+                }
                 debug_server::Request::Snapshot { spec } => {
                     self.settle_pending_jobs();
                     let _ = tx.send(self.debug_snapshot(&spec));
@@ -444,6 +447,21 @@ impl MainWindow {
         match r {
             Ok(()) => debug_server::Response::Json(self.debug_state_value().to_string()),
             Err(e) => debug_server::Response::Error(format!("view search key error: {e}")),
+        }
+    }
+
+    /// `POST /view/search/option/<name>/<on|off>`：検索オプション（case/word/regex）を切り替える。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn debug_view_search_option(&self, name: &str, on: bool) -> debug_server::Response {
+        if !matches!(self.active_view.get(), ActiveView::Text) {
+            return debug_server::Response::BadRequest("text viewer not active".into());
+        }
+        match self.viewer.debug_set_option(name, on) {
+            Ok(true) => debug_server::Response::Json(self.debug_state_value().to_string()),
+            Ok(false) => {
+                debug_server::Response::BadRequest(format!("unknown search option: {name}"))
+            }
+            Err(e) => debug_server::Response::Error(format!("view search option error: {e}")),
         }
     }
 
