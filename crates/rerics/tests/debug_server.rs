@@ -1748,6 +1748,28 @@ fn modal_resize_endpoint_changes_client_size() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// list_box セレクタ（キー割り当て一覧）はサイズ変更枠付きで、リサイズすると wm_size が
+/// 一覧とボタンを再配置する。大きくしても壊れず（パニックせず）、撮影・選択・クローズできる。
+#[test]
+fn keybind_selector_is_resizable() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/KeyBindsDialog", "").expect("KeyBindsDialog");
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"list\""), "リスト選択モーダルが開くはず: {modal}");
+
+    let (st, _) = server.req("POST", "/modal/resize/960x740", "").expect("resize");
+    assert_eq!(st, 200, "/modal/resize は 200");
+
+    // リサイズ後も撮影でき（再レイアウトが走ってもクラッシュしない）、選択行を動かせる。
+    let (sst, png) = req_bytes(server.port, "GET", "/snapshot/modal").expect("snap");
+    assert_eq!(sst, 200, "リサイズ後も /snapshot/modal は 200");
+    assert!(png.starts_with(&[0x89, b'P', b'N', b'G']), "PNG 署名");
+    server.req("POST", "/modal/select/3", "").expect("select");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// タスクマネージャは多列 ListView モーダル（走行中タスクの一覧）。タスクが無くても開き、
 /// modal_registry 登録済みなので観測・撮影・クローズできる（デッドロックしない）。
 #[test]

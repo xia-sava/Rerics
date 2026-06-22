@@ -267,6 +267,13 @@ pub fn modal_window_sysmenu(title: &str, w: i32, h: i32) -> (gui::WindowModal, M
     modal_window_styled(title, w, h, co::WS::SYSMENU)
 }
 
+/// [`modal_window`] にサイズ変更枠（× も）を足したもの。一覧から選ぶセレクタのように、
+/// 中身を広げて見たいモーダルで使う。リサイズ時の再レイアウトは各ダイアログが `wm_size`
+/// で行い、最小サイズは `wm_get_min_max_info` で抑える。
+pub fn modal_window_resizable(title: &str, w: i32, h: i32) -> (gui::WindowModal, ModalArm) {
+    modal_window_styled(title, w, h, co::WS::SYSMENU | co::WS::SIZEBOX)
+}
+
 fn modal_window_styled(title: &str, w: i32, h: i32, extra: co::WS) -> (gui::WindowModal, ModalArm) {
     // headless（debug-server 撮影）時は生成時にアクティブ化させない。VISIBLE 付きで top-level
     // 窓を作ると初回 show が SW_SHOW 相当でフォアグラウンド化し、画面に出ない（親を画面外退避

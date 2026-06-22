@@ -11,7 +11,7 @@ pub fn list_box(
     items: &[String],
     initial: usize,
 ) -> Option<usize> {
-    let (wnd, arm) = super::modal_window(title, 420, 320);
+    let (wnd, arm) = super::modal_window_resizable(title, 420, 320);
 
     let list = gui::ListBox::new(
         &wnd,
@@ -114,8 +114,48 @@ pub fn list_box(
         });
     }
 
+    // リサイズ追従：ListBox は余白いっぱいに広げ、OK/キャンセルは右下へ寄せ直す。
+    {
+        let wndc = wnd.clone();
+        let (lst, okc, cancelc) = (list.clone(), ok.clone(), cancel.clone());
+        wnd.on().wm_size(move |_| {
+            if let Ok(rc) = wndc.hwnd().GetClientRect() {
+                relayout(&lst, &okc, &cancelc, rc.right, rc.bottom);
+            }
+            Ok(())
+        });
+    }
+    // 小さくし過ぎてボタンや一覧が潰れないよう最小サイズを抑える。
+    wnd.on().wm_get_min_max_info(move |p| {
+        p.info.ptMinTrackSize = w::POINT { x: gui::dpi_x(280), y: gui::dpi_y(200) };
+        Ok(())
+    });
+
     let _ = wnd.show_modal(parent);
     let _ = (ok, cancel, list);
     let r = *result.borrow();
     r
+}
+
+/// クライアント寸法 `cw`×`ch`（物理px）に合わせて一覧とボタンを再配置する。一覧は左右上を
+/// 16/14px の余白で広げ、OK/キャンセルは下端右寄せ（OK が左・キャンセルが右）。
+fn relayout(list: &gui::ListBox, ok: &gui::Button, cancel: &gui::Button, cw: i32, ch: i32) {
+    let mx = gui::dpi_x(16);
+    let top = gui::dpi_y(14);
+    let bh = gui::dpi_y(26);
+    let bottom_margin = gui::dpi_y(16);
+    let gap = gui::dpi_y(12);
+    let ok_w = gui::dpi_x(80);
+    let cancel_w = gui::dpi_x(86);
+    let btn_gap = gui::dpi_x(8);
+
+    let btn_y = (ch - bottom_margin - bh).max(top);
+    let cancel_x = (cw - mx - cancel_w).max(0);
+    let ok_x = (cancel_x - btn_gap - ok_w).max(0);
+    let list_w = (cw - mx * 2).max(1);
+    let list_h = (btn_y - gap - top).max(1);
+
+    let _ = list.hwnd().MoveWindow(w::POINT { x: mx, y: top }, w::SIZE { cx: list_w, cy: list_h }, true);
+    let _ = ok.hwnd().MoveWindow(w::POINT { x: ok_x, y: btn_y }, w::SIZE { cx: ok_w, cy: bh }, true);
+    let _ = cancel.hwnd().MoveWindow(w::POINT { x: cancel_x, y: btn_y }, w::SIZE { cx: cancel_w, cy: bh }, true);
 }
