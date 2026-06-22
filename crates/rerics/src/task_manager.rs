@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use winsafe::{gui, prelude::*};
+use winsafe::{self as w, gui, prelude::*};
 
 use crate::task::TaskEntry;
 
@@ -15,7 +15,7 @@ type Registry = Rc<RefCell<Vec<TaskEntry>>>;
 
 /// タスクマネージャを表示する。タスクは別スレッドで動き続けるため、閉じても処理は継続する。
 pub fn show(parent: &impl GuiParent, tasks: &Registry) {
-    let (wnd, arm) = crate::dialog::modal_window("タスクマネージャ", 588, 360);
+    let (wnd, arm) = crate::dialog::modal_window_resizable("タスクマネージャ", 588, 360);
 
     let list = gui::ListView::<u64>::new(
         &wnd,
@@ -86,6 +86,24 @@ pub fn show(parent: &impl GuiParent, tasks: &Registry) {
             ..Default::default()
         },
     );
+
+    // リサイズ追従：一覧を広げ、左寄せアクションは x 固定で下端へ・「閉じる」は右下へ。
+    {
+        let wndc = wnd.clone();
+        let lst = list.clone();
+        let (b_stop, b_suspend, b_resume, b_refresh, b_close) =
+            (stop.clone(), suspend.clone(), resume.clone(), refresh.clone(), close.clone());
+        wnd.on().wm_size(move |_| {
+            if let Ok(rc) = wndc.hwnd().GetClientRect() {
+                relayout(&lst, [&b_stop, &b_suspend, &b_resume, &b_refresh], &b_close, rc.right, rc.bottom);
+            }
+            Ok(())
+        });
+        wnd.on().wm_get_min_max_info(move |p| {
+            p.info.ptMinTrackSize = w::POINT { x: gui::dpi_x(480), y: gui::dpi_y(260) };
+            Ok(())
+        });
+    }
 
     {
         let list = list.clone();
@@ -179,6 +197,37 @@ pub fn show(parent: &impl GuiParent, tasks: &Registry) {
 
     let _ = wnd.show_modal(parent);
     let _ = (stop, suspend, resume, refresh, close);
+}
+
+/// クライアント `cw`×`ch`（物理px）に合わせて再配置する。一覧を四周 12px で広げ、左寄せの
+/// アクション 4 ボタンは x（12/110/208/306・幅90・間隔98）を保ったまま下端へ、「閉じる」は
+/// 下端右寄せへ寄せ直す。
+fn relayout(
+    list: &gui::ListView<u64>,
+    left: [&gui::Button; 4],
+    close: &gui::Button,
+    cw: i32,
+    ch: i32,
+) {
+    let m = gui::dpi_x(12);
+    let mt = gui::dpi_y(12);
+    let bh = gui::dpi_y(26);
+    let bottom = gui::dpi_y(16);
+    let gap = gui::dpi_y(12);
+    let btn_y = (ch - bottom - bh).max(mt);
+    for (i, b) in left.iter().enumerate() {
+        let x = gui::dpi_x(12 + i as i32 * 98);
+        let _ = b.hwnd().MoveWindow(w::POINT { x, y: btn_y }, w::SIZE { cx: gui::dpi_x(90), cy: bh }, true);
+    }
+    let close_w = gui::dpi_x(80);
+    let _ = close.hwnd().MoveWindow(
+        w::POINT { x: (cw - m - close_w).max(0), y: btn_y },
+        w::SIZE { cx: close_w, cy: bh },
+        true,
+    );
+    let list_w = (cw - m * 2).max(1);
+    let list_h = (btn_y - gap - mt).max(1);
+    let _ = list.hwnd().MoveWindow(w::POINT { x: m, y: mt }, w::SIZE { cx: list_w, cy: list_h }, true);
 }
 
 /// 選択行のタスクに `action`（中止/中断/再開）を適用し、一覧を再描画する。

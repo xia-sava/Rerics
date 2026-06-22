@@ -359,7 +359,7 @@ impl MainWindow {
             .position(|r| Some(r.to_ascii_uppercase()) == cur)
             .unwrap_or(0);
 
-        let (wnd, arm) = crate::dialog::modal_window("ドライブの選択", 472, 320);
+        let (wnd, arm) = crate::dialog::modal_window_resizable("ドライブの選択", 472, 320);
         let list = gui::ListView::<()>::new(
             &wnd,
             gui::ListViewOpts {
@@ -397,6 +397,29 @@ impl MainWindow {
                 ..Default::default()
             },
         );
+
+        // リサイズ追従：一覧を広げ OK/中止を右下へ。最小サイズも抑える。
+        {
+            let wndc = wnd.clone();
+            let (lst, okc, cancelc) = (list.clone(), ok.clone(), cancel.clone());
+            wnd.on().wm_size(move |_| {
+                if let Ok(rc) = wndc.hwnd().GetClientRect() {
+                    crate::dialog::relayout_list_dialog(
+                        lst.hwnd(),
+                        12,
+                        26,
+                        &[(cancelc.hwnd(), 86), (okc.hwnd(), 80)],
+                        rc.right,
+                        rc.bottom,
+                    );
+                }
+                Ok(())
+            });
+            wnd.on().wm_get_min_max_info(move |p| {
+                p.info.ptMinTrackSize = w::POINT { x: gui::dpi_x(360), y: gui::dpi_y(240) };
+                Ok(())
+            });
+        }
 
         let result: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
         // モーダルが閉じた後に届く遅延 fill を捨てるための生存フラグ。
@@ -604,7 +627,7 @@ impl MainWindow {
             return Ok(());
         }
 
-        let (wnd, arm) = crate::dialog::modal_window("登録ディレクトリ", 600, 360);
+        let (wnd, arm) = crate::dialog::modal_window_resizable("登録ディレクトリ", 600, 360);
         let list = gui::ListView::<()>::new(
             &wnd,
             gui::ListViewOpts {
@@ -641,6 +664,29 @@ impl MainWindow {
                 ..Default::default()
             },
         );
+
+        // リサイズ追従：一覧を広げ OK/中止を右下へ。最小サイズも抑える。
+        {
+            let wndc = wnd.clone();
+            let (lst, okc, cancelc) = (list.clone(), ok.clone(), cancel.clone());
+            wnd.on().wm_size(move |_| {
+                if let Ok(rc) = wndc.hwnd().GetClientRect() {
+                    crate::dialog::relayout_list_dialog(
+                        lst.hwnd(),
+                        12,
+                        26,
+                        &[(cancelc.hwnd(), 86), (okc.hwnd(), 80)],
+                        rc.right,
+                        rc.bottom,
+                    );
+                }
+                Ok(())
+            });
+            wnd.on().wm_get_min_max_info(move |p| {
+                p.info.ptMinTrackSize = w::POINT { x: gui::dpi_x(400), y: gui::dpi_y(260) };
+                Ok(())
+            });
+        }
 
         let result: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
 

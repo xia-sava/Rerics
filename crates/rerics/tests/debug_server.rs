@@ -1770,6 +1770,44 @@ fn keybind_selector_is_resizable() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// ドライブ選択（ListView）もサイズ変更枠付き。リサイズで一覧/ボタンが再配置され、
+/// 撮影・クローズできる（共有ヘルパ relayout_list_dialog の ListView 経路）。
+#[test]
+fn drive_dialog_is_resizable() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/ChangeDriveDialog", "").expect("ChangeDriveDialog");
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"drive\""), "ドライブ選択が開くはず: {modal}");
+
+    let (st, _) = server.req("POST", "/modal/resize/980x760", "").expect("resize");
+    assert_eq!(st, 200, "/modal/resize は 200");
+    let (sst, png) = req_bytes(server.port, "GET", "/snapshot/modal").expect("snap");
+    assert_eq!(sst, 200, "リサイズ後も /snapshot/modal は 200");
+    assert!(png.starts_with(&[0x89, b'P', b'N', b'G']), "PNG 署名");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
+/// タスクマネージャ（左寄せアクション＋右「閉じる」）はサイズ変更枠付き。リサイズで一覧が
+/// 広がり、左ボタンは下端へ・閉じるは右下へ寄り直す（個別 relayout 経路）。壊れず撮影・クローズ可。
+#[test]
+fn task_manager_is_resizable() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenTaskManager", "").expect("OpenTaskManager");
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"tasks\""), "タスクマネージャが開くはず: {modal}");
+
+    let (st, _) = server.req("POST", "/modal/resize/980x760", "").expect("resize");
+    assert_eq!(st, 200, "/modal/resize は 200");
+    let (sst, png) = req_bytes(server.port, "GET", "/snapshot/modal").expect("snap");
+    assert_eq!(sst, 200, "リサイズ後も /snapshot/modal は 200");
+    assert!(png.starts_with(&[0x89, b'P', b'N', b'G']), "PNG 署名");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// タスクマネージャは多列 ListView モーダル（走行中タスクの一覧）。タスクが無くても開き、
 /// modal_registry 登録済みなので観測・撮影・クローズできる（デッドロックしない）。
 #[test]

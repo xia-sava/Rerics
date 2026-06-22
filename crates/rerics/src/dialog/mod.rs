@@ -274,6 +274,36 @@ pub fn modal_window_resizable(title: &str, w: i32, h: i32) -> (gui::WindowModal,
     modal_window_styled(title, w, h, co::WS::SYSMENU | co::WS::SIZEBOX)
 }
 
+/// 「一覧＋下端右寄せボタン」型モーダルのリサイズ追従。クライアント `cw`×`ch`（物理px）に対し
+/// `list` を四周 `margin`（論理px）で広げ（下端はボタン行ぶん空ける）、`buttons` を下端へ
+/// 右寄せに並べる（`buttons[0]` が最も右）。各要素は `(hwnd, 幅〔論理px〕)`・高さは `btn_h`。
+/// list_box・ドライブ選択・登録ディレクトリで共用する。
+pub fn relayout_list_dialog(
+    list: &w::HWND,
+    margin: i32,
+    btn_h: i32,
+    buttons: &[(&w::HWND, i32)],
+    cw: i32,
+    ch: i32,
+) {
+    let m = gui::dpi_x(margin);
+    let mt = gui::dpi_y(margin);
+    let bh = gui::dpi_y(btn_h);
+    let gap = gui::dpi_y(12);
+    let btn_gap = gui::dpi_x(8);
+    let btn_y = (ch - mt - bh).max(mt);
+    let mut right = cw - m;
+    for (h, w_logical) in buttons {
+        let bw = gui::dpi_x(*w_logical);
+        let bx = (right - bw).max(0);
+        let _ = h.MoveWindow(w::POINT { x: bx, y: btn_y }, w::SIZE { cx: bw, cy: bh }, true);
+        right = bx - btn_gap;
+    }
+    let list_w = (cw - m * 2).max(1);
+    let list_h = (btn_y - gap - mt).max(1);
+    let _ = list.MoveWindow(w::POINT { x: m, y: mt }, w::SIZE { cx: list_w, cy: list_h }, true);
+}
+
 fn modal_window_styled(title: &str, w: i32, h: i32, extra: co::WS) -> (gui::WindowModal, ModalArm) {
     // headless（debug-server 撮影）時は生成時にアクティブ化させない。VISIBLE 付きで top-level
     // 窓を作ると初回 show が SW_SHOW 相当でフォアグラウンド化し、画面に出ない（親を画面外退避
