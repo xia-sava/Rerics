@@ -38,7 +38,7 @@ pub fn message_box(
     // 窓幅はラベルが収まりつつボタン行も収まる幅に。
     let win_w = (label_x + label_w + 16).max(total + 32);
 
-    let wnd = modal_window(title, win_w, win_h);
+    let (wnd, arm) = modal_window(title, win_w, win_h);
 
     let _label = gui::Label::new(
         &wnd,
@@ -115,33 +115,23 @@ pub fn message_box(
     }
 
     #[cfg(feature = "debug-server")]
-    let (reg_title, reg_prompt, reg_wnd) = (title.to_string(), message.to_string(), wnd.clone());
+    arm.plain("message", title, message, false, reg_buttons);
     let first_btn = buttons.first().cloned();
     let checkbox_k = checkbox.clone();
-    let wnd_create = wnd.clone();
-    wnd.on().wm_create(move |_| {
+    arm.on_create(move |hwnd| {
         if let Some(first) = &first_btn {
             first.hwnd().SetFocus();
         }
-        #[cfg(feature = "debug-server")]
-        crate::debug_server::modal_registry::push(
-            "message",
-            &reg_title,
-            &reg_prompt,
-            reg_wnd.hwnd().ptr() as isize,
-            false,
-            reg_buttons.clone(),
-        );
-        // Shift 押下中だけ「すべてに適用」を自動チェックする（Shift＋はい/いいえで全適用＝conflict_box と同じ Shift トグル）。
+        // Shift 押下中だけ「すべてに適用」を自動チェックする（Shift＋はい/いいえで全適用）。
         if let Some(cb) = &checkbox_k {
             let cb_k = cb.clone();
-            keyhook::push(wnd_create.hwnd(), move |vk, down| {
+            keyhook::push(hwnd, move |vk, down| {
                 if vk == 0x10 {
                     cb_k.set_check(down);
                 }
             });
         }
-        Ok(0)
+        Ok(())
     });
 
     if let Some(idi) = style.icon() {
@@ -172,8 +162,6 @@ pub fn message_box(
     if has_all {
         keyhook::pop();
     }
-    #[cfg(feature = "debug-server")]
-    crate::debug_server::modal_registry::pop();
     let _ = buttons;
     let r = *result.borrow();
     r

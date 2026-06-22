@@ -2582,7 +2582,7 @@ impl KeysPane {
 /// 設定ダイアログを表示する。`OK`／`適用` で確定した [`Config`] を `on_apply` へ渡す
 /// （`適用` は閉じずに継続、`OK` は閉じる。`キャンセル` は破棄して閉じる）。
 pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config) + 'static) {
-    let wnd = crate::dialog::modal_window_sysmenu("設定", 960, 620);
+    let (wnd, arm) = crate::dialog::modal_window_sysmenu("設定", 960, 620);
 
     let shared = Rc::new(Shared {
         cfg: RefCell::new(current.clone()),
@@ -2706,6 +2706,19 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
 
     let on_apply = Rc::new(on_apply);
 
+    #[cfg(feature = "debug-server")]
+    arm.plain(
+        "settings",
+        "設定",
+        "",
+        false,
+        vec![
+            ("OK".to_string(), 1u16),
+            ("キャンセル".to_string(), 2u16),
+            ("適用".to_string(), 3u16),
+        ],
+    );
+
     // window 生成後：ナビ流し込み・初期表示 pane・各リスト初期化。
     {
         let nav = nav.clone();
@@ -2715,9 +2728,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         let keys_image = keys_image.clone();
         let registered = registered.clone();
         let columns_editor = columns_editor.clone();
-        #[cfg(feature = "debug-server")]
-        let reg_wnd = wnd.clone();
-        wnd.on().wm_create(move |_| {
+        arm.on_create(move |_| {
             // 初期表示：先頭ページ（pane 0）を出し、ナビへフォーカスを与える。
             let init = nav.selected_pane();
             for (i, p) in panes.iter().enumerate() {
@@ -2729,20 +2740,7 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
             keys_text.populate();
             keys_image.populate();
             columns_editor.populate();
-            #[cfg(feature = "debug-server")]
-            crate::debug_server::modal_registry::push(
-                "settings",
-                "設定",
-                "",
-                reg_wnd.hwnd().ptr() as isize,
-                false,
-                vec![
-                    ("OK".to_string(), 1u16),
-                    ("キャンセル".to_string(), 2u16),
-                    ("適用".to_string(), 3u16),
-                ],
-            );
-            Ok(0)
+            Ok(())
         });
     }
 
@@ -2795,8 +2793,6 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     }
 
     let _ = wnd.show_modal(parent);
-    #[cfg(feature = "debug-server")]
-    crate::debug_server::modal_registry::pop();
     let _ = (nav, panes, keys, keys_text, keys_image, registered, ok, cancel, apply, preview_label, preview, viewer_preview);
 }
 

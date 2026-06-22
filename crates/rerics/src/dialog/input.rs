@@ -41,7 +41,7 @@ pub fn input_box_full(
     select: InputSelect,
     history: Option<&[&str]>,
 ) -> Option<String> {
-    let wnd = modal_window(title, 360, 150);
+    let (wnd, arm) = modal_window(title, 360, 150);
 
     let _label = gui::Label::new(
         &wnd,
@@ -139,22 +139,17 @@ pub fn input_box_full(
     let result: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
     #[cfg(feature = "debug-server")]
-    let (reg_title, reg_prompt, reg_wnd) = (title.to_string(), message.to_string(), wnd.clone());
-    {
-        wnd.on().wm_create(move |_| {
-            on_create();
-            #[cfg(feature = "debug-server")]
-            crate::debug_server::modal_registry::push(
-                "input",
-                &reg_title,
-                &reg_prompt,
-                reg_wnd.hwnd().ptr() as isize,
-                true,
-                vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
-            );
-            Ok(0)
-        });
-    }
+    arm.plain(
+        "input",
+        title,
+        message,
+        true,
+        vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
+    );
+    arm.on_create(move |_| {
+        on_create();
+        Ok(())
+    });
 
     {
         let result = result.clone();
@@ -176,8 +171,6 @@ pub fn input_box_full(
     }
 
     let _ = wnd.show_modal(parent);
-    #[cfg(feature = "debug-server")]
-    crate::debug_server::modal_registry::pop();
     let _ = cancel;
     let r = result.borrow().clone();
     r

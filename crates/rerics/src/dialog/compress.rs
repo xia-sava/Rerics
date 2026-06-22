@@ -12,7 +12,7 @@ pub fn compress_box(
     default_name: &str,
     history: &[&str],
 ) -> Option<CompressChoice> {
-    let wnd = modal_window("圧縮", 360, 168);
+    let (wnd, arm) = modal_window("圧縮", 360, 168);
 
     let _label = gui::Label::new(
         &wnd,
@@ -73,23 +73,20 @@ pub fn compress_box(
     let result: Rc<RefCell<Option<CompressChoice>>> = Rc::new(RefCell::new(None));
 
     #[cfg(feature = "debug-server")]
-    let reg_wnd = wnd.clone();
+    arm.plain(
+        "compress",
+        "圧縮",
+        "圧縮ファイル名を入力して下さい。",
+        true,
+        vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
+    );
     {
         let combo_c = combo.clone();
         let default = default_name.to_string();
-        wnd.on().wm_create(move |_| {
+        arm.on_create(move |_| {
             let _ = combo_c.hwnd().SetWindowText(&default);
             let _ = combo_c.hwnd().SetFocus();
-            #[cfg(feature = "debug-server")]
-            crate::debug_server::modal_registry::push(
-                "compress",
-                "圧縮",
-                "圧縮ファイル名を入力して下さい。",
-                reg_wnd.hwnd().ptr() as isize,
-                true,
-                vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
-            );
-            Ok(0)
+            Ok(())
         });
     }
 
@@ -127,8 +124,6 @@ pub fn compress_box(
     }
 
     let _ = wnd.show_modal(parent);
-    #[cfg(feature = "debug-server")]
-    crate::debug_server::modal_registry::pop();
     let _ = (ok, cancel);
     let r = result.borrow().clone();
     r

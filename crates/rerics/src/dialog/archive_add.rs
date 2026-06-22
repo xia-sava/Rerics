@@ -6,7 +6,7 @@ use super::*;
 /// 書庫への追加先に同名エントリがあるとき、追加方式を尋ねる。OK で選択を、
 /// キャンセル/Esc で `None` を返す。`summary` は衝突件数などの説明文。
 pub fn archive_add_box(parent: &impl GuiParent, summary: &str) -> Option<ArchiveAddMode> {
-    let wnd = modal_window("書庫への追加", 400, 180);
+    let (wnd, _arm) = modal_window("書庫への追加", 400, 180);
 
     let _label = gui::Label::new(
         &wnd,
@@ -65,23 +65,13 @@ pub fn archive_add_box(parent: &impl GuiParent, summary: &str) -> Option<Archive
     let result: Rc<RefCell<Option<ArchiveAddMode>>> = Rc::new(RefCell::new(None));
 
     #[cfg(feature = "debug-server")]
-    let (reg_prompt, reg_wnd) = (summary.to_string(), wnd.clone());
-    {
-        let wf = wnd.clone();
-        wnd.on().wm_create(move |_| {
-            focus_initial(wf.hwnd());
-            #[cfg(feature = "debug-server")]
-            crate::debug_server::modal_registry::push(
-                "archive_add",
-                "書庫への追加",
-                &reg_prompt,
-                reg_wnd.hwnd().ptr() as isize,
-                true,
-                vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
-            );
-            Ok(0)
-        });
-    }
+    _arm.plain(
+        "archive_add",
+        "書庫への追加",
+        summary,
+        true,
+        vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
+    );
 
     {
         let result = result.clone();
@@ -107,8 +97,6 @@ pub fn archive_add_box(parent: &impl GuiParent, summary: &str) -> Option<Archive
     }
 
     let _ = wnd.show_modal(parent);
-    #[cfg(feature = "debug-server")]
-    crate::debug_server::modal_registry::pop();
     let _ = (ok, cancel);
     let r = *result.borrow();
     r

@@ -64,7 +64,7 @@ impl MainWindow {
     pub(crate) fn incremental_search(&self, is_left: bool) -> w::AnyResult<()> {
         let origin = self.view(is_left).state().borrow().cursor;
 
-        let wnd = crate::dialog::modal_window("インクリメンタルサーチ", 320, 96);
+        let (wnd, arm) = crate::dialog::modal_window("インクリメンタルサーチ", 320, 96);
 
         let _label = gui::Label::new(
             &wnd,
@@ -124,21 +124,18 @@ impl MainWindow {
         }
 
         #[cfg(feature = "debug-server")]
-        let reg_wnd = wnd.clone();
+        arm.plain(
+            "incremental",
+            "インクリメンタルサーチ",
+            "",
+            true,
+            vec![("OK".to_string(), 1u16), ("中止(&S)".to_string(), 2u16)],
+        );
         {
             let edit2 = edit.clone();
-            wnd.on().wm_create(move |_| {
+            arm.on_create(move |_| {
                 edit2.hwnd().SetFocus();
-                #[cfg(feature = "debug-server")]
-                crate::debug_server::modal_registry::push(
-                    "incremental",
-                    "インクリメンタルサーチ",
-                    "",
-                    reg_wnd.hwnd().ptr() as isize,
-                    true,
-                    vec![("OK".to_string(), 1u16), ("中止(&S)".to_string(), 2u16)],
-                );
-                Ok(0)
+                Ok(())
             });
         }
 
@@ -161,8 +158,6 @@ impl MainWindow {
         }
 
         let _ = wnd.show_modal(&self.wnd);
-        #[cfg(feature = "debug-server")]
-        crate::debug_server::modal_registry::pop();
         let _ = (edit, ok, cancel);
         Ok(())
     }

@@ -23,7 +23,7 @@ pub fn rename_box(
     let show_sub = is_single && single_is_dir;
     let win_h = if show_sub { 388 } else { 340 };
     let btn_y = if show_sub { 348 } else { 290 };
-    let wnd = modal_window("名前の変更", 360, win_h);
+    let (wnd, arm) = modal_window("名前の変更", 360, win_h);
 
     // 名前行（常設）。単一＝編集可・名前プリフィル、複数＝無効で変換結果ラベルを表示。
     // 右の「...」は名前変換メニュー（原作 btnFileName）。
@@ -330,7 +330,7 @@ pub fn rename_box(
     let name_init = name_edit.clone();
     let first_check = checks[0].clone();
     arm_modal(
-        &wnd,
+        &arm,
         "rename",
         "名前の変更",
         "名前/属性/日時の変更",
@@ -347,6 +347,7 @@ pub fn rename_box(
                 name_init.hwnd().EnableWindow(false);
                 first_check.hwnd().SetFocus();
             }
+            Ok(())
         },
     );
     {
@@ -404,7 +405,6 @@ pub fn rename_box(
     }
 
     let _ = wnd.show_modal(parent);
-    disarm_modal();
     let _ = (
         ok, cancel, checks, name_edit, mtime_edit, ctime_edit, mtime_btn, ctime_btn, name_btn,
         sub_checks,

@@ -11,7 +11,7 @@ pub fn list_box(
     items: &[String],
     initial: usize,
 ) -> Option<usize> {
-    let wnd = super::modal_window(title, 420, 320);
+    let (wnd, arm) = super::modal_window(title, 420, 320);
 
     let list = gui::ListBox::new(
         &wnd,
@@ -52,11 +52,18 @@ pub fn list_box(
     let initial = if items.is_empty() { 0 } else { initial.min(items.len() - 1) };
 
     #[cfg(feature = "debug-server")]
-    let (reg_title, reg_wnd, reg_items) = (title.to_string(), wnd.clone(), rows.clone());
+    #[cfg(feature = "debug-server")]
+    arm.list(
+        "list",
+        title,
+        rows.clone(),
+        initial,
+        vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
+    );
     {
         let list = list.clone();
         let rows = rows.clone();
-        wnd.on().wm_create(move |_| {
+        arm.on_create(move |_| {
             // ListBox は HWND 生成後でないと add が効かない（生成前 add は無効）。
             if !rows.is_empty() {
                 let _ = list.items().add(&rows);
@@ -67,16 +74,7 @@ pub fn list_box(
                 }
             }
             list.hwnd().SetFocus();
-            #[cfg(feature = "debug-server")]
-            crate::debug_server::modal_registry::push_list(
-                "list",
-                &reg_title,
-                reg_items.clone(),
-                initial,
-                reg_wnd.hwnd().ptr() as isize,
-                vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
-            );
-            Ok(0)
+            Ok(())
         });
     }
 
@@ -117,8 +115,6 @@ pub fn list_box(
     }
 
     let _ = wnd.show_modal(parent);
-    #[cfg(feature = "debug-server")]
-    crate::debug_server::modal_registry::pop();
     let _ = (ok, cancel, list);
     let r = *result.borrow();
     r

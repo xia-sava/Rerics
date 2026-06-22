@@ -874,7 +874,7 @@ impl MainWindow {
             "<F:r>_<No:0000><F:e>",
         ];
 
-        let wnd = crate::dialog::modal_window("連番リネーム", 444, 268);
+        let (wnd, arm) = crate::dialog::modal_window("連番リネーム", 444, 268);
         let _lf = gui::Label::new(&wnd, gui::LabelOpts {
             text: "命名規則(&F):",
             position: gui::dpi(12, 15),
@@ -1079,23 +1079,20 @@ impl MainWindow {
         }
 
         #[cfg(feature = "debug-server")]
-        let reg_wnd = wnd.clone();
+        arm.plain(
+            "rename_seq",
+            "連番リネーム",
+            "",
+            false,
+            vec![("OK".to_string(), 1u16), ("中止(&S)".to_string(), 2u16)],
+        );
         {
             let template = template.clone();
             let update = update.clone();
-            wnd.on().wm_create(move |_| {
+            arm.on_create(move |_| {
                 update();
                 template.hwnd().SetFocus();
-                #[cfg(feature = "debug-server")]
-                crate::debug_server::modal_registry::push(
-                    "rename_seq",
-                    "連番リネーム",
-                    "",
-                    reg_wnd.hwnd().ptr() as isize,
-                    false,
-                    vec![("OK".to_string(), 1u16), ("中止(&S)".to_string(), 2u16)],
-                );
-                Ok(0)
+                Ok(())
             });
         }
 
@@ -1127,8 +1124,6 @@ impl MainWindow {
         }
 
         let _ = wnd.show_modal(&self.wnd);
-        #[cfg(feature = "debug-server")]
-        crate::debug_server::modal_registry::pop();
         let _ = (template, start, step, base_case, ext_case, preview, ok, cancel);
         Ok(())
     }

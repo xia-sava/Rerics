@@ -8,7 +8,7 @@ use super::*;
 /// 在るとき、解決方法（最新ならコピー/上書き/強制上書き/名前変更/スキップ）と
 /// 「すべてに適用」を尋ねる。OK でラジオ選択＋チェック状態を、キャンセル/Esc で `Cancel` を返す。
 pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution, bool) {
-    let wnd = modal_window("同名ファイルの処理", 380, 250);
+    let (wnd, arm) = modal_window("同名ファイルの処理", 380, 250);
 
     let _label = gui::Label::new(
         &wnd,
@@ -151,7 +151,7 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
         let refresh_c = refresh.clone();
         let rename_sel = rename.clone();
         arm_modal(
-            &wnd,
+            &arm,
             "conflict",
             "同名ファイルの処理",
             name,
@@ -185,6 +185,7 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
                     all_k.set_check(down);
                     refresh_k();
                 });
+                Ok(())
             },
         );
     }
@@ -219,7 +220,6 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
 
     let _ = wnd.show_modal(parent);
     keyhook::pop();
-    disarm_modal();
     let _ = (ok, cancel);
     let r = result.borrow().clone();
     r

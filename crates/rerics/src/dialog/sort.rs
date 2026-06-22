@@ -7,7 +7,7 @@ use super::*;
 /// ソート設定ダイアログ。種別と昇順/降順を選ばせ、OK なら `(種別, 降順か)` を返す。
 /// 中止/Esc は `None`。`cur`/`reverse` を初期選択にする。
 pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option<(SortType, bool)> {
-    let wnd = modal_window("ソート", 280, 300);
+    let (wnd, arm) = modal_window("ソート", 280, 300);
 
     // エクスプローラ互換は名前/拡張子に直交するチェック。種別ラジオは互換なしの素の種別を選び、
     // 互換種別が現在値なら対応する素の種別ラジオを選びチェックを立てる。
@@ -89,13 +89,13 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
     let result: Rc<RefCell<Option<(SortType, bool)>>> = Rc::new(RefCell::new(None));
 
     arm_modal(
-        &wnd,
+        &arm,
         "sort",
         "ソート",
         "ソートの種別と昇降",
         false,
         vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
-        |_| {},
+        |_| Ok(()),
     );
     {
         let result = result.clone();
@@ -129,7 +129,6 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
     }
 
     let _ = wnd.show_modal(parent);
-    disarm_modal();
     let _ = (ok, cancel);
     let r = *result.borrow();
     r

@@ -4,6 +4,8 @@
 //! スタイル（[`MessageStyle`]）でアイコン・ボタン構成を切り替える。`MessageStyle` の整数値は
 //! 原作の enum に一致させ、将来スクリプトからの `int` → enum 変換をそのまま通せるようにする。
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::SystemTime;
 
 use rerics_core::{NameCase, SortType, floor_to_local_midnight, format_local};
@@ -139,70 +141,201 @@ pub mod keyhook {
     }
 }
 
+/// モーダル登録の遅延データ。`modal_window` の `wm_create` で `modal_registry` へ push される。
+#[cfg(feature = "debug-server")]
+enum Reg {
+    Plain {
+        kind: &'static str,
+        title: String,
+        prompt: String,
+        has_input: bool,
+        buttons: Vec<(String, u16)>,
+    },
+    List {
+        kind: &'static str,
+        title: String,
+        items: Vec<String>,
+        selected: usize,
+        buttons: Vec<(String, u16)>,
+    },
+    ListView {
+        kind: &'static str,
+        title: String,
+        buttons: Vec<(String, u16)>,
+        hooks: crate::debug_server::modal_registry::ListViewHooks,
+    },
+}
+
+/// モーダルの配線ハンドル。[`modal_window`] が返す。ダイアログは show 前に
+/// [`ModalArm::plain`]/[`ModalArm::list`]/[`ModalArm::list_view`] で debug-server への登録
+/// 情報を、[`ModalArm::on_create`] で生成時の固有処理（初期フォーカスの上書き・keyhook 等）を
+/// 仕込む。いずれも省略可。登録を省いても `modal_window` が最小エントリを自動 push するので、
+/// **どのモーダルも必ず debug-server から観測（撮影）できる**。
+#[derive(Clone)]
+pub struct ModalArm {
+    #[cfg(feature = "debug-server")]
+    reg: Rc<RefCell<Option<Reg>>>,
+    #[allow(clippy::type_complexity)]
+    on_create: Rc<RefCell<Option<Box<dyn Fn(&w::HWND) -> w::AnyResult<()>>>>>,
+}
+
+impl ModalArm {
+    fn new() -> Self {
+        Self {
+            #[cfg(feature = "debug-server")]
+            reg: Rc::new(RefCell::new(None)),
+            on_create: Rc::new(RefCell::new(None)),
+        }
+    }
+
+    /// 生成時の固有処理（初期フォーカスの上書き・keyhook など）を仕込む。親 `HWND` が渡る
+    /// （子コントロール作成済み）。
+    pub fn on_create(&self, f: impl Fn(&w::HWND) -> w::AnyResult<()> + 'static) {
+        *self.on_create.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// 通常モーダルの登録情報を仕込む（`buttons` は (ラベル, ctrl_id)・OK=1/Cancel=2）。
+    #[cfg(feature = "debug-server")]
+    pub fn plain(
+        &self,
+        kind: &'static str,
+        title: &str,
+        prompt: &str,
+        has_input: bool,
+        buttons: Vec<(String, u16)>,
+    ) {
+        *self.reg.borrow_mut() = Some(Reg::Plain {
+            kind,
+            title: title.to_owned(),
+            prompt: prompt.to_owned(),
+            has_input,
+            buttons,
+        });
+    }
+
+    /// 単列リスト選択モーダルの登録情報を仕込む。
+    #[cfg(feature = "debug-server")]
+    pub fn list(
+        &self,
+        kind: &'static str,
+        title: &str,
+        items: Vec<String>,
+        selected: usize,
+        buttons: Vec<(String, u16)>,
+    ) {
+        *self.reg.borrow_mut() = Some(Reg::List {
+            kind,
+            title: title.to_owned(),
+            items,
+            selected,
+            buttons,
+        });
+    }
+
+    /// 多列 ListView モーダルの登録情報を仕込む。
+    #[cfg(feature = "debug-server")]
+    pub fn list_view(
+        &self,
+        kind: &'static str,
+        title: &str,
+        buttons: Vec<(String, u16)>,
+        hooks: crate::debug_server::modal_registry::ListViewHooks,
+    ) {
+        *self.reg.borrow_mut() = Some(Reg::ListView {
+            kind,
+            title: title.to_owned(),
+            buttons,
+            hooks,
+        });
+    }
+}
+
 /// 標準モーダル窓を作る（タイトル＋クライアント幅高）。原作 `PluginForm` 相当の佇まい
 /// （× 無し・最大化/最小化無し・親中央・`IsDialogMessage` 処理あり）を一元化する。
 ///
 /// アプリのモーダルは生の `WindowModal::new` を各所で書かず、必ずこの関数（または
-/// [`modal_window_sysmenu`]）を通す。配線（登録・フォーカス）は [`arm_modal`] を併用する。
-pub fn modal_window(title: &str, w: i32, h: i32) -> gui::WindowModal {
+/// [`modal_window_sysmenu`]）を通す。返り値の [`ModalArm`] へ登録情報・生成時処理を仕込む
+/// （省略可）。フォーカス・debug-server 登録・閉鎖時の後始末（pop）はこの関数が一手に
+/// 引き受けるので、**登録忘れでモーダルが撮れなくなることがない**。
+pub fn modal_window(title: &str, w: i32, h: i32) -> (gui::WindowModal, ModalArm) {
     modal_window_styled(title, w, h, co::WS::default())
 }
 
 /// [`modal_window`] にタイトルバーの × （システムメニュー）を足したもの。設定のように
 /// 大きく、× で閉じられると自然なモーダルで使う。
-pub fn modal_window_sysmenu(title: &str, w: i32, h: i32) -> gui::WindowModal {
+pub fn modal_window_sysmenu(title: &str, w: i32, h: i32) -> (gui::WindowModal, ModalArm) {
     modal_window_styled(title, w, h, co::WS::SYSMENU)
 }
 
-fn modal_window_styled(title: &str, w: i32, h: i32, extra: co::WS) -> gui::WindowModal {
-    gui::WindowModal::new(gui::WindowModalOpts {
+fn modal_window_styled(title: &str, w: i32, h: i32, extra: co::WS) -> (gui::WindowModal, ModalArm) {
+    let wnd = gui::WindowModal::new(gui::WindowModalOpts {
         title,
         size: gui::dpi(w, h),
         style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE | extra,
         process_dlg_msgs: true,
         ..Default::default()
-    })
+    });
+    let arm = ModalArm::new();
+
+    // 生成時：初期フォーカス → debug-server 登録（未指定なら最小エントリを自動 push）→
+    // ダイアログ固有の on_create。これで登録忘れでも必ず観測可能になる。
+    {
+        let wf = wnd.clone();
+        let oc = arm.on_create.clone();
+        #[cfg(feature = "debug-server")]
+        let reg = arm.reg.clone();
+        #[cfg(feature = "debug-server")]
+        let fallback = title.to_owned();
+        wnd.on().wm_create(move |_| {
+            focus_initial(wf.hwnd());
+            #[cfg(feature = "debug-server")]
+            {
+                use crate::debug_server::modal_registry as reg_mod;
+                let hp = wf.hwnd().ptr() as isize;
+                match reg.borrow_mut().take() {
+                    Some(Reg::Plain { kind, title, prompt, has_input, buttons }) => {
+                        reg_mod::push(kind, &title, &prompt, hp, has_input, buttons)
+                    }
+                    Some(Reg::List { kind, title, items, selected, buttons }) => {
+                        reg_mod::push_list(kind, &title, items, selected, hp, buttons)
+                    }
+                    Some(Reg::ListView { kind, title, buttons, hooks }) => {
+                        reg_mod::push_list_view(kind, &title, hp, buttons, hooks)
+                    }
+                    None => reg_mod::push("modal", &fallback, "", hp, false, Vec::new()),
+                }
+            }
+            if let Some(f) = oc.borrow_mut().take() {
+                f(wf.hwnd())?;
+            }
+            Ok(0)
+        });
+    }
+    // 閉鎖時：登録を取り除く。NCDESTROY は winsafe の内部後始末と被るので DESTROY で行う。
+    wnd.on().wm(co::WM::DESTROY, move |_| {
+        #[cfg(feature = "debug-server")]
+        crate::debug_server::modal_registry::pop();
+        Ok(0)
+    });
+
+    (wnd, arm)
 }
 
-/// モーダルの標準 `wm_create` 配線を仕込む：初期フォーカス（[`focus_initial`]）＋
-/// （debug-server 時）`modal_registry` 登録＋ダイアログ固有の作成時処理 `on_create`。
-/// `on_create` には親 `HWND` が渡る（子コントロール作成済み＝[`keyhook::push`] や
-/// 初期の有効/無効設定をここで行う）。固有処理が要らなければ `|_| {}` を渡す。
-/// `buttons` は (ラベル, ctrl_id) の列（OK=1・Cancel=2 等）。
+/// 通常モーダルの登録情報＋生成時処理を従来の引数並びでまとめて仕込む簡易版。
 pub fn arm_modal(
-    wnd: &gui::WindowModal,
+    arm: &ModalArm,
     kind: &'static str,
     reg_title: &str,
     reg_prompt: &str,
     has_input: bool,
     buttons: Vec<(String, u16)>,
-    on_create: impl Fn(&w::HWND) + 'static,
+    on_create: impl Fn(&w::HWND) -> w::AnyResult<()> + 'static,
 ) {
-    let wf = wnd.clone();
     #[cfg(feature = "debug-server")]
-    let reg = (kind, reg_title.to_string(), reg_prompt.to_string(), has_input, buttons);
+    arm.plain(kind, reg_title, reg_prompt, has_input, buttons);
     #[cfg(not(feature = "debug-server"))]
     let _ = (kind, reg_title, reg_prompt, has_input, buttons);
-    wnd.on().wm_create(move |_| {
-        focus_initial(wf.hwnd());
-        #[cfg(feature = "debug-server")]
-        crate::debug_server::modal_registry::push(
-            reg.0,
-            &reg.1,
-            &reg.2,
-            wf.hwnd().ptr() as isize,
-            reg.3,
-            reg.4.clone(),
-        );
-        on_create(wf.hwnd());
-        Ok(0)
-    });
-}
-
-/// モーダルを閉じた後始末（`modal_registry` から取り除く）。`show_modal` 直後に呼ぶ。
-pub fn disarm_modal() {
-    #[cfg(feature = "debug-server")]
-    crate::debug_server::modal_registry::pop();
+    arm.on_create(on_create);
 }
 
 /// 原作 WinForms の「ロード時にタブ順先頭のコントロールへフォーカス」を再現する基盤処理。

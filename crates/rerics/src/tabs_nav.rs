@@ -359,7 +359,7 @@ impl MainWindow {
             .position(|r| Some(r.to_ascii_uppercase()) == cur)
             .unwrap_or(0);
 
-        let wnd = crate::dialog::modal_window("ドライブの選択", 472, 320);
+        let (wnd, arm) = crate::dialog::modal_window("ドライブの選択", 472, 320);
         let list = gui::ListView::<()>::new(
             &wnd,
             gui::ListViewOpts {
@@ -411,7 +411,7 @@ impl MainWindow {
             let me = self.clone();
             let alive_c = alive.clone();
             let pending_c = pending.clone();
-            wnd.on().wm_create(move |_| {
+            arm.on_create(move |_| {
                 for (head, width) in [
                     ("ドライブ", 64),
                     ("ボリューム", 150),
@@ -460,41 +460,39 @@ impl MainWindow {
                 if let Ok(modal) = list.hwnd().GetParent() {
                     let _ = modal.SetTimer(SPIN_TIMER_ID, 110, None);
                 }
-                #[cfg(feature = "debug-server")]
-                {
-                    let modal_ptr = list.hwnd().GetParent().map(|h| h.ptr() as isize).unwrap_or(0);
-                    let list_r = list.clone();
-                    let list_s = list.clone();
-                    crate::debug_server::modal_registry::push_list_view(
-                        "drive",
-                        "ドライブの選択",
-                        modal_ptr,
-                        vec![("OK".to_owned(), 1u16), ("中止(&S)".to_owned(), 2u16)],
-                        crate::debug_server::modal_registry::ListViewHooks {
-                            headers: ["ドライブ", "ボリューム", "種類", "空き容量", "合計容量"]
-                                .iter()
-                                .map(|s| s.to_string())
-                                .collect(),
-                            read: Box::new(move || {
-                                let rows = list_r
-                                    .items()
-                                    .iter()
-                                    .map(|it| (0..5u32).map(|c| it.text(c)).collect())
-                                    .collect();
-                                let sel = list_r.items().iter().position(|it| it.is_selected()).unwrap_or(0);
-                                (rows, sel)
-                            }),
-                            select: Box::new(move |idx| {
-                                if let Some(it) = list_s.items().iter().nth(idx) {
-                                    let _ = it.select(true);
-                                    let _ = it.focus();
-                                }
-                            }),
-                        },
-                    );
-                }
-                Ok(0)
+                Ok(())
             });
+        }
+        #[cfg(feature = "debug-server")]
+        {
+            let list_r = list.clone();
+            let list_s = list.clone();
+            arm.list_view(
+                "drive",
+                "ドライブの選択",
+                vec![("OK".to_owned(), 1u16), ("中止(&S)".to_owned(), 2u16)],
+                crate::debug_server::modal_registry::ListViewHooks {
+                    headers: ["ドライブ", "ボリューム", "種類", "空き容量", "合計容量"]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                    read: Box::new(move || {
+                        let rows = list_r
+                            .items()
+                            .iter()
+                            .map(|it| (0..5u32).map(|c| it.text(c)).collect())
+                            .collect();
+                        let sel = list_r.items().iter().position(|it| it.is_selected()).unwrap_or(0);
+                        (rows, sel)
+                    }),
+                    select: Box::new(move |idx| {
+                        if let Some(it) = list_s.items().iter().nth(idx) {
+                            let _ = it.select(true);
+                            let _ = it.focus();
+                        }
+                    }),
+                },
+            );
         }
         {
             // probe 中の行のボリューム列でスピナーを回す。
@@ -579,8 +577,6 @@ impl MainWindow {
         self.in_dialog.set(true);
         let _ = wnd.show_modal(&self.wnd);
         self.in_dialog.set(false);
-        #[cfg(feature = "debug-server")]
-        crate::debug_server::modal_registry::pop();
         alive.set(false);
         let _ = (ok, cancel, list);
 
@@ -608,7 +604,7 @@ impl MainWindow {
             return Ok(());
         }
 
-        let wnd = crate::dialog::modal_window("登録ディレクトリ", 600, 360);
+        let (wnd, arm) = crate::dialog::modal_window("登録ディレクトリ", 600, 360);
         let list = gui::ListView::<()>::new(
             &wnd,
             gui::ListViewOpts {
@@ -651,7 +647,7 @@ impl MainWindow {
         {
             let list = list.clone();
             let entries_c = entries.clone();
-            wnd.on().wm_create(move |_| {
+            arm.on_create(move |_| {
                 for (head, width) in [("", 44), ("名前", 180), ("場所", 330)] {
                     list.cols().add(head, gui::dpi_x(width))?;
                 }
@@ -663,41 +659,39 @@ impl MainWindow {
                     it.focus()?;
                 }
                 list.hwnd().SetFocus();
-                #[cfg(feature = "debug-server")]
-                {
-                    let modal_ptr = list.hwnd().GetParent().map(|h| h.ptr() as isize).unwrap_or(0);
-                    let list_r = list.clone();
-                    let list_s = list.clone();
-                    crate::debug_server::modal_registry::push_list_view(
-                        "jump",
-                        "登録ディレクトリ",
-                        modal_ptr,
-                        vec![("OK".to_owned(), 1u16), ("中止(&S)".to_owned(), 2u16)],
-                        crate::debug_server::modal_registry::ListViewHooks {
-                            headers: ["ショートカット", "名前", "場所"]
-                                .iter()
-                                .map(|s| s.to_string())
-                                .collect(),
-                            read: Box::new(move || {
-                                let rows = list_r
-                                    .items()
-                                    .iter()
-                                    .map(|it| (0..3u32).map(|c| it.text(c)).collect())
-                                    .collect();
-                                let sel = list_r.items().iter().position(|it| it.is_selected()).unwrap_or(0);
-                                (rows, sel)
-                            }),
-                            select: Box::new(move |idx| {
-                                if let Some(it) = list_s.items().iter().nth(idx) {
-                                    let _ = it.select(true);
-                                    let _ = it.focus();
-                                }
-                            }),
-                        },
-                    );
-                }
-                Ok(0)
+                Ok(())
             });
+        }
+        #[cfg(feature = "debug-server")]
+        {
+            let list_r = list.clone();
+            let list_s = list.clone();
+            arm.list_view(
+                "jump",
+                "登録ディレクトリ",
+                vec![("OK".to_owned(), 1u16), ("中止(&S)".to_owned(), 2u16)],
+                crate::debug_server::modal_registry::ListViewHooks {
+                    headers: ["ショートカット", "名前", "場所"]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                    read: Box::new(move || {
+                        let rows = list_r
+                            .items()
+                            .iter()
+                            .map(|it| (0..3u32).map(|c| it.text(c)).collect())
+                            .collect();
+                        let sel = list_r.items().iter().position(|it| it.is_selected()).unwrap_or(0);
+                        (rows, sel)
+                    }),
+                    select: Box::new(move |idx| {
+                        if let Some(it) = list_s.items().iter().nth(idx) {
+                            let _ = it.select(true);
+                            let _ = it.focus();
+                        }
+                    }),
+                },
+            );
         }
         {
             // ショートカットキーを押したら、その行が一意に決まればそのまま選択＋移動。
@@ -751,8 +745,6 @@ impl MainWindow {
         self.in_dialog.set(true);
         let _ = wnd.show_modal(&self.wnd);
         self.in_dialog.set(false);
-        #[cfg(feature = "debug-server")]
-        crate::debug_server::modal_registry::pop();
         let _ = (ok, cancel, list);
 
         let sel = *result.borrow();
