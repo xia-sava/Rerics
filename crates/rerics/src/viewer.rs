@@ -580,10 +580,13 @@ impl ViewerView {
         let prev_x = regex_x + cb_w + gap;
         let next_x = prev_x + btn_w + gap;
         let counter_x = next_x + btn_w + gap;
-        // 入力欄の右端に履歴▼を置き、残りを入力欄に割り当てる。
-        let hist_w = gui::dpi_x(22);
-        let hist_x = (cluster_x - gap - hist_w).max(pad);
-        let edit_w = (hist_x - gap - pad).max(gui::dpi_x(40));
+        // 入力欄は左寄せでおよそ半分の幅にし、右端に履歴▼を密着させる（コンボの矢印風）。
+        // 右側のトグル列との間は空ける。
+        let hist_w = gui::dpi_x(20);
+        let input_span = (cluster_x - gap - pad).max(gui::dpi_x(80));
+        let box_total = (input_span / 2).max(gui::dpi_x(160)).min(input_span);
+        let edit_w = (box_total - hist_w).max(gui::dpi_x(120));
+        let hist_x = pad + edit_w;
         BarGeom {
             y,
             h,
