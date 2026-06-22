@@ -1903,3 +1903,40 @@ fn text_viewer_search_options_toggle_matches() {
     server.req("POST", "/view/search", "fo(").expect("type bad");
     assert_eq!(count(&server), "0", "不正な正規表現は 0 件");
 }
+
+/// 検索履歴：Enter 確定時のみ記録・重複は最新へ集約・履歴選択で入力欄へ入るのを観測する。
+#[test]
+fn text_viewer_search_history_records_on_enter() {
+    let server = Server::start(&["doc.txt"], "");
+    std::fs::write(server.base.join("sbx").join("doc.txt"), "foo bar baz qux\n").unwrap();
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/ViewFile", "").expect("ViewFile");
+    poll(&server, "/state/active_view", |b| b.trim().trim_matches('"') == "text");
+    req_bytes(server.port, "GET", "/snapshot").expect("warmup snapshot");
+
+    let history = |s: &Server| s.req("GET", "/state/viewer/history", "").expect("history").1.trim().to_string();
+
+    // 入力しただけでは記録されない（Enter 確定時のみ）。
+    server.req("POST", "/view/search", "foo").expect("type foo");
+    assert_eq!(history(&server), "[]", "入力だけでは履歴に入らない");
+
+    // Enter で確定すると記録される。
+    server.req("POST", "/view/search/key/enter", "").expect("enter foo");
+    assert_eq!(history(&server), "[\"foo\"]", "Enter 確定で foo が記録される");
+
+    // 別語を確定すると新しい順で先頭へ。
+    server.req("POST", "/view/search", "bar").expect("type bar");
+    server.req("POST", "/view/search/key/enter", "").expect("enter bar");
+    assert_eq!(history(&server), "[\"bar\",\"foo\"]", "新しい順に積まれる");
+
+    // 既出の語を再確定すると重複削除＝最新（先頭）へ集約（件数は増えない）。
+    server.req("POST", "/view/search", "foo").expect("type foo 2");
+    server.req("POST", "/view/search/key/enter", "").expect("enter foo 2");
+    assert_eq!(history(&server), "[\"foo\",\"bar\"]", "重複は最新へ集約");
+
+    // 履歴の index 番目（新しい順）を選ぶと入力欄へ入って検索される。
+    server.req("POST", "/view/search/history/1", "").expect("pick history 1");
+    let search = server.req("GET", "/state/viewer/search", "").expect("search").1;
+    assert_eq!(search.trim(), "\"bar\"", "履歴1番目（bar）が入力欄へ: {search}");
+    poll(&server, "/state/viewer/search_open", |b| b.trim() == "true");
+}

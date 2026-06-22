@@ -24,6 +24,8 @@ type Pos = (usize, usize);
 const TAB_WIDTH: usize = 4;
 /// 読み込むファイルの上限（これを超えたら先頭だけ）。
 pub const MAX_VIEW_BYTES: usize = 4 * 1024 * 1024;
+/// 検索履歴の保持上限（決め打ち）。
+const HISTORY_CAP: usize = 32;
 
 struct Inner {
     model: RefCell<ViewerModel>,
@@ -71,6 +73,8 @@ struct Inner {
     search_regex: gui::CheckBox,
     search_prev: gui::Button,
     search_next: gui::Button,
+    /// 入力欄右端の履歴ドロップダウン（▼）ボタン。クリック/Alt+↑↓ で履歴メニューを開く。
+    search_history: gui::Button,
     /// 検索バーを閉じたときに呼ぶコールバック（キー入力を本体へ戻す）。MainWindow が登録する。
     on_search_close: RefCell<Option<Box<dyn Fn()>>>,
     /// マウス選択の始点・終点（None なら選択なし）。
@@ -155,6 +159,7 @@ impl ViewerView {
         };
         let search_prev = mk_btn("↑");
         let search_next = mk_btn("↓");
+        let search_history = mk_btn("▼");
         let inner = Rc::new(Inner {
             model: RefCell::new(ViewerModel::new(Vec::new())),
             title: RefCell::new(String::new()),
@@ -183,6 +188,7 @@ impl ViewerView {
             search_regex,
             search_prev,
             search_next,
+            search_history,
             on_search_close: RefCell::new(None),
             sel_anchor: Cell::new(None),
             sel_cursor: Cell::new(None),
@@ -236,10 +242,11 @@ impl ViewerView {
         }
     }
 
-    /// 検索バーの子コントロール一式（入力欄＋トグル＋前後ボタン）。
-    fn search_bar_controls(&self) -> [&w::HWND; 6] {
+    /// 検索バーの子コントロール一式（入力欄＋履歴▼＋トグル＋前後ボタン）。
+    fn search_bar_controls(&self) -> [&w::HWND; 7] {
         [
             self.inner.search_edit.hwnd(),
+            self.inner.search_history.hwnd(),
             self.inner.search_case.hwnd(),
             self.inner.search_word.hwnd(),
             self.inner.search_regex.hwnd(),
@@ -391,16 +398,73 @@ impl ViewerView {
     }
 
     /// 検索バーを閉じて現在位置を確定する（Enter）。検索語・一致はそのまま残し F3 等で続けられる。
+    /// 確定したときだけ検索語を履歴へ記録する（重複は最新へ集約・上限32・`history.toml` に永続）。
     pub fn confirm_search_bar(&self) -> w::AnyResult<()> {
         if !self.inner.search_active.get() {
             return Ok(());
         }
+        self.record_history();
         self.reset_search_bar();
         self.refresh()?;
         if let Some(cb) = self.inner.on_search_close.borrow().as_ref() {
             cb();
         }
         Ok(())
+    }
+
+    /// 現在の検索語を検索履歴（キー `"search"`）へ記録する。空は無視。
+    fn record_history(&self) {
+        let term = self.inner.search_term.borrow().clone();
+        if term.trim().is_empty() {
+            return;
+        }
+        let mut hist = rerics_core::InputHistory::load();
+        hist.add_capped("search", &term, HISTORY_CAP);
+        let _ = hist.save();
+    }
+
+    /// 検索履歴のドロップダウン（ポップアップメニュー）を ▼ の下に開く。メニューは ↑↓ で項目を
+    /// 選び Enter で確定・Esc で取消できる（ネイティブ挙動）。選ぶと入力欄へ入れて検索する。
+    fn open_history_dropdown(&self) -> w::AnyResult<()> {
+        let items = rerics_core::InputHistory::load().get("search");
+        if items.is_empty() {
+            self.inner.search_edit.hwnd().SetFocus();
+            return Ok(());
+        }
+        let menu = w::HMENU::CreatePopupMenu()?;
+        for (i, it) in items.iter().enumerate() {
+            menu.AppendMenu(
+                co::MF::STRING,
+                w::IdMenu::Id((i + 1) as u16),
+                w::BmpPtrStr::from_str(it),
+            )?;
+        }
+        // ▼ ボタンの左下に出す（画面座標）。
+        let r = self.inner.search_history.hwnd().GetWindowRect()?;
+        let pt = w::POINT { x: r.left, y: r.bottom };
+        let owner = self.hwnd();
+        let _ = owner.SetForegroundWindow();
+        let chosen = menu.TrackPopupMenu(
+            co::TPM::RETURNCMD | co::TPM::LEFTALIGN | co::TPM::TOPALIGN,
+            pt,
+            owner,
+        )?;
+        if let Some(id) = chosen {
+            if let Some(it) = items.get((id as usize).saturating_sub(1)) {
+                self.set_query(it)?;
+            }
+        }
+        self.inner.search_edit.hwnd().SetFocus();
+        Ok(())
+    }
+
+    /// 入力欄に文字列を入れ（末尾キャレット）、その内容で検索する。履歴選択の共通経路。
+    fn set_query(&self, text: &str) -> w::AnyResult<()> {
+        let edit = self.inner.search_edit.hwnd();
+        let _ = edit.SetWindowText(text);
+        let caret = text.encode_utf16().count() as i32;
+        self.inner.search_edit.set_selection(caret, caret);
+        self.apply_search_from_edit()
     }
 
     /// 検索バーを閉じて開始位置へ戻す（Esc）。検索語とハイライト（黄）は残すが、現在一致
@@ -461,6 +525,28 @@ impl ViewerView {
         Ok(true)
     }
 
+    /// debug-server 用：検索履歴（新しい順）。
+    #[cfg(feature = "debug-server")]
+    pub fn debug_history(&self) -> Vec<String> {
+        rerics_core::InputHistory::load().get("search")
+    }
+
+    /// debug-server 用：履歴の index 番目（新しい順）を入力欄へ入れて検索する。範囲外は `false`。
+    #[cfg(feature = "debug-server")]
+    pub fn debug_select_history(&self, index: usize) -> w::AnyResult<bool> {
+        let items = rerics_core::InputHistory::load().get("search");
+        match items.get(index) {
+            Some(it) => {
+                if !self.inner.search_active.get() {
+                    self.open_search_bar()?;
+                }
+                self.set_query(it)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     /// 検索バーの高さ（本文をこのぶん下へずらす）。
     fn search_bar_height(&self) -> i32 {
         self.inner.line_height.get() + gui::dpi_y(12)
@@ -494,11 +580,15 @@ impl ViewerView {
         let prev_x = regex_x + cb_w + gap;
         let next_x = prev_x + btn_w + gap;
         let counter_x = next_x + btn_w + gap;
-        let edit_w = (cluster_x - pad - gap).max(gui::dpi_x(40));
+        // 入力欄の右端に履歴▼を置き、残りを入力欄に割り当てる。
+        let hist_w = gui::dpi_x(22);
+        let hist_x = (cluster_x - gap - hist_w).max(pad);
+        let edit_w = (hist_x - gap - pad).max(gui::dpi_x(40));
         BarGeom {
             y,
             h,
             edit: (pad, edit_w),
+            history: (hist_x, hist_w),
             case: (case_x, cb_w),
             word: (word_x, cb_w),
             regex: (regex_x, cb_w),
@@ -519,6 +609,7 @@ impl ViewerView {
             let _ = hwnd.MoveWindow(w::POINT { x, y: g.y }, w::SIZE { cx: w, cy: g.h }, true);
         };
         mv(self.inner.search_edit.hwnd(), g.edit);
+        mv(self.inner.search_history.hwnd(), g.history);
         mv(self.inner.search_case.hwnd(), g.case);
         mv(self.inner.search_word.hwnd(), g.word);
         mv(self.inner.search_regex.hwnd(), g.regex);
@@ -544,6 +635,7 @@ impl ViewerView {
         let sfont = self.create_font_sized((self.inner.font_size - 1).max(6))?;
         let _sel = dc.SelectObject(&*sfont)?;
         dc.SetTextColor(chrome::text())?;
+        self.draw_bar_button(dc, g.history, g.y, g.h, "▼")?;
         self.draw_bar_toggle(dc, g.case, g.y, g.h, "大小", !o.case_sensitive)?;
         self.draw_bar_toggle(dc, g.word, g.y, g.h, "単語", o.whole_word)?;
         self.draw_bar_toggle(dc, g.regex, g.y, g.h, "正規", o.regex)?;
@@ -939,6 +1031,24 @@ impl ViewerView {
             this.find_next(true)?;
             this.inner.search_edit.hwnd().SetFocus();
             Ok(())
+        });
+        // ▼：検索履歴のドロップダウン（メニュー）を開く。
+        let this = self.clone();
+        self.inner.search_history.on().bn_clicked(move || {
+            this.open_history_dropdown()?;
+            Ok(())
+        });
+
+        // Alt+↑↓ も ▼ と同じく履歴ドロップダウンを開く（Alt 併用は WM_SYSKEYDOWN で届く）。
+        let this = self.clone();
+        self.inner.search_edit.on_subclass().wm(co::WM::SYSKEYDOWN, move |p| {
+            match p.wparam as u16 {
+                0x26 | 0x28 => {
+                    this.open_history_dropdown()?;
+                    Ok(0)
+                }
+                _ => Ok(unsafe { this.inner.search_edit.hwnd().DefSubclassProc(p) }),
+            }
         });
     }
 
@@ -1354,6 +1464,7 @@ struct BarGeom {
     y: i32,
     h: i32,
     edit: (i32, i32),
+    history: (i32, i32),
     case: (i32, i32),
     word: (i32, i32),
     regex: (i32, i32),

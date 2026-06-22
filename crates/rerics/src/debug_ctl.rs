@@ -65,6 +65,9 @@ impl MainWindow {
                 debug_server::Request::ViewSearchOption { name, on } => {
                     let _ = tx.send(self.debug_view_search_option(&name, on));
                 }
+                debug_server::Request::ViewSearchHistory { index } => {
+                    let _ = tx.send(self.debug_view_search_history(index));
+                }
                 debug_server::Request::Snapshot { spec } => {
                     self.settle_pending_jobs();
                     let _ = tx.send(self.debug_snapshot(&spec));
@@ -465,6 +468,19 @@ impl MainWindow {
         }
     }
 
+    /// `POST /view/search/history/<index>`：検索履歴の index 番目（新しい順）を選んで検索する。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn debug_view_search_history(&self, index: usize) -> debug_server::Response {
+        if !matches!(self.active_view.get(), ActiveView::Text) {
+            return debug_server::Response::BadRequest("text viewer not active".into());
+        }
+        match self.viewer.debug_select_history(index) {
+            Ok(true) => debug_server::Response::Json(self.debug_state_value().to_string()),
+            Ok(false) => debug_server::Response::BadRequest(format!("no history at {index}")),
+            Err(e) => debug_server::Response::Error(format!("view search history error: {e}")),
+        }
+    }
+
     /// `GET /snapshot[/<spec>]`：画面 PNG を返す。spec は全体／名前付き要素／数値範囲／要素相対範囲。
     /// 名前付き要素の矩形は復帰後レイアウトで確定するため、撮影準備（復帰＋再レイアウト）を先に行う。
     #[cfg(feature = "debug-server")]
@@ -819,6 +835,7 @@ impl MainWindow {
                 "case_sensitive": opts.case_sensitive,
                 "whole_word": opts.whole_word,
                 "regex": opts.regex,
+                "history": self.viewer.debug_history(),
             })
         } else {
             serde_json::Value::Null
