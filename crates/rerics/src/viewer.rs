@@ -293,6 +293,9 @@ impl ViewerView {
         edit.ShowWindow(co::SW::SHOW);
         self.layout_search_bar();
         edit.SetFocus();
+        // 前回の検索語を残したまま、カーソルを末尾に置いて続けて編集できるようにする。
+        let caret = term.encode_utf16().count() as i32;
+        self.inner.search_edit.set_selection(caret, caret);
         self.apply_search_from_edit()?;
         self.refresh()
     }
@@ -316,14 +319,12 @@ impl ViewerView {
         Ok(())
     }
 
-    /// 検索バーを閉じて開始位置へ戻す（Esc）。検索語とハイライトも解除する。
+    /// 検索バーを閉じて開始位置へ戻す（Esc）。検索語とハイライトは残し、次に開くと続けられる。
     pub fn cancel_search_bar(&self) -> w::AnyResult<()> {
         if !self.inner.search_active.get() {
             return Ok(());
         }
         self.inner.scroll_top.set(self.inner.saved_scroll.get());
-        *self.inner.search_term.borrow_mut() = String::new();
-        self.inner.match_pos.set(None);
         self.reset_search_bar();
         self.refresh()?;
         if let Some(cb) = self.inner.on_search_close.borrow().as_ref() {

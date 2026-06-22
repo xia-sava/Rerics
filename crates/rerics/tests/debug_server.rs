@@ -1829,17 +1829,19 @@ fn text_viewer_search_finds_all_occurrences_and_navigates() {
     assert_eq!(st, 200, "/snapshot は 200");
     assert!(png.starts_with(&[0x89, b'P', b'N', b'G']), "PNG 署名で始まる");
 
-    // Enter で確定するとバーは閉じるが検索語・一致は残る。
+    // Enter で確定するとバーは閉じるが検索語・ハイライトは残る。
     server.req("POST", "/view/search/key/enter", "").expect("enter");
     poll(&server, "/state/viewer/search_open", |b| b.trim() == "false");
     let count2 = server.req("GET", "/state/viewer/match_count", "").expect("count2").1;
     assert_eq!(count2.trim(), "3", "Enter 確定後も検索語は残る");
 
-    // 再度開いて Esc で取り消すと、バーが閉じ検索も解除される（一致なし）。
+    // 再度開いて Esc で閉じても、検索語とハイライトは残る（開始位置へ戻るだけ）。
     server.req("POST", "/command/ViewerSearchDialog", "").expect("reopen search");
     poll(&server, "/state/viewer/search_open", |b| b.trim() == "true");
     server.req("POST", "/view/search/key/esc", "").expect("esc");
     poll(&server, "/state/viewer/search_open", |b| b.trim() == "false");
-    let m_after = match_json(&server);
-    assert_eq!(m_after.trim(), "null", "Esc 取消後は一致なし: {m_after}");
+    let count3 = server.req("GET", "/state/viewer/match_count", "").expect("count3").1;
+    assert_eq!(count3.trim(), "3", "Esc で閉じても検索語・ハイライトは残る");
+    let search = server.req("GET", "/state/viewer/search", "").expect("search").1;
+    assert_eq!(search.trim(), "\"foo\"", "Esc 後も検索語は残る: {search}");
 }
