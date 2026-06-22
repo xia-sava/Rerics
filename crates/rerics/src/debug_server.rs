@@ -176,6 +176,9 @@ pub enum Request {
     ModalSelect { index: usize },
     /// `POST /modal/check`：開いているモーダルの最初のチェックボックスをトグルする。
     ModalCheck,
+    /// `POST /modal/resize/<w>x<h>`：開いているモーダルの窓サイズを w×h（物理px）へ変える。
+    /// WM_SIZE が飛んでダイアログの再レイアウトが走るので、リサイズ追従を headless で検証できる。
+    ModalResize { width: i32, height: i32 },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -350,6 +353,13 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::ModalText { value })
             } else if path == "/modal/check" {
                 Some(Request::ModalCheck)
+            } else if let Some(wh) = path.strip_prefix("/modal/resize/") {
+                wh.trim_end_matches('/').split_once('x').and_then(|(w, h)| {
+                    Some(Request::ModalResize {
+                        width: w.parse().ok()?,
+                        height: h.parse().ok()?,
+                    })
+                })
             } else {
                 None
             }

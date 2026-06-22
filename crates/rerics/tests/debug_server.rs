@@ -1715,6 +1715,39 @@ fn settings_new_pages_reachable_and_snapshot() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// `/modal/resize/<w>x<h>` がモーダルへ WM_SIZE を飛ばし、クライアント寸法が要求サイズへ
+/// 変わる（手動ドラッグの代替＝リサイズ追従ダイアログを headless で検証する基盤）。
+#[test]
+fn modal_resize_endpoint_changes_client_size() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+
+    // /snapshot/modal は PrintWindow でクライアント領域を撮るので、PNG の IHDR 幅高が
+    // そのままモーダルのクライアント寸法になる。
+    let client_dims = |port| -> (u32, u32) {
+        let (st, png) = req_bytes(port, "GET", "/snapshot/modal").expect("snap");
+        assert_eq!(st, 200, "/snapshot/modal は 200");
+        assert!(png.starts_with(&[0x89, b'P', b'N', b'G']), "PNG 署名");
+        let w = u32::from_be_bytes([png[16], png[17], png[18], png[19]]);
+        let h = u32::from_be_bytes([png[20], png[21], png[22], png[23]]);
+        (w, h)
+    };
+
+    let (w0, h0) = client_dims(server.port);
+    let resp = server.req("POST", "/modal/resize/700x520", "").expect("resize");
+    assert_eq!(resp.0, 200, "/modal/resize は 200");
+
+    let (w1, h1) = client_dims(server.port);
+    // 縮んだうえで、要求した窓サイズ(700x520)から枠/タイトルバーを引いた近傍に収まる。
+    assert!(w1 < w0 && h1 < h0, "resize 後はクライアントが縮むはず: {w0}x{h0} -> {w1}x{h1}");
+    assert!((620..=700).contains(&w1), "幅は要求(700)近傍のはず: {w1}");
+    assert!((430..=520).contains(&h1), "高さは要求(520)近傍のはず: {h1}");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// タスクマネージャは多列 ListView モーダル（走行中タスクの一覧）。タスクが無くても開き、
 /// modal_registry 登録済みなので観測・撮影・クローズできる（デッドロックしない）。
 #[test]

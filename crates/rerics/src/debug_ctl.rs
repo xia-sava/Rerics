@@ -93,6 +93,9 @@ impl MainWindow {
                 debug_server::Request::ModalCheck => {
                     let _ = tx.send(self.debug_modal_check());
                 }
+                debug_server::Request::ModalResize { width, height } => {
+                    let _ = tx.send(self.debug_modal_resize(width, height));
+                }
             }
         }
     }
@@ -273,6 +276,28 @@ impl MainWindow {
             }
             None => debug_server::Response::BadRequest("modal has no list".into()),
         }
+    }
+
+    /// `POST /modal/resize/<w>x<h>`：開いているモーダルの窓サイズを w×h（物理px）へ変える。
+    /// `SetWindowPos` で WM_SIZE を飛ばし、リサイズ追従するダイアログの再レイアウトを headless で
+    /// 撮って検証できるようにする（手動ドラッグの代替手段）。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn debug_modal_resize(&self, width: i32, height: i32) -> debug_server::Response {
+        if width <= 0 || height <= 0 {
+            return debug_server::Response::BadRequest("resize needs positive w/h".into());
+        }
+        let Some(modal) = self.debug_modal_hwnd() else {
+            return debug_server::Response::BadRequest("no modal open".into());
+        };
+        if let Err(e) = modal.SetWindowPos(
+            w::HwndPlace::None,
+            w::POINT::with(0, 0),
+            w::SIZE::with(width, height),
+            co::SWP::NOMOVE | co::SWP::NOZORDER | co::SWP::NOACTIVATE,
+        ) {
+            return debug_server::Response::Error(format!("resize failed: {e}"));
+        }
+        debug_server::Response::Json(self.debug_state_value().to_string())
     }
 
     /// `POST /modal/key/<key>`：開いているモーダルへキー送出。`<key>` は `enter`/`esc`/`tab`/
