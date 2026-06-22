@@ -1191,6 +1191,16 @@ impl ViewerView {
                 _ => Ok(unsafe { this.inner.search_edit.hwnd().DefSubclassProc(p) }),
             }
         });
+        // Alt+C/W/R に伴う WM_SYSCHAR を食って、メニューバーのニーモニック（登録(R) 等）へ
+        // 貫通させない（バーが開いている間は c/w/r を消費する。Esc で抜ければメニューは使える）。
+        let this = self.clone();
+        self.inner.search_edit.on_subclass().wm(co::WM::SYSCHAR, move |p| {
+            if matches!((p.wparam as u8).to_ascii_lowercase(), b'c' | b'w' | b'r') {
+                Ok(0)
+            } else {
+                Ok(unsafe { this.inner.search_edit.hwnd().DefSubclassProc(p) })
+            }
+        });
 
         // 履歴リスト内のキー：Enter で確定・Esc で取消（↑↓ はネイティブ選択移動に任せる）。
         let this = self.clone();
