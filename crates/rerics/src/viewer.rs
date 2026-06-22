@@ -83,6 +83,9 @@ struct Inner {
     list_open: Cell<bool>,
     /// 検索バーを閉じたときに呼ぶコールバック（キー入力を本体へ戻す）。MainWindow が登録する。
     on_search_close: RefCell<Option<Box<dyn Fn()>>>,
+    /// キーチョードがユーザーのビューアキーバインドに割り当て済みなら実行して true を返す
+    /// コールバック。検索バー内のニーモニック（Alt+C 等）と被ったらユーザー側を優先するのに使う。
+    on_chord: RefCell<Option<Box<dyn Fn(rerics_core::KeyChord) -> bool>>>,
     /// マウス選択の始点・終点（None なら選択なし）。
     sel_anchor: Cell<Option<Pos>>,
     sel_cursor: Cell<Option<Pos>>,
@@ -209,6 +212,7 @@ impl ViewerView {
             search_list,
             list_open: Cell::new(false),
             on_search_close: RefCell::new(None),
+            on_chord: RefCell::new(None),
             sel_anchor: Cell::new(None),
             sel_cursor: Cell::new(None),
             selecting: Cell::new(false),
@@ -278,6 +282,48 @@ impl ViewerView {
     /// MainWindow がキー入力先を本体へ戻すためのコールバックを登録する。
     pub fn on_search_close(&self, cb: impl Fn() + 'static) {
         *self.inner.on_search_close.borrow_mut() = Some(Box::new(cb));
+    }
+
+    /// ユーザーキーバインド照会コールバックを登録する（割り当て済みなら実行して true）。
+    pub fn on_chord(&self, cb: impl Fn(rerics_core::KeyChord) -> bool + 'static) {
+        *self.inner.on_chord.borrow_mut() = Some(Box::new(cb));
+    }
+
+    /// チェック状態（`checked`）を反映して再検索する。「ケースを無視」ON＝大小無視。単語/正規は
+    /// 排他（片方 ON で他方 OFF）。クリックとニーモニックの共通経路。
+    fn apply_option(&self, kind: OptKind, checked: bool) -> w::AnyResult<()> {
+        let mut o = self.inner.search_opts.get();
+        match kind {
+            OptKind::Case => o.case_sensitive = !checked,
+            OptKind::Word => {
+                o.whole_word = checked;
+                if checked {
+                    o.regex = false;
+                }
+            }
+            OptKind::Regex => {
+                o.regex = checked;
+                if checked {
+                    o.whole_word = false;
+                }
+            }
+        }
+        self.inner.search_opts.set(o);
+        self.inner.search_case.set_check(!o.case_sensitive);
+        self.inner.search_word.set_check(o.whole_word);
+        self.inner.search_regex.set_check(o.regex);
+        self.refocus_after_toggle()
+    }
+
+    /// トグルを反転して再検索する（ニーモニック Alt+C/W/R 用）。
+    fn toggle_option(&self, kind: OptKind) -> w::AnyResult<()> {
+        let o = self.inner.search_opts.get();
+        let cur = match kind {
+            OptKind::Case => !o.case_sensitive,
+            OptKind::Word => o.whole_word,
+            OptKind::Regex => o.regex,
+        };
+        self.apply_option(kind, !cur)
     }
 
     fn clear_selection(&self) {
@@ -582,6 +628,24 @@ impl ViewerView {
     #[cfg(feature = "debug-server")]
     pub fn debug_is_dropdown_open(&self) -> bool {
         self.inner.list_open.get()
+    }
+
+    /// debug-server 用：ニーモニック（c/w/r）を駆動する。Alt+キーがユーザーバインドに割り当て
+    /// 済みならそちらを優先し、無ければトグルを反転する（SYSKEYDOWN 経路と同じ判断）。
+    #[cfg(feature = "debug-server")]
+    pub fn debug_mnemonic(&self, key: char) -> w::AnyResult<bool> {
+        let (vk, kind) = match key.to_ascii_lowercase() {
+            'c' => (0x43u16, OptKind::Case),
+            'w' => (0x57, OptKind::Word),
+            'r' => (0x52, OptKind::Regex),
+            _ => return Ok(false),
+        };
+        let chord = rerics_core::KeyChord::new(vk, false, false, true);
+        let user = self.inner.on_chord.borrow().as_ref().map(|cb| cb(chord)).unwrap_or(false);
+        if !user {
+            self.toggle_option(kind)?;
+        }
+        Ok(true)
     }
 
     /// debug-server 用：履歴ドロップダウンを開く/閉じる（headless でも開閉を観測できるように）。
@@ -1064,36 +1128,18 @@ impl ViewerView {
         });
 
         // 右側トグル（マウス用）。クリックでフラグを更新→再検索→入力欄へフォーカスを戻す。
-        // 「大小」ON＝大小無視（case_sensitive=false）。
+        // 「ケースを無視」ON＝大小無視。単語/正規は排他（apply_option が担う）。
         let this = self.clone();
         self.inner.search_case.on().bn_clicked(move || {
-            let mut o = this.inner.search_opts.get();
-            o.case_sensitive = !this.inner.search_case.is_checked();
-            this.inner.search_opts.set(o);
-            this.refocus_after_toggle()
+            this.apply_option(OptKind::Case, this.inner.search_case.is_checked())
         });
-        // 単語一致と正規表現は排他（片方 ON で他方 OFF・両方 OFF＝標準の部分一致）。
         let this = self.clone();
         self.inner.search_word.on().bn_clicked(move || {
-            let mut o = this.inner.search_opts.get();
-            o.whole_word = this.inner.search_word.is_checked();
-            if o.whole_word {
-                o.regex = false;
-                this.inner.search_regex.set_check(false);
-            }
-            this.inner.search_opts.set(o);
-            this.refocus_after_toggle()
+            this.apply_option(OptKind::Word, this.inner.search_word.is_checked())
         });
         let this = self.clone();
         self.inner.search_regex.on().bn_clicked(move || {
-            let mut o = this.inner.search_opts.get();
-            o.regex = this.inner.search_regex.is_checked();
-            if o.regex {
-                o.whole_word = false;
-                this.inner.search_word.set_check(false);
-            }
-            this.inner.search_opts.set(o);
-            this.refocus_after_toggle()
+            this.apply_option(OptKind::Regex, this.inner.search_regex.is_checked())
         });
         // 前/次ボタン（入力欄内の ↑↓ キーと同機能）。
         let this = self.clone();
@@ -1115,12 +1161,31 @@ impl ViewerView {
             Ok(())
         });
 
-        // Alt+↑↓ も ▼ と同じく履歴ドロップダウンを開く（Alt 併用は WM_SYSKEYDOWN で届く）。
+        // 入力欄での Alt 併用ショートカット（WM_SYSKEYDOWN）：Alt+↑↓ で履歴ドロップダウン、
+        // Alt+C/W/R でトグル。ただし同じ Alt+キーがユーザーのビューアキーバインドに割り当て済みなら
+        // そちらを優先する（被ったらユーザー優先）。扱わないキーは既定処理へ。
         let this = self.clone();
         self.inner.search_edit.on_subclass().wm(co::WM::SYSKEYDOWN, move |p| {
-            match p.wparam as u16 {
-                0x26 | 0x28 => {
-                    this.open_history_dropdown()?;
+            let vk = p.wparam as u16;
+            match vk {
+                0x26 | 0x28 | 0x43 | 0x57 | 0x52 => {
+                    let chord = rerics_core::KeyChord::new(vk, false, false, true);
+                    let user_handled = this
+                        .inner
+                        .on_chord
+                        .borrow()
+                        .as_ref()
+                        .map(|cb| cb(chord))
+                        .unwrap_or(false);
+                    if !user_handled {
+                        match vk {
+                            0x26 | 0x28 => this.open_history_dropdown()?,
+                            0x43 => this.toggle_option(OptKind::Case)?,
+                            0x57 => this.toggle_option(OptKind::Word)?,
+                            0x52 => this.toggle_option(OptKind::Regex)?,
+                            _ => {}
+                        }
+                    }
                     Ok(0)
                 }
                 _ => Ok(unsafe { this.inner.search_edit.hwnd().DefSubclassProc(p) }),
@@ -1560,6 +1625,14 @@ impl ViewerView {
         )
     }
 
+}
+
+/// 検索トグルの種類（ニーモニック/クリック共通の切替対象）。
+#[derive(Clone, Copy)]
+enum OptKind {
+    Case,
+    Word,
+    Regex,
 }
 
 /// 検索バー各要素の配置（x, 幅）と共通の y・高さ。layout と自前ミラー描画で共有する。

@@ -161,6 +161,8 @@ pub enum Request {
     ViewSearchHistory { index: usize },
     /// `POST /view/search/dropdown/<open|close>`：履歴ドロップダウンを開く/閉じる。
     ViewSearchDropdown { open: bool },
+    /// `POST /view/search/mnemonic/<c|w|r>`：トグルのニーモニック（Alt+C/W/R 相当）を駆動する。
+    ViewSearchMnemonic { key: char },
     /// `GET /snapshot[/<spec>]`：画面 PNG。`spec` は ""（全体）・名前付き要素・
     /// `x,y-WxH`（数値範囲）・`<name>/<x,y-WxH>`（要素相対のサブ範囲）。
     Snapshot { spec: String },
@@ -312,6 +314,11 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::ViewSearchDropdown {
                     open: s.trim_end_matches('/').eq_ignore_ascii_case("open"),
                 })
+            } else if let Some(s) = path.strip_prefix("/view/search/mnemonic/") {
+                s.trim_end_matches('/')
+                    .chars()
+                    .next()
+                    .map(|key| Request::ViewSearchMnemonic { key })
             } else if let Some(rest) = path.strip_prefix("/view/search/option/") {
                 match rest.trim_end_matches('/').rsplit_once('/') {
                     Some((name, val)) => Some(Request::ViewSearchOption {

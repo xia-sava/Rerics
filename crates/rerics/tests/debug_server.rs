@@ -1948,3 +1948,43 @@ fn text_viewer_search_history_records_on_enter() {
     let lc = server.req("GET", "/state/viewer/list_open", "").expect("list_open2").1;
     assert_eq!(lc.trim(), "false", "ドロップダウンが閉じる");
 }
+
+/// トグルのニーモニック（Alt+C/W/R 相当）が、未割り当てなら該当トグルを反転する。
+#[test]
+fn text_viewer_search_mnemonic_toggles_options() {
+    let server = Server::start(&["doc.txt"], "");
+    std::fs::write(server.base.join("sbx").join("doc.txt"), "foo bar\n").unwrap();
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/ViewFile", "").expect("ViewFile");
+    poll(&server, "/state/active_view", |b| b.trim().trim_matches('"') == "text");
+    req_bytes(server.port, "GET", "/snapshot").expect("warmup snapshot");
+    server.req("POST", "/command/ViewerSearchDialog", "").expect("open");
+    poll(&server, "/state/viewer/search_open", |b| b.trim() == "true");
+
+    // 既定はケース無視 ON（case_sensitive=false）。ニーモニック c で反転＝大小区別 ON。
+    server.req("POST", "/view/search/mnemonic/c", "").expect("mnemonic c");
+    let cs = server.req("GET", "/state/viewer/case_sensitive", "").expect("cs").1;
+    assert_eq!(cs.trim(), "true", "c で大小区別が立つ");
+    // w で単語境界 ON。
+    server.req("POST", "/view/search/mnemonic/w", "").expect("mnemonic w");
+    let ww = server.req("GET", "/state/viewer/whole_word", "").expect("ww").1;
+    assert_eq!(ww.trim(), "true", "w で単語境界が立つ");
+}
+
+/// ニーモニックと同じ Alt+キーがユーザーのビューアキーバインドに割り当て済みなら、ユーザー側を
+/// 優先する（トグルせずそのコマンドを実行）。ここでは Alt+C を ViewerClose に割り当てて確認。
+#[test]
+fn text_viewer_search_mnemonic_yields_to_user_keybind() {
+    let server = Server::start(&["doc.txt"], "[keybinds_textviewer]\n\"Alt+C\" = \"ViewerClose\"\n");
+    std::fs::write(server.base.join("sbx").join("doc.txt"), "foo bar\n").unwrap();
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/ViewFile", "").expect("ViewFile");
+    poll(&server, "/state/active_view", |b| b.trim().trim_matches('"') == "text");
+    req_bytes(server.port, "GET", "/snapshot").expect("warmup snapshot");
+    server.req("POST", "/command/ViewerSearchDialog", "").expect("open");
+    poll(&server, "/state/viewer/search_open", |b| b.trim() == "true");
+
+    // Alt+C は被っているのでユーザーバインド（ViewerClose）が走る＝ビューアが閉じる。
+    server.req("POST", "/view/search/mnemonic/c", "").expect("mnemonic c");
+    poll(&server, "/state/active_view", |b| b.trim().trim_matches('"') == "none");
+}

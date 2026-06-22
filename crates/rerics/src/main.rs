@@ -553,6 +553,19 @@ impl MainWindow {
             self.viewer.on_search_close(move || {
                 this.key_sink.hwnd().SetFocus();
             });
+            // 検索バー内のニーモニック（Alt+C 等）と同じキーがユーザーのビューアキーバインドに
+            // 割り当て済みなら、そちらを優先して実行する。
+            let this = self.clone();
+            self.viewer.on_chord(move |chord| {
+                let resolved = this.viewer_keymap.borrow().resolve_inv(&chord).cloned();
+                match resolved {
+                    Some(inv) => {
+                        let _ = this.exec_viewer(&inv);
+                        true
+                    }
+                    None => false,
+                }
+            });
         }
 
         // メニュー項目（有効なもの）をアクティブ側ペインへのコマンド実行に配線する。

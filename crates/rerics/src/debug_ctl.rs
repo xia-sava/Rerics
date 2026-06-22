@@ -71,6 +71,9 @@ impl MainWindow {
                 debug_server::Request::ViewSearchDropdown { open } => {
                     let _ = tx.send(self.debug_view_search_dropdown(open));
                 }
+                debug_server::Request::ViewSearchMnemonic { key } => {
+                    let _ = tx.send(self.debug_view_search_mnemonic(key));
+                }
                 debug_server::Request::Snapshot { spec } => {
                     self.settle_pending_jobs();
                     let _ = tx.send(self.debug_snapshot(&spec));
@@ -493,6 +496,18 @@ impl MainWindow {
         match self.viewer.debug_dropdown(open) {
             Ok(()) => debug_server::Response::Json(self.debug_state_value().to_string()),
             Err(e) => debug_server::Response::Error(format!("view search dropdown error: {e}")),
+        }
+    }
+
+    /// `POST /view/search/mnemonic/<c|w|r>`：トグルのニーモニック（Alt+C/W/R 相当）を駆動する。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn debug_view_search_mnemonic(&self, key: char) -> debug_server::Response {
+        if !matches!(self.active_view.get(), ActiveView::Text) {
+            return debug_server::Response::BadRequest("text viewer not active".into());
+        }
+        match self.viewer.debug_mnemonic(key) {
+            Ok(_) => debug_server::Response::Json(self.debug_state_value().to_string()),
+            Err(e) => debug_server::Response::Error(format!("view search mnemonic error: {e}")),
         }
     }
 
