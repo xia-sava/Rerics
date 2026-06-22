@@ -9,7 +9,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rerics_core::{
-    Colors, Config, DisplayLine, LineEnding, Rgb, ViewMode, ViewerModel, search_offsets,
+    Colors, Config, DisplayLine, LineEnding, Rgb, SearchOptions, ViewMode, ViewerModel,
+    search_matches,
 };
 use unicode_width::UnicodeWidthChar;
 use winsafe::{self as w, co, gui, prelude::*};
@@ -42,8 +43,10 @@ struct Inner {
     gutter_chars: Cell<usize>,
     /// 再生成が必要か（open/エンコーディング/モード変更で立てる）。
     dirty: Cell<bool>,
-    /// 検索語（小文字化はしない。一致は大小無視で判定）。
+    /// 検索語（小文字化はしない。一致は `search_opts` に従って判定）。
     search_term: RefCell<String>,
+    /// 検索オプション（大小区別・単語一致・正規表現）。既定＝大小無視・部分一致。
+    search_opts: Cell<SearchOptions>,
     /// 現在ヒットしている表示行（ハイライト対象）。
     /// 現在の検索一致（表示行 index, 行内の開始桁）。検索ハイライト/ナビの基準。
     match_pos: Cell<Option<(usize, usize)>>,
@@ -116,6 +119,7 @@ impl ViewerView {
             gutter_chars: Cell::new(1),
             dirty: Cell::new(true),
             search_term: RefCell::new(String::new()),
+            search_opts: Cell::new(SearchOptions::default()),
             match_pos: Cell::new(None),
             search_active: Cell::new(false),
             saved_scroll: Cell::new(0),
@@ -206,13 +210,13 @@ impl ViewerView {
         self.refresh()
     }
 
-    /// debug-server 観測用：検索語・現在一致 `(行, 桁)`・可視全体の一致総数。
+    /// debug-server 観測用：検索語・現在一致 `(行, 桁, 長さ)`・可視全体の一致総数・検索オプション。
     #[cfg(feature = "debug-server")]
-    pub fn debug_search_state(&self) -> (String, Option<(usize, usize)>, usize) {
+    pub fn debug_search_state(&self) -> (String, Option<(usize, usize, usize)>, usize, SearchOptions) {
         let term = self.inner.search_term.borrow().clone();
-        let pos = self.inner.match_pos.get();
+        let pos = self.inner.match_pos.get().map(|(l, c)| (l, c, self.current_match_len()));
         let count = self.all_matches().len();
-        (term, pos, count)
+        (term, pos, count, self.inner.search_opts.get())
     }
 
     /// 検索語を設定し、現在位置以降の最初の一致へジャンプする。空なら検索解除。
@@ -423,13 +427,31 @@ impl ViewerView {
             return Vec::new();
         }
         let lines = self.inner.lines.borrow();
+        let opts = self.inner.search_opts.get();
         let mut out = Vec::new();
         for (li, line) in lines.iter().enumerate() {
-            for off in search_offsets(&line.body, &term) {
+            for (off, _len) in search_matches(&line.body, &term, &opts) {
                 out.push((li, off));
             }
         }
         out
+    }
+
+    /// 現在一致の長さ（debug 観測・正規表現で可変長になるため）。無ければ 0。
+    #[cfg(feature = "debug-server")]
+    fn current_match_len(&self) -> usize {
+        let Some((line, col)) = self.inner.match_pos.get() else {
+            return 0;
+        };
+        let term = self.inner.search_term.borrow();
+        let opts = self.inner.search_opts.get();
+        let lines = self.inner.lines.borrow();
+        let Some(dl) = lines.get(line) else { return 0 };
+        search_matches(&dl.body, &term, &opts)
+            .into_iter()
+            .find(|&(off, _)| off == col)
+            .map(|(_, len)| len)
+            .unwrap_or(0)
     }
 
     /// 指定の一致（行・桁）を現在一致にし、行が可視範囲（上から1/4の位置）に入るようスクロールする。
@@ -705,8 +727,7 @@ impl ViewerView {
         &self,
         dc: &w::HDC,
         line: &DisplayLine,
-        spans: &[usize],
-        needle_len: usize,
+        spans: &[(usize, usize)],
         cur_off: Option<usize>,
         y: i32,
         content_left: i32,
@@ -729,9 +750,9 @@ impl ViewerView {
             }
         }
         // 検索一致の桁を上書き（現在一致＝選択文字色・他＝検索文字色）。
-        for &off in spans {
+        for &(off, len) in spans {
             let oc = if cur_off == Some(off) { colors.selected_file } else { colors.viewer_find_text };
-            let end = (off + needle_len).min(n);
+            let end = (off + len).min(n);
             for slot in col.iter_mut().take(end).skip(off) {
                 *slot = oc;
             }
@@ -899,7 +920,8 @@ impl ViewerView {
         let top = self.inner.scroll_top.get();
         let match_pos = self.inner.match_pos.get();
         let term = self.inner.search_term.borrow();
-        let needle_len = term.chars().count();
+        let opts = self.inner.search_opts.get();
+        let has_term = !term.is_empty();
         let sel_brush = w::HBRUSH::CreateSolidBrush(rgb(colors.selected_file_bg))?;
         let find_brush = w::HBRUSH::CreateSolidBrush(rgb(colors.viewer_find_bg))?;
         let mut y = top_y;
@@ -919,18 +941,18 @@ impl ViewerView {
                 }
             }
             // 検索一致（選択していない行のみ）。行内の各一致を桁単位で塗り、現在一致は選択色で区別する。
-            let spans: Vec<usize> = if highlighted || needle_len == 0 {
+            let spans: Vec<(usize, usize)> = if highlighted || !has_term {
                 Vec::new()
             } else {
-                search_offsets(&line.body, &term)
+                search_matches(&line.body, &term, &opts)
             };
             let cur_off = match match_pos {
                 Some((ml, mc)) if ml == i => Some(mc),
                 _ => None,
             };
-            for &off in &spans {
+            for &(off, len) in &spans {
                 let left = self.col_x(&line.body, off, content_left, cwd);
-                let right = self.col_x(&line.body, off + needle_len, content_left, cwd);
+                let right = self.col_x(&line.body, off + len, content_left, cwd);
                 let brush = if cur_off == Some(off) { &sel_brush } else { &find_brush };
                 dc.FillRect(w::RECT { left, top: y, right, bottom: y + lh }, brush)?;
             }
@@ -940,7 +962,7 @@ impl ViewerView {
                 dc.DrawText(&line.gutter, rect, co::DT::SINGLELINE | co::DT::RIGHT | co::DT::NOPREFIX)?;
             }
             if !line.body.is_empty() {
-                self.draw_body_line(dc, line, &spans, needle_len, cur_off, y, content_left, cwd, &colors)?;
+                self.draw_body_line(dc, line, &spans, cur_off, y, content_left, cwd, &colors)?;
             }
             // 現在一致のある行に下線（検索カーソル行）。
             if cur_off.is_some() {

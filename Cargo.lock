@@ -1327,6 +1327,7 @@ dependencies = [
  "flate2",
  "image",
  "lzma-rust2",
+ "regex",
  "ruzstd",
  "serde",
  "sevenz-rust2",

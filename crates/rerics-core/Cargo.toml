@@ -12,6 +12,7 @@ rar = ["dep:unrar"]
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 encoding_rs = "0.8.35"
 image = "0.25"
+regex = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 unicode-width = "0.2.2"

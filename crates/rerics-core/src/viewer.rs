@@ -421,22 +421,88 @@ fn lower_chars(s: &str) -> Vec<char> {
     s.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect()
 }
 
-/// `line` 中に現れる `needle` の全一致の開始桁（文字単位・大小無視・非重複）を返す。
-/// 桁は `line.chars()` のインデックス。`needle` が空なら空。
-pub fn search_offsets(line: &str, needle: &str) -> Vec<usize> {
-    let needle = lower_chars(needle);
+/// 検索の絞り込みオプション。既定（[`Default`]）は大小無視・部分一致・非正規表現。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SearchOptions {
+    /// 大文字小文字を区別する（false＝大小無視）。
+    pub case_sensitive: bool,
+    /// 単語一致（一致の前後が語境界）。正規表現時は無視する。
+    pub whole_word: bool,
+    /// `needle` を正規表現として扱う。
+    pub regex: bool,
+}
+
+/// 語を構成する文字か（英数字＋アンダースコア）。単語一致の境界判定に使う。
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// `hay`（文字列）中で `[start, start+len)` の前後が語境界か。
+fn word_bounded(hay: &[char], start: usize, len: usize) -> bool {
+    let before = start == 0 || !is_word_char(hay[start - 1]);
+    let end = start + len;
+    let after = end >= hay.len() || !is_word_char(hay[end]);
+    before && after
+}
+
+/// `line` 中に現れる `needle` の全一致を `(開始桁, 長さ)`（ともに文字単位）で返す。
+/// 桁は `line.chars()` のインデックス。`needle` が空なら空。`opts` で大小区別・単語一致・
+/// 正規表現を切り替える。正規表現が不正なら空（＝一致なし扱い）。
+pub fn search_matches(line: &str, needle: &str, opts: &SearchOptions) -> Vec<(usize, usize)> {
     if needle.is_empty() {
         return Vec::new();
     }
-    let hay = lower_chars(line);
+    if opts.regex {
+        regex_matches(line, needle, opts)
+    } else {
+        literal_matches(line, needle, opts)
+    }
+}
+
+/// 部分一致（非正規表現）。大小無視は 1 文字ずつ畳んで桁を保つ。単語一致時は語境界のみ採用。
+fn literal_matches(line: &str, needle: &str, opts: &SearchOptions) -> Vec<(usize, usize)> {
+    let hay: Vec<char> = if opts.case_sensitive {
+        line.chars().collect()
+    } else {
+        lower_chars(line)
+    };
+    let ndl: Vec<char> = if opts.case_sensitive {
+        needle.chars().collect()
+    } else {
+        lower_chars(needle)
+    };
+    let nlen = ndl.len();
+    if nlen == 0 {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     let mut i = 0;
-    while i + needle.len() <= hay.len() {
-        if hay[i..i + needle.len()] == needle[..] {
-            out.push(i);
-            i += needle.len();
+    while i + nlen <= hay.len() {
+        if hay[i..i + nlen] == ndl[..] && (!opts.whole_word || word_bounded(&hay, i, nlen)) {
+            out.push((i, nlen));
+            i += nlen;
         } else {
             i += 1;
+        }
+    }
+    out
+}
+
+/// 正規表現一致。大小無視はビルダで、桁は char 単位へ変換する。零幅一致は捨てる。
+fn regex_matches(line: &str, needle: &str, opts: &SearchOptions) -> Vec<(usize, usize)> {
+    let re = match regex::RegexBuilder::new(needle)
+        .case_insensitive(!opts.case_sensitive)
+        .build()
+    {
+        Ok(re) => re,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for m in re.find_iter(line) {
+        let start = line[..m.start()].chars().count();
+        let len = line[m.start()..m.end()].chars().count();
+        if len > 0 {
+            out.push((start, len));
         }
     }
     out
@@ -447,23 +513,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn search_offsets_finds_all_case_insensitive() {
-        // 大小無視で全一致を桁単位に返す。
-        assert_eq!(search_offsets("Foo foo FOO", "foo"), vec![0, 4, 8]);
+    fn search_matches_finds_all_case_insensitive() {
+        let o = SearchOptions::default();
+        // 大小無視で全一致を (開始, 長さ) で返す。
+        assert_eq!(search_matches("Foo foo FOO", "foo", &o), vec![(0, 3), (4, 3), (8, 3)]);
         // 部分一致・記号交じり。
-        assert_eq!(search_offsets("a_bar_bar", "bar"), vec![2, 6]);
+        assert_eq!(search_matches("a_bar_bar", "bar", &o), vec![(2, 3), (6, 3)]);
         // 非重複（"aa" は "aaaa" に2回）。
-        assert_eq!(search_offsets("aaaa", "aa"), vec![0, 2]);
+        assert_eq!(search_matches("aaaa", "aa", &o), vec![(0, 2), (2, 2)]);
         // 無し・空 needle。
-        assert_eq!(search_offsets("hello", "xyz"), Vec::<usize>::new());
-        assert_eq!(search_offsets("hello", ""), Vec::<usize>::new());
+        assert_eq!(search_matches("hello", "xyz", &o), Vec::<(usize, usize)>::new());
+        assert_eq!(search_matches("hello", "", &o), Vec::<(usize, usize)>::new());
     }
 
     #[test]
-    fn search_offsets_columns_align_with_fullwidth() {
+    fn search_matches_columns_align_with_fullwidth() {
         // 全角を挟んでも桁は chars() インデックス（バイトでない）で揃う。
-        // "あいABCあい" の "abc" は 2 文字目から。
-        assert_eq!(search_offsets("あいABCあい", "abc"), vec![2]);
+        // "あいABCあい" の "abc" は 2 文字目から長さ 3。
+        assert_eq!(search_matches("あいABCあい", "abc", &SearchOptions::default()), vec![(2, 3)]);
+    }
+
+    #[test]
+    fn search_matches_case_sensitive() {
+        let o = SearchOptions { case_sensitive: true, ..Default::default() };
+        // 大小区別＝小文字 foo のみ一致（Foo/FOO は外す）。
+        assert_eq!(search_matches("Foo foo FOO", "foo", &o), vec![(4, 3)]);
+    }
+
+    #[test]
+    fn search_matches_whole_word() {
+        let o = SearchOptions { whole_word: true, ..Default::default() };
+        // 単語一致＝語境界で囲まれた bar のみ（barx・xbar は外す）。
+        assert_eq!(search_matches("bar barx xbar a bar", "bar", &o), vec![(0, 3), (16, 3)]);
+    }
+
+    #[test]
+    fn search_matches_regex_variable_length() {
+        let o = SearchOptions { regex: true, ..Default::default() };
+        // 可変長一致（fo+ は "foo" と "fooo"）。大小無視は既定で効く。
+        assert_eq!(search_matches("foo Fooo x", "fo+", &o), vec![(0, 3), (4, 4)]);
+        // 不正な正規表現は 0 件扱い。
+        assert_eq!(search_matches("abc", "a(", &o), Vec::<(usize, usize)>::new());
     }
 
     #[test]

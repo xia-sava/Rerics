@@ -792,13 +792,15 @@ impl MainWindow {
             serde_json::Value::Null
         };
         let viewer = if matches!(self.active_view.get(), ActiveView::Text) {
-            let (search, pos, count) = self.viewer.debug_search_state();
-            let len = search.chars().count();
+            let (search, pos, count, opts) = self.viewer.debug_search_state();
             json!({
                 "search": search,
                 "search_open": self.viewer.is_search_bar_open(),
-                "match": pos.map(|(l, c)| json!({ "line": l, "col": c, "len": len })),
+                "match": pos.map(|(l, c, len)| json!({ "line": l, "col": c, "len": len })),
                 "match_count": count,
+                "case_sensitive": opts.case_sensitive,
+                "whole_word": opts.whole_word,
+                "regex": opts.regex,
             })
         } else {
             serde_json::Value::Null
