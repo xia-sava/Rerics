@@ -1684,6 +1684,37 @@ fn settings_dialog_opens_snapshots_and_closes() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// 新設の設定ページ（レイアウト＝既定ウィンドウサイズ／全般＝既定エディタ／ビューア＝
+/// ズーム増減）がナビのキー操作で到達でき、各ページが PrintWindow で撮れる（headless で
+/// 観測可能であることの担保）。先頭は「テーマ・フォント」で、下キーでページを順に辿る。
+#[test]
+fn settings_new_pages_reachable_and_snapshot() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+
+    let snap_ok = |label: &str| {
+        let (st, png) = req_bytes(server.port, "GET", "/snapshot/modal").expect("modal snap");
+        assert_eq!(st, 200, "{label}: /snapshot/modal は 200");
+        assert!(png.starts_with(&[0x89, b'P', b'N', b'G']), "{label}: PNG 署名で始まる");
+        assert!(png.len() > 1000, "{label}: PNG が非空 ({} bytes)", png.len());
+    };
+    let down = |n: usize| {
+        for _ in 0..n {
+            server.req("POST", "/modal/key/down", "").expect("modal key down");
+        }
+    };
+    down(3); // テーマ・フォント → 配色 → テキストビューア → レイアウト
+    snap_ok("レイアウト");
+    down(2); // → 一覧 → 全般
+    snap_ok("全般");
+    down(3); // → ファイル操作 → カーソル → ビューア
+    snap_ok("ビューア");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// タスクマネージャは多列 ListView モーダル（走行中タスクの一覧）。タスクが無くても開き、
 /// modal_registry 登録済みなので観測・撮影・クローズできる（デッドロックしない）。
 #[test]
