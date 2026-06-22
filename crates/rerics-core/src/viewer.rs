@@ -445,67 +445,98 @@ fn word_bounded(hay: &[char], start: usize, len: usize) -> bool {
     before && after
 }
 
-/// `line` 中に現れる `needle` の全一致を `(開始桁, 長さ)`（ともに文字単位）で返す。
-/// 桁は `line.chars()` のインデックス。`needle` が空なら空。`opts` で大小区別・単語一致・
-/// 正規表現を切り替える。正規表現が不正なら空（＝一致なし扱い）。
-pub fn search_matches(line: &str, needle: &str, opts: &SearchOptions) -> Vec<(usize, usize)> {
+/// コンパイル済みの検索マッチャ。`needle`＋`opts` から一度だけ作り、各行へ繰り返し適用する。
+/// 正規表現を行ごとに再コンパイルしないための型（多数行の走査でコストを一定に保つ）。
+#[derive(Debug, Clone)]
+pub enum Matcher {
+    /// 空の検索語＝常に一致なし。
+    Empty,
+    /// 部分一致。`needle` は大小区別に応じて畳み済み（`case_sensitive` で行も同様に畳む）。
+    Literal {
+        needle: Vec<char>,
+        case_sensitive: bool,
+        whole_word: bool,
+    },
+    /// コンパイル済み正規表現。
+    Regex(regex::Regex),
+}
+
+/// `needle`＋`opts` からマッチャを作る（正規表現はここで一度だけコンパイル）。空・不正な
+/// 正規表現は [`Matcher::Empty`]（＝一致なし）。
+pub fn build_matcher(needle: &str, opts: &SearchOptions) -> Matcher {
     if needle.is_empty() {
-        return Vec::new();
+        return Matcher::Empty;
     }
     if opts.regex {
-        regex_matches(line, needle, opts)
+        match regex::RegexBuilder::new(needle)
+            .case_insensitive(!opts.case_sensitive)
+            .build()
+        {
+            Ok(re) => Matcher::Regex(re),
+            Err(_) => Matcher::Empty,
+        }
     } else {
-        literal_matches(line, needle, opts)
-    }
-}
-
-/// 部分一致（非正規表現）。大小無視は 1 文字ずつ畳んで桁を保つ。単語一致時は語境界のみ採用。
-fn literal_matches(line: &str, needle: &str, opts: &SearchOptions) -> Vec<(usize, usize)> {
-    let hay: Vec<char> = if opts.case_sensitive {
-        line.chars().collect()
-    } else {
-        lower_chars(line)
-    };
-    let ndl: Vec<char> = if opts.case_sensitive {
-        needle.chars().collect()
-    } else {
-        lower_chars(needle)
-    };
-    let nlen = ndl.len();
-    if nlen == 0 {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i + nlen <= hay.len() {
-        if hay[i..i + nlen] == ndl[..] && (!opts.whole_word || word_bounded(&hay, i, nlen)) {
-            out.push((i, nlen));
-            i += nlen;
+        let needle = if opts.case_sensitive {
+            needle.chars().collect()
         } else {
-            i += 1;
+            lower_chars(needle)
+        };
+        Matcher::Literal {
+            needle,
+            case_sensitive: opts.case_sensitive,
+            whole_word: opts.whole_word,
         }
     }
-    out
 }
 
-/// 正規表現一致。大小無視はビルダで、桁は char 単位へ変換する。零幅一致は捨てる。
-fn regex_matches(line: &str, needle: &str, opts: &SearchOptions) -> Vec<(usize, usize)> {
-    let re = match regex::RegexBuilder::new(needle)
-        .case_insensitive(!opts.case_sensitive)
-        .build()
-    {
-        Ok(re) => re,
-        Err(_) => return Vec::new(),
-    };
-    let mut out = Vec::new();
-    for m in re.find_iter(line) {
-        let start = line[..m.start()].chars().count();
-        let len = line[m.start()..m.end()].chars().count();
-        if len > 0 {
-            out.push((start, len));
+impl Matcher {
+    /// `line` 中の全一致を `(開始桁, 長さ)`（文字単位）で返す。桁は `line.chars()` のインデックス。
+    pub fn find(&self, line: &str) -> Vec<(usize, usize)> {
+        match self {
+            Matcher::Empty => Vec::new(),
+            Matcher::Literal { needle, case_sensitive, whole_word } => {
+                let nlen = needle.len();
+                if nlen == 0 {
+                    return Vec::new();
+                }
+                let hay: Vec<char> = if *case_sensitive {
+                    line.chars().collect()
+                } else {
+                    lower_chars(line)
+                };
+                let mut out = Vec::new();
+                let mut i = 0;
+                while i + nlen <= hay.len() {
+                    if hay[i..i + nlen] == needle[..]
+                        && (!whole_word || word_bounded(&hay, i, nlen))
+                    {
+                        out.push((i, nlen));
+                        i += nlen;
+                    } else {
+                        i += 1;
+                    }
+                }
+                out
+            }
+            Matcher::Regex(re) => {
+                let mut out = Vec::new();
+                for m in re.find_iter(line) {
+                    let start = line[..m.start()].chars().count();
+                    let len = line[m.start()..m.end()].chars().count();
+                    if len > 0 {
+                        out.push((start, len));
+                    }
+                }
+                out
+            }
         }
     }
-    out
+}
+
+/// `line` 中に現れる `needle` の全一致を `(開始桁, 長さ)`（ともに文字単位）で返す。単発用の
+/// 薄いラッパ（多数行を走査するなら [`build_matcher`] で一度作って [`Matcher::find`] を使う）。
+pub fn search_matches(line: &str, needle: &str, opts: &SearchOptions) -> Vec<(usize, usize)> {
+    build_matcher(needle, opts).find(line)
 }
 
 #[cfg(test)]

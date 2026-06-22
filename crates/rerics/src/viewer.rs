@@ -9,8 +9,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rerics_core::{
-    Colors, Config, DisplayLine, LineEnding, Rgb, SearchOptions, ViewMode, ViewerModel,
-    search_matches,
+    Colors, Config, DisplayLine, LineEnding, Matcher, Rgb, SearchOptions, ViewMode, ViewerModel,
+    build_matcher,
 };
 use unicode_width::UnicodeWidthChar;
 use winsafe::{self as w, co, gui, prelude::*};
@@ -47,6 +47,9 @@ struct Inner {
     search_term: RefCell<String>,
     /// 検索オプション（大小区別・単語一致・正規表現）。既定＝大小無視・部分一致。
     search_opts: Cell<SearchOptions>,
+    /// コンパイル済みマッチャのキャッシュ（検索語＋オプションが変わるまで使い回す）。
+    /// 正規表現を行ごとに再コンパイルしないための要。
+    matcher_cache: RefCell<Option<(String, SearchOptions, Matcher)>>,
     /// 現在ヒットしている表示行（ハイライト対象）。
     /// 現在の検索一致（表示行 index, 行内の開始桁）。検索ハイライト/ナビの基準。
     match_pos: Cell<Option<(usize, usize)>>,
@@ -163,6 +166,7 @@ impl ViewerView {
             dirty: Cell::new(true),
             search_term: RefCell::new(String::new()),
             search_opts: Cell::new(SearchOptions::default()),
+            matcher_cache: RefCell::new(None),
             match_pos: Cell::new(None),
             search_active: Cell::new(false),
             saved_scroll: Cell::new(0),
@@ -612,17 +616,31 @@ impl ViewerView {
         Ok(())
     }
 
+    /// 現在の検索語＋オプションのコンパイル済みマッチャを返す（キャッシュ。変わるまで使い回す）。
+    /// 正規表現を行ごとに再コンパイルしないための要。
+    fn matcher(&self) -> Matcher {
+        let term = self.inner.search_term.borrow();
+        let opts = self.inner.search_opts.get();
+        if let Some((t, o, m)) = self.inner.matcher_cache.borrow().as_ref() {
+            if t == &*term && *o == opts {
+                return m.clone();
+            }
+        }
+        let m = build_matcher(&term, &opts);
+        *self.inner.matcher_cache.borrow_mut() = Some((term.clone(), opts, m.clone()));
+        m
+    }
+
     /// 全表示行を走査して、検索語の全一致を `(行, 開始桁)` の昇順で集める。
     fn all_matches(&self) -> Vec<(usize, usize)> {
-        let term = self.inner.search_term.borrow();
-        if term.is_empty() {
+        if self.inner.search_term.borrow().is_empty() {
             return Vec::new();
         }
+        let matcher = self.matcher();
         let lines = self.inner.lines.borrow();
-        let opts = self.inner.search_opts.get();
         let mut out = Vec::new();
         for (li, line) in lines.iter().enumerate() {
-            for (off, _len) in search_matches(&line.body, &term, &opts) {
+            for (off, _len) in matcher.find(&line.body) {
                 out.push((li, off));
             }
         }
@@ -635,11 +653,11 @@ impl ViewerView {
         let Some((line, col)) = self.inner.match_pos.get() else {
             return 0;
         };
-        let term = self.inner.search_term.borrow();
-        let opts = self.inner.search_opts.get();
+        let matcher = self.matcher();
         let lines = self.inner.lines.borrow();
         let Some(dl) = lines.get(line) else { return 0 };
-        search_matches(&dl.body, &term, &opts)
+        matcher
+            .find(&dl.body)
             .into_iter()
             .find(|&(off, _)| off == col)
             .map(|(_, len)| len)
@@ -1164,9 +1182,8 @@ impl ViewerView {
         let lines = self.inner.lines.borrow();
         let top = self.inner.scroll_top.get();
         let match_pos = self.inner.match_pos.get();
-        let term = self.inner.search_term.borrow();
-        let opts = self.inner.search_opts.get();
-        let has_term = !term.is_empty();
+        let has_term = !self.inner.search_term.borrow().is_empty();
+        let matcher = self.matcher();
         let sel_brush = w::HBRUSH::CreateSolidBrush(rgb(colors.selected_file_bg))?;
         let find_brush = w::HBRUSH::CreateSolidBrush(rgb(colors.viewer_find_bg))?;
         let mut y = top_y;
@@ -1189,7 +1206,7 @@ impl ViewerView {
             let spans: Vec<(usize, usize)> = if highlighted || !has_term {
                 Vec::new()
             } else {
-                search_matches(&line.body, &term, &opts)
+                matcher.find(&line.body)
             };
             let cur_off = match match_pos {
                 Some((ml, mc)) if ml == i => Some(mc),
