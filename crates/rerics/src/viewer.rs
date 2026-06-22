@@ -146,9 +146,9 @@ impl ViewerView {
                 },
             )
         };
-        let search_case = mk_check("大小");
-        let search_word = mk_check("単語");
-        let search_regex = mk_check("正規");
+        let search_case = mk_check("ケースを無視(&C)");
+        let search_word = mk_check("単語境界(&W)");
+        let search_regex = mk_check("正規表現(&R)");
         let mk_btn = |text: &str| {
             gui::Button::new(
                 &wnd,
@@ -636,7 +636,10 @@ impl ViewerView {
         let bar_h = self.search_bar_height();
         let pad = gui::dpi_x(6);
         let gap = gui::dpi_x(4);
-        let cb_w = gui::dpi_x(58);
+        // トグルはラベルに合わせて個別幅（チェック枠＋日本語ラベル＋(&X) ぶん）。
+        let case_w = gui::dpi_x(140);
+        let word_w = gui::dpi_x(112);
+        let regex_w = gui::dpi_x(112);
         let btn_w = gui::dpi_x(26);
         let counter_w = gui::dpi_x(72);
         let h = self.inner.line_height.get().max(gui::dpi_y(18));
@@ -644,7 +647,7 @@ impl ViewerView {
         // 入力欄は左寄せでおよそ半分の幅にし、右端に履歴▼を密着させる（コンボの矢印風）。
         // ボックス幅の目安には「クラスタを右寄せしたときの左端」を参照に使う（幅は従来どおり）。
         let hist_w = gui::dpi_x(20);
-        let cluster_w = cb_w * 3 + btn_w * 2 + gap * 4;
+        let cluster_w = case_w + word_w + regex_w + btn_w * 2 + gap * 5;
         let ref_right = (cw - pad - counter_w - gap - cluster_w).max(pad);
         let input_span = (ref_right - gap - pad).max(gui::dpi_x(80));
         let box_total = (input_span / 2).max(gui::dpi_x(160)).min(input_span);
@@ -652,9 +655,9 @@ impl ViewerView {
         let hist_x = pad + edit_w;
         // トグル・ボタン・カウンタはボックスのすぐ右へ左寄せで並べる（右寄せにしない）。
         let case_x = hist_x + hist_w + gap * 2;
-        let word_x = case_x + cb_w + gap;
-        let regex_x = word_x + cb_w + gap;
-        let prev_x = regex_x + cb_w + gap;
+        let word_x = case_x + case_w + gap;
+        let regex_x = word_x + word_w + gap;
+        let prev_x = regex_x + regex_w + gap;
         let next_x = prev_x + btn_w + gap;
         let counter_x = next_x + btn_w + gap;
         BarGeom {
@@ -662,9 +665,9 @@ impl ViewerView {
             h,
             edit: (pad, edit_w),
             history: (hist_x, hist_w),
-            case: (case_x, cb_w),
-            word: (word_x, cb_w),
-            regex: (regex_x, cb_w),
+            case: (case_x, case_w),
+            word: (word_x, word_w),
+            regex: (regex_x, regex_w),
             prev: (prev_x, btn_w),
             next: (next_x, btn_w),
             counter: (counter_x, counter_w),
@@ -709,9 +712,9 @@ impl ViewerView {
         let _sel = dc.SelectObject(&*sfont)?;
         dc.SetTextColor(chrome::text())?;
         self.draw_bar_button(dc, g.history, g.y, g.h, "▼")?;
-        self.draw_bar_toggle(dc, g.case, g.y, g.h, "大小", !o.case_sensitive)?;
-        self.draw_bar_toggle(dc, g.word, g.y, g.h, "単語", o.whole_word)?;
-        self.draw_bar_toggle(dc, g.regex, g.y, g.h, "正規", o.regex)?;
+        self.draw_bar_toggle(dc, g.case, g.y, g.h, "ケースを無視", !o.case_sensitive)?;
+        self.draw_bar_toggle(dc, g.word, g.y, g.h, "単語境界", o.whole_word)?;
+        self.draw_bar_toggle(dc, g.regex, g.y, g.h, "正規表現", o.regex)?;
         self.draw_bar_button(dc, g.prev, g.y, g.h, "↑")?;
         self.draw_bar_button(dc, g.next, g.y, g.h, "↓")?;
         // 一致カウンタ（語が空なら出さず・一致なしは 0 件）。
