@@ -740,7 +740,13 @@ impl MainWindow {
         };
         let media = if matches!(self.active_view.get(), ActiveView::Media) {
             let (index, total) = self.media.nav_position();
-            json!({ "index": index, "total": total, "title": self.media.title() })
+            json!({
+                "index": index,
+                "total": total,
+                "title": self.media.title(),
+                "mode": self.media.display_mode(),
+                "scale_percent": self.media.scale_percent(),
+            })
         } else {
             serde_json::Value::Null
         };

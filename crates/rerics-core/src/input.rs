@@ -77,6 +77,7 @@ pub mod vk {
     pub const D2: u16 = 0x32;
     pub const D3: u16 = 0x33;
     pub const D4: u16 = 0x34;
+    pub const D5: u16 = 0x35;
     // 記号キー（JIS 配列前提。記号⇔VK の対応は配列依存なので、既定割当に使う際は
     // 実機の VK を確認してから割り当てる）。
     pub const OEM_1: u16 = 0xBA; // JIS: ":" "*"
@@ -203,6 +204,9 @@ pub enum Command {
     ImageZoomOut,
     ImageFitWindow,
     ImageActualSize,
+    ImageFitWidth,
+    ImageFitHeight,
+    ImageFitLarge,
     ImageRotateRight,
     ImageRotateLeft,
     ImageFlipHorizontal,
@@ -334,6 +338,9 @@ impl Command {
             (ImageZoomOut, "ImageZoomOut"),
             (ImageFitWindow, "ImageFitWindow"),
             (ImageActualSize, "ImageActualSize"),
+            (ImageFitWidth, "ImageFitWidth"),
+            (ImageFitHeight, "ImageFitHeight"),
+            (ImageFitLarge, "ImageFitLarge"),
             (ImageRotateRight, "ImageRotateRight"),
             (ImageRotateLeft, "ImageRotateLeft"),
             (ImageFlipHorizontal, "ImageFlipHorizontal"),
@@ -376,7 +383,8 @@ impl Command {
             | ViewerContextMenu => &[TextViewer],
             ViewerClose => &[TextViewer, ImageViewer],
             ImageNext | ImagePrevious | ImageZoomIn | ImageZoomOut | ImageFitWindow
-            | ImageActualSize | ImageRotateRight | ImageRotateLeft | ImageFlipHorizontal
+            | ImageActualSize | ImageFitWidth | ImageFitHeight | ImageFitLarge
+            | ImageRotateRight | ImageRotateLeft | ImageFlipHorizontal
             | ImageFlipVertical | ImageCopy | MediaTogglePlay => &[ImageViewer],
             Edit | OpenSettings => &[Filer, TextViewer],
             _ => &[Filer],
@@ -818,9 +826,12 @@ impl KeyMap {
         m.bind(KeyChord::key(vk::SUBTRACT), ImageZoomOut);
         m.bind(KeyChord::key(vk::Z), ImageZoomIn);
         m.bind(KeyChord::key(vk::X), ImageZoomOut);
-        // 表示倍率（0＝ウィンドウに合わせる・1＝原寸）。
-        m.bind(KeyChord::key(vk::D0), ImageFitWindow);
+        // 表示モード（1＝原寸・2＝全体・3＝幅に合わせる・4＝高さに合わせる・5＝なるべく大きく）。
         m.bind(KeyChord::key(vk::D1), ImageActualSize);
+        m.bind(KeyChord::key(vk::D2), ImageFitWindow);
+        m.bind(KeyChord::key(vk::D3), ImageFitWidth);
+        m.bind(KeyChord::key(vk::D4), ImageFitHeight);
+        m.bind(KeyChord::key(vk::D5), ImageFitLarge);
         // 回転・反転（R＝右回転・L＝左回転・V＝左右反転・H＝上下反転）。
         m.bind(KeyChord::key(vk::R), ImageRotateRight);
         m.bind(KeyChord::key(vk::L), ImageRotateLeft);
@@ -1203,6 +1214,13 @@ mod tests {
         assert_eq!(m.resolve(&KeyChord::key(vk::SUBTRACT)), Some(Command::ImageZoomOut));
         assert_eq!(m.resolve(&KeyChord::key(vk::R)), Some(Command::ImageRotateRight));
         assert_eq!(m.resolve(&KeyChord::key(vk::H)), Some(Command::ImageFlipVertical));
+        // 表示モードは数字キー 1〜5（0 は原作に無いので未バインド）。
+        assert_eq!(m.resolve(&KeyChord::key(vk::D0)), None);
+        assert_eq!(m.resolve(&KeyChord::key(vk::D1)), Some(Command::ImageActualSize));
+        assert_eq!(m.resolve(&KeyChord::key(vk::D2)), Some(Command::ImageFitWindow));
+        assert_eq!(m.resolve(&KeyChord::key(vk::D3)), Some(Command::ImageFitWidth));
+        assert_eq!(m.resolve(&KeyChord::key(vk::D4)), Some(Command::ImageFitHeight));
+        assert_eq!(m.resolve(&KeyChord::key(vk::D5)), Some(Command::ImageFitLarge));
         assert_eq!(
             m.resolve(&KeyChord::new(vk::C, true, false, false)),
             Some(Command::ImageCopy)

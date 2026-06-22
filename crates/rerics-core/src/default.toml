@@ -197,8 +197,11 @@ Up = "ViewerScrollUp"
 
 [keybinds_imageviewer]
 - = "ImageZoomOut"
-0 = "ImageFitWindow"
 1 = "ImageActualSize"
+2 = "ImageFitWindow"
+3 = "ImageFitWidth"
+4 = "ImageFitHeight"
+5 = "ImageFitLarge"
 ";" = "ImageZoomIn"
 "Ctrl+C" = "ImageCopy"
 Down = "ImageNext"

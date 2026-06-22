@@ -13,7 +13,8 @@ use std::rc::Rc;
 
 use rerics_core::{
     Colors, Config, FrameSource, MediaKind, Rgb, clamp_pan, composite_over_checker, fit_scale,
-    flip_rgba, load_image, placement, rgba_to_bgra, rgba_to_clipboard_dib, rotate_rgba,
+    fit_scale_height, fit_scale_look_large, fit_scale_width, flip_rgba, load_image, placement,
+    rgba_to_bgra, rgba_to_clipboard_dib, rotate_rgba,
 };
 
 /// 透過表示の市松 1 マスの画素サイズ。
@@ -36,6 +37,39 @@ const MEDIA_TIMER_ID: usize = 0x6D31;
 /// ここで遅延展開（既展開なら再利用）する。`None` は「読み込めない」（展開失敗等）を表す。
 /// これにより `MediaView` 自身は書庫を一切知らずに前後送りできる。
 pub type NavResolver = Rc<dyn Fn(usize) -> Option<PathBuf>>;
+
+/// 画像の表示モード（倍率の決め方）。原作 ImageViewer の D1〜D5 に対応する。
+/// 手動ズーム・回転後は `Manual` になり、保存した倍率で表示する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DisplayMode {
+    /// 手動ズーム（保存した倍率を使う）。
+    Manual,
+    /// 原寸（常に 1.0）。原作 D1=NonStretch。
+    NonStretch,
+    /// 全体表示（縦横比保持で領域に収める・縮小のみ）。原作 D2=Stretch。
+    Stretch,
+    /// 幅を領域に合わせる（高さははみ出してスクロール）。原作 D3=StretchWidth。
+    StretchWidth,
+    /// 高さを領域に合わせる（幅ははみ出してスクロール）。原作 D4=StretchHeight。
+    StretchHeight,
+    /// なるべく大きく表示（一辺ぴったり・他辺ははみ出す）。原作 D5=StretchLookLarge。
+    StretchLookLarge,
+}
+
+impl DisplayMode {
+    /// debug-server 観測用のトークン。
+    #[cfg(feature = "debug-server")]
+    fn token(self) -> &'static str {
+        match self {
+            DisplayMode::Manual => "manual",
+            DisplayMode::NonStretch => "actual",
+            DisplayMode::Stretch => "fit",
+            DisplayMode::StretchWidth => "fit_width",
+            DisplayMode::StretchHeight => "fit_height",
+            DisplayMode::StretchLookLarge => "fit_large",
+        }
+    }
+}
 
 struct Inner {
     /// 巡回件数と現在位置（実パスは `resolver` が index から解決する）。
@@ -72,8 +106,8 @@ struct Inner {
     hflip: Cell<bool>,
     vflip: Cell<bool>,
     scale: Cell<f64>,
-    /// フィット（領域に合わせて自動縮小）か、手動ズームか。
-    fit: Cell<bool>,
+    /// 表示モード（倍率の決め方）。手動ズーム時は `Manual`。
+    mode: Cell<DisplayMode>,
     pan: Cell<(f64, f64)>,
     /// パン（ドラッグ）操作の途中状態。
     panning: Cell<bool>,
@@ -134,7 +168,7 @@ impl MediaView {
             hflip: Cell::new(false),
             vflip: Cell::new(false),
             scale: Cell::new(1.0),
-            fit: Cell::new(true),
+            mode: Cell::new(DisplayMode::Stretch),
             pan: Cell::new((0.0, 0.0)),
             panning: Cell::new(false),
             pan_start: Cell::new((0, 0)),
@@ -171,6 +205,18 @@ impl MediaView {
     #[cfg(feature = "debug-server")]
     pub fn title(&self) -> String {
         self.inner.title.borrow().clone()
+    }
+
+    /// 現在の表示モードのトークン（debug-server 観測用）。
+    #[cfg(feature = "debug-server")]
+    pub fn display_mode(&self) -> &'static str {
+        self.inner.mode.get().token()
+    }
+
+    /// 現在の表示倍率（％・debug-server 観測用）。直近の描画で確定した値。
+    #[cfg(feature = "debug-server")]
+    pub fn scale_percent(&self) -> i32 {
+        (self.inner.scale.get() * 100.0).round() as i32
     }
 
     pub fn refresh(&self) -> w::AnyResult<()> {
@@ -245,7 +291,7 @@ impl MediaView {
         self.inner.hflip.set(false);
         self.inner.vflip.set(false);
         self.inner.scale.set(1.0);
-        self.inner.fit.set(true);
+        self.inner.mode.set(DisplayMode::Stretch);
         self.inner.pan.set((0.0, 0.0));
 
         let ext = path
@@ -382,23 +428,41 @@ impl MediaView {
             next = 1.0;
         }
         self.inner.scale.set(next);
-        self.inner.fit.set(false);
+        self.inner.mode.set(DisplayMode::Manual);
         self.refresh()
     }
 
-    /// 領域に合わせて全体表示へ戻す。
+    /// 表示モードを切り替える（パンは中央へ戻す）。倍率は描画時にモードから決まる。
+    fn set_mode(&self, mode: DisplayMode) -> w::AnyResult<()> {
+        self.inner.mode.set(mode);
+        self.inner.pan.set((0.0, 0.0));
+        self.refresh()
+    }
+
+    /// 領域に合わせて全体表示にする（原作 D2=Stretch）。
     pub fn fit_to_window(&self) -> w::AnyResult<()> {
-        self.inner.fit.set(true);
-        self.inner.pan.set((0.0, 0.0));
-        self.refresh()
+        self.set_mode(DisplayMode::Stretch)
     }
 
-    /// 原寸（100%）表示にする。
+    /// 原寸（100%）表示にする（原作 D1=NonStretch）。
     pub fn actual_size(&self) -> w::AnyResult<()> {
-        self.inner.fit.set(false);
         self.inner.scale.set(1.0);
-        self.inner.pan.set((0.0, 0.0));
-        self.refresh()
+        self.set_mode(DisplayMode::NonStretch)
+    }
+
+    /// 幅を領域に合わせる（原作 D3=StretchWidth）。
+    pub fn fit_width(&self) -> w::AnyResult<()> {
+        self.set_mode(DisplayMode::StretchWidth)
+    }
+
+    /// 高さを領域に合わせる（原作 D4=StretchHeight）。
+    pub fn fit_height(&self) -> w::AnyResult<()> {
+        self.set_mode(DisplayMode::StretchHeight)
+    }
+
+    /// なるべく大きく表示する（原作 D5=StretchLookLarge）。
+    pub fn fit_look_large(&self) -> w::AnyResult<()> {
+        self.set_mode(DisplayMode::StretchLookLarge)
     }
 
     /// 現在の鏡像反転設定を RGBA へ適用する（左右→上下の順）。
@@ -505,7 +569,7 @@ impl MediaView {
                 this.inner.seeking.set(true);
                 std::mem::forget(this.hwnd().SetCapture());
                 this.seek_to_x(p.coords.x);
-            } else if this.has_image() && !this.inner.fit.get() {
+            } else if this.has_image() && this.inner.mode.get() != DisplayMode::Stretch {
                 this.inner.panning.set(true);
                 this.inner.pan_start.set((p.coords.x, p.coords.y));
                 this.inner.pan_origin.set(this.inner.pan.get());
@@ -708,14 +772,16 @@ impl MediaView {
         if fw == 0 || fh == 0 || body_h <= 0 {
             return Ok(());
         }
-        // 倍率（フィット時は領域から再計算して保持する）。
-        let scale = if self.inner.fit.get() {
-            let s = fit_scale(fw, fh, cw, body_h);
-            self.inner.scale.set(s);
-            s
-        } else {
-            self.inner.scale.get()
+        // 倍率（モード指定時は領域から毎回再計算して保持・手動ズーム時のみ保存値）。
+        let scale = match self.inner.mode.get() {
+            DisplayMode::Manual => self.inner.scale.get(),
+            DisplayMode::NonStretch => 1.0,
+            DisplayMode::Stretch => fit_scale(fw, fh, cw, body_h),
+            DisplayMode::StretchWidth => fit_scale_width(fw, cw),
+            DisplayMode::StretchHeight => fit_scale_height(fh, body_h),
+            DisplayMode::StretchLookLarge => fit_scale_look_large(fw, fh, cw, body_h),
         };
+        self.inner.scale.set(scale);
         // パンを画像が離れすぎない範囲へ収める。
         let disp_w = (fw as f64 * scale).round() as i32;
         let disp_h = (fh as f64 * scale).round() as i32;
@@ -795,7 +861,7 @@ impl MediaView {
         let rot_s = if rot != 0 { format!("  {}°", rot) } else { String::new() };
         let play = if self.inner.animated.get() { " Space:再生/停止" } else { "" };
         format!(
-            "{}    {}x{}  {}%{}{}    (←→:送り +/-:拡縮 0:全体 1:原寸 R:回転{} Esc:閉じる)",
+            "{}    {}x{}  {}%{}{}    (←→:送り +/-:拡縮 1原寸 2全体 3幅 4高 5大 R:回転{} Esc:閉じる)",
             title, bw, bh, zoom, rot_s, pos, play,
         )
     }

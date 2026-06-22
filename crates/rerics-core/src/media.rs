@@ -369,6 +369,30 @@ pub fn fit_scale(img_w: u32, img_h: u32, win_w: i32, win_h: i32) -> f64 {
     sx.min(sy).min(1.0)
 }
 
+/// 幅を領域に合わせる倍率（幅が領域より大きいときだけ縮小・拡大はしない）。高さははみ出す。
+pub fn fit_scale_width(img_w: u32, win_w: i32) -> f64 {
+    if img_w == 0 || win_w <= 0 || (img_w as i32) <= win_w {
+        return 1.0;
+    }
+    win_w as f64 / img_w as f64
+}
+
+/// 高さを領域に合わせる倍率（高さが領域より大きいときだけ縮小・拡大はしない）。幅ははみ出す。
+pub fn fit_scale_height(img_h: u32, win_h: i32) -> f64 {
+    if img_h == 0 || win_h <= 0 || (img_h as i32) <= win_h {
+        return 1.0;
+    }
+    win_h as f64 / img_h as f64
+}
+
+/// なるべく大きく表示する倍率。各軸につき「領域より大きければ縮小・以下なら 1.0」を求め、
+/// 大きい方（縮小の緩い方）を採る。結果として一辺が領域にぴったり、他辺ははみ出してスクロールになる。
+pub fn fit_scale_look_large(img_w: u32, img_h: u32, win_w: i32, win_h: i32) -> f64 {
+    let sw = fit_scale_width(img_w, win_w);
+    let sh = fit_scale_height(img_h, win_h);
+    sw.max(sh)
+}
+
 /// 表示先の矩形（左上 x,y と 幅,高）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Placement {
@@ -511,6 +535,31 @@ mod tests {
         assert_eq!(fit_scale(100, 100, 500, 500), 1.0); // 原寸より拡大しない
         assert_eq!(fit_scale(400, 200, 200, 200), 0.5); // 幅が制約
         assert_eq!(fit_scale(0, 0, 200, 200), 1.0);
+    }
+
+    #[test]
+    fn fit_width_shrinks_only_when_wider() {
+        assert_eq!(fit_scale_width(1000, 500), 0.5); // 幅が領域超→縮小
+        assert_eq!(fit_scale_width(300, 500), 1.0); // 幅が領域以下→拡大しない
+        assert_eq!(fit_scale_width(0, 500), 1.0);
+        assert_eq!(fit_scale_width(500, 0), 1.0);
+    }
+
+    #[test]
+    fn fit_height_shrinks_only_when_taller() {
+        assert_eq!(fit_scale_height(1000, 500), 0.5);
+        assert_eq!(fit_scale_height(300, 500), 1.0);
+        assert_eq!(fit_scale_height(0, 500), 1.0);
+    }
+
+    #[test]
+    fn look_large_takes_looser_shrink() {
+        // 幅 500→400(0.8)・高さ 200→160(0.8) 両方制約：緩い方＝大きい方を採る。
+        assert_eq!(fit_scale_look_large(500, 200, 400, 150), 0.8);
+        // 幅だけ制約・高さは収まる→ max(0.8, 1.0)=1.0（高さ基準で原寸のまま、幅ははみ出す）。
+        assert_eq!(fit_scale_look_large(500, 200, 400, 300), 1.0);
+        // 両方収まる→1.0（拡大しない）。
+        assert_eq!(fit_scale_look_large(200, 100, 500, 500), 1.0);
     }
 
     #[test]

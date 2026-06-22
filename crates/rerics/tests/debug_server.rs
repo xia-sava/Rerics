@@ -1740,3 +1740,39 @@ fn task_manager_dialog_opens_observes_and_closes() {
     server.req("POST", "/modal/command/cancel", "").expect("cancel");
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
+
+/// 画像ビューアの表示モードキー（1=原寸/2=全体/3=幅/4=高/5=大）が、それぞれの
+/// モードへ切り替わるのを debug-server で観測する。0 は原作に無い＝未バインドで不変。
+#[test]
+fn image_viewer_display_modes_switch_by_keys() {
+    let server = Server::start(&["pic.png"], "");
+
+    // 左 items は [.., pic.png]。CursorDown×1 で pic.png にカーソルを置いて開く。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/ViewFile", "").expect("ViewFile");
+    poll(&server, "/state/active_view", |b| b.trim().trim_matches('"') == "media");
+
+    let mode = |s: &Server| {
+        s.req("GET", "/state/media/mode", "")
+            .expect("media mode")
+            .1
+            .trim()
+            .trim_matches('"')
+            .to_string()
+    };
+
+    // 既定は全体表示（Stretch）。
+    assert_eq!(mode(&server), "fit", "初期モードは全体表示");
+
+    // 各キーで対応モードへ切り替わる。
+    for (key, want) in
+        [("1", "actual"), ("2", "fit"), ("3", "fit_width"), ("4", "fit_height"), ("5", "fit_large")]
+    {
+        server.req("POST", &format!("/view/key/{key}"), "").expect("view key");
+        assert_eq!(mode(&server), want, "キー {key} で {want} になるはず");
+    }
+
+    // 0 は画像ビューアでは未バインド＝直前の fit_large のまま変わらない。
+    server.req("POST", "/view/key/0", "").expect("view key 0");
+    assert_eq!(mode(&server), "fit_large", "0 は未バインドでモード不変");
+}

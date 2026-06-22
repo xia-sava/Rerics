@@ -43,8 +43,9 @@ pub use log::{LogLevel, LogLine, LogState};
 pub use macros::{MacroAbort, MacroCtx, MacroHost, expand_macros};
 pub use media::{
     AnimatedImage, Frame, FrameSource, MediaKind, Placement, StillImage, clamp_pan,
-    composite_over_checker, decode_thumbnail, fit_scale, flip_rgba, load_image, placement,
-    rgba_to_bgra, rgba_to_clipboard_dib, rotate_rgba, rotated_dims,
+    composite_over_checker, decode_thumbnail, fit_scale, fit_scale_height, fit_scale_look_large,
+    fit_scale_width, flip_rgba, load_image, placement, rgba_to_bgra, rgba_to_clipboard_dib,
+    rotate_rgba, rotated_dims,
 };
 pub use operation::{
     ConflictResolution, CopyOptions, DeleteWarnChoice, DirInfo, OpSummary, OperationHost,
