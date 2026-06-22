@@ -362,7 +362,6 @@ impl ViewerView {
         self.inner.search_case.set_check(!o.case_sensitive);
         self.inner.search_word.set_check(o.whole_word);
         self.inner.search_regex.set_check(o.regex);
-        self.inner.search_word.hwnd().EnableWindow(!o.regex);
         self.layout_search_bar();
         edit.SetFocus();
         // 前回の検索語を全選択して開く（中身があればそのまま打ち直しで置換できる）。
@@ -424,15 +423,25 @@ impl ViewerView {
         let mut o = self.inner.search_opts.get();
         match name {
             "case_sensitive" | "case" => o.case_sensitive = on,
-            "whole_word" | "word" => o.whole_word = on,
-            "regex" => o.regex = on,
+            // 単語一致と正規表現は排他（片方 ON で他方 OFF）。
+            "whole_word" | "word" => {
+                o.whole_word = on;
+                if on {
+                    o.regex = false;
+                }
+            }
+            "regex" => {
+                o.regex = on;
+                if on {
+                    o.whole_word = false;
+                }
+            }
             _ => return Ok(false),
         }
         self.inner.search_opts.set(o);
         self.inner.search_case.set_check(!o.case_sensitive);
         self.inner.search_word.set_check(o.whole_word);
         self.inner.search_regex.set_check(o.regex);
-        self.inner.search_word.hwnd().EnableWindow(!o.regex);
         let term = self.inner.search_term.borrow().clone();
         self.set_search(&term)?;
         Ok(true)
@@ -781,20 +790,27 @@ impl ViewerView {
             this.inner.search_opts.set(o);
             this.refocus_after_toggle()
         });
+        // 単語一致と正規表現は排他（片方 ON で他方 OFF・両方 OFF＝標準の部分一致）。
         let this = self.clone();
         self.inner.search_word.on().bn_clicked(move || {
             let mut o = this.inner.search_opts.get();
             o.whole_word = this.inner.search_word.is_checked();
+            if o.whole_word {
+                o.regex = false;
+                this.inner.search_regex.set_check(false);
+            }
             this.inner.search_opts.set(o);
             this.refocus_after_toggle()
         });
-        // 正規表現 ON の間は単語一致を無効化（グレーアウト）する。
         let this = self.clone();
         self.inner.search_regex.on().bn_clicked(move || {
             let mut o = this.inner.search_opts.get();
             o.regex = this.inner.search_regex.is_checked();
+            if o.regex {
+                o.whole_word = false;
+                this.inner.search_word.set_check(false);
+            }
             this.inner.search_opts.set(o);
-            this.inner.search_word.hwnd().EnableWindow(!o.regex);
             this.refocus_after_toggle()
         });
         // 前/次ボタン（入力欄内の ↑↓ キーと同機能）。

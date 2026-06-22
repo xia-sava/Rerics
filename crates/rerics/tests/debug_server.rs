@@ -1882,10 +1882,16 @@ fn text_viewer_search_options_toggle_matches() {
     // 単語一致 ON：語境界の foo/Foo/FOO ＝ 3（foobar は外す）。
     server.req("POST", "/view/search/option/whole_word/on", "").expect("word on");
     assert_eq!(count(&server), "3", "単語一致で 3 件");
-    server.req("POST", "/view/search/option/whole_word/off", "").expect("word off");
 
-    // 正規表現 ON：fo+ は foo×3・foobar の foo・fooo ＝ 5（fo は除外＝o が1つ以上だが fo は o1つ…
-    // 実際 "fo " の fo は fo+ にマッチ）。ここでは可変長一致が動くことを確認する。
+    // 単語一致 ON の状態で正規表現 ON にすると、単語一致は排他で OFF になる。
+    server.req("POST", "/view/search/option/regex/on", "").expect("regex on (excl)");
+    let ww = server.req("GET", "/state/viewer/whole_word", "").expect("ww").1;
+    assert_eq!(ww.trim(), "false", "正規表現 ON で単語一致が排他 OFF");
+    let rx0 = server.req("GET", "/state/viewer/regex", "").expect("rx0").1;
+    assert_eq!(rx0.trim(), "true", "正規表現は ON");
+    server.req("POST", "/view/search/option/regex/off", "").expect("regex off");
+
+    // 正規表現 ON：fo+ は可変長で複数一致する（大小無視は既定で効く）。
     server.req("POST", "/view/search/option/regex/on", "").expect("regex on");
     server.req("POST", "/view/search", "fo+").expect("type fo+");
     let rc: i32 = count(&server).parse().unwrap();
