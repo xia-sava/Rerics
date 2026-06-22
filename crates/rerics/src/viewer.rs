@@ -50,6 +50,11 @@ struct Inner {
     /// コンパイル済みマッチャのキャッシュ（検索語＋オプションが変わるまで使い回す）。
     /// 正規表現を行ごとに再コンパイルしないための要。
     matcher_cache: RefCell<Option<(String, SearchOptions, Matcher)>>,
+    /// 表示行の世代（再生成のたびに +1）。一致リストのキャッシュ無効化に使う。
+    lines_gen: Cell<u64>,
+    /// 全一致リストのキャッシュ（検索語・オプション・行世代が変わるまで使い回す）。
+    /// 内容は起動中に変わらないので、移動のたびに全行を走査し直さないための要。
+    match_cache: RefCell<Option<(String, SearchOptions, u64, Rc<Vec<(usize, usize)>>)>>,
     /// 現在ヒットしている表示行（ハイライト対象）。
     /// 現在の検索一致（表示行 index, 行内の開始桁）。検索ハイライト/ナビの基準。
     match_pos: Cell<Option<(usize, usize)>>,
@@ -167,6 +172,8 @@ impl ViewerView {
             search_term: RefCell::new(String::new()),
             search_opts: Cell::new(SearchOptions::default()),
             matcher_cache: RefCell::new(None),
+            lines_gen: Cell::new(0),
+            match_cache: RefCell::new(None),
             match_pos: Cell::new(None),
             search_active: Cell::new(false),
             saved_scroll: Cell::new(0),
@@ -631,20 +638,33 @@ impl ViewerView {
         m
     }
 
-    /// 全表示行を走査して、検索語の全一致を `(行, 開始桁)` の昇順で集める。
-    fn all_matches(&self) -> Vec<(usize, usize)> {
-        if self.inner.search_term.borrow().is_empty() {
-            return Vec::new();
-        }
-        let matcher = self.matcher();
-        let lines = self.inner.lines.borrow();
-        let mut out = Vec::new();
-        for (li, line) in lines.iter().enumerate() {
-            for (off, _len) in matcher.find(&line.body) {
-                out.push((li, off));
+    /// 全表示行の検索語一致 `(行, 開始桁)` を昇順で返す（キャッシュ）。ビューア内容は起動中に
+    /// 変わらないので、検索語・オプション・表示行の世代が変わるまで作り直さず使い回す。
+    fn all_matches(&self) -> Rc<Vec<(usize, usize)>> {
+        let term = self.inner.search_term.borrow();
+        let opts = self.inner.search_opts.get();
+        let generation = self.inner.lines_gen.get();
+        if let Some((t, o, g, m)) = self.inner.match_cache.borrow().as_ref() {
+            if t == &*term && *o == opts && *g == generation {
+                return m.clone();
             }
         }
-        out
+        let matches = if term.is_empty() {
+            Vec::new()
+        } else {
+            let matcher = self.matcher();
+            let lines = self.inner.lines.borrow();
+            let mut out = Vec::new();
+            for (li, line) in lines.iter().enumerate() {
+                for (off, _len) in matcher.find(&line.body) {
+                    out.push((li, off));
+                }
+            }
+            out
+        };
+        let rc = Rc::new(matches);
+        *self.inner.match_cache.borrow_mut() = Some((term.clone(), opts, generation, rc.clone()));
+        rc
     }
 
     /// 現在一致の長さ（debug 観測・正規表現で可変長になるため）。無ければ 0。
@@ -1112,6 +1132,8 @@ impl ViewerView {
         *self.inner.lines.borrow_mut() = lines;
         self.inner.cached_wrap.set(wrap_cols);
         self.inner.dirty.set(false);
+        // 表示行が変わったので一致リストのキャッシュ世代を進める。
+        self.inner.lines_gen.set(self.inner.lines_gen.get().wrapping_add(1));
         // スクロール位置をクランプ。
         let total = self.inner.lines.borrow().len();
         let page = self.page_rows();
