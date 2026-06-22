@@ -1844,4 +1844,7 @@ fn text_viewer_search_finds_all_occurrences_and_navigates() {
     assert_eq!(count3.trim(), "3", "Esc で閉じても検索語・ハイライトは残る");
     let search = server.req("GET", "/state/viewer/search", "").expect("search").1;
     assert_eq!(search.trim(), "\"foo\"", "Esc 後も検索語は残る: {search}");
+    // 現在一致（青）は手放す＝開き直すと戻った表示位置から検索し直す。
+    let m_esc = match_json(&server);
+    assert_eq!(m_esc.trim(), "null", "Esc 後は現在一致をリセット: {m_esc}");
 }

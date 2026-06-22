@@ -319,12 +319,14 @@ impl ViewerView {
         Ok(())
     }
 
-    /// 検索バーを閉じて開始位置へ戻す（Esc）。検索語とハイライトは残し、次に開くと続けられる。
+    /// 検索バーを閉じて開始位置へ戻す（Esc）。検索語とハイライト（黄）は残すが、現在一致
+    /// （青）は手放す。次に開くと戻った表示位置から検索し直す。
     pub fn cancel_search_bar(&self) -> w::AnyResult<()> {
         if !self.inner.search_active.get() {
             return Ok(());
         }
         self.inner.scroll_top.set(self.inner.saved_scroll.get());
+        self.inner.match_pos.set(None);
         self.reset_search_bar();
         self.refresh()?;
         if let Some(cb) = self.inner.on_search_close.borrow().as_ref() {
