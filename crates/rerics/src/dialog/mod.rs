@@ -268,10 +268,27 @@ pub fn modal_window_sysmenu(title: &str, w: i32, h: i32) -> (gui::WindowModal, M
 }
 
 fn modal_window_styled(title: &str, w: i32, h: i32, extra: co::WS) -> (gui::WindowModal, ModalArm) {
+    // headless（debug-server 撮影）時は生成時にアクティブ化させない。VISIBLE 付きで top-level
+    // 窓を作ると初回 show が SW_SHOW 相当でフォアグラウンド化し、画面に出ない（親を画面外退避
+    // 済み）状態でも手前で作業中のアプリが一瞬フォーカスを失う。そこで VISIBLE を外して生成し
+    // （活性化しない）、wm_create 末尾で SW_SHOWNOACTIVATE により活性化せず可視化する。可視には
+    // なるので /snapshot/modal の PrintWindow は中身を撮れる（不可視のままだと真っ黒になる）。
+    let mut style = co::WS::CAPTION | co::WS::BORDER | extra;
+    let mut ex_style = co::WS_EX::LEFT | co::WS_EX::DLGMODALFRAME;
+    #[cfg(feature = "debug-server")]
+    let headless = crate::debug_server::parse_headless();
+    #[cfg(not(feature = "debug-server"))]
+    let headless = false;
+    if headless {
+        ex_style |= co::WS_EX::NOACTIVATE;
+    } else {
+        style |= co::WS::VISIBLE;
+    }
     let wnd = gui::WindowModal::new(gui::WindowModalOpts {
         title,
         size: gui::dpi(w, h),
-        style: co::WS::CAPTION | co::WS::BORDER | co::WS::VISIBLE | extra,
+        style,
+        ex_style,
         process_dlg_msgs: true,
         ..Default::default()
     });
@@ -307,6 +324,21 @@ fn modal_window_styled(title: &str, w: i32, h: i32, extra: co::WS) -> (gui::Wind
             }
             if let Some(f) = oc.borrow_mut().take() {
                 f(wf.hwnd())?;
+            }
+            // headless 時は VISIBLE 無しで生成しているので、初期フォーカス等を済ませた後に
+            // 活性化せず可視化する。これで撮影（PrintWindow）は撮れるが前景は奪わない。
+            // 非アクティブ表示は初回 WM_PAINT が遅延するため、子まで同期再描画して、開いた直後の
+            // /snapshot/modal でも自前描画ペインの中身が揃うようにする。
+            #[cfg(feature = "debug-server")]
+            if crate::debug_server::parse_headless() {
+                wf.hwnd().ShowWindow(co::SW::SHOWNOACTIVATE);
+                if let Ok(rc) = wf.hwnd().GetClientRect() {
+                    let _ = wf.hwnd().RedrawWindow(
+                        rc,
+                        &w::HRGN::NULL,
+                        co::RDW::INVALIDATE | co::RDW::ERASE | co::RDW::ALLCHILDREN | co::RDW::UPDATENOW,
+                    );
+                }
             }
             Ok(0)
         });
