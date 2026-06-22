@@ -150,6 +150,11 @@ pub enum Request {
     Command { name: String, args: Vec<String> },
     /// `POST /view/key/<action>`：重ね表示中ビューアの操作（next/prev/close）。
     ViewKey { action: String },
+    /// `POST /view/search`：テキストビューアのインライン検索バーへ文字列を入れて即時検索（値は body）。
+    /// バーが閉じていれば開く。インクリメンタル検索を headless から駆動するための直接経路。
+    ViewSearch { value: String },
+    /// `POST /view/search/key/<key>`：検索バーのキー操作（down/up＝一致移動・enter＝確定・esc＝取消）。
+    ViewSearchKey { key: String },
     /// `GET /snapshot[/<spec>]`：画面 PNG。`spec` は ""（全体）・名前付き要素・
     /// `x,y-WxH`（数値範囲）・`<name>/<x,y-WxH>`（要素相対のサブ範囲）。
     Snapshot { spec: String },
@@ -292,6 +297,12 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                         return;
                     }
                 }
+            } else if let Some(key) = path.strip_prefix("/view/search/key/") {
+                Some(Request::ViewSearchKey { key: key.trim_end_matches('/').to_string() })
+            } else if path == "/view/search" {
+                let mut value = String::new();
+                let _ = std::io::Read::read_to_string(req.as_reader(), &mut value);
+                Some(Request::ViewSearch { value })
             } else if let Some(action) = path.strip_prefix("/view/key/") {
                 Some(Request::ViewKey { action: action.trim_end_matches('/').to_string() })
             } else if let Some(key) = path.strip_prefix("/modal/key/") {

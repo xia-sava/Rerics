@@ -117,8 +117,7 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         KeyBindsDialog => DebugCmdClass::MaybeModal,
         // インクリメンタルサーチは入力モーダル（打鍵追従でカーソル移動・読取のみ）。
         IncrementalSearchDialog => DebugCmdClass::MaybeModal,
-        // ビューアの検索は入力モーダル（検索語を尋ねる・読取のみ）。
-        ViewerSearchDialog => DebugCmdClass::MaybeModal,
+        // ビューアの検索はインライン検索バー（モーダルを開かない＝即時に応答が返る）。
         // ソート設定はモーダルを開く（並べ替えのみ＝書込みではない）。modal_registry に登録
         // 済みなので開いて OK/Cancel で閉じられる（ラジオ値そのものの選択は未対応＝種別変更の
         // ロジックは引数コマンド Sort(type) でも駆動・検証できる）。
@@ -548,6 +547,11 @@ impl MainWindow {
             let this = self.clone();
             self.viewer.on_menu(move |pt| {
                 let _ = this.show_text_menu(pt);
+            });
+            // 検索バーを閉じたら、キー入力先を本体（key_sink）へ戻す。
+            let this = self.clone();
+            self.viewer.on_search_close(move || {
+                this.key_sink.hwnd().SetFocus();
             });
         }
 

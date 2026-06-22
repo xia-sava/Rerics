@@ -56,6 +56,12 @@ impl MainWindow {
                 debug_server::Request::ViewKey { action } => {
                     let _ = tx.send(self.debug_view_key(&action));
                 }
+                debug_server::Request::ViewSearch { value } => {
+                    let _ = tx.send(self.debug_view_search(&value));
+                }
+                debug_server::Request::ViewSearchKey { key } => {
+                    let _ = tx.send(self.debug_view_search_key(&key));
+                }
                 debug_server::Request::Snapshot { spec } => {
                     self.settle_pending_jobs();
                     let _ = tx.send(self.debug_snapshot(&spec));
@@ -410,6 +416,37 @@ impl MainWindow {
         }
     }
 
+    /// `POST /view/search`：テキストビューアの検索バーへ文字列を入れて即時検索する。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn debug_view_search(&self, value: &str) -> debug_server::Response {
+        if !matches!(self.active_view.get(), ActiveView::Text) {
+            return debug_server::Response::BadRequest("text viewer not active".into());
+        }
+        match self.viewer.debug_set_bar_text(value) {
+            Ok(()) => debug_server::Response::Json(self.debug_state_value().to_string()),
+            Err(e) => debug_server::Response::Error(format!("view search error: {e}")),
+        }
+    }
+
+    /// `POST /view/search/key/<key>`：検索バーのキー操作（down/up/enter/esc）。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn debug_view_search_key(&self, key: &str) -> debug_server::Response {
+        if !matches!(self.active_view.get(), ActiveView::Text) {
+            return debug_server::Response::BadRequest("text viewer not active".into());
+        }
+        let r = match key.to_ascii_lowercase().as_str() {
+            "down" | "next" => self.viewer.find_next(true),
+            "up" | "prev" => self.viewer.find_next(false),
+            "enter" | "return" => self.viewer.confirm_search_bar(),
+            "esc" | "escape" => self.viewer.cancel_search_bar(),
+            _ => return debug_server::Response::BadRequest(format!("unknown search key: {key}")),
+        };
+        match r {
+            Ok(()) => debug_server::Response::Json(self.debug_state_value().to_string()),
+            Err(e) => debug_server::Response::Error(format!("view search key error: {e}")),
+        }
+    }
+
     /// `GET /snapshot[/<spec>]`：画面 PNG を返す。spec は全体／名前付き要素／数値範囲／要素相対範囲。
     /// 名前付き要素の矩形は復帰後レイアウトで確定するため、撮影準備（復帰＋再レイアウト）を先に行う。
     #[cfg(feature = "debug-server")]
@@ -759,6 +796,7 @@ impl MainWindow {
             let len = search.chars().count();
             json!({
                 "search": search,
+                "search_open": self.viewer.is_search_bar_open(),
                 "match": pos.map(|(l, c)| json!({ "line": l, "col": c, "len": len })),
                 "match_count": count,
             })

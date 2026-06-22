@@ -47,6 +47,14 @@ struct Inner {
     /// 現在ヒットしている表示行（ハイライト対象）。
     /// 現在の検索一致（表示行 index, 行内の開始桁）。検索ハイライト/ナビの基準。
     match_pos: Cell<Option<(usize, usize)>>,
+    /// インライン検索バーが開いているか（開いている間は本文を下にずらす）。
+    search_active: Cell<bool>,
+    /// 検索バーを開いた時点のスクロール位置（Esc で戻す先）。
+    saved_scroll: Cell<usize>,
+    /// 検索バーの入力欄（本物の Edit 子コントロール）。既定は非表示で生成し、開閉で出し入れする。
+    search_edit: gui::Edit,
+    /// 検索バーを閉じたときに呼ぶコールバック（キー入力を本体へ戻す）。MainWindow が登録する。
+    on_search_close: RefCell<Option<Box<dyn Fn()>>>,
     /// マウス選択の始点・終点（None なら選択なし）。
     sel_anchor: Cell<Option<Pos>>,
     sel_cursor: Cell<Option<Pos>>,
@@ -80,6 +88,19 @@ impl ViewerView {
                 ..Default::default()
             },
         );
+        // 検索バーの入力欄。非表示（VISIBLE を外す）で生成し、検索時のみ前面に出す。
+        // イベント（en_change・サブクラス）は親窓の生成より前に登録する必要があるため、ここで作る。
+        let search_edit = gui::Edit::new(
+            &wnd,
+            gui::EditOpts {
+                control_style: co::ES::AUTOHSCROLL,
+                window_style: co::WS::CHILD | co::WS::GROUP | co::WS::TABSTOP | co::WS::BORDER,
+                position: gui::dpi(4, 4),
+                width: gui::dpi_x(200),
+                height: gui::dpi_y(22),
+                ..Default::default()
+            },
+        );
         let inner = Rc::new(Inner {
             model: RefCell::new(ViewerModel::new(Vec::new())),
             title: RefCell::new(String::new()),
@@ -96,6 +117,10 @@ impl ViewerView {
             dirty: Cell::new(true),
             search_term: RefCell::new(String::new()),
             match_pos: Cell::new(None),
+            search_active: Cell::new(false),
+            saved_scroll: Cell::new(0),
+            search_edit,
+            on_search_close: RefCell::new(None),
             sel_anchor: Cell::new(None),
             sel_cursor: Cell::new(None),
             selecting: Cell::new(false),
@@ -135,8 +160,20 @@ impl ViewerView {
         self.inner.dirty.set(true);
         *self.inner.search_term.borrow_mut() = String::new();
         self.inner.match_pos.set(None);
+        self.reset_search_bar();
         self.clear_selection();
         let _ = self.refresh();
+    }
+
+    /// 検索バーを登録解除なしで畳む（ファイルを開き直す/ビューアを閉じる際の後始末）。
+    fn reset_search_bar(&self) {
+        self.inner.search_active.set(false);
+        self.inner.search_edit.hwnd().ShowWindow(co::SW::HIDE);
+    }
+
+    /// MainWindow がキー入力先を本体へ戻すためのコールバックを登録する。
+    pub fn on_search_close(&self, cb: impl Fn() + 'static) {
+        *self.inner.on_search_close.borrow_mut() = Some(Box::new(cb));
     }
 
     fn clear_selection(&self) {
@@ -167,11 +204,6 @@ impl ViewerView {
         self.inner.match_pos.set(None);
         self.clear_selection();
         self.refresh()
-    }
-
-    /// 現在の検索語を返す（検索ダイアログの初期値用）。
-    pub fn search_term(&self) -> String {
-        self.inner.search_term.borrow().clone()
     }
 
     /// debug-server 観測用：検索語・現在一致 `(行, 桁)`・可視全体の一致総数。
@@ -238,6 +270,148 @@ impl ViewerView {
         let hit = matches[next];
         self.jump_to(hit.0, hit.1);
         self.refresh()
+    }
+
+    /// 検索バーが開いているか（debug-server 観測用）。
+    #[cfg(feature = "debug-server")]
+    pub fn is_search_bar_open(&self) -> bool {
+        self.inner.search_active.get()
+    }
+
+    /// インライン検索バーを開く。開始時のスクロール位置を控え（Esc 復帰用）、入力欄を前面に
+    /// 出してフォーカスし、現在の検索語で一度検索する。既に開いていれば入力欄へ再フォーカスのみ。
+    pub fn open_search_bar(&self) -> w::AnyResult<()> {
+        let edit = self.inner.search_edit.hwnd();
+        if self.inner.search_active.get() {
+            edit.SetFocus();
+            return Ok(());
+        }
+        self.inner.saved_scroll.set(self.inner.scroll_top.get());
+        self.inner.search_active.set(true);
+        let term = self.inner.search_term.borrow().clone();
+        let _ = edit.SetWindowText(&term);
+        edit.ShowWindow(co::SW::SHOW);
+        self.layout_search_bar();
+        edit.SetFocus();
+        self.apply_search_from_edit()?;
+        self.refresh()
+    }
+
+    /// 入力欄の現在値で検索する（en_change・バー操作の共通経路）。
+    fn apply_search_from_edit(&self) -> w::AnyResult<()> {
+        let text = self.inner.search_edit.hwnd().GetWindowText().unwrap_or_default();
+        self.set_search(&text)
+    }
+
+    /// 検索バーを閉じて現在位置を確定する（Enter）。検索語・一致はそのまま残し F3 等で続けられる。
+    pub fn confirm_search_bar(&self) -> w::AnyResult<()> {
+        if !self.inner.search_active.get() {
+            return Ok(());
+        }
+        self.reset_search_bar();
+        self.refresh()?;
+        if let Some(cb) = self.inner.on_search_close.borrow().as_ref() {
+            cb();
+        }
+        Ok(())
+    }
+
+    /// 検索バーを閉じて開始位置へ戻す（Esc）。検索語とハイライトも解除する。
+    pub fn cancel_search_bar(&self) -> w::AnyResult<()> {
+        if !self.inner.search_active.get() {
+            return Ok(());
+        }
+        self.inner.scroll_top.set(self.inner.saved_scroll.get());
+        *self.inner.search_term.borrow_mut() = String::new();
+        self.inner.match_pos.set(None);
+        self.reset_search_bar();
+        self.refresh()?;
+        if let Some(cb) = self.inner.on_search_close.borrow().as_ref() {
+            cb();
+        }
+        Ok(())
+    }
+
+    /// debug-server 用：バーを（必要なら開いて）入力欄に文字列を入れ、その場で検索する。
+    /// headless は run loop が止まり合成キー/通知が届かないため、ここで直接適用する。
+    #[cfg(feature = "debug-server")]
+    pub fn debug_set_bar_text(&self, text: &str) -> w::AnyResult<()> {
+        if !self.inner.search_active.get() {
+            self.open_search_bar()?;
+        }
+        let _ = self.inner.search_edit.hwnd().SetWindowText(text);
+        self.apply_search_from_edit()
+    }
+
+    /// 検索バーの高さ（本文をこのぶん下へずらす）。
+    fn search_bar_height(&self) -> i32 {
+        self.inner.line_height.get() + gui::dpi_y(12)
+    }
+
+    /// 本文描画の上端オフセット（検索バーが開いていればその高さ、閉じていれば 0）。
+    fn body_top(&self) -> i32 {
+        if self.inner.search_active.get() {
+            self.search_bar_height()
+        } else {
+            0
+        }
+    }
+
+    /// 検索バーの入力欄をクライアント幅に合わせて配置する（右端の一致カウンタ領域を空ける）。
+    fn layout_search_bar(&self) {
+        if !self.inner.search_active.get() {
+            return;
+        }
+        let cw = self.hwnd().GetClientRect().map(|r| r.right - r.left).unwrap_or(0);
+        let bar_h = self.search_bar_height();
+        let pad = gui::dpi_x(6);
+        let counter_w = gui::dpi_x(96);
+        let eh = self.inner.line_height.get().max(gui::dpi_y(18));
+        let ey = ((bar_h - eh) / 2).max(0);
+        let ew = (cw - pad * 2 - counter_w).max(gui::dpi_x(40));
+        let _ = self.inner.search_edit.hwnd().MoveWindow(
+            w::POINT { x: pad, y: ey },
+            w::SIZE { cx: ew, cy: eh },
+            true,
+        );
+    }
+
+    /// 検索バーの帯（背景＋下境界＋一致カウンタ）を描く。入力欄自体は子コントロールが上に乗る。
+    fn draw_search_bar(&self, dc: &w::HDC, cw: i32) -> w::AnyResult<()> {
+        let bar_h = self.search_bar_height();
+        let face = chrome::face();
+        let brush = w::HBRUSH::CreateSolidBrush(face)?;
+        dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: bar_h }, &brush)?;
+        chrome::hline(dc, 0, cw, bar_h - 1, chrome::highlight())?;
+        // 右端に「現在 / 総数」を出す（語が空なら何も出さず、一致なしは 0 件）。
+        let term = self.inner.search_term.borrow().clone();
+        if !term.is_empty() {
+            let matches = self.all_matches();
+            let total = matches.len();
+            let text = if total == 0 {
+                "0 件".to_string()
+            } else {
+                let cur = self
+                    .inner
+                    .match_pos
+                    .get()
+                    .and_then(|c| matches.iter().position(|&m| m == c))
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
+                format!("{cur} / {total}")
+            };
+            let sfont = self.create_font_sized((self.inner.font_size - 1).max(6))?;
+            let _sel = dc.SelectObject(&*sfont)?;
+            dc.SetTextColor(chrome::text())?;
+            let pad = gui::dpi_x(8);
+            let rect = w::RECT { left: cw / 2, top: 0, right: cw - pad, bottom: bar_h };
+            dc.DrawText(
+                &text,
+                rect,
+                co::DT::SINGLELINE | co::DT::VCENTER | co::DT::RIGHT | co::DT::NOPREFIX,
+            )?;
+        }
+        Ok(())
     }
 
     /// 全表示行を走査して、検索語の全一致を `(行, 開始桁)` の昇順で集める。
@@ -311,10 +485,10 @@ impl ViewerView {
         ((h / lh).max(1)) as usize
     }
 
-    /// 本文領域の高さ（状態行を除く）。
+    /// 本文領域の高さ（上の検索バーと下の状態行を除く）。
     fn body_height(&self) -> i32 {
         let ch = self.hwnd().GetClientRect().map(|r| r.bottom - r.top).unwrap_or(0);
-        (ch - self.status_height()).max(0)
+        (ch - self.status_height() - self.body_top()).max(0)
     }
 
     fn status_height(&self) -> i32 {
@@ -414,6 +588,58 @@ impl ViewerView {
             }
             Ok(())
         });
+
+        // リサイズ時、開いていれば検索バーを幅へ追従させる。
+        let this = self.clone();
+        self.wnd.on().wm_size(move |_| {
+            this.layout_search_bar();
+            Ok(())
+        });
+
+        // 入力中はリアルタイム検索（インクリメンタル）。
+        let this = self.clone();
+        self.inner.search_edit.on().en_change(move || {
+            this.apply_search_from_edit()?;
+            Ok(())
+        });
+
+        // 入力欄内のキー：↑↓ で一致移動・Enter 確定・Esc 取消。それ以外（左右/Home/End 等の
+        // キャレット移動）は既定処理へ通す。Enter/Esc は WM_CHAR を飲んでビープを抑える。
+        let this = self.clone();
+        self.inner.search_edit.on_subclass().wm(co::WM::KEYDOWN, move |p| {
+            let handled = match p.wparam as u16 {
+                0x26 => {
+                    this.find_next(false)?;
+                    true
+                } // VK_UP
+                0x28 => {
+                    this.find_next(true)?;
+                    true
+                } // VK_DOWN
+                0x0D => {
+                    this.confirm_search_bar()?;
+                    true
+                } // VK_RETURN
+                0x1B => {
+                    this.cancel_search_bar()?;
+                    true
+                } // VK_ESCAPE
+                _ => false,
+            };
+            if handled {
+                Ok(0)
+            } else {
+                Ok(unsafe { this.inner.search_edit.hwnd().DefSubclassProc(p) })
+            }
+        });
+        let this = self.clone();
+        self.inner.search_edit.on_subclass().wm(co::WM::CHAR, move |p| {
+            if matches!(p.wparam as u16, 0x0D | 0x1B) {
+                Ok(0)
+            } else {
+                Ok(unsafe { this.inner.search_edit.hwnd().DefSubclassProc(p) })
+            }
+        });
     }
 
     /// 全選択（先頭から末尾まで）。
@@ -452,7 +678,7 @@ impl ViewerView {
         }
         let lh = self.inner.line_height.get().max(1);
         let top = self.inner.scroll_top.get();
-        let row = (pt.y.max(0) / lh) as usize;
+        let row = ((pt.y - self.body_top()).max(0) / lh) as usize;
         let line = (top + row).min(lines.len() - 1);
         let (_, _, content_left) = self.gutter_geometry();
         let cwd = self.inner.char_width.get().max(1);
@@ -652,6 +878,7 @@ impl ViewerView {
         self.rebuild_if_needed(wrap_cols);
 
         let body_h = self.body_height();
+        let top_y = self.body_top();
         let lh = self.inner.line_height.get().max(1);
         let cwd = self.inner.char_width.get().max(1);
         let (num_right, sep_x, content_left) = self.gutter_geometry();
@@ -661,8 +888,8 @@ impl ViewerView {
         let bg = w::HBRUSH::CreateSolidBrush(rgb(colors.viewer_background))?;
         dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &bg)?;
 
-        // 行番号欄とコンテンツを仕切る縦線。
-        chrome::vline(dc, sep_x, 0, body_h, rgb(colors.viewer_separator))?;
+        // 行番号欄とコンテンツを仕切る縦線（本文領域のみ）。
+        chrome::vline(dc, sep_x, top_y, top_y + body_h, rgb(colors.viewer_separator))?;
 
         // 本文。
         let is_text = self.inner.model.borrow().mode == ViewMode::Text;
@@ -673,9 +900,9 @@ impl ViewerView {
         let needle_len = term.chars().count();
         let sel_brush = w::HBRUSH::CreateSolidBrush(rgb(colors.selected_file_bg))?;
         let find_brush = w::HBRUSH::CreateSolidBrush(rgb(colors.viewer_find_bg))?;
-        let mut y = 0i32;
+        let mut y = top_y;
         let mut i = top;
-        while i < lines.len() && y < body_h {
+        while i < lines.len() && y < top_y + body_h {
             let line = &lines[i];
             // マウス選択のハイライト（行内の桁範囲）。選択は検索ハイライトより優先。
             let mut highlighted = false;
@@ -748,6 +975,11 @@ impl ViewerView {
         let status_h = self.status_height();
         let sy = ch - status_h;
         self.draw_status(dc, cw, sy, status_h)?;
+
+        // 上端の検索バー帯（入力欄は子コントロールが上に乗る）。
+        if self.inner.search_active.get() {
+            self.draw_search_bar(dc, cw)?;
+        }
         Ok(())
     }
 

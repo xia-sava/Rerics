@@ -261,7 +261,7 @@ impl MainWindow {
             Command::ViewerScrollBottom => self.viewer.scroll_end()?,
             Command::ViewerChangeEncoding => self.viewer.cycle_encoding(true)?,
             Command::ViewerToggleMode => self.viewer.toggle_mode()?,
-            Command::ViewerSearchDialog => self.viewer_search()?,
+            Command::ViewerSearchDialog => self.viewer.open_search_bar()?,
             Command::ViewerFindNext => self.viewer.find_next(true)?,
             Command::ViewerFindPrevious => self.viewer.find_next(false)?,
             Command::ViewerCopy => self.viewer.copy_selection()?,
@@ -281,22 +281,6 @@ impl MainWindow {
             Command::OpenSettings => self.open_settings()?,
             _ => {}
         }
-        Ok(())
-    }
-
-    /// 検索語を入力ダイアログで尋ね、ビューア内を検索する。
-    pub(crate) fn viewer_search(&self) -> w::AnyResult<()> {
-        let cur = self.viewer.search_term();
-        let input = self.input_with_history(
-            "検索",
-            "検索する文字列（空で解除・F3で次・Shift+F3で前）:",
-            &cur,
-            "search",
-        );
-        if let Some(term) = input {
-            self.viewer.set_search(term.trim())?;
-        }
-        self.key_sink.hwnd().SetFocus();
         Ok(())
     }
 
@@ -419,7 +403,7 @@ impl MainWindow {
                 self.viewer.select_all();
                 self.viewer.refresh()?;
             }
-            SEARCH => self.viewer_search()?,
+            SEARCH => self.viewer.open_search_bar()?,
             FIND_NEXT => self.viewer.find_next(true)?,
             ENCODING => self.viewer.cycle_encoding(true)?,
             MODE => self.viewer.toggle_mode()?,

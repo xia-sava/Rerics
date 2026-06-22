@@ -1792,12 +1792,10 @@ fn text_viewer_search_finds_all_occurrences_and_navigates() {
     // 一度撮影してレイアウト＋描画を走らせ、表示行を実幅で確定させる（検索は表示行を走査する）。
     req_bytes(server.port, "GET", "/snapshot").expect("warmup snapshot");
 
-    // 検索ダイアログを開いて "foo" を確定する（モーダルは先に応答が返る非ブロッキング経路）。
+    // インライン検索バーを開いて "foo" を打ち込む（インクリメンタル検索が即時に走る）。
     server.req("POST", "/command/ViewerSearchDialog", "").expect("open search");
-    wait_modal(&server);
-    server.req("POST", "/modal/text", "foo").unwrap();
-    server.req("POST", "/modal/key/enter", "").unwrap();
-    poll(&server, "/state/modal", |b| b.trim() == "null");
+    poll(&server, "/state/viewer/search_open", |b| b.trim() == "true");
+    server.req("POST", "/view/search", "foo").expect("type foo");
 
     let match_json = |s: &Server| s.req("GET", "/state/viewer/match", "").expect("match").1;
 
@@ -1811,18 +1809,37 @@ fn text_viewer_search_finds_all_occurrences_and_navigates() {
         "初期一致は 0 行 0 桁: {m1}"
     );
 
-    // N で同一行内の次の一致（8 桁目）へ。
-    server.req("POST", "/view/key/N", "").expect("find next");
+    // ↓ で同一行内の次の一致（8 桁目）へ。
+    server.req("POST", "/view/search/key/down", "").expect("down");
     let m2 = match_json(&server);
     assert!(m2.contains("\"col\":8"), "次の一致は同一行 8 桁: {m2}");
 
-    // さらに N で 3 行目の FOO（別行・0 桁）へ。
-    server.req("POST", "/view/key/N", "").expect("find next 2");
+    // さらに ↓ で 3 行目の FOO（別行・0 桁）へ。
+    server.req("POST", "/view/search/key/down", "").expect("down 2");
     let m3 = match_json(&server);
     assert!(m3.contains("\"line\":2") && m3.contains("\"col\":0"), "3 番目は 2 行目 0 桁: {m3}");
+
+    // ↑ で 8 桁目の一致へ戻る。
+    server.req("POST", "/view/search/key/up", "").expect("up");
+    let m4 = match_json(&server);
+    assert!(m4.contains("\"col\":8"), "↑ で前の一致 8 桁へ戻る: {m4}");
 
     // ハイライト描画を撮れる（観測可能）。
     let (st, png) = req_bytes(server.port, "GET", "/snapshot").expect("snapshot");
     assert_eq!(st, 200, "/snapshot は 200");
     assert!(png.starts_with(&[0x89, b'P', b'N', b'G']), "PNG 署名で始まる");
+
+    // Enter で確定するとバーは閉じるが検索語・一致は残る。
+    server.req("POST", "/view/search/key/enter", "").expect("enter");
+    poll(&server, "/state/viewer/search_open", |b| b.trim() == "false");
+    let count2 = server.req("GET", "/state/viewer/match_count", "").expect("count2").1;
+    assert_eq!(count2.trim(), "3", "Enter 確定後も検索語は残る");
+
+    // 再度開いて Esc で取り消すと、バーが閉じ検索も解除される（一致なし）。
+    server.req("POST", "/command/ViewerSearchDialog", "").expect("reopen search");
+    poll(&server, "/state/viewer/search_open", |b| b.trim() == "true");
+    server.req("POST", "/view/search/key/esc", "").expect("esc");
+    poll(&server, "/state/viewer/search_open", |b| b.trim() == "false");
+    let m_after = match_json(&server);
+    assert_eq!(m_after.trim(), "null", "Esc 取消後は一致なし: {m_after}");
 }
