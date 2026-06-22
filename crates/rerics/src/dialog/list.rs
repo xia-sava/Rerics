@@ -8,10 +8,11 @@ use winsafe::{self as w, co, gui, prelude::*};
 pub fn list_box(
     parent: &impl GuiParent,
     title: &str,
+    key: &'static str,
     items: &[String],
     initial: usize,
 ) -> Option<usize> {
-    let (wnd, arm) = super::modal_window_resizable(title, 420, 320);
+    let (wnd, arm) = super::modal_window_resizable_keyed(title, key, 420, 320, 280, 200);
 
     let list = gui::ListBox::new(
         &wnd,
@@ -132,11 +133,6 @@ pub fn list_box(
             Ok(())
         });
     }
-    // 小さくし過ぎてボタンや一覧が潰れないよう最小サイズを抑える。
-    wnd.on().wm_get_min_max_info(move |p| {
-        p.info.ptMinTrackSize = w::POINT { x: gui::dpi_x(280), y: gui::dpi_y(200) };
-        Ok(())
-    });
 
     let _ = wnd.show_modal(parent);
     let _ = (ok, cancel, list);

@@ -267,11 +267,66 @@ pub fn modal_window_sysmenu(title: &str, w: i32, h: i32) -> (gui::WindowModal, M
     modal_window_styled(title, w, h, co::WS::SYSMENU)
 }
 
-/// [`modal_window`] にサイズ変更枠（× も）を足したもの。一覧から選ぶセレクタのように、
-/// 中身を広げて見たいモーダルで使う。リサイズ時の再レイアウトは各ダイアログが `wm_size`
-/// で行い、最小サイズは `wm_get_min_max_info` で抑える。
-pub fn modal_window_resizable(title: &str, w: i32, h: i32) -> (gui::WindowModal, ModalArm) {
-    modal_window_styled(title, w, h, co::WS::SYSMENU | co::WS::SIZEBOX)
+/// サイズ変更枠（× も）付きで、**前回サイズを無言で記憶する**モーダル。一覧から選ぶ
+/// セレクタのように中身を広げて見たいモーダルで使う。`key` 別に前回のクライアントサイズ
+/// （論理px）を `dialog-sizes.toml` へ保存し、次回はそのサイズで開く。リサイズ時の再配置は
+/// 各ダイアログが `wm_size` で行う。最小サイズは `min_w`/`min_h`（論理px）で抑え、保存値が
+/// それ未満なら最小へ、画面サイズを超えていたら既定（`default_w`/`default_h`）へ戻す。
+pub fn modal_window_resizable_keyed(
+    title: &str,
+    key: &'static str,
+    default_w: i32,
+    default_h: i32,
+    min_w: i32,
+    min_h: i32,
+) -> (gui::WindowModal, ModalArm) {
+    let (w0, h0) = resolve_dialog_size(key, (default_w, default_h), (min_w, min_h));
+    let (wnd, arm) = modal_window_styled(title, w0, h0, co::WS::SYSMENU | co::WS::SIZEBOX);
+
+    // ドラッグでの縮小下限。
+    wnd.on().wm_get_min_max_info(move |p| {
+        p.info.ptMinTrackSize = w::POINT { x: gui::dpi_x(min_w), y: gui::dpi_y(min_h) };
+        Ok(())
+    });
+    // 閉じる時に現在のクライアントサイズ（論理px）を無言で記録する。winsafe は同じ
+    // メッセージへ複数ハンドラを登録でき全部走るので、基盤の DESTROY（pop）と併存できる。
+    let wsave = wnd.clone();
+    wnd.on().wm(co::WM::DESTROY, move |_| {
+        if let Ok(rc) = wsave.hwnd().GetClientRect() {
+            let mut store = rerics_core::DialogSizes::load();
+            store.set(key, (to_logical(rc.right, true), to_logical(rc.bottom, false)));
+            let _ = store.save();
+        }
+        Ok(0)
+    });
+    (wnd, arm)
+}
+
+/// 物理px を論理px へ戻す（`gui::dpi_*(1000)` が 1000 論理の物理px＝スケール）。
+fn to_logical(phys: i32, horizontal: bool) -> i32 {
+    let scale = (if horizontal { gui::dpi_x(1000) } else { gui::dpi_y(1000) }).max(1);
+    (phys as i64 * 1000 / scale as i64) as i32
+}
+
+/// プライマリ画面サイズ（論理px）。保存値が画面を超えていないかの判定に使う。
+fn screen_logical() -> (i32, i32) {
+    let sw = w::GetSystemMetrics(co::SM::CXSCREEN);
+    let sh = w::GetSystemMetrics(co::SM::CYSCREEN);
+    (to_logical(sw, true), to_logical(sh, false))
+}
+
+/// `key` の前回サイズを検証して返す。未保存は既定。最小未満は最小へ引き上げ、画面を
+/// 超えるサイズは既定へ戻す。
+fn resolve_dialog_size(key: &str, def: (i32, i32), min: (i32, i32)) -> (i32, i32) {
+    let Some((w, h)) = rerics_core::DialogSizes::load().get(key) else {
+        return def;
+    };
+    let (w, h) = (w.max(min.0), h.max(min.1));
+    let (sw, sh) = screen_logical();
+    if w > sw || h > sh {
+        return def;
+    }
+    (w, h)
 }
 
 /// 「一覧＋下端右寄せボタン」型モーダルのリサイズ追従。クライアント `cw`×`ch`（物理px）に対し

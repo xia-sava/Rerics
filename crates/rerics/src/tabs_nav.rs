@@ -210,7 +210,7 @@ impl MainWindow {
             self.log.info("移動履歴がありません。");
             return Ok(());
         }
-        let Some(idx) = dialog::list_box(&self.wnd, "移動履歴", &history, 0) else {
+        let Some(idx) = dialog::list_box(&self.wnd, "移動履歴", "history", &history, 0) else {
             return Ok(());
         };
         let Some(disp) = history.get(idx).cloned() else {
@@ -359,7 +359,8 @@ impl MainWindow {
             .position(|r| Some(r.to_ascii_uppercase()) == cur)
             .unwrap_or(0);
 
-        let (wnd, arm) = crate::dialog::modal_window_resizable("ドライブの選択", 472, 320);
+        let (wnd, arm) =
+            crate::dialog::modal_window_resizable_keyed("ドライブの選択", "drive", 472, 320, 360, 240);
         let list = gui::ListView::<()>::new(
             &wnd,
             gui::ListViewOpts {
@@ -413,10 +414,6 @@ impl MainWindow {
                         rc.bottom,
                     );
                 }
-                Ok(())
-            });
-            wnd.on().wm_get_min_max_info(move |p| {
-                p.info.ptMinTrackSize = w::POINT { x: gui::dpi_x(360), y: gui::dpi_y(240) };
                 Ok(())
             });
         }
@@ -627,7 +624,8 @@ impl MainWindow {
             return Ok(());
         }
 
-        let (wnd, arm) = crate::dialog::modal_window_resizable("登録ディレクトリ", 600, 360);
+        let (wnd, arm) =
+            crate::dialog::modal_window_resizable_keyed("登録ディレクトリ", "jump", 600, 360, 400, 260);
         let list = gui::ListView::<()>::new(
             &wnd,
             gui::ListViewOpts {
@@ -680,10 +678,6 @@ impl MainWindow {
                         rc.bottom,
                     );
                 }
-                Ok(())
-            });
-            wnd.on().wm_get_min_max_info(move |p| {
-                p.info.ptMinTrackSize = w::POINT { x: gui::dpi_x(400), y: gui::dpi_y(260) };
                 Ok(())
             });
         }

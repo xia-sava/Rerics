@@ -36,7 +36,7 @@ impl MainWindow {
             .iter()
             .map(|(k, v)| format!("{k:<18} {v}"))
             .collect();
-        let _ = dialog::list_box(&self.wnd, "キー割り当て", &rows, 0);
+        let _ = dialog::list_box(&self.wnd, "キー割り当て", "keybinds", &rows, 0);
         self.key_sink.hwnd().SetFocus();
     }
 

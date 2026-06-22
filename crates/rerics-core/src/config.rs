@@ -52,6 +52,11 @@ pub fn history_path() -> PathBuf {
     data_dir().join("history.toml")
 }
 
+/// リサイズ可能ダイアログの前回サイズを覚えるファイルのパス。
+pub fn dialog_sizes_path() -> PathBuf {
+    data_dir().join("dialog-sizes.toml")
+}
+
 /// TOML ファイルを読んでデシリアライズする。ファイルが無い・読めない・
 /// パースに失敗したいずれの場合も `T::default()` を返す。
 pub fn load_toml<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
@@ -687,6 +692,36 @@ impl InputHistory {
             let n = list.len() - cap;
             list.drain(0..n);
         }
+    }
+}
+
+/// リサイズ可能ダイアログの前回サイズ（用途キー別・クライアントの論理px幅高）を覚えるストア。
+/// `dialog-sizes.toml` に永続。設定 UI は持たず無言で記憶する。
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct DialogSizes {
+    #[serde(default)]
+    sizes: std::collections::BTreeMap<String, (i32, i32)>,
+}
+
+impl DialogSizes {
+    /// サイズ記憶ファイルから読み込む（無ければ空）。
+    pub fn load() -> Self {
+        load_toml(&dialog_sizes_path())
+    }
+
+    /// サイズ記憶ファイルへ保存する。
+    pub fn save(&self) -> std::io::Result<()> {
+        save_toml(&dialog_sizes_path(), self)
+    }
+
+    /// キーの前回サイズ（論理px幅高）を返す。
+    pub fn get(&self, key: &str) -> Option<(i32, i32)> {
+        self.sizes.get(key).copied()
+    }
+
+    /// キーのサイズを記録する。
+    pub fn set(&mut self, key: &str, size: (i32, i32)) {
+        self.sizes.insert(key.to_owned(), size);
     }
 }
 

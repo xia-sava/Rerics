@@ -1770,6 +1770,41 @@ fn keybind_selector_is_resizable() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// リサイズ可能ダイアログは前回サイズを無言で記憶する（dialog-sizes.toml）。リサイズして
+/// 閉じ、再オープンすると保存サイズで開く。
+#[test]
+fn dialog_remembers_last_size() {
+    let server = Server::start(&["a.txt"], "");
+    let client_dims = |port| -> (u32, u32) {
+        let (st, png) = req_bytes(port, "GET", "/snapshot/modal").expect("snap");
+        assert_eq!(st, 200);
+        assert!(png.starts_with(&[0x89, b'P', b'N', b'G']));
+        (
+            u32::from_be_bytes([png[16], png[17], png[18], png[19]]),
+            u32::from_be_bytes([png[20], png[21], png[22], png[23]]),
+        )
+    };
+
+    server.req("POST", "/command/KeyBindsDialog", "").expect("open1");
+    wait_modal(&server);
+    let (w0, h0) = client_dims(server.port);
+
+    // 小さくリサイズして閉じる。
+    server.req("POST", "/modal/resize/700x520", "").expect("resize");
+    server.req("POST", "/modal/command/cancel", "").expect("cancel1");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+
+    // 再オープンは記憶した小さいサイズで開く（既定より小さく・要求700近傍）。
+    server.req("POST", "/command/KeyBindsDialog", "").expect("open2");
+    wait_modal(&server);
+    let (w1, h1) = client_dims(server.port);
+    assert!(w1 < w0 && h1 < h0, "記憶サイズで開くはず: {w0}x{h0} -> {w1}x{h1}");
+    assert!((620..=700).contains(&w1), "幅は記憶した要求(700)近傍: {w1}");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel2");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// ドライブ選択（ListView）もサイズ変更枠付き。リサイズで一覧/ボタンが再配置され、
 /// 撮影・クローズできる（共有ヘルパ relayout_list_dialog の ListView 経路）。
 #[test]

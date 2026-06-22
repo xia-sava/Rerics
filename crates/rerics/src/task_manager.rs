@@ -15,7 +15,8 @@ type Registry = Rc<RefCell<Vec<TaskEntry>>>;
 
 /// タスクマネージャを表示する。タスクは別スレッドで動き続けるため、閉じても処理は継続する。
 pub fn show(parent: &impl GuiParent, tasks: &Registry) {
-    let (wnd, arm) = crate::dialog::modal_window_resizable("タスクマネージャ", 588, 360);
+    let (wnd, arm) =
+        crate::dialog::modal_window_resizable_keyed("タスクマネージャ", "tasks", 588, 360, 480, 260);
 
     let list = gui::ListView::<u64>::new(
         &wnd,
@@ -97,10 +98,6 @@ pub fn show(parent: &impl GuiParent, tasks: &Registry) {
             if let Ok(rc) = wndc.hwnd().GetClientRect() {
                 relayout(&lst, [&b_stop, &b_suspend, &b_resume, &b_refresh], &b_close, rc.right, rc.bottom);
             }
-            Ok(())
-        });
-        wnd.on().wm_get_min_max_info(move |p| {
-            p.info.ptMinTrackSize = w::POINT { x: gui::dpi_x(480), y: gui::dpi_y(260) };
             Ok(())
         });
     }
