@@ -237,12 +237,6 @@ impl Engine {
             .map_err(|e| e.to_string())
     }
 
-    /// JS ソースを同期実行する。名前はスタックトレース用の表示名。Promise は解決しない。
-    pub fn run(&mut self, name: &'static str, code: String) -> Result<(), deno_core::error::CoreError> {
-        self.runtime.execute_script(name, code)?;
-        Ok(())
-    }
-
     /// JS ソースを実行し、イベントループが空になるまで回す（async op / Promise を完了させる）。
     pub fn run_to_completion(
         &mut self,
@@ -305,7 +299,7 @@ mod tests {
             ..Default::default()
         });
         let mut eng = Engine::new(host.clone());
-        eng.run(
+        eng.run_to_completion(
             "test:basic",
             r#"rerics.log("hi"); rerics.navigate(rerics.currentDir() + "\\sub");"#.to_string(),
         )
@@ -374,7 +368,7 @@ mod tests {
             ..Default::default()
         });
         let mut eng = Engine::new(host.clone());
-        eng.run(
+        eng.run_to_completion(
             "test:register",
             r#"rerics.registerCommand("up", () => rerics.navigate(rerics.currentDir() + "/.."));"#
                 .to_string(),

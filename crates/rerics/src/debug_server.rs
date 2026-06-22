@@ -176,6 +176,15 @@ pub enum Request {
     /// `POST /modal/resize/<w>x<h>`：開いているモーダルの窓サイズを w×h（物理px）へ変える。
     /// WM_SIZE が飛んでダイアログの再レイアウトが走るので、リサイズ追従を headless で検証できる。
     ModalResize { width: i32, height: i32 },
+    /// `GET /script/commands`：登録済みスクリプトコマンド名の一覧（JSON 文字列配列）。
+    #[cfg(feature = "scripting")]
+    ScriptCommands,
+    /// `POST /script/invoke/<name>`：登録済みスクリプトコマンドを名前で実行する（投げっぱなし）。
+    #[cfg(feature = "scripting")]
+    ScriptInvoke { name: String },
+    /// `POST /script/eval`：body の TS/JS ソースをスクリプトエンジンで評価する（投げっぱなし）。
+    #[cfg(feature = "scripting")]
+    ScriptEval { code: String },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -286,6 +295,15 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
             } else if let Some(rest) = path.strip_prefix("/snapshot/") {
                 let spec = rest.trim_end_matches('/').trim_end_matches(".png");
                 Some(Request::Snapshot { spec: spec.to_string() })
+            } else if path == "/script/commands" {
+                #[cfg(feature = "scripting")]
+                {
+                    Some(Request::ScriptCommands)
+                }
+                #[cfg(not(feature = "scripting"))]
+                {
+                    None
+                }
             } else {
                 None
             }
@@ -357,6 +375,29 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                         height: h.parse().ok()?,
                     })
                 })
+            } else if let Some(name) = path.strip_prefix("/script/invoke/") {
+                let _ = &name;
+                #[cfg(feature = "scripting")]
+                {
+                    Some(Request::ScriptInvoke {
+                        name: name.trim_end_matches('/').to_string(),
+                    })
+                }
+                #[cfg(not(feature = "scripting"))]
+                {
+                    None
+                }
+            } else if path == "/script/eval" {
+                #[cfg(feature = "scripting")]
+                {
+                    let mut code = String::new();
+                    let _ = std::io::Read::read_to_string(req.as_reader(), &mut code);
+                    Some(Request::ScriptEval { code })
+                }
+                #[cfg(not(feature = "scripting"))]
+                {
+                    None
+                }
             } else {
                 None
             }

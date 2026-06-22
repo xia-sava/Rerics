@@ -154,6 +154,34 @@ impl Server {
         Server { child, port, base }
     }
 
+    /// `start` と同じ隔離起動だが、`data/scripts/` にユーザスクリプト（名前→中身）を
+    /// 置いてから起動する。起動時に名前順で読み込まれる（scripting feature 時のみ）。
+    #[cfg(feature = "scripting")]
+    fn start_with_scripts(sandbox_files: &[&str], scripts: &[(&str, &str)]) -> Server {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("rerics_it_{}_{}", std::process::id(), n));
+        let data = base.join("data");
+        let sbx = base.join("sbx");
+        std::fs::create_dir_all(data.join("scripts")).unwrap();
+        std::fs::create_dir_all(&sbx).unwrap();
+        for f in sandbox_files {
+            std::fs::write(sbx.join(f), b"x").unwrap();
+        }
+        for (name, body) in scripts {
+            std::fs::write(data.join("scripts").join(name), body.as_bytes()).unwrap();
+        }
+        std::fs::write(
+            data.join("state.toml"),
+            format!(
+                "active_tab = 0\nsplit_ratio = 0.5\n[[tabs]]\nleft = '{p}'\nright = '{p}'\nactive_right = false\n",
+                p = sbx.display()
+            ),
+        )
+        .unwrap();
+        let (child, port) = spawn_and_wait(&data, false);
+        Server { child, port, base }
+    }
+
     /// HTTP リクエストを投げる。`(status, body)` を返す。
     fn req(&self, method: &str, path: &str, body: &str) -> Option<(u16, String)> {
         req(self.port, method, path, body)
@@ -2115,4 +2143,58 @@ fn text_viewer_search_mnemonic_yields_to_user_keybind() {
     // Alt+C は被っているのでユーザーバインド（ViewerClose）が走る＝ビューアが閉じる。
     server.req("POST", "/view/search/mnemonic/c", "").expect("mnemonic c");
     poll(&server, "/state/active_view", |b| b.trim().trim_matches('"') == "none");
+}
+
+/// scripting：起動時に scripts を読み込み、登録されたコマンドが `/script/commands` に並ぶ。
+#[cfg(feature = "scripting")]
+#[test]
+fn script_commands_register_on_startup() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[(
+            "00-cmds.ts",
+            r#"rerics.registerCommand("logHi", () => { rerics.log("hi from script"); });
+               rerics.registerCommand("goUp", () => { rerics.navigate(rerics.currentDir() + "/.."); });"#,
+        )],
+    );
+    let list = poll(&server, "/script/commands", |b| b.contains("logHi"));
+    assert!(
+        list.contains("logHi") && list.contains("goUp"),
+        "registered commands should be listed: {list}"
+    );
+}
+
+/// scripting：`/script/eval` で評価したコードのログがアプリのログ欄へ出る（エンジン→UI 配線）。
+#[cfg(feature = "scripting")]
+#[test]
+fn script_eval_runs_and_logs_to_app() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    let (st, _) = server
+        .req("POST", "/script/eval", r#"rerics.log("eval-marker-42");"#)
+        .expect("eval");
+    assert_eq!(st, 200, "eval accepted");
+    let log = poll(&server, "/state/log", |b| b.contains("eval-marker-42"));
+    assert!(log.contains("eval-marker-42"), "eval log should reach app: {log}");
+}
+
+/// scripting：`/script/invoke` で登録コマンドを呼ぶと、ペイン操作（navigate）が UI に反映される。
+#[cfg(feature = "scripting")]
+#[test]
+fn script_invoke_navigates_active_pane() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[(
+            "00-cmds.ts",
+            r#"rerics.registerCommand("goUp", () => { rerics.navigate(rerics.currentDir() + "/.."); });"#,
+        )],
+    );
+    let loc0 = server.req("GET", "/state/panes/left/location", "").unwrap().1;
+    assert!(loc0.contains("sbx"), "should start in the sandbox: {loc0}");
+
+    server.req("POST", "/script/invoke/goUp", "").expect("invoke");
+    let loc1 = poll(&server, "/state/panes/left/location", |b| !b.contains("sbx"));
+    assert!(
+        !loc1.contains("sbx"),
+        "active pane should leave the sandbox after goUp: {loc1}"
+    );
 }
