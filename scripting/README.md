@@ -36,7 +36,7 @@ rerics.registerCommand("up", () => {
 | `await rerics.listDir(path)` | ディレクトリ走査（裏スレッド・`Promise<RericsDirEntry[]>`） |
 | `rerics.registerCommand(name, handler)` | 名前付きコマンドを登録（handler は同期/async どちらでも） |
 | `rerics.on(event, handler)` | 本体のイベントを購読（`changeDirectory` / `executeCommand`） |
-| `await rerics.copy()` / `await rerics.move()` | 選択を反対ペインへコピー/移動（ワーカー実行・完了を待てる） |
+| `await rerics.copy()` / `await rerics.move()` / `await rerics.delete()` | 選択をコピー/移動/削除（ワーカー実行・完了を待てる・`cancel()` 可） |
 
 詳細な型は `rerics.d.ts` を参照。
 
@@ -94,9 +94,9 @@ rerics.command("Delete");  // 選んだ .tmp を削除（確認は本体設定�
 
 ### 非同期ファイル操作（完了を待つ）
 
-`await rerics.copy()` / `await rerics.move()` は、アクティブペインの選択（無ければカーソル）項目を
-反対ペインへコピー/移動する。ワーカースレッドで実行し、**完了するまで待てる** `Promise` を返す。
-失敗・中止は例外になる（`try/catch`）。
+`await rerics.copy()` / `await rerics.move()` / `await rerics.delete()` は、アクティブペインの選択
+（無ければカーソル）項目を処理する（copy/move は反対ペインへ・delete はその場で）。ワーカー
+スレッドで実行し、**完了するまで待てる** job を返す。失敗・中止は例外になる（`try/catch`）。
 
 ```ts
 rerics.activePane().apply((d) => {

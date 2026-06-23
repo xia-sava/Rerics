@@ -56,6 +56,7 @@ pub trait HostApi {
 pub enum ScriptOp {
     Copy,
     Move,
+    Delete,
 }
 
 /// ペイン 1 つぶんの状態スナップショット（スクリプトへ渡す）。JS では camelCase で見える。
@@ -228,10 +229,15 @@ fn read_dir_entries(path: &str) -> std::io::Result<Vec<DirEntry>> {
 /// 返す。完了受信用の `oneshot` を作り、受信側を `JobAwaiters` に登録する（`op_op_await` が待つ）。
 /// 起動できなければ例外。
 #[op2(nofast)]
-fn op_op_start(state: &mut OpState, move_it: bool) -> Result<u32, deno_error::JsErrorBox> {
+fn op_op_start(state: &mut OpState, kind: u32) -> Result<u32, deno_error::JsErrorBox> {
+    let op = match kind {
+        0 => ScriptOp::Copy,
+        1 => ScriptOp::Move,
+        2 => ScriptOp::Delete,
+        _ => return Err(deno_error::JsErrorBox::generic("unknown operation kind")),
+    };
     let host = state.borrow::<Host>().clone();
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
-    let op = if move_it { ScriptOp::Move } else { ScriptOp::Copy };
     let token = host
         .begin_operation(op, tx)
         .map_err(deno_error::JsErrorBox::generic)?;
@@ -365,8 +371,8 @@ const BOOTSTRAP: &str = r#"
     buildPane(snap, (idx, v) => ops.op_set_selected(snap.isLeft, idx, v));
   // 非同期操作を起動し、await できて .cancel() も持つ job を返す。op_op_start は起動失敗を
   // 例外にし、op_op_await はワーカー完了で resolve（失敗/中止は reject）する。
-  const startOp = (move_it) => {
-    const token = ops.op_op_start(move_it);
+  const startOp = (kind) => {
+    const token = ops.op_op_start(kind);
     const job = ops.op_op_await(token);
     job.cancel = () => ops.op_op_cancel(token);
     return job;
@@ -388,8 +394,9 @@ const BOOTSTRAP: &str = r#"
     activePane: () => makePane(ops.op_pane_snapshot(false)),
     oppositePane: () => makePane(ops.op_pane_snapshot(true)),
     command: (name, ...args) => ops.op_command(String(name), args.map(String)),
-    copy: () => startOp(false),
-    move: () => startOp(true),
+    copy: () => startOp(0),
+    move: () => startOp(1),
+    delete: () => startOp(2),
     registerCommand: (name, fn) => {
       if (typeof fn !== "function") throw new TypeError("registerCommand: fn must be a function");
       commands.set(String(name), fn);
@@ -659,6 +666,7 @@ mod tests {
             self.operations.borrow_mut().push(match op {
                 ScriptOp::Copy => "copy",
                 ScriptOp::Move => "move",
+                ScriptOp::Delete => "delete",
             });
             // 完了を即座に通知する（実 GUI ではワーカー完了で送られる）。トークンは件数で代用。
             let _ = done.send(Ok(()));
@@ -996,12 +1004,13 @@ mod tests {
             r#"(async () => {
                  await rerics.copy();
                  await rerics.move();
+                 await rerics.delete();
                  rerics.log("ops done");
                })();"#
                 .to_string(),
         )
         .unwrap();
-        assert_eq!(*host.operations.borrow(), vec!["copy", "move"]);
+        assert_eq!(*host.operations.borrow(), vec!["copy", "move", "delete"]);
         assert_eq!(*host.logs.borrow(), vec!["ops done".to_string()]);
     }
 

@@ -391,17 +391,26 @@ impl MainWindow {
     /// 発火する。起動できなければ（対象なし・書庫・起動失敗）即座に `done` へエラーを返す。
     fn begin_script_operation(&self, op: ScriptOp, done: OpDone) -> Result<u64, String> {
         let is_left = !self.active_right.get();
-        if self.pane(is_left).borrow().is_archive() || self.pane(!is_left).borrow().is_archive() {
+        // 削除は src のみ、コピー/移動は src+dst が必要。いずれも書庫は未対応。
+        let needs_dst = !matches!(op, ScriptOp::Delete);
+        if self.pane(is_left).borrow().is_archive()
+            || (needs_dst && self.pane(!is_left).borrow().is_archive())
+        {
             return Err("書庫の操作は未対応です".to_string());
         }
         let names = self.selected_or_cursor_names(is_left);
         if names.is_empty() {
             return Err("対象がありません".to_string());
         }
-        let move_it = matches!(op, ScriptOp::Move);
         let src_dir = self.pane(is_left).borrow().path().to_path_buf();
-        let dst_dir = self.pane(!is_left).borrow().path().to_path_buf();
-        match self.start_copy(src_dir, dst_dir, names, move_it) {
+        let started = match op {
+            ScriptOp::Delete => self.start_delete(src_dir, names),
+            ScriptOp::Copy | ScriptOp::Move => {
+                let dst_dir = self.pane(!is_left).borrow().path().to_path_buf();
+                self.start_copy(src_dir, dst_dir, names, matches!(op, ScriptOp::Move))
+            }
+        };
+        match started {
             Ok(id) => {
                 self.script.pending_ops.borrow_mut().insert(id, done);
                 Ok(id)

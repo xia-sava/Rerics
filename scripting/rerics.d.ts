@@ -102,62 +102,66 @@ interface RericsJob extends Promise<void> {
   cancel(): void;
 }
 
-/** Rerics 本体が提供するホスト API。グローバル `rerics` から呼ぶ。 */
-declare namespace rerics {
+/**
+ * Rerics 本体が提供するホスト API。グローバル `rerics` から呼ぶ。
+ *
+ * （`delete` が予約語のため `declare namespace` ではなくオブジェクト型で宣言している。）
+ */
+declare const rerics: {
   /** アプリのログ欄へメッセージを出す。 */
-  function log(message: string): void;
+  log(message: string): void;
 
   /** アクティブペインの現在ディレクトリ（絶対パス）を返す。 */
-  function currentDir(): string;
+  currentDir(): string;
 
   /** アクティブペインを `path` へ移動する。 */
-  function navigate(path: string): void;
+  navigate(path: string): void;
 
   /** 確認ダイアログ（はい/いいえ）を出す。「はい」なら true。 */
-  function confirm(message: string): boolean;
+  confirm(message: string): boolean;
 
   /** 入力ダイアログを出す。OK なら入力文字列、キャンセルなら null。 */
-  function prompt(message: string, defaultValue?: string): string | null;
+  prompt(message: string, defaultValue?: string): string | null;
 
   /** 一覧から 1 つ選ばせる。選んだ行の index、キャンセルなら null。 */
-  function select(title: string, items: string[]): number | null;
+  select(title: string, items: string[]): number | null;
 
   /**
    * アクティブペインの現在状態（現在地・項目一覧・選択・カーソル）を取得する。
    * 返るのは取得時点のスナップショットで、以後の変化は反映されない。
    */
-  function activePane(): RericsPane;
+  activePane(): RericsPane;
 
   /** 反対側ペインの現在状態を取得する。詳細は {@link activePane}。 */
-  function oppositePane(): RericsPane;
+  oppositePane(): RericsPane;
 
   /**
    * 内蔵コマンドを名前で実行する（アクティブペイン文脈・同期）。引数は文字列で渡す。
    * 不明なコマンド名・実行失敗は例外を投げる（`try/catch` で拾える）。
    *
    * ワーカーを起動する操作（コピー/移動/削除など）は「開始」まで戻り、**完了は待たない**。
-   * 完了を待ちたい操作向けの `await` 版は今後追加する。
+   * 完了を待ちたいときは `await rerics.copy()` などの非同期版を使う。
    *
    * ```ts
    * rerics.activePane().apply((d) => {
    *   for (const it of d.items) if (it.ext === "tmp") it.selected = true;
    * });
-   * rerics.command("Delete");   // 選んだ .tmp を削除
+   * rerics.command("Delete");   // 選んだ .tmp を削除（開始まで・完了は待たない）
    * ```
    */
-  function command(name: string, ...args: string[]): void;
+  command(name: string, ...args: string[]): void;
 
   /**
    * `path` 直下を裏スレッドで走査して返す。重いディレクトリでも UI を止めない。
    * `await` して使う。
    */
-  function listDir(path: string): Promise<RericsDirEntry[]>;
+  listDir(path: string): Promise<RericsDirEntry[]>;
 
   /**
    * 名前付きコマンドを登録する。`handler` は同期でも `async`（Promise を返す）でもよい。
    * 同名で再登録すると後勝ちで上書きする。
    */
-  function registerCommand(name: string, handler: () => void | Promise<void>): void;
+  registerCommand(name: string, handler: () => void | Promise<void>): void;
 
   /**
    * ファイラー本体のイベントにハンドラを登録する。同じイベントに複数登録でき、登録順に
@@ -171,7 +175,7 @@ declare namespace rerics {
    * });
    * ```
    */
-  function on(event: RericsEvent, handler: (arg: string) => void | Promise<void>): void;
+  on(event: RericsEvent, handler: (arg: string) => void | Promise<void>): void;
 
   /**
    * アクティブペインの選択（無ければカーソル）項目を反対ペインへコピーする。ワーカーで実行し、
@@ -187,8 +191,11 @@ declare namespace rerics {
    * rerics.log("コピー完了");
    * ```
    */
-  function copy(): RericsJob;
+  copy(): RericsJob;
 
   /** コピーと同じだが移動（成功後に元を削除）。詳細は {@link copy}。 */
-  function move(): RericsJob;
-}
+  move(): RericsJob;
+
+  /** アクティブペインの選択（無ければカーソル）項目を削除する。詳細は {@link copy}。 */
+  delete(): RericsJob;
+};

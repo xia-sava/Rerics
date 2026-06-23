@@ -137,6 +137,25 @@ rerics.registerCommand("copyTxt", async () => {
   rerics.log("コピー完了");
 });
 
+// 非同期削除の例：一時ファイルを選択して削除し、完了を待つ（await で順番を保てる）。
+rerics.registerCommand("purgeTemp", async () => {
+  let n = 0;
+  rerics.activePane().apply((d) => {
+    for (const it of d.items) {
+      if (!it.isDir && (it.ext === "tmp" || it.ext === "bak")) {
+        it.selected = true;
+        n++;
+      }
+    }
+  });
+  if (n === 0) {
+    rerics.log("一時ファイルはありません");
+    return;
+  }
+  await rerics.delete();
+  rerics.log(`${n} 件を削除しました`);
+});
+
 // モーダルの例：確認・入力・一覧選択。
 rerics.registerCommand("askThings", async () => {
   if (!rerics.confirm("続けますか？")) {

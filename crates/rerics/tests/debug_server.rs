@@ -2461,3 +2461,29 @@ fn script_async_op_job_is_cancelable() {
     let log = poll(&server, "/state/log", |b| b.contains("CANCEL FLOW DONE"));
     assert!(log.contains("CANCEL FLOW DONE"), "cancel flow should complete without error: {log}");
 }
+
+/// scripting：`await rerics.delete()` がアクティブペインの選択を削除し、完了で resolve する。
+#[test]
+fn script_async_delete_awaits_completion() {
+    let server = Server::start_with_scripts(&["a.txt", "b.txt", "c.txt"], &[]);
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"(async () => {
+                 rerics.activePane().apply((d) => {
+                   for (const it of d.items) if (it.name === "a.txt") it.selected = true;
+                 });
+                 await rerics.delete();
+                 rerics.log("DELETE DONE");
+               })();"#,
+        )
+        .expect("eval");
+
+    let log = poll(&server, "/state/log", |b| b.contains("DELETE DONE"));
+    assert!(log.contains("DELETE DONE"), "await delete should resolve: {log}");
+    // a.txt が消え、他は残る。
+    let items = poll(&server, "/state/panes/left/items", |b| !b.contains("\"name\":\"a.txt\""));
+    assert!(!items.contains("\"name\":\"a.txt\""), "a.txt should be deleted: {items}");
+    assert!(items.contains("\"name\":\"b.txt\""), "b.txt must remain: {items}");
+}

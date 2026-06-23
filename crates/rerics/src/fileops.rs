@@ -656,7 +656,8 @@ impl MainWindow {
             }
         }
         let dir = self.pane(is_left).borrow().path().to_path_buf();
-        self.start_delete(dir, names)
+        self.start_delete(dir, names)?;
+        Ok(())
     }
 
     /// 選択（無ければカーソル）をゴミ箱へ送る（確認ダイアログ付き・実FSのみ・同期）。
@@ -1173,7 +1174,9 @@ impl MainWindow {
         let _ = self.reload_side(is_left);
     }
 
-    pub(crate) fn start_delete(&self, dir: PathBuf, names: Vec<String>) -> w::AnyResult<()> {
+    /// 削除をワーカースレッドで起動し、払い出したタスク `id` を返す（[`start_copy`] と同様、
+    /// スクリプトの async 操作が完了を待つのに使える）。
+    pub(crate) fn start_delete(&self, dir: PathBuf, names: Vec<String>) -> w::AnyResult<u64> {
         let control = Arc::new(TaskControl::new());
         let host = ChannelHost::new(
             self.task_tx.clone(),
@@ -1192,7 +1195,7 @@ impl MainWindow {
                 dst_dir: dir,
             });
         });
-        Ok(())
+        Ok(id)
     }
 
     /// 削除をワーカースレッドで起動する。
