@@ -2740,7 +2740,8 @@ impl KeyEditor {
                     | co::WS::VISIBLE
                     | co::WS::CLIPSIBLINGS
                     | co::WS::TABSTOP
-                    | co::WS::BORDER,
+                    | co::WS::BORDER
+                    | co::WS::VSCROLL,
                 ..Default::default()
             },
         );
@@ -2886,6 +2887,7 @@ impl KeyEditor {
                     rows,
                     selected: this.inner.sel.get(),
                     sub: this.inner.sub.get(),
+                    top: this.inner.top.get(),
                     capturing: this.inner.capturing.get(),
                     picking,
                     status: this.inner.status.borrow().clone(),
@@ -2980,6 +2982,10 @@ impl KeyEditor {
             let this = self.clone();
             Box::new(move || this.cancel_pick()) as Box<dyn Fn()>
         };
+        let scroll = {
+            let this = self.clone();
+            Box::new(move |top: i32| this.scroll_to(top as isize)) as Box<dyn Fn(i32)>
+        };
         crate::debug_server::modal_registry::register_key_editor(
             self.inner.category.debug_str(),
             KeyEditorHooks {
@@ -2995,6 +3001,7 @@ impl KeyEditor {
                 pick,
                 pick_commit,
                 pick_cancel,
+                scroll,
             },
         );
     }
@@ -3138,6 +3145,7 @@ impl KeyEditor {
             } else if self.inner.sel.get() >= n {
                 self.inner.sel.set(n - 1);
             }
+            self.update_scrollbar();
             return;
         }
         let view: Vec<usize> = match self.inner.view_mode.get() {
@@ -3180,6 +3188,7 @@ impl KeyEditor {
         if self.inner.sub.get() >= cc {
             self.inner.sub.set(cc.saturating_sub(1));
         }
+        self.update_scrollbar();
     }
 
     /// 検索クエリを適用して表示を絞り込む（`config` は変更しない）。同じ値なら何もしない。
@@ -3568,11 +3577,40 @@ impl KeyEditor {
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
-    /// 1 画面に収まる行数。
+    /// 1 画面に収まる行数（最下部のステータス行 1 行を除いた本文領域）。
     fn visible_rows(&self) -> usize {
         let ch = self.hwnd().GetClientRect().map(|r| r.bottom - r.top).unwrap_or(0);
         let rh = self.inner.row_h.get().max(1);
-        (ch / rh).max(1) as usize
+        ((ch - rh) / rh).max(1) as usize
+    }
+
+    /// 縦スクロールバーを現在の行数・表示位置に合わせる。
+    fn update_scrollbar(&self) {
+        if self.hwnd().GetClientRect().is_err() {
+            return;
+        }
+        let n = self.inner.view.borrow().len();
+        let vis = self.visible_rows();
+        let mut si = w::SCROLLINFO::default();
+        si.fMask = co::SIF::RANGE | co::SIF::PAGE | co::SIF::POS;
+        si.nMin = 0;
+        si.nMax = (n as i32 - 1).max(0);
+        si.nPage = vis as u32;
+        si.nPos = self.inner.top.get() as i32;
+        self.hwnd().SetScrollInfo(co::SBB::VERT, &si, true);
+    }
+
+    /// 表示先頭行を動かす（範囲内へクランプ・スクロールバーと再描画も更新）。選択は動かさない。
+    fn scroll_to(&self, new_top: isize) {
+        let n = self.inner.view.borrow().len();
+        let vis = self.visible_rows();
+        let max_top = n.saturating_sub(vis) as isize;
+        let top = new_top.clamp(0, max_top) as usize;
+        if top != self.inner.top.get() {
+            self.inner.top.set(top);
+            self.update_scrollbar();
+            let _ = self.hwnd().InvalidateRect(None, false);
+        }
     }
 
     /// 選択が見える位置までスクロールを調整する。
@@ -3586,6 +3624,7 @@ impl KeyEditor {
             top = sel + 1 - vis;
         }
         self.inner.top.set(top);
+        self.update_scrollbar();
     }
 
     fn move_sel(&self, dir: isize) {
@@ -3706,6 +3745,35 @@ impl KeyEditor {
             Ok(())
         });
 
+        // 縦スクロールバー：行単位で表示位置を動かす（選択は動かさない）。
+        let this = self.clone();
+        self.list.on().wm_v_scroll(move |p| {
+            let cur = this.inner.top.get() as isize;
+            let vis = this.visible_rows() as isize;
+            let n = this.inner.view.borrow().len() as isize;
+            let new = match p.request {
+                co::SB_REQ::LINEUP => cur - 1,
+                co::SB_REQ::LINEDOWN => cur + 1,
+                co::SB_REQ::PAGEUP => cur - vis,
+                co::SB_REQ::PAGEDOWN => cur + vis,
+                co::SB_REQ::THUMBPOSITION | co::SB_REQ::THUMBTRACK => p.scroll_box_pos as isize,
+                co::SB_REQ::TOP => 0,
+                co::SB_REQ::BOTTOM => n,
+                _ => cur,
+            };
+            this.scroll_to(new);
+            Ok(())
+        });
+
+        // マウスホイール：3 行ずつスクロール（winsafe 0.0.27 は回転量が keys に入る）。
+        let this = self.clone();
+        self.list.on().wm_mouse_wheel(move |p| {
+            let dist = p.keys.raw() as i16 as i32;
+            let lines = (dist / 120) * 3;
+            this.scroll_to(this.inner.top.get() as isize - lines as isize);
+            Ok(())
+        });
+
         let this = self.clone();
         self.list.on().wm_key_down(move |p| {
             this.on_key(p.vkey_code.raw());
@@ -3734,11 +3802,16 @@ impl KeyEditor {
             }
             return;
         }
-        // ピックモード：↑↓ で機能を選び、Enter で確定・Esc で中止。
+        let vis = self.visible_rows() as isize;
+        // ピックモード：↑↓/PageUp/Down/Home/End で機能を選び、Enter で確定・Esc で中止。
         if self.inner.picking.borrow().is_some() {
             match vk {
                 k::UP => self.move_sel(-1),
                 k::DOWN => self.move_sel(1),
+                k::PRIOR => self.move_sel(-vis),
+                k::NEXT => self.move_sel(vis),
+                k::HOME => self.move_sel(isize::MIN / 2),
+                k::END => self.move_sel(isize::MAX / 2),
                 k::RETURN => self.commit_pick(),
                 k::ESCAPE => self.cancel_pick(),
                 _ => {}
@@ -3749,6 +3822,14 @@ impl KeyEditor {
             self.move_sel(-1);
         } else if vk == k::DOWN {
             self.move_sel(1);
+        } else if vk == k::PRIOR {
+            self.move_sel(-vis);
+        } else if vk == k::NEXT {
+            self.move_sel(vis);
+        } else if vk == k::HOME {
+            self.move_sel(isize::MIN / 2);
+        } else if vk == k::END {
+            self.move_sel(isize::MAX / 2);
         } else if vk == k::LEFT {
             self.move_sub(-1);
         } else if vk == k::RIGHT {

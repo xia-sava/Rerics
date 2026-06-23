@@ -172,6 +172,12 @@ impl MainWindow {
                         Ok(())
                     }));
                 }
+                debug_server::Request::KeysScroll { category, top } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| {
+                        (h.scroll)(top);
+                        Ok(())
+                    }));
+                }
             }
         }
     }

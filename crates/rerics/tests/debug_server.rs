@@ -1933,6 +1933,39 @@ fn settings_key_editor_inline_function_picker_changes_binding() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// 長い一覧をスクロールできる（先頭行が動く・選択は不変・範囲外はクランプ）。ホイール／
+/// スクロールバーと同じ scroll 経路を headless から叩く。
+#[test]
+fn settings_key_editor_scrolls_long_list() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // 既定は先頭・選択 0。Filer は全コマンドが並ぶので 1 画面に収まらない。
+    let s = keys();
+    assert!(s.contains(r#""top":0"#), "初期は先頭: {s}");
+
+    // 下へスクロール＝先頭行が動く・選択は不変。
+    server.req("POST", "/keys/filer/scroll/5", "").unwrap();
+    let s = keys();
+    assert!(s.contains(r#""top":5"#), "先頭行が 5 へ: {s}");
+    assert!(s.contains(r#""selected":0"#), "スクロールで選択は動かない: {s}");
+
+    // 範囲外は末尾へクランプ（巨大値でも top は範囲内＝0 でも 100000 でもない）。
+    server.req("POST", "/keys/filer/scroll/100000", "").unwrap();
+    let s = keys();
+    assert!(!s.contains(r#""top":100000"#), "範囲外はクランプ: {s}");
+    assert!(!s.contains(r#""top":0"#), "末尾近くまでは進む: {s}");
+
+    // 先頭へ戻す。
+    server.req("POST", "/keys/filer/scroll/0", "").unwrap();
+    assert!(keys().contains(r#""top":0"#), "先頭へ戻る");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// キー編集ページの検索（機能名・キーへの部分一致・大小無視）。クエリで一覧が絞り込まれ、
 /// 空クエリで全件へ戻る。`config` は変わらない（割り当ては不変）。
 #[test]

@@ -143,6 +143,8 @@ pub mod modal_registry {
         pub selected: usize,
         /// 機能順で選択行のキー群のうちサブ選択中の index（個別削除の対象）。
         pub sub: usize,
+        /// 表示先頭行（スクロール位置）。
+        pub top: usize,
         /// キャプチャ待ちか。
         pub capturing: bool,
         /// 機能ピッカー（インライン）中か。`true` の間は `rows` が機能一覧になる。
@@ -186,6 +188,8 @@ pub mod modal_registry {
         pub pick_commit: Box<dyn Fn()>,
         /// ピックモードを中止する。
         pub pick_cancel: Box<dyn Fn()>,
+        /// 表示先頭行を指定位置へ（ホイール／スクロールバーと同じ経路・範囲外はクランプ）。
+        pub scroll: Box<dyn Fn(i32)>,
     }
 
     thread_local! {
@@ -290,6 +294,8 @@ pub enum Request {
     KeysPickCommit { category: String },
     /// `POST /keys/<category>/pickcancel`：ピックを中止する。
     KeysPickCancel { category: String },
+    /// `POST /keys/<category>/scroll/<top>`：表示先頭行を top へ（範囲外はクランプ）。
+    KeysScroll { category: String, top: i32 },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -500,6 +506,11 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                     idx.parse::<usize>().ok().map(|label| Request::KeysPick {
                         category: cat.to_string(),
                         label,
+                    })
+                } else if let Some((cat, idx)) = rest.rsplit_once("/scroll/") {
+                    idx.parse::<i32>().ok().map(|top| Request::KeysScroll {
+                        category: cat.to_string(),
+                        top,
                     })
                 } else if let Some(cat) = rest.strip_suffix("/bind") {
                     let mut body = String::new();
