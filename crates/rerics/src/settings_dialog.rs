@@ -2660,17 +2660,17 @@ fn command_genre(cmd: Command) -> (u8, &'static str) {
         | SelectFile | SelectMask | PathMask => (2, "選択"),
         Reload | Refresh | View | ViewFile | DirectoryInformation | SortByName | SortByExtension
         | SortBySize | SortByDate | Sort | SortDialog | SortReverseToggle => (3, "表示・並べ替え"),
-        FocusLeft | FocusRight | PageNext | PagePrevious | NewTab | CloseTab | SwapPath
-        | OppositeToCurrent | CurrentToOpposite => (4, "タブ・ペイン"),
+        PageNext | PagePrevious | NewTab | CloseTab => (4, "タブ"),
+        FocusLeft | FocusRight | SwapPath | OppositeToCurrent | CurrentToOpposite | MaximizeLeft
+        | MaximizeRight | MaximizeLeftForce | MaximizeRightForce | MaximizeCurrent | BorderLeft
+        | BorderRight | BorderReset => (5, "ペイン"),
         MakeDirectory | Copy | Move | Rename | RenameSequenceDialog | Delete | SendToRecycled
         | CreateShortcut | ClipCopy | ClipCut | ClipPaste | CreateFile | Edit | PropertyDialog
-        | Compress | Extract => (5, "ファイル操作"),
-        MaximizeLeft | MaximizeRight | MaximizeLeftForce | MaximizeRightForce | BorderLeft
-        | BorderRight | BorderReset | MaximizeCurrent | MaximizeWindow | MinimizeWindow => {
-            (6, "ウィンドウ")
-        }
+        | Compress | Extract => (6, "ファイル操作"),
         OpenTaskManager | OpenSettings | KeyBindsDialog | CopyLog | ClearLog | Nop
-        | ApplicationExit | End | Restart | Quit => (7, "アプリ・その他"),
+        | ApplicationExit | End | Restart | Quit | MaximizeWindow | MinimizeWindow => {
+            (7, "アプリ・その他")
+        }
         ViewerScrollUp | ViewerScrollDown | ViewerPageUp | ViewerPageDown | ViewerScrollTop
         | ViewerScrollBottom => (8, "スクロール"),
         ViewerSearchDialog | ViewerFindNext | ViewerFindPrevious => (9, "検索"),
@@ -3982,6 +3982,20 @@ impl KeyEditor {
                         this.inner.sub.set(ci);
                         this.ensure_visible();
                         this.begin_remap();
+                        return Ok(());
+                    }
+                    // キー未割当（— 表示）の機能をダブルクリック＝新しいキーのキャプチャを始める
+                    //（キー順で空キー定義「－」をダブルクリックするのと対称）。
+                    let no_keys = this
+                        .inner
+                        .view
+                        .borrow()
+                        .get(row)
+                        .and_then(|&ri| this.inner.rows.borrow().get(ri).map(|r| r.chords.is_empty()))
+                        .unwrap_or(false);
+                    if no_keys {
+                        this.ensure_visible();
+                        this.begin_capture();
                         return Ok(());
                     }
                 }
