@@ -23,6 +23,8 @@ interface RericsDirEntry {
 interface RericsItem {
   /** `items` 内での添字。 */
   readonly index: number;
+  /** フルパス（明示的な操作対象指定に使える。例：`rerics.copy(items.map(i => i.fullName), dest)`）。 */
+  readonly fullName: string;
   /** 表示名（拡張子込み）。 */
   readonly name: string;
   /** 拡張子を除いた名前。 */
@@ -178,24 +180,34 @@ declare const rerics: {
   on(event: RericsEvent, handler: (arg: string) => void | Promise<void>): void;
 
   /**
-   * アクティブペインの選択（無ければカーソル）項目を反対ペインへコピーする。ワーカーで実行し、
-   * **完了まで待てる** job（`Promise` ＋ `cancel()`）を返す。失敗・中止は例外。
+   * 項目を反対ペイン（または `dest`）へコピーする。ワーカーで実行し、**完了まで待てる**
+   * job（`Promise` ＋ `cancel()`）を返す。失敗・中止は例外。
+   *
+   * - 引数なし＝アクティブペインの選択（無ければカーソル）→ 反対ペイン。
+   * - `copy(items, dest)`＝`items`（フルパス配列。`item.fullName` を使う）→ `dest` ディレクトリ。
+   *   `items` が複数ディレクトリにまたがってもよい（job は全完了で resolve）。
    *
    * ```ts
+   * // 選択ベース
    * rerics.activePane().apply((d) => {
    *   for (const it of d.items) if (it.ext === "txt") it.selected = true;
    * });
-   * const job = rerics.copy();
-   * // job.cancel();        // 中止したいとき
-   * await job;
-   * rerics.log("コピー完了");
+   * await rerics.copy();
+   *
+   * // 明示ベース
+   * const p = rerics.activePane();
+   * const items = p.items.filter((it) => !it.isDir).map((it) => it.fullName);
+   * await rerics.copy(items, rerics.oppositePane().dir);
    * ```
    */
-  copy(): RericsJob;
+  copy(items?: string[], dest?: string): RericsJob;
 
   /** コピーと同じだが移動（成功後に元を削除）。詳細は {@link copy}。 */
-  move(): RericsJob;
+  move(items?: string[], dest?: string): RericsJob;
 
-  /** アクティブペインの選択（無ければカーソル）項目を削除する。詳細は {@link copy}。 */
-  delete(): RericsJob;
+  /**
+   * 項目を削除する。引数なし＝アクティブペインの選択（無ければカーソル）、`delete(items)`＝
+   * `items`（フルパス配列）。詳細は {@link copy}。
+   */
+  delete(items?: string[]): RericsJob;
 };

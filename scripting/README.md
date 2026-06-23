@@ -117,6 +117,15 @@ const job = rerics.copy();
 await job;
 ```
 
+対象と行き先を明示することもできる（`items` はフルパス配列・`item.fullName` を使う）。`items` が
+複数ディレクトリにまたがっても 1 つの job として扱える。
+
+```ts
+const p = rerics.activePane();
+const items = p.items.filter((it) => !it.isDir).map((it) => it.fullName);
+await rerics.copy(items, rerics.oppositePane().dir);   // 明示ベース
+```
+
 ### イベントの購読
 
 `rerics.on(event, handler)` で本体のイベントに反応できる。同じイベントに複数登録でき、登録順に

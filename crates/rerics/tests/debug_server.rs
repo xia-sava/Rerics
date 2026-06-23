@@ -2487,3 +2487,34 @@ fn script_async_delete_awaits_completion() {
     assert!(!items.contains("\"name\":\"a.txt\""), "a.txt should be deleted: {items}");
     assert!(items.contains("\"name\":\"b.txt\""), "b.txt must remain: {items}");
 }
+
+/// scripting：明示引数版 `rerics.copy(items, dest)`＝項目のフルパスと行き先を渡してコピーする。
+#[test]
+fn script_async_copy_explicit_items_and_dest() {
+    let server = Server::start_with_scripts(&["a.txt", "b.txt"], &[]);
+    // 右ペインを親へ（行き先）。左＝sbx のファイルをフルパスで渡す。
+    server.req("POST", "/command/FocusRight", "").unwrap();
+    server.req("POST", "/command/ToParent", "").unwrap();
+    server.req("POST", "/command/FocusLeft", "").unwrap();
+
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"(async () => {
+                 const p = rerics.activePane();
+                 const items = p.items.filter((it) => !it.isDir).map((it) => it.fullName);
+                 await rerics.copy(items, rerics.oppositePane().dir);
+                 rerics.log("EXPLICIT COPY DONE");
+               })();"#,
+        )
+        .expect("eval");
+
+    let log = poll(&server, "/state/log", |b| b.contains("EXPLICIT COPY DONE"));
+    assert!(log.contains("EXPLICIT COPY DONE"), "explicit copy should resolve: {log}");
+    // 行き先＝sbx の親（＝サンドボックスのベース）。両ファイルがそこへ書かれている。
+    assert!(
+        server.base.join("a.txt").exists() && server.base.join("b.txt").exists(),
+        "explicit copy should write both files to the dest dir"
+    );
+}

@@ -40,12 +40,15 @@ pub trait HostApi {
     /// 内蔵コマンドを名前で実行する（同期）。不明な名前・実行失敗はエラー文字列を返す。
     /// ワーカーを起動する操作は「開始」までで戻り、完了は待たない。
     fn command(&self, name: &str, args: &[String]) -> Result<(), String>;
-    /// 非同期ファイル操作（コピー/移動）を起動する。起動できたら**トークン**（タスク id）を返し、
-    /// 完了時に `done` へ結果を送る（Ok＝成功・Err＝失敗/中止）。起動できなければ（対象なし等）
-    /// `Err` を返す（その場合 `done` は使われない）。トークンは `cancel_operation` で中止に使う。
+    /// 非同期ファイル操作を起動する。起動できたら**トークン**を返し、完了時に `done` へ結果を
+    /// 送る（Ok＝成功・Err＝失敗/中止）。`items` が空なら対象＝アクティブペインの選択（行き先＝
+    /// 反対ペイン）、非空なら対象＝そのパス群・行き先＝`dest`（delete では `dest` は無視）。
+    /// 起動できなければ（対象なし等）`Err`（その場合 `done` は使われない）。
     fn begin_operation(
         &self,
         op: ScriptOp,
+        items: Vec<String>,
+        dest: String,
         done: tokio::sync::oneshot::Sender<Result<(), String>>,
     ) -> Result<u64, String>;
     /// トークンで進行中の操作を中止する（未知のトークンは無視）。
@@ -82,6 +85,8 @@ pub struct PaneSnapshot {
 pub struct PaneItem {
     /// `items` 内での添字（将来の書き戻しで行を指す）。
     pub index: usize,
+    /// フルパス（現在地と名前を結合したもの。明示的な操作対象指定に使える）。
+    pub full_name: String,
     /// 表示名（拡張子込み）。
     pub name: String,
     /// 拡張子を除いた名前。
@@ -228,8 +233,13 @@ fn read_dir_entries(path: &str) -> std::io::Result<Vec<DirEntry>> {
 /// 非同期ファイル操作を起動する同期 op。ホストへ起動を依頼し、得たトークン（タスク id）を
 /// 返す。完了受信用の `oneshot` を作り、受信側を `JobAwaiters` に登録する（`op_op_await` が待つ）。
 /// 起動できなければ例外。
-#[op2(nofast)]
-fn op_op_start(state: &mut OpState, kind: u32) -> Result<u32, deno_error::JsErrorBox> {
+#[op2]
+fn op_op_start(
+    state: &mut OpState,
+    kind: u32,
+    #[serde] items: Vec<String>,
+    #[string] dest: &str,
+) -> Result<u32, deno_error::JsErrorBox> {
     let op = match kind {
         0 => ScriptOp::Copy,
         1 => ScriptOp::Move,
@@ -239,7 +249,7 @@ fn op_op_start(state: &mut OpState, kind: u32) -> Result<u32, deno_error::JsErro
     let host = state.borrow::<Host>().clone();
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     let token = host
-        .begin_operation(op, tx)
+        .begin_operation(op, items, dest.to_string(), tx)
         .map_err(deno_error::JsErrorBox::generic)?;
     state.borrow::<JobAwaiters>().borrow_mut().insert(token, rx);
     Ok(token as u32)
@@ -319,6 +329,7 @@ const BOOTSTRAP: &str = r#"
       let sel = raw.selected;
       const it = {
         index: raw.index,
+        fullName: raw.fullName,
         name: raw.name,
         baseName: raw.baseName,
         ext: raw.ext,
@@ -371,8 +382,10 @@ const BOOTSTRAP: &str = r#"
     buildPane(snap, (idx, v) => ops.op_set_selected(snap.isLeft, idx, v));
   // 非同期操作を起動し、await できて .cancel() も持つ job を返す。op_op_start は起動失敗を
   // 例外にし、op_op_await はワーカー完了で resolve（失敗/中止は reject）する。
-  const startOp = (kind) => {
-    const token = ops.op_op_start(kind);
+  // 非同期操作を起動し、await できて .cancel() も持つ job を返す。引数なしは選択ベース、
+  // (items, dest) を渡すと明示ベース（items＝パス配列・dest＝行き先ディレクトリ）。
+  const startOp = (kind, items, dest) => {
+    const token = ops.op_op_start(kind, (items || []).map(String), dest == null ? "" : String(dest));
     const job = ops.op_op_await(token);
     job.cancel = () => ops.op_op_cancel(token);
     return job;
@@ -394,9 +407,9 @@ const BOOTSTRAP: &str = r#"
     activePane: () => makePane(ops.op_pane_snapshot(false)),
     oppositePane: () => makePane(ops.op_pane_snapshot(true)),
     command: (name, ...args) => ops.op_command(String(name), args.map(String)),
-    copy: () => startOp(0),
-    move: () => startOp(1),
-    delete: () => startOp(2),
+    copy: (items, dest) => startOp(0, items, dest),
+    move: (items, dest) => startOp(1, items, dest),
+    delete: (items) => startOp(2, items, ""),
     registerCommand: (name, fn) => {
       if (typeof fn !== "function") throw new TypeError("registerCommand: fn must be a function");
       commands.set(String(name), fn);
@@ -661,6 +674,8 @@ mod tests {
         fn begin_operation(
             &self,
             op: ScriptOp,
+            _items: Vec<String>,
+            _dest: String,
             done: tokio::sync::oneshot::Sender<Result<(), String>>,
         ) -> Result<u64, String> {
             self.operations.borrow_mut().push(match op {
@@ -686,6 +701,7 @@ mod tests {
         };
         PaneItem {
             index,
+            full_name: name.to_string(),
             name: name.to_string(),
             base_name,
             ext,

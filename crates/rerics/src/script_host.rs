@@ -34,7 +34,12 @@ pub enum HostCall {
     SetSelected { is_left: bool, index: usize, selected: bool },
     ApplySelection { is_left: bool, changes: Vec<(usize, bool)> },
     Command { name: String, args: Vec<String> },
-    BeginOperation { op: ScriptOp, done: OpDone },
+    BeginOperation {
+        op: ScriptOp,
+        items: Vec<String>,
+        dest: String,
+        done: OpDone,
+    },
     CancelOperation { token: u64 },
 }
 
@@ -54,8 +59,27 @@ type ScriptQueue = WakeQueue<HostCall, HostResp>;
 
 /// 非同期操作の完了通知の送り先（Ok＝成功・Err＝失敗/中止メッセージ）。
 type OpDone = oneshot::Sender<Result<(), String>>;
-/// 進行中のスクリプト発 async 操作：タスク id → 完了通知。
-type PendingOps = Rc<RefCell<HashMap<u64, OpDone>>>;
+
+/// 1 つのスクリプト操作（job）。複数ディレクトリに分かれる場合は複数タスクを束ねるので、
+/// 全タスクの完了で 1 度だけ `done` を発火する。トークン＝先頭タスク id。
+struct JobGroup {
+    /// 未完了タスク数。0 で完了通知する。
+    remaining: usize,
+    /// 完了通知の送り先（発火時に取り出す）。
+    done: Option<OpDone>,
+    /// 束ねているタスク id 群（キャンセルで全停止する）。
+    task_ids: Vec<u64>,
+}
+
+/// 進行中のスクリプト発 async 操作のレジストリ。
+#[derive(Default)]
+struct JobRegistry {
+    /// トークン（先頭タスク id）→ job。
+    jobs: HashMap<u64, JobGroup>,
+    /// タスク id → トークン（どの job に属すか）。
+    task_to_token: HashMap<u64, u64>,
+}
+type Jobs = Rc<RefCell<JobRegistry>>;
 
 /// `SystemTime` を Unix epoch ミリ秒へ。取得不可・1970 より前は 0。
 fn system_time_ms(t: Option<std::time::SystemTime>) -> u64 {
@@ -91,9 +115,9 @@ pub struct ScriptBridge {
     /// 各ペイン（[左, 右]）で最後に changeDirectory を撃った現在地。実移動の検出に使う
     /// （在席再読込・F5・操作後 Focus では現在地が変わらないので撃たない）。
     last_dir: Rc<RefCell<[String; 2]>>,
-    /// 進行中のスクリプト発 async 操作。`WorkerEvent::Done` で対応する `oneshot` を発火し、
-    /// スクリプトの `await` を解く。
-    pending_ops: PendingOps,
+    /// 進行中のスクリプト発 async 操作。`WorkerEvent::Done` で束ねたタスクの完了を数え、全部
+    /// 揃ったら `oneshot` を発火してスクリプトの `await` を解く。
+    jobs: Jobs,
 }
 
 impl ScriptBridge {
@@ -105,7 +129,7 @@ impl ScriptBridge {
             cmd_rx: Rc::new(RefCell::new(Some(cmd_rx))),
             suppress_events: Rc::new(Cell::new(false)),
             last_dir: Rc::new(RefCell::new([String::new(), String::new()])),
-            pending_ops: Rc::new(RefCell::new(HashMap::new())),
+            jobs: Rc::new(RefCell::new(JobRegistry::default())),
         }
     }
 
@@ -247,13 +271,24 @@ impl HostApi for GuiHost {
         }
     }
 
-    fn begin_operation(&self, op: ScriptOp, done: OpDone) -> Result<u64, String> {
+    fn begin_operation(
+        &self,
+        op: ScriptOp,
+        items: Vec<String>,
+        dest: String,
+        done: OpDone,
+    ) -> Result<u64, String> {
         // 起動依頼を UI へ送りトークンを得る（同期）。完了は `done`（oneshot）で後から届く。
         match ui_marshal::call(
             &self.queue,
             self.hwnd_ptr,
             SCRIPT_WAKE.raw(),
-            HostCall::BeginOperation { op, done },
+            HostCall::BeginOperation {
+                op,
+                items,
+                dest,
+                done,
+            },
         ) {
             Ok(HostResp::OpStarted(r)) => r,
             _ => Err("操作の起動に応答がありませんでした".to_string()),
@@ -368,8 +403,14 @@ impl MainWindow {
                 HostCall::Command { name, args } => {
                     let _ = tx.send(HostResp::CommandResult(self.run_script_command(&name, args)));
                 }
-                HostCall::BeginOperation { op, done } => {
-                    let _ = tx.send(HostResp::OpStarted(self.begin_script_operation(op, done)));
+                HostCall::BeginOperation {
+                    op,
+                    items,
+                    dest,
+                    done,
+                } => {
+                    let r = self.begin_script_operation(op, items, dest, done);
+                    let _ = tx.send(HostResp::OpStarted(r));
                 }
                 HostCall::CancelOperation { token } => {
                     self.cancel_script_operation(token);
@@ -379,50 +420,116 @@ impl MainWindow {
         }
     }
 
-    /// トークン（タスク id）の進行中操作を中止する（タスクの `TaskControl` を停止）。
-    fn cancel_script_operation(&self, id: u64) {
-        if let Some(t) = self.tasks.borrow().iter().find(|t| t.id == id) {
-            t.control.stop();
+    /// トークンの job が束ねる全タスクを中止する（各 `TaskControl` を停止）。
+    fn cancel_script_operation(&self, token: u64) {
+        let task_ids: Vec<u64> = self
+            .script
+            .jobs
+            .borrow()
+            .jobs
+            .get(&token)
+            .map(|g| g.task_ids.clone())
+            .unwrap_or_default();
+        let tasks = self.tasks.borrow();
+        for id in task_ids {
+            if let Some(t) = tasks.iter().find(|t| t.id == id) {
+                t.control.stop();
+            }
         }
     }
 
     /// スクリプト発の非同期ファイル操作を起動する。対象＝アクティブペインの選択（無ければ
     /// カーソル）、行き先＝反対ペイン。ワーカーを起こせたらタスク id に `done` を紐づけ、完了で
     /// 発火する。起動できなければ（対象なし・書庫・起動失敗）即座に `done` へエラーを返す。
-    fn begin_script_operation(&self, op: ScriptOp, done: OpDone) -> Result<u64, String> {
+    fn begin_script_operation(
+        &self,
+        op: ScriptOp,
+        items: Vec<String>,
+        dest: String,
+        done: OpDone,
+    ) -> Result<u64, String> {
         let is_left = !self.active_right.get();
-        // 削除は src のみ、コピー/移動は src+dst が必要。いずれも書庫は未対応。
         let needs_dst = !matches!(op, ScriptOp::Delete);
-        if self.pane(is_left).borrow().is_archive()
-            || (needs_dst && self.pane(!is_left).borrow().is_archive())
-        {
-            return Err("書庫の操作は未対応です".to_string());
-        }
-        let names = self.selected_or_cursor_names(is_left);
-        if names.is_empty() {
-            return Err("対象がありません".to_string());
-        }
-        let src_dir = self.pane(is_left).borrow().path().to_path_buf();
-        let started = match op {
-            ScriptOp::Delete => self.start_delete(src_dir, names),
-            ScriptOp::Copy | ScriptOp::Move => {
-                let dst_dir = self.pane(!is_left).borrow().path().to_path_buf();
-                self.start_copy(src_dir, dst_dir, names, matches!(op, ScriptOp::Move))
+        // 対象＝(src_dir, names) のグループ。選択ベースはアクティブペイン 1 グループ、明示ベースは
+        // 与えられたパスを親ディレクトリごとにまとめる。
+        let (groups, dst_dir) = if items.is_empty() {
+            if self.pane(is_left).borrow().is_archive() {
+                return Err("書庫の操作は未対応です".to_string());
             }
+            let names = self.selected_or_cursor_names(is_left);
+            if names.is_empty() {
+                return Err("対象がありません".to_string());
+            }
+            let src = self.pane(is_left).borrow().path().to_path_buf();
+            let dst = self.pane(!is_left).borrow().path().to_path_buf();
+            (vec![(src, names)], dst)
+        } else {
+            let mut by_dir: HashMap<std::path::PathBuf, Vec<String>> = HashMap::new();
+            for item in &items {
+                let p = std::path::Path::new(item);
+                if let Some(name) = p.file_name().map(|n| n.to_string_lossy().into_owned()) {
+                    let parent = p.parent().map(|x| x.to_path_buf()).unwrap_or_default();
+                    by_dir.entry(parent).or_default().push(name);
+                }
+            }
+            if by_dir.is_empty() {
+                return Err("対象がありません".to_string());
+            }
+            let dst = std::path::PathBuf::from(&dest);
+            if needs_dst && dest.is_empty() {
+                return Err("行き先が指定されていません".to_string());
+            }
+            (by_dir.into_iter().collect(), dst)
         };
-        match started {
-            Ok(id) => {
-                self.script.pending_ops.borrow_mut().insert(id, done);
-                Ok(id)
+
+        // 各グループでワーカーを起こす。起動できた id を束ねて 1 job にする。
+        let mut task_ids = Vec::new();
+        for (src_dir, names) in groups {
+            let started = match op {
+                ScriptOp::Delete => self.start_delete(src_dir, names),
+                ScriptOp::Copy | ScriptOp::Move => {
+                    self.start_copy(src_dir, dst_dir.clone(), names, matches!(op, ScriptOp::Move))
+                }
+            };
+            match started {
+                Ok(id) => task_ids.push(id),
+                Err(e) => self.log.error(&format!("操作を起動できません: {e}")),
             }
-            Err(e) => Err(e.to_string()),
         }
+        let Some(&token) = task_ids.first() else {
+            return Err("操作を起動できませんでした".to_string());
+        };
+        let mut reg = self.script.jobs.borrow_mut();
+        for &id in &task_ids {
+            reg.task_to_token.insert(id, token);
+        }
+        reg.jobs.insert(
+            token,
+            JobGroup {
+                remaining: task_ids.len(),
+                done: Some(done),
+                task_ids,
+            },
+        );
+        Ok(token)
     }
 
-    /// ワーカー完了（`WorkerEvent::Done`）を受けたとき、その id を待っているスクリプト操作が
-    /// あれば完了を通知する（`await` を解く）。スクリプト発でない操作の id は無視される。
+    /// ワーカー完了（`WorkerEvent::Done`）を受けたとき、その id が属する job のカウントを減らし、
+    /// 全タスクが揃ったら完了を通知する（`await` を解く）。スクリプト発でない id は無視される。
     pub(crate) fn notify_script_op_done(&self, id: u64) {
-        if let Some(done) = self.script.pending_ops.borrow_mut().remove(&id) {
+        let mut reg = self.script.jobs.borrow_mut();
+        let Some(token) = reg.task_to_token.remove(&id) else {
+            return;
+        };
+        let fire = reg.jobs.get_mut(&token).and_then(|g| {
+            g.remaining = g.remaining.saturating_sub(1);
+            if g.remaining == 0 { g.done.take() } else { None }
+        });
+        if fire.is_some() {
+            reg.jobs.remove(&token);
+        }
+        drop(reg);
+        if let Some(done) = fire {
             let _ = done.send(Ok(()));
         }
     }
@@ -502,6 +609,10 @@ impl MainWindow {
             .enumerate()
             .map(|(index, it)| PaneItem {
                 index,
+                full_name: std::path::Path::new(&dir)
+                    .join(&it.name)
+                    .to_string_lossy()
+                    .into_owned(),
                 name: it.name.clone(),
                 base_name: it.base_name.clone(),
                 // スクリプト API はドット無しに統一する（コアはドット付きで持つ）。
