@@ -4,6 +4,7 @@
 use std::ffi::c_void;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use winsafe::{self as w, co};
 
@@ -173,6 +174,30 @@ fn parse_hdrop(bytes: &[u8]) -> Vec<PathBuf> {
     paths
 }
 
+/// クリップボードを開く。クリップボードはプロセス横断の単一所有資源で、他プロセス
+/// （クリップボード履歴ツール等）が一瞬掴むと `OpenClipboard` が失敗する。そうした
+/// 一過性の競合を吸収するため、短い間隔で数回リトライしてから諦める。全リトライが
+/// 失敗したら、呼び出し側がユーザーへ明示できるようエラー文字列を返す（黙って空振りしない）。
+fn open_clipboard_retry(owner: &w::HWND) -> Result<w::guard::CloseClipboardGuard<'_>, String> {
+    const ATTEMPTS: u32 = 8;
+    const INTERVAL: Duration = Duration::from_millis(25);
+    let mut last = String::new();
+    for attempt in 0..ATTEMPTS {
+        match owner.OpenClipboard() {
+            Ok(clip) => return Ok(clip),
+            Err(e) => {
+                last = e.to_string();
+                if attempt + 1 < ATTEMPTS {
+                    std::thread::sleep(INTERVAL);
+                }
+            }
+        }
+    }
+    Err(format!(
+        "クリップボードを開けませんでした（他のアプリが使用中の可能性）: {last}"
+    ))
+}
+
 /// 選択ファイル群をクリップボードへ（`move_it` で切り取り＝移動指定）。
 pub fn clip_copy_files(owner: &w::HWND, paths: &[PathBuf], move_it: bool) -> Result<(), String> {
     if paths.is_empty() {
@@ -181,7 +206,7 @@ pub fn clip_copy_files(owner: &w::HWND, paths: &[PathBuf], move_it: bool) -> Res
     let hdrop = build_hdrop(paths);
     let effect = if move_it { DROPEFFECT_MOVE } else { DROPEFFECT_COPY };
     let effect_fmt = preferred_drop_effect_format();
-    let clip = owner.OpenClipboard().map_err(|e| e.to_string())?;
+    let clip = open_clipboard_retry(owner)?;
     clip.EmptyClipboard().map_err(|e| e.to_string())?;
     clip.SetClipboardData(co::CF::HDROP, &hdrop).map_err(|e| e.to_string())?;
     if effect_fmt != 0 {
@@ -191,14 +216,17 @@ pub fn clip_copy_files(owner: &w::HWND, paths: &[PathBuf], move_it: bool) -> Res
     Ok(())
 }
 
-/// クリップボードのファイル一覧と「移動指定か」を取り出す。ファイルが無ければ Err。
+/// クリップボードのファイル一覧と「移動指定か」を取り出す。クリップボードを開けない等の
+/// システム的失敗は `Err`（呼び出し側がエラー表示する）。ファイル形式のデータが無い
+/// （貼れるものが無い）場合は空 Vec を `Ok` で返す＝正常な「貼るもの無し」と区別する。
 pub fn clip_paste_files(owner: &w::HWND) -> Result<(Vec<PathBuf>, bool), String> {
-    let clip = owner.OpenClipboard().map_err(|e| e.to_string())?;
-    let bytes = clip.GetClipboardData(co::CF::HDROP).map_err(|e| e.to_string())?;
+    let clip = open_clipboard_retry(owner)?;
+    let bytes = match clip.GetClipboardData(co::CF::HDROP) {
+        Ok(bytes) => bytes,
+        // HDROP（ファイル）形式が無い＝テキストのみ/空など。システム失敗ではないので空を返す。
+        Err(_) => return Ok((Vec::new(), false)),
+    };
     let paths = parse_hdrop(&bytes);
-    if paths.is_empty() {
-        return Err("クリップボードにファイルがありません".to_string());
-    }
     let effect_fmt = preferred_drop_effect_format();
     let move_it = if effect_fmt != 0 {
         let fmt = unsafe { co::CF::from_raw(effect_fmt) };

@@ -750,11 +750,16 @@ impl MainWindow {
         }
         let (paths, move_it) = match shell::clip_paste_files(self.wnd.hwnd()) {
             Ok(v) => v,
+            // クリップボードを開けない等のシステム失敗は、黙らせずエラーとして明示する。
             Err(e) => {
-                self.log.info(&e);
+                self.log.error(&format!("クリップボードからの貼り付けに失敗しました: {e}"));
                 return Ok(());
             }
         };
+        if paths.is_empty() {
+            self.log.info("クリップボードに貼り付けられるファイルがありません。");
+            return Ok(());
+        }
         // 親ディレクトリごとにまとめて run_copy する（複数フォルダ由来でも壊れない）。
         let mut groups: std::collections::BTreeMap<PathBuf, Vec<String>> = Default::default();
         for p in &paths {
