@@ -2611,12 +2611,31 @@ struct KeyRow {
     chords: Vec<String>,
 }
 
+/// キー順ビューの 1 行＝1 chord と、それが起動するコマンド。
+struct KeyChordRow {
+    chord: String,
+    command: Command,
+}
+
+/// キー編集ページの並べ方。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KeyView {
+    /// 機能順（コマンド → 割り当てキー群）。
+    ByCommand,
+    /// キー順（キー → 起動する機能）。
+    ByKey,
+}
+
 /// 「キー」ページの編集状態。
 struct KeyEditorInner {
     shared: Rc<Shared>,
     category: KeyCategory,
     rows: RefCell<Vec<KeyRow>>,
-    /// 検索で絞り込んだ表示対象＝`rows` へのインデックス（表示順）。`sel`/`top` はこの上の位置。
+    /// キー順ビューの行（chord でソート）。`rows` と同じ map から組む。
+    key_rows: RefCell<Vec<KeyChordRow>>,
+    /// 並べ方（機能順／キー順）。
+    view_mode: Cell<KeyView>,
+    /// 検索で絞り込んだ表示対象＝現モードの行配列へのインデックス（表示順）。`sel`/`top` はこの上の位置。
     view: RefCell<Vec<usize>>,
     /// 検索クエリ（機能名・キーへの部分一致・大小無視）。空なら全件表示。
     query: RefCell<String>,
@@ -2636,6 +2655,8 @@ struct KeyEditorInner {
 struct KeyEditor {
     list: gui::WindowControl,
     search: gui::Edit,
+    /// 機能順／キー順の並べ替え切替。
+    toggle: gui::RadioGroup,
     inner: Rc<KeyEditorInner>,
 }
 
@@ -2654,10 +2675,28 @@ impl KeyEditor {
             gui::EditOpts {
                 control_style: co::ES::AUTOHSCROLL,
                 position: gui::dpi(60, 40),
-                width: gui::dpi_x(700),
+                width: gui::dpi_x(500),
                 height: gui::dpi_y(24),
                 ..Default::default()
             },
+        );
+        let toggle = gui::RadioGroup::new(
+            parent,
+            &[
+                gui::RadioButtonOpts {
+                    text: "機能順(&F)",
+                    position: gui::dpi(572, 42),
+                    size: gui::dpi(92, 20),
+                    selected: true,
+                    ..Default::default()
+                },
+                gui::RadioButtonOpts {
+                    text: "キー順(&Y)",
+                    position: gui::dpi(668, 42),
+                    size: gui::dpi(92, 20),
+                    ..Default::default()
+                },
+            ],
         );
         let list = gui::WindowControl::new(
             parent,
@@ -2706,10 +2745,13 @@ impl KeyEditor {
         let me = Self {
             list,
             search,
+            toggle,
             inner: Rc::new(KeyEditorInner {
                 shared: shared.clone(),
                 category,
                 rows: RefCell::new(Vec::new()),
+                key_rows: RefCell::new(Vec::new()),
+                view_mode: Cell::new(KeyView::ByCommand),
                 view: RefCell::new(Vec::new()),
                 query: RefCell::new(String::new()),
                 sel: Cell::new(0),
@@ -2726,6 +2768,13 @@ impl KeyEditor {
             me.search.on().en_change(move || {
                 let q = this.search.text().unwrap_or_default();
                 this.apply_query(&q);
+                Ok(())
+            });
+        }
+        {
+            let this = me.clone();
+            me.toggle.on().bn_clicked(move || {
+                this.set_view(this.toggle.selected_index() == Some(1));
                 Ok(())
             });
         }
@@ -2766,12 +2815,19 @@ impl KeyEditor {
         let read = {
             let this = self.clone();
             Box::new(move || {
-                let rows = {
+                let by_key = this.inner.view_mode.get() == KeyView::ByKey;
+                let view = this.inner.view.borrow();
+                let rows = if by_key {
+                    let all = this.inner.key_rows.borrow();
+                    view.iter()
+                        .map(|&ri| {
+                            let r = &all[ri];
+                            (r.chord.clone(), vec![r.command.as_token().to_string()])
+                        })
+                        .collect()
+                } else {
                     let all = this.inner.rows.borrow();
-                    this.inner
-                        .view
-                        .borrow()
-                        .iter()
+                    view.iter()
                         .map(|&ri| {
                             let r = &all[ri];
                             (r.command.as_token().to_string(), r.chords.clone())
@@ -2784,6 +2840,7 @@ impl KeyEditor {
                     capturing: this.inner.capturing.get(),
                     status: this.inner.status.borrow().clone(),
                     query: this.inner.query.borrow().clone(),
+                    mode: if by_key { "key" } else { "command" }.to_string(),
                 }
             }) as Box<dyn Fn() -> KeyEditorState>
         };
@@ -2805,8 +2862,14 @@ impl KeyEditor {
                 let ch = KeyChord::parse(chord)
                     .ok_or_else(|| format!("unknown chord: {chord}"))?;
                 let pos = {
-                    let rows = this.inner.rows.borrow();
-                    this.inner.view.borrow().iter().position(|&ri| rows[ri].command == cmd)
+                    let view = this.inner.view.borrow();
+                    if this.inner.view_mode.get() == KeyView::ByKey {
+                        let krows = this.inner.key_rows.borrow();
+                        view.iter().position(|&ri| krows[ri].command == cmd)
+                    } else {
+                        let rows = this.inner.rows.borrow();
+                        view.iter().position(|&ri| rows[ri].command == cmd)
+                    }
                 };
                 if let Some(di) = pos {
                     this.inner.sel.set(di);
@@ -2830,9 +2893,13 @@ impl KeyEditor {
                 this.apply_query(q);
             }) as Box<dyn Fn(&str)>
         };
+        let set_view = {
+            let this = self.clone();
+            Box::new(move |by_key: bool| this.set_view(by_key)) as Box<dyn Fn(bool)>
+        };
         crate::debug_server::modal_registry::register_key_editor(
             self.inner.category.debug_str(),
-            KeyEditorHooks { read, select, bind, unbind, reset, search },
+            KeyEditorHooks { read, select, bind, unbind, reset, search, set_view },
         );
     }
 
@@ -2851,9 +2918,10 @@ impl KeyEditor {
         f(map)
     }
 
-    /// 現在のキーマップから機能順の行を組み直す（空値＝未バインドは除く）。
+    /// 現在のキーマップから機能順 `rows`・キー順 `key_rows` の両方を組み直す（空値＝未バインドは除く）。
     fn rebuild_rows(&self) {
         let mut by_cmd: HashMap<Command, Vec<String>> = HashMap::new();
+        let mut key_rows: Vec<KeyChordRow> = Vec::new();
         self.with_map(|map| {
             for (chord, inv) in map.iter() {
                 if inv.trim().is_empty() {
@@ -2861,6 +2929,7 @@ impl KeyEditor {
                 }
                 if let Some(parsed) = Invocation::parse(inv) {
                     by_cmd.entry(parsed.command).or_default().push(chord.clone());
+                    key_rows.push(KeyChordRow { chord: chord.clone(), command: parsed.command });
                 }
             }
         });
@@ -2873,16 +2942,21 @@ impl KeyEditor {
                 KeyRow { command, chords }
             })
             .collect();
+        key_rows.sort_by(|a, b| a.chord.cmp(&b.chord));
         *self.inner.rows.borrow_mut() = rows;
+        *self.inner.key_rows.borrow_mut() = key_rows;
         self.rebuild_view();
     }
 
-    /// 検索クエリで `rows` を絞り込み、表示対象 `view` を組み直す。選択を範囲内へ収める。
+    /// 検索クエリで現モードの行を絞り込み、表示対象 `view` を組み直す。選択を範囲内へ収める。
     fn rebuild_view(&self) {
         let q = self.inner.query.borrow().to_lowercase();
-        let view: Vec<usize> = {
-            let rows = self.inner.rows.borrow();
-            rows.iter()
+        let view: Vec<usize> = match self.inner.view_mode.get() {
+            KeyView::ByCommand => self
+                .inner
+                .rows
+                .borrow()
+                .iter()
                 .enumerate()
                 .filter(|(_, r)| {
                     q.is_empty()
@@ -2890,7 +2964,20 @@ impl KeyEditor {
                         || r.chords.iter().any(|c| c.to_lowercase().contains(&q))
                 })
                 .map(|(i, _)| i)
-                .collect()
+                .collect(),
+            KeyView::ByKey => self
+                .inner
+                .key_rows
+                .borrow()
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| {
+                    q.is_empty()
+                        || r.chord.to_lowercase().contains(&q)
+                        || r.command.as_token().to_lowercase().contains(&q)
+                })
+                .map(|(i, _)| i)
+                .collect(),
         };
         let n = view.len();
         *self.inner.view.borrow_mut() = view;
@@ -2917,11 +3004,38 @@ impl KeyEditor {
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
-    /// 選択行のコマンド。
+    /// 並べ方を切り替える（同じなら何もしない）。キャプチャ中なら中断する。
+    fn set_view(&self, by_key: bool) {
+        let mode = if by_key { KeyView::ByKey } else { KeyView::ByCommand };
+        if self.inner.view_mode.get() == mode {
+            return;
+        }
+        self.inner.view_mode.set(mode);
+        self.inner.capturing.set(false);
+        self.inner.sel.set(0);
+        self.inner.top.set(0);
+        self.toggle[0].select(!by_key);
+        self.toggle[1].select(by_key);
+        self.rebuild_view();
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    /// 選択行のコマンド（機能順＝その行の機能／キー順＝その chord が起動する機能）。
     fn selected_command(&self) -> Option<Command> {
-        let view = self.inner.view.borrow();
-        let ri = *view.get(self.inner.sel.get())?;
-        self.inner.rows.borrow().get(ri).map(|r| r.command)
+        let ri = *self.inner.view.borrow().get(self.inner.sel.get())?;
+        match self.inner.view_mode.get() {
+            KeyView::ByCommand => self.inner.rows.borrow().get(ri).map(|r| r.command),
+            KeyView::ByKey => self.inner.key_rows.borrow().get(ri).map(|r| r.command),
+        }
+    }
+
+    /// キー順で選択中の chord（機能順では `None`）。
+    fn selected_chord(&self) -> Option<String> {
+        if self.inner.view_mode.get() != KeyView::ByKey {
+            return None;
+        }
+        let ri = *self.inner.view.borrow().get(self.inner.sel.get())?;
+        self.inner.key_rows.borrow().get(ri).map(|r| r.chord.clone())
     }
 
     /// chord を選択行のコマンドへ割り当てる（chord は一意なので既存があれば移動＝上書き）。
@@ -2939,22 +3053,36 @@ impl KeyEditor {
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
-    /// 選択行のコマンドの割り当てを全て解除する（既定キーは空値で打ち消す＝差分保存で永続）。
+    /// 選択行の割り当てを解除する（既定キーは空値で打ち消す＝差分保存で永続）。
+    /// 機能順＝その機能の全キー／キー順＝選択中のその1キーだけ。
     fn unbind_selected(&self) {
         let Some(command) = self.selected_command() else {
             return;
         };
-        let chords: Vec<String> = {
-            let view = self.inner.view.borrow();
-            match view.get(self.inner.sel.get()) {
-                Some(&ri) => self
-                    .inner
-                    .rows
-                    .borrow()
-                    .get(ri)
-                    .map(|r| r.chords.clone())
-                    .unwrap_or_default(),
-                None => return,
+        let (chords, status): (Vec<String>, String) = match self.inner.view_mode.get() {
+            KeyView::ByCommand => {
+                let chords: Vec<String> = {
+                    let view = self.inner.view.borrow();
+                    match view.get(self.inner.sel.get()) {
+                        Some(&ri) => self
+                            .inner
+                            .rows
+                            .borrow()
+                            .get(ri)
+                            .map(|r| r.chords.clone())
+                            .unwrap_or_default(),
+                        None => return,
+                    }
+                };
+                let s = format!("{} の割り当てを解除しました", command.as_token());
+                (chords, s)
+            }
+            KeyView::ByKey => {
+                let Some(chord) = self.selected_chord() else {
+                    return;
+                };
+                let s = format!("{} の割り当てを解除しました", chord);
+                (vec![chord], s)
             }
         };
         if chords.is_empty() {
@@ -2966,7 +3094,7 @@ impl KeyEditor {
                 map.insert(c.clone(), String::new());
             }
         });
-        *self.inner.status.borrow_mut() = format!("{} の割り当てを解除しました", command.as_token());
+        *self.inner.status.borrow_mut() = status;
         self.rebuild_rows();
         let _ = self.hwnd().InvalidateRect(None, false);
     }
@@ -3158,7 +3286,6 @@ impl KeyEditor {
         let hl_text = w::GetSysColor(co::COLOR::HIGHLIGHTTEXT);
         let hl_bg = w::HBRUSH::GetSysColorBrush(co::COLOR::HIGHLIGHT)?;
 
-        let rows = self.inner.rows.borrow();
         let view = self.inner.view.borrow();
         let top = self.inner.top.get();
         let sel = self.inner.sel.get();
@@ -3166,12 +3293,38 @@ impl KeyEditor {
         let key_x = gui::dpi_x(8);
         let chord_x = gui::dpi_x(260);
         let vis = (ch / row_h).max(1) as usize;
-        for vi in 0..vis {
-            let di = top + vi;
-            if di >= view.len() {
-                break;
+        // 可視範囲の各行を現モードで (左, 右, 右を淡色表示するか) に文字列化する。
+        // 機能順＝(機能, キー群 or "—"), キー順＝(キー, 機能)。
+        let lines: Vec<(String, String, bool)> = match self.inner.view_mode.get() {
+            KeyView::ByCommand => {
+                let rows = self.inner.rows.borrow();
+                (0..vis)
+                    .filter_map(|vi| {
+                        view.get(top + vi).map(|&ri| {
+                            let r = &rows[ri];
+                            if r.chords.is_empty() {
+                                (r.command.as_token().to_string(), "—".to_string(), true)
+                            } else {
+                                (r.command.as_token().to_string(), r.chords.join(", "), false)
+                            }
+                        })
+                    })
+                    .collect()
             }
-            let row = &rows[view[di]];
+            KeyView::ByKey => {
+                let krows = self.inner.key_rows.borrow();
+                (0..vis)
+                    .filter_map(|vi| {
+                        view.get(top + vi).map(|&ri| {
+                            let r = &krows[ri];
+                            (r.chord.clone(), r.command.as_token().to_string(), false)
+                        })
+                    })
+                    .collect()
+            }
+        };
+        for (vi, (left, right, muted)) in lines.iter().enumerate() {
+            let di = top + vi;
             let y = vi as i32 * row_h;
             let ty = y + (row_h - fh) / 2;
             if di == sel {
@@ -3180,16 +3333,14 @@ impl KeyEditor {
             } else {
                 dc.SetTextColor(text_col)?;
             }
-            dc.TextOut(key_x, ty, row.command.as_token())?;
+            dc.TextOut(key_x, ty, left)?;
             if di == sel && capturing {
                 dc.TextOut(chord_x, ty, "← キーを押してください（Escで中止）")?;
-            } else if row.chords.is_empty() {
-                if di != sel {
+            } else {
+                if *muted && di != sel {
                     dc.SetTextColor(gray_col)?;
                 }
-                dc.TextOut(chord_x, ty, "—")?;
-            } else {
-                dc.TextOut(chord_x, ty, &row.chords.join(", "))?;
+                dc.TextOut(chord_x, ty, right)?;
             }
         }
         Ok(())

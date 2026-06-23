@@ -139,6 +139,12 @@ impl MainWindow {
                         Ok(())
                     }));
                 }
+                debug_server::Request::KeysSetView { category, by_key } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| {
+                        (h.set_view)(by_key);
+                        Ok(())
+                    }));
+                }
             }
         }
     }

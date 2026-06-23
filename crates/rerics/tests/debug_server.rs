@@ -1841,6 +1841,66 @@ fn settings_key_editor_search_filters_by_name_and_key() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// キー編集ページの機能順／キー順ビュー切替。キー順では行が「キー→機能」になり、検索も効く。
+/// キー順の削除は選択中の 1 キーだけを外す（同じ機能の別キーは残る）。
+#[test]
+fn settings_key_editor_toggles_command_and_key_views() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // 既定は機能順：行は (機能, [キー…])。MakeDirectory=K。
+    let s = keys();
+    assert!(s.contains(r#""mode":"command""#), "初期は機能順: {s}");
+    assert!(s.contains(r#"["MakeDirectory",["K"]]"#), "機能順 MakeDirectory=K: {s}");
+
+    // キー順へ切替：行は (キー, [機能])。K→MakeDirectory。
+    assert_eq!(server.req("POST", "/keys/filer/view", "key").unwrap().0, 200, "view 切替 ok");
+    let s = keys();
+    assert!(s.contains(r#""mode":"key""#), "キー順になる: {s}");
+    assert!(s.contains(r#"["K",["MakeDirectory"]]"#), "キー順 K→MakeDirectory: {s}");
+
+    // キー順でも検索が効く（キー・機能名どちらにも一致）。
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    assert!(keys().contains(r#"["K",["MakeDirectory"]]"#), "キー順で機能名検索が効く");
+    server.req("POST", "/keys/filer/search", "").unwrap();
+
+    // 機能順へ戻して、同じ機能に 2 キーを割り当てる（per-chord 削除の検証用）。
+    server.req("POST", "/keys/filer/view", "command").unwrap();
+    server.req("POST", "/keys/filer/bind", r#"["SelectMask","Ctrl+Shift+M"]"#).unwrap();
+    server.req("POST", "/keys/filer/bind", r#"["SelectMask","Ctrl+Shift+N"]"#).unwrap();
+    assert!(
+        keys().contains(r#"["SelectMask",["Ctrl+Shift+M","Ctrl+Shift+N"]]"#),
+        "SelectMask が 2 キーを持つ: {}",
+        keys()
+    );
+
+    // キー順で Ctrl+Shift+M の行だけを選び、削除＝その 1 キーだけ外れる。
+    server.req("POST", "/keys/filer/view", "key").unwrap();
+    server.req("POST", "/keys/filer/search", "Ctrl+Shift+M").unwrap();
+    let s = keys();
+    // 絞り込みで M の行だけ（N の行は出ない）。rows 配列を厳密に見る（status 文言の巻き込みを避ける）。
+    assert!(
+        s.contains(r#""rows":[["Ctrl+Shift+M",["SelectMask"]]]"#),
+        "M の行だけが出る: {s}"
+    );
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/unbind", "").unwrap();
+
+    // 機能順へ戻すと、SelectMask は N だけ残る（M だけが外れた）。
+    server.req("POST", "/keys/filer/search", "").unwrap();
+    server.req("POST", "/keys/filer/view", "command").unwrap();
+    assert!(
+        keys().contains(r#"["SelectMask",["Ctrl+Shift+N"]]"#),
+        "M だけ外れ N が残る: {}",
+        keys()
+    );
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// `/modal/resize/<w>x<h>` がモーダルへ WM_SIZE を飛ばし、クライアント寸法が要求サイズへ
 /// 変わる（手動ドラッグの代替＝リサイズ追従ダイアログを headless で検証する基盤）。
 #[test]

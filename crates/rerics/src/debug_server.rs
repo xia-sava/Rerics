@@ -147,6 +147,8 @@ pub mod modal_registry {
         pub status: String,
         /// 現在の検索クエリ（空なら全件）。
         pub query: String,
+        /// 並べ方：`"command"`（機能順＝行は (機能, [キー…])）／`"key"`（キー順＝行は (キー, [機能])）。
+        pub mode: String,
     }
 
     /// (コマンドのトークン名, chord トークン) を割り当てるフック。未知コマンド等は Err。
@@ -163,6 +165,8 @@ pub mod modal_registry {
         pub reset: Box<dyn Fn()>,
         /// 検索クエリを適用して表示を絞り込む（機能名・キーへの部分一致）。
         pub search: Box<dyn Fn(&str)>,
+        /// 並べ方を切り替える（`true`＝キー順／`false`＝機能順）。
+        pub set_view: Box<dyn Fn(bool)>,
     }
 
     thread_local! {
@@ -255,6 +259,8 @@ pub enum Request {
     /// `POST /keys/<category>/search`：body の文字列で表示を絞り込む（機能名・キーへの部分一致・
     /// 大小無視）。空 body で全件へ戻す。
     KeysSearch { category: String, query: String },
+    /// `POST /keys/<category>/view`：並べ方を切り替える。body が `key` ならキー順、それ以外は機能順。
+    KeysSetView { category: String, by_key: bool },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -480,6 +486,13 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                     let mut query = String::new();
                     let _ = std::io::Read::read_to_string(req.as_reader(), &mut query);
                     Some(Request::KeysSearch { category: cat.to_string(), query })
+                } else if let Some(cat) = rest.strip_suffix("/view") {
+                    let mut body = String::new();
+                    let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);
+                    Some(Request::KeysSetView {
+                        category: cat.to_string(),
+                        by_key: body.trim() == "key",
+                    })
                 } else {
                     rest.strip_suffix("/reset")
                         .map(|cat| Request::KeysReset { category: cat.to_string() })
