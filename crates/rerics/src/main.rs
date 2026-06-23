@@ -1,14 +1,11 @@
 mod chrome;
-#[cfg(feature = "scripting")]
 mod script;
 // 常時ビルド（純粋関数＋ユニットテスト）。呼び出し元は debug-server feature 下なので OFF 時は未使用。
 #[allow(dead_code)]
 mod debug_json;
 #[cfg(feature = "debug-server")]
 mod debug_server;
-#[cfg(any(feature = "debug-server", feature = "scripting"))]
 mod ui_marshal;
-#[cfg(feature = "scripting")]
 mod script_host;
 mod dialog;
 mod file_list;
@@ -262,7 +259,6 @@ struct MainWindow {
     archive_temp_dirs: Rc<RefCell<std::collections::HashMap<PathBuf, PathBuf>>>,
     #[cfg(feature = "debug-server")]
     debug: debug_server::Bridge,
-    #[cfg(feature = "scripting")]
     script: script_host::ScriptBridge,
 }
 
@@ -516,7 +512,6 @@ impl MainWindow {
             archive_temp_dirs: Rc::new(RefCell::new(std::collections::HashMap::new())),
             #[cfg(feature = "debug-server")]
             debug: debug_server::Bridge::new(debug_port, debug_allow_write, debug_headless),
-            #[cfg(feature = "scripting")]
             script: script_host::ScriptBridge::new(),
         }
     }
@@ -599,8 +594,7 @@ impl MainWindow {
             });
         }
 
-        // スクリプトエンジンスレッドからの HostApi 要求を UI スレッドで捌く（feature 有効時のみ）。
-        #[cfg(feature = "scripting")]
+        // スクリプトエンジンスレッドからの HostApi 要求を UI スレッドで捌く。
         {
             let this = self.clone();
             let wake = winutil::msg::SCRIPT_WAKE;
@@ -705,8 +699,7 @@ impl MainWindow {
                 let hwnd_ptr = this.wnd.hwnd().ptr() as isize;
                 debug_server::start(port, this.debug.queue.clone(), hwnd_ptr);
             }
-            // スクリプトエンジンを別スレッドに建て、起動スクリプトを読み込む（feature 有効時のみ）。
-            #[cfg(feature = "scripting")]
+            // スクリプトエンジンを別スレッドに建て、起動スクリプトを読み込む。
             this.start_script_engine();
             // 設定読込エラーは、詳細をログへ出し、窓表示後にアラートを出す（遅延）。
             if let Some(detail) = &this.config_error {

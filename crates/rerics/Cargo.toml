@@ -9,8 +9,6 @@ edition.workspace = true
 debug-server = ["dep:tiny_http", "dep:image"]
 # rar 読取（unrar crate・既定 off）。core の rar feature を引き継ぐ。
 rar = ["rerics-core/rar"]
-# TS/JS スクリプト基盤（deno_core ＝ V8 埋め込み・既定 off）。
-scripting = ["dep:deno_core", "dep:tokio", "dep:deno_error", "dep:deno_ast"]
 
 [dependencies]
 rerics-core.workspace = true
@@ -20,8 +18,9 @@ winsafe.workspace = true
 serde_json = "1"
 tiny_http = { version = "0.12", optional = true }
 image = { version = "0.25", optional = true }
-deno_core = { version = "0.404.0", optional = true }
-tokio = { version = "1.52.3", features = ["rt"], optional = true }
+# TS/JS スクリプト基盤（deno_core ＝ V8 埋め込み）。リリースに載る本機能なので常時ビルド。
+deno_core = "0.404.0"
+tokio = { version = "1.52.3", features = ["rt"] }
 serde = { version = "1.0.228", features = ["derive"] }
-deno_error = { version = "=0.7.1", optional = true }
-deno_ast = { version = "0.53.2", features = ["transpiling"], optional = true }
+deno_error = "=0.7.1"
+deno_ast = { version = "0.53.2", features = ["transpiling"] }

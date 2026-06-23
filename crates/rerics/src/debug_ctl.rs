@@ -96,18 +96,15 @@ impl MainWindow {
                 debug_server::Request::ModalResize { width, height } => {
                     let _ = tx.send(self.debug_modal_resize(width, height));
                 }
-                #[cfg(feature = "scripting")]
                 debug_server::Request::ScriptCommands => {
                     let names = self.script_list_commands();
                     let json = serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_string());
                     let _ = tx.send(debug_server::Response::Json(json));
                 }
-                #[cfg(feature = "scripting")]
                 debug_server::Request::ScriptInvoke { name } => {
                     self.script_send(crate::script_host::EngineCmd::Invoke(name));
                     let _ = tx.send(debug_server::Response::Json("\"ok\"".to_string()));
                 }
-                #[cfg(feature = "scripting")]
                 debug_server::Request::ScriptEval { code } => {
                     self.script_send(crate::script_host::EngineCmd::Eval(code));
                     let _ = tx.send(debug_server::Response::Json("\"ok\"".to_string()));

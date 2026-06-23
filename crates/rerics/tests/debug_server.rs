@@ -155,8 +155,7 @@ impl Server {
     }
 
     /// `start` と同じ隔離起動だが、`data/scripts/` にユーザスクリプト（名前→中身）を
-    /// 置いてから起動する。起動時に名前順で読み込まれる（scripting feature 時のみ）。
-    #[cfg(feature = "scripting")]
+    /// 置いてから起動する。起動時に名前順で読み込まれる。
     fn start_with_scripts(sandbox_files: &[&str], scripts: &[(&str, &str)]) -> Server {
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
         let base = std::env::temp_dir().join(format!("rerics_it_{}_{}", std::process::id(), n));
@@ -2146,7 +2145,6 @@ fn text_viewer_search_mnemonic_yields_to_user_keybind() {
 }
 
 /// scripting：起動時に scripts を読み込み、登録されたコマンドが `/script/commands` に並ぶ。
-#[cfg(feature = "scripting")]
 #[test]
 fn script_commands_register_on_startup() {
     let server = Server::start_with_scripts(
@@ -2165,7 +2163,6 @@ fn script_commands_register_on_startup() {
 }
 
 /// scripting：`/script/eval` で評価したコードのログがアプリのログ欄へ出る（エンジン→UI 配線）。
-#[cfg(feature = "scripting")]
 #[test]
 fn script_eval_runs_and_logs_to_app() {
     let server = Server::start_with_scripts(&["a.txt"], &[]);
@@ -2178,7 +2175,6 @@ fn script_eval_runs_and_logs_to_app() {
 }
 
 /// scripting：`/script/invoke` で登録コマンドを呼ぶと、ペイン操作（navigate）が UI に反映される。
-#[cfg(feature = "scripting")]
 #[test]
 fn script_invoke_navigates_active_pane() {
     let server = Server::start_with_scripts(
@@ -2200,7 +2196,6 @@ fn script_invoke_navigates_active_pane() {
 }
 
 /// scripting：`rerics.confirm` がモーダルを出し、Yes 応答が boolean で返る（同期往復）。
-#[cfg(feature = "scripting")]
 #[test]
 fn script_confirm_opens_modal_and_returns_choice() {
     let server = Server::start_with_scripts(&["a.txt"], &[]);
@@ -2215,7 +2210,6 @@ fn script_confirm_opens_modal_and_returns_choice() {
 }
 
 /// scripting：`rerics.prompt` が入力モーダルを出し、入力文字列が返る。
-#[cfg(feature = "scripting")]
 #[test]
 fn script_prompt_opens_modal_and_returns_text() {
     let server = Server::start_with_scripts(&["a.txt"], &[]);
@@ -2230,7 +2224,6 @@ fn script_prompt_opens_modal_and_returns_text() {
 }
 
 /// scripting：`rerics.select` が一覧モーダルを出し、選んだ行の index が返る。
-#[cfg(feature = "scripting")]
 #[test]
 fn script_select_opens_list_and_returns_index() {
     let server = Server::start_with_scripts(&["a.txt"], &[]);
