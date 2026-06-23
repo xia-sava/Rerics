@@ -2713,17 +2713,23 @@ struct KeyEditor {
     btn_a: gui::Button,
     btn_b: gui::Button,
     btn_c: gui::Button,
+    /// 上部ヒント（モードで文面を差し替える）。
+    hint: gui::Label,
     inner: Rc<KeyEditorInner>,
 }
 
 impl KeyEditor {
     fn new(parent: &gui::WindowControl, shared: &Rc<Shared>, category: KeyCategory) -> Self {
-        label(
+        // 上部ヒント：モード（機能順／キー順／機能ピッカー）に応じて文面を差し替える。
+        // ピッカー中は中止方法をここに大きく出して、背景色と合わせて別モードを明示する。
+        let hint = gui::Label::new(
             parent,
-            "機能を選び「キー定義を追加」で割り当て（実際にキーを押す・右クリックで中止）",
-            16,
-            12,
-            560,
+            gui::LabelOpts {
+                text: "機能を選び「キー定義を追加」で割り当て（実際にキーを押す・右クリックで中止）",
+                position: gui::dpi(16, 12),
+                size: gui::dpi(744, 18),
+                ..Default::default()
+            },
         );
         label(parent, "検索:", 16, 44, 40);
         let search = gui::Edit::new(
@@ -2818,6 +2824,7 @@ impl KeyEditor {
             btn_a: btn_a.clone(),
             btn_b: btn_b.clone(),
             btn_c: btn_c.clone(),
+            hint,
             inner: Rc::new(KeyEditorInner {
                 shared: shared.clone(),
                 category,
@@ -2914,6 +2921,23 @@ impl KeyEditor {
         let _ = self.btn_a.hwnd().SetWindowText(a);
         let _ = self.btn_b.hwnd().SetWindowText(b);
         let _ = self.btn_c.hwnd().SetWindowText(c);
+    }
+
+    /// 上部ヒントの文面を現モードに合わせて更新する。ピッカー中は中止方法をここに明示する。
+    fn update_hint(&self) {
+        let text = if self.inner.picking.borrow().is_some() {
+            "◆ 機能ピッカー：割り当てる機能を選んで Enter／ダブルクリック（右クリックか Esc で中止）"
+        } else {
+            match self.inner.view_mode.get() {
+                KeyView::ByCommand => {
+                    "機能を選び「キー定義を追加」で割り当て（実際にキーを押す・右クリックで中止）"
+                }
+                KeyView::ByKey => {
+                    "キーを選び「機能定義を変更」で機能を割り当て（－はダブルクリックでも割り当て可）"
+                }
+            }
+        };
+        let _ = self.hint.hwnd().SetWindowText(text);
     }
 
     fn hwnd(&self) -> &w::HWND {
@@ -3331,6 +3355,7 @@ impl KeyEditor {
         self.toggle[0].select(!by_key);
         self.toggle[1].select(by_key);
         self.relabel_buttons();
+        self.update_hint();
         self.rebuild_view();
         let _ = self.hwnd().InvalidateRect(None, false);
     }
@@ -3496,6 +3521,7 @@ impl KeyEditor {
             "{} に割り当てる機能を選択（{} を置換・右クリック/Escで中止）",
             chord, old_label
         );
+        self.update_hint();
         self.rebuild_view();
         let _ = self.hwnd().InvalidateRect(None, false);
     }
@@ -3548,6 +3574,7 @@ impl KeyEditor {
         let _ = self.search.set_text("");
         self.inner.sel.set(0);
         self.inner.top.set(0);
+        self.update_hint();
         self.rebuild_rows();
         let _ = self.hwnd().InvalidateRect(None, false);
     }
@@ -4244,6 +4271,7 @@ impl KeyEditor {
     /// window 生成後の初期化（ボタン整形・スクロール調整・再描画）。
     fn populate(&self) {
         self.relabel_buttons();
+        self.update_hint();
         self.ensure_visible();
         let _ = self.hwnd().InvalidateRect(None, false);
     }
