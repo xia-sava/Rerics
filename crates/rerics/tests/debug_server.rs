@@ -2432,3 +2432,32 @@ fn script_async_copy_awaits_worker_completion() {
     let right = poll(&server, "/state/panes/right/items", |b| b.contains("\"name\":\"a.txt\""));
     assert!(right.contains("\"name\":\"a.txt\""), "copied file should appear in the dest pane: {right}");
 }
+
+/// scripting：非同期操作の job が awaitable かつ `.cancel()` を持つ（キャンセル経路が実
+/// GuiHost を通って壊れない）。実際に中止されるかはタイミング依存なのでフロー完走だけ見る。
+#[test]
+fn script_async_op_job_is_cancelable() {
+    let server = Server::start_with_scripts(&["a.txt", "b.txt"], &[]);
+    server.req("POST", "/command/FocusRight", "").unwrap();
+    server.req("POST", "/command/ToParent", "").unwrap();
+    server.req("POST", "/command/FocusLeft", "").unwrap();
+
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"(async () => {
+                 rerics.activePane().apply((d) => {
+                   for (const it of d.items) if (it.name === "a.txt") it.selected = true;
+                 });
+                 const job = rerics.copy();
+                 job.cancel();
+                 try { await job; } catch (e) { /* 中止なら例外 */ }
+                 rerics.log("CANCEL FLOW DONE");
+               })();"#,
+        )
+        .expect("eval");
+
+    let log = poll(&server, "/state/log", |b| b.contains("CANCEL FLOW DONE"));
+    assert!(log.contains("CANCEL FLOW DONE"), "cancel flow should complete without error: {log}");
+}

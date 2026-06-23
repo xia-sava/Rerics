@@ -35,6 +35,7 @@ pub enum HostCall {
     ApplySelection { is_left: bool, changes: Vec<(usize, bool)> },
     Command { name: String, args: Vec<String> },
     BeginOperation { op: ScriptOp, done: OpDone },
+    CancelOperation { token: u64 },
 }
 
 /// UI スレッド → エンジンスレッドへの応答。
@@ -46,6 +47,7 @@ pub enum HostResp {
     Index(Option<usize>),
     Snapshot(script::PaneSnapshot),
     CommandResult(Result<(), String>),
+    OpStarted(Result<u64, String>),
 }
 
 type ScriptQueue = WakeQueue<HostCall, HostResp>;
@@ -245,13 +247,25 @@ impl HostApi for GuiHost {
         }
     }
 
-    fn begin_operation(&self, op: ScriptOp, done: OpDone) {
-        // 起動依頼を UI へ送る（ack のみ同期で待つ）。完了は `done`（oneshot）で後から届く。
-        let _ = ui_marshal::call(
+    fn begin_operation(&self, op: ScriptOp, done: OpDone) -> Result<u64, String> {
+        // 起動依頼を UI へ送りトークンを得る（同期）。完了は `done`（oneshot）で後から届く。
+        match ui_marshal::call(
             &self.queue,
             self.hwnd_ptr,
             SCRIPT_WAKE.raw(),
             HostCall::BeginOperation { op, done },
+        ) {
+            Ok(HostResp::OpStarted(r)) => r,
+            _ => Err("操作の起動に応答がありませんでした".to_string()),
+        }
+    }
+
+    fn cancel_operation(&self, token: u64) {
+        let _ = ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::CancelOperation { token },
         );
     }
 }
@@ -355,26 +369,34 @@ impl MainWindow {
                     let _ = tx.send(HostResp::CommandResult(self.run_script_command(&name, args)));
                 }
                 HostCall::BeginOperation { op, done } => {
-                    self.begin_script_operation(op, done);
+                    let _ = tx.send(HostResp::OpStarted(self.begin_script_operation(op, done)));
+                }
+                HostCall::CancelOperation { token } => {
+                    self.cancel_script_operation(token);
                     let _ = tx.send(HostResp::Done);
                 }
             }
         }
     }
 
+    /// トークン（タスク id）の進行中操作を中止する（タスクの `TaskControl` を停止）。
+    fn cancel_script_operation(&self, id: u64) {
+        if let Some(t) = self.tasks.borrow().iter().find(|t| t.id == id) {
+            t.control.stop();
+        }
+    }
+
     /// スクリプト発の非同期ファイル操作を起動する。対象＝アクティブペインの選択（無ければ
     /// カーソル）、行き先＝反対ペイン。ワーカーを起こせたらタスク id に `done` を紐づけ、完了で
     /// 発火する。起動できなければ（対象なし・書庫・起動失敗）即座に `done` へエラーを返す。
-    fn begin_script_operation(&self, op: ScriptOp, done: OpDone) {
+    fn begin_script_operation(&self, op: ScriptOp, done: OpDone) -> Result<u64, String> {
         let is_left = !self.active_right.get();
         if self.pane(is_left).borrow().is_archive() || self.pane(!is_left).borrow().is_archive() {
-            let _ = done.send(Err("書庫の操作は未対応です".to_string()));
-            return;
+            return Err("書庫の操作は未対応です".to_string());
         }
         let names = self.selected_or_cursor_names(is_left);
         if names.is_empty() {
-            let _ = done.send(Err("対象がありません".to_string()));
-            return;
+            return Err("対象がありません".to_string());
         }
         let move_it = matches!(op, ScriptOp::Move);
         let src_dir = self.pane(is_left).borrow().path().to_path_buf();
@@ -382,10 +404,9 @@ impl MainWindow {
         match self.start_copy(src_dir, dst_dir, names, move_it) {
             Ok(id) => {
                 self.script.pending_ops.borrow_mut().insert(id, done);
+                Ok(id)
             }
-            Err(e) => {
-                let _ = done.send(Err(e.to_string()));
-            }
+            Err(e) => Err(e.to_string()),
         }
     }
 

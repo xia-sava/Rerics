@@ -108,6 +108,15 @@ rerics.log("コピー完了");
 
 同名衝突は本体の確認ダイアログで解決する（`await` 中もダイアログは反応する）。
 
+返り値は job（`Promise` ＋ `cancel()`）。`job.cancel()` で進行中の操作を中止できる（中止されると
+`await` は例外になる）。
+
+```ts
+const job = rerics.copy();
+// 何らかの条件で job.cancel();
+await job;
+```
+
 ### イベントの購読
 
 `rerics.on(event, handler)` で本体のイベントに反応できる。同じイベントに複数登録でき、登録順に

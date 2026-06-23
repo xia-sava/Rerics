@@ -4,9 +4,15 @@
 //! 呼ぶ。GUI に触る操作は [`HostApi`] を介してUIスレッドへマーシャルする（実装は GUI 側）。
 //! テストはモックの [`HostApi`] で同期的に検証する。
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use deno_core::{JsRuntime, OpState, RuntimeOptions, extension, op2};
+
+/// 進行中の非同期操作の完了受け口（トークン→`oneshot` 受信）。`op_op_start` が登録し、
+/// `op_op_await` が取り出して待つ。OpState に常駐させ、ops 間で共有する。
+type JobAwaiters = Rc<RefCell<HashMap<u64, tokio::sync::oneshot::Receiver<Result<(), String>>>>>;
 
 /// スクリプトからのホスト操作を受ける窓口。実 GUI 実装は UI スレッドへマーシャルし、
 /// テストはモックで記録する。`&self` で受けるのは V8 アイソレートと同一スレッドから
@@ -34,9 +40,16 @@ pub trait HostApi {
     /// 内蔵コマンドを名前で実行する（同期）。不明な名前・実行失敗はエラー文字列を返す。
     /// ワーカーを起動する操作は「開始」までで戻り、完了は待たない。
     fn command(&self, name: &str, args: &[String]) -> Result<(), String>;
-    /// 非同期ファイル操作（コピー/移動）を起動する。完了時に `done` へ結果を送る
-    /// （Ok＝成功・Err＝失敗/中止のメッセージ）。スクリプトはこの完了を `await` する。
-    fn begin_operation(&self, op: ScriptOp, done: tokio::sync::oneshot::Sender<Result<(), String>>);
+    /// 非同期ファイル操作（コピー/移動）を起動する。起動できたら**トークン**（タスク id）を返し、
+    /// 完了時に `done` へ結果を送る（Ok＝成功・Err＝失敗/中止）。起動できなければ（対象なし等）
+    /// `Err` を返す（その場合 `done` は使われない）。トークンは `cancel_operation` で中止に使う。
+    fn begin_operation(
+        &self,
+        op: ScriptOp,
+        done: tokio::sync::oneshot::Sender<Result<(), String>>,
+    ) -> Result<u64, String>;
+    /// トークンで進行中の操作を中止する（未知のトークンは無視）。
+    fn cancel_operation(&self, token: u64);
 }
 
 /// スクリプトが起動する非同期ファイル操作の種別。
@@ -211,20 +224,46 @@ fn read_dir_entries(path: &str) -> std::io::Result<Vec<DirEntry>> {
     Ok(out)
 }
 
-/// 非同期ファイル操作（コピー/移動）を起動し、ワーカー完了まで `await` する op。ホストへ
-/// 起動を依頼し、完了の `oneshot` を待つ＝ UI スレッドのワーカー完了がここで resolve する。
-#[op2(async(lazy), nofast)]
-async fn op_copy(
-    state: Rc<std::cell::RefCell<OpState>>,
-    move_it: bool,
-) -> Result<(), deno_error::JsErrorBox> {
-    let host = state.borrow().borrow::<Host>().clone();
+/// 非同期ファイル操作を起動する同期 op。ホストへ起動を依頼し、得たトークン（タスク id）を
+/// 返す。完了受信用の `oneshot` を作り、受信側を `JobAwaiters` に登録する（`op_op_await` が待つ）。
+/// 起動できなければ例外。
+#[op2(nofast)]
+fn op_op_start(state: &mut OpState, move_it: bool) -> Result<u32, deno_error::JsErrorBox> {
+    let host = state.borrow::<Host>().clone();
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
-    host.begin_operation(if move_it { ScriptOp::Move } else { ScriptOp::Copy }, tx);
-    match rx.await {
-        Ok(r) => r.map_err(deno_error::JsErrorBox::generic),
-        Err(_) => Err(deno_error::JsErrorBox::generic("operation was dropped")),
+    let op = if move_it { ScriptOp::Move } else { ScriptOp::Copy };
+    let token = host
+        .begin_operation(op, tx)
+        .map_err(deno_error::JsErrorBox::generic)?;
+    state.borrow::<JobAwaiters>().borrow_mut().insert(token, rx);
+    Ok(token as u32)
+}
+
+/// トークンの操作完了を待つ非同期 op。`JobAwaiters` から受信側を取り出して待ち、結果を返す
+/// ＝ UI スレッドのワーカー完了がここで resolve する。失敗・中止は例外。
+#[op2(async(lazy), nofast)]
+async fn op_op_await(
+    state: Rc<RefCell<OpState>>,
+    token: u32,
+) -> Result<(), deno_error::JsErrorBox> {
+    let rx = state
+        .borrow()
+        .borrow::<JobAwaiters>()
+        .borrow_mut()
+        .remove(&(token as u64));
+    match rx {
+        Some(rx) => match rx.await {
+            Ok(r) => r.map_err(deno_error::JsErrorBox::generic),
+            Err(_) => Err(deno_error::JsErrorBox::generic("operation was dropped")),
+        },
+        None => Err(deno_error::JsErrorBox::generic("unknown job token")),
     }
+}
+
+/// トークンの操作を中止する同期 op。
+#[op2(fast)]
+fn op_op_cancel(state: &mut OpState, token: u32) {
+    state.borrow::<Host>().cancel_operation(token as u64);
 }
 
 /// 重い走査を裏のブロッキングプールに逃がす非同期 op。GUI には触れない純粋処理なので
@@ -251,7 +290,9 @@ extension!(
         op_set_selected,
         op_apply_selection,
         op_command,
-        op_copy,
+        op_op_start,
+        op_op_await,
+        op_op_cancel,
         op_list_dir
     ]
 );
@@ -322,6 +363,14 @@ const BOOTSTRAP: &str = r#"
   // 即時版：item.selected への代入がその場で UI に反映される。
   const makePane = (snap) =>
     buildPane(snap, (idx, v) => ops.op_set_selected(snap.isLeft, idx, v));
+  // 非同期操作を起動し、await できて .cancel() も持つ job を返す。op_op_start は起動失敗を
+  // 例外にし、op_op_await はワーカー完了で resolve（失敗/中止は reject）する。
+  const startOp = (move_it) => {
+    const token = ops.op_op_start(move_it);
+    const job = ops.op_op_await(token);
+    job.cancel = () => ops.op_op_cancel(token);
+    return job;
+  };
   globalThis.rerics = {
     log: (m) => ops.op_log(String(m)),
     currentDir: () => ops.op_current_dir(),
@@ -339,8 +388,8 @@ const BOOTSTRAP: &str = r#"
     activePane: () => makePane(ops.op_pane_snapshot(false)),
     oppositePane: () => makePane(ops.op_pane_snapshot(true)),
     command: (name, ...args) => ops.op_command(String(name), args.map(String)),
-    copy: () => ops.op_copy(false),
-    move: () => ops.op_copy(true),
+    copy: () => startOp(false),
+    move: () => startOp(true),
     registerCommand: (name, fn) => {
       if (typeof fn !== "function") throw new TypeError("registerCommand: fn must be a function");
       commands.set(String(name), fn);
@@ -472,6 +521,7 @@ impl Engine {
             let state = runtime.op_state();
             let mut state = state.borrow_mut();
             state.put::<Host>(host);
+            state.put::<JobAwaiters>(Rc::new(RefCell::new(HashMap::new())));
         }
         runtime
             .execute_script("rerics:bootstrap", BOOTSTRAP)
@@ -542,7 +592,6 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
 
     #[derive(Default)]
     struct MockHost {
@@ -560,6 +609,7 @@ mod tests {
         /// この名前のコマンドは失敗させる（エラー経路の検証用）。
         failing_command: Option<String>,
         operations: RefCell<Vec<&'static str>>,
+        cancelled: RefCell<Vec<u64>>,
     }
 
     impl HostApi for MockHost {
@@ -605,13 +655,17 @@ mod tests {
             &self,
             op: ScriptOp,
             done: tokio::sync::oneshot::Sender<Result<(), String>>,
-        ) {
+        ) -> Result<u64, String> {
             self.operations.borrow_mut().push(match op {
                 ScriptOp::Copy => "copy",
                 ScriptOp::Move => "move",
             });
-            // 完了を即座に通知する（実 GUI ではワーカー完了で送られる）。
+            // 完了を即座に通知する（実 GUI ではワーカー完了で送られる）。トークンは件数で代用。
             let _ = done.send(Ok(()));
+            Ok(self.operations.borrow().len() as u64)
+        }
+        fn cancel_operation(&self, token: u64) {
+            self.cancelled.borrow_mut().push(token);
         }
     }
 
@@ -949,6 +1003,27 @@ mod tests {
         .unwrap();
         assert_eq!(*host.operations.borrow(), vec!["copy", "move"]);
         assert_eq!(*host.logs.borrow(), vec!["ops done".to_string()]);
+    }
+
+    #[test]
+    fn async_op_job_cancel_routes_token_to_host() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:cancel",
+            r#"(async () => {
+                 const job = rerics.copy();
+                 job.cancel();
+                 await job;
+                 rerics.log("after");
+               })();"#
+                .to_string(),
+        )
+        .unwrap();
+        assert_eq!(*host.operations.borrow(), vec!["copy"]);
+        // copy のトークンは 1（operations 件数で代用）。cancel がそのトークンで届く。
+        assert_eq!(*host.cancelled.borrow(), vec![1u64]);
+        assert_eq!(*host.logs.borrow(), vec!["after".to_string()]);
     }
 
     #[test]

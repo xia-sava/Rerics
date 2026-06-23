@@ -93,6 +93,15 @@ interface RericsPane {
  */
 type RericsEvent = "changeDirectory" | "executeCommand";
 
+/**
+ * 非同期ファイル操作のハンドル。`await` で完了を待て、`cancel()` で中止できる。
+ * 失敗・中止すると `await` は例外になる。
+ */
+interface RericsJob extends Promise<void> {
+  /** 進行中の操作を中止する。 */
+  cancel(): void;
+}
+
 /** Rerics 本体が提供するホスト API。グローバル `rerics` から呼ぶ。 */
 declare namespace rerics {
   /** アプリのログ欄へメッセージを出す。 */
@@ -166,18 +175,20 @@ declare namespace rerics {
 
   /**
    * アクティブペインの選択（無ければカーソル）項目を反対ペインへコピーする。ワーカーで実行し、
-   * **完了まで待てる** `Promise` を返す（`await` する）。失敗・中止は例外。
+   * **完了まで待てる** job（`Promise` ＋ `cancel()`）を返す。失敗・中止は例外。
    *
    * ```ts
    * rerics.activePane().apply((d) => {
    *   for (const it of d.items) if (it.ext === "txt") it.selected = true;
    * });
-   * await rerics.copy();
+   * const job = rerics.copy();
+   * // job.cancel();        // 中止したいとき
+   * await job;
    * rerics.log("コピー完了");
    * ```
    */
-  function copy(): Promise<void>;
+  function copy(): RericsJob;
 
   /** コピーと同じだが移動（成功後に元を削除）。詳細は {@link copy}。 */
-  function move(): Promise<void>;
+  function move(): RericsJob;
 }
