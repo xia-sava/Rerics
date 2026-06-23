@@ -149,6 +149,8 @@ pub mod modal_registry {
         pub query: String,
         /// 並べ方：`"command"`（機能順＝行は (機能, [キー…])）／`"key"`（キー順＝行は (キー, [機能])）。
         pub mode: String,
+        /// 衝突＝1 つのキーに 2 機能以上＝`(キー, [機能ラベル…])`。空なら衝突なし。
+        pub conflicts: Vec<(String, Vec<String>)>,
     }
 
     /// (コマンドのトークン名, chord トークン) を割り当てるフック。未知コマンド等は Err。

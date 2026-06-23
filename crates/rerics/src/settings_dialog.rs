@@ -2605,16 +2605,29 @@ impl KeyCategory {
     }
 }
 
-/// 「キー」ページの 1 行＝1 コマンドと、それに割り当たっている chord（トークン）群。
+/// 機能順の 1 行＝1 コマンドと、それに割り当たっている chord 群。
 struct KeyRow {
     command: Command,
-    chords: Vec<String>,
+    chords: Vec<ChordRef>,
 }
 
-/// キー順ビューの 1 行＝1 chord と、それが起動するコマンド。
+/// 機能順の行に並ぶ 1 つの chord 参照。`conflicted`＝同じ chord を他機能も定義している（衝突）。
+struct ChordRef {
+    token: String,
+    conflicted: bool,
+}
+
+/// キー順の 1 行＝1 chord と、それを定義している全機能のラベル（2 つ以上＝衝突）。
 struct KeyChordRow {
     chord: String,
-    command: Command,
+    labels: Vec<String>,
+}
+
+/// 割り当て値の表示ラベル。既知コマンドは正規トークン名、未知（`Func_*` 等）は生値のまま。
+fn binding_label(value: &str) -> String {
+    Invocation::parse(value)
+        .map(|i| i.command.as_token().to_string())
+        .unwrap_or_else(|| value.trim().to_string())
 }
 
 /// キー編集ページの並べ方。
@@ -2630,8 +2643,12 @@ enum KeyView {
 struct KeyEditorInner {
     shared: Rc<Shared>,
     category: KeyCategory,
+    /// 編集中の下書き＝chord → 割り当て値（生の invocation 文字列）のリスト。空 Vec＝明示 unbind。
+    /// **重複（1 つの chord に複数機能）を許す**＝これが衝突状態。未知バインド（`Func_*` 等）も
+    /// 生値のまま保持し、反映時に消さない。OK/適用の検証を通った時だけ `config.keybinds` へ書き戻す。
+    draft: RefCell<BTreeMap<String, Vec<String>>>,
     rows: RefCell<Vec<KeyRow>>,
-    /// キー順ビューの行（chord でソート）。`rows` と同じ map から組む。
+    /// キー順ビューの行（chord でソート）。`draft` から組む。
     key_rows: RefCell<Vec<KeyChordRow>>,
     /// 並べ方（機能順／キー順）。
     view_mode: Cell<KeyView>,
@@ -2749,6 +2766,7 @@ impl KeyEditor {
             inner: Rc::new(KeyEditorInner {
                 shared: shared.clone(),
                 category,
+                draft: RefCell::new(BTreeMap::new()),
                 rows: RefCell::new(Vec::new()),
                 key_rows: RefCell::new(Vec::new()),
                 view_mode: Cell::new(KeyView::ByCommand),
@@ -2761,6 +2779,7 @@ impl KeyEditor {
                 status: RefCell::new(String::new()),
             }),
         };
+        me.load_draft();
         me.rebuild_rows();
         me.setup_events();
         {
@@ -2822,7 +2841,7 @@ impl KeyEditor {
                     view.iter()
                         .map(|&ri| {
                             let r = &all[ri];
-                            (r.chord.clone(), vec![r.command.as_token().to_string()])
+                            (r.chord.clone(), r.labels.clone())
                         })
                         .collect()
                 } else {
@@ -2830,7 +2849,10 @@ impl KeyEditor {
                     view.iter()
                         .map(|&ri| {
                             let r = &all[ri];
-                            (r.command.as_token().to_string(), r.chords.clone())
+                            (
+                                r.command.as_token().to_string(),
+                                r.chords.iter().map(|c| c.token.clone()).collect(),
+                            )
                         })
                         .collect()
                 };
@@ -2841,6 +2863,7 @@ impl KeyEditor {
                     status: this.inner.status.borrow().clone(),
                     query: this.inner.query.borrow().clone(),
                     mode: if by_key { "key" } else { "command" }.to_string(),
+                    conflicts: this.conflicts(),
                 }
             }) as Box<dyn Fn() -> KeyEditorState>
         };
@@ -2865,7 +2888,8 @@ impl KeyEditor {
                     let view = this.inner.view.borrow();
                     if this.inner.view_mode.get() == KeyView::ByKey {
                         let krows = this.inner.key_rows.borrow();
-                        view.iter().position(|&ri| krows[ri].command == cmd)
+                        view.iter()
+                            .position(|&ri| krows[ri].labels.iter().any(|l| Command::from_token(l) == Some(cmd)))
                     } else {
                         let rows = this.inner.rows.borrow();
                         view.iter().position(|&ri| rows[ri].command == cmd)
@@ -2907,8 +2931,8 @@ impl KeyEditor {
     #[cfg(not(feature = "debug-server"))]
     fn register_debug(&self) {}
 
-    /// `config` の当該カテゴリのキーマップへの参照。
-    fn with_map<R>(&self, f: impl FnOnce(&mut BTreeMap<String, String>) -> R) -> R {
+    /// `config` の当該カテゴリのキーマップへの参照。下書きの読み込み／書き戻しにのみ使う。
+    fn with_cfg_map<R>(&self, f: impl FnOnce(&mut BTreeMap<String, String>) -> R) -> R {
         let mut cfg = self.inner.shared.cfg.borrow_mut();
         let map = match self.inner.category {
             KeyCategory::Filer => &mut cfg.keybinds,
@@ -2918,27 +2942,99 @@ impl KeyEditor {
         f(map)
     }
 
-    /// 現在のキーマップから機能順 `rows`・キー順 `key_rows` の両方を組み直す（空値＝未バインドは除く）。
+    /// `config.keybinds` から下書きを作る。空値＝明示 unbind は空 Vec、非空は 1 要素のリスト。
+    /// 未知バインドも生値のまま保持する（反映時に消さないため）。
+    fn load_draft(&self) {
+        let map = self.with_cfg_map(|m| m.clone());
+        let mut draft: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (chord, val) in map {
+            if val.trim().is_empty() {
+                draft.insert(chord, Vec::new());
+            } else {
+                draft.insert(chord, vec![val]);
+            }
+        }
+        *self.inner.draft.borrow_mut() = draft;
+    }
+
+    /// 下書きを `config.keybinds` へ書き戻す（衝突が無いと検証済みの時だけ呼ぶ）。
+    /// 空 Vec＝unbind は空文字で残す（既定キーの打ち消し）、1 要素はその値。
+    fn flush_draft(&self) {
+        let mut out: BTreeMap<String, String> = BTreeMap::new();
+        for (chord, vals) in self.inner.draft.borrow().iter() {
+            let first = vals.iter().find(|v| !v.trim().is_empty());
+            out.insert(chord.clone(), first.cloned().unwrap_or_default());
+        }
+        self.with_cfg_map(|m| *m = out);
+    }
+
+    /// 衝突（1 つの chord に 2 機能以上）を chord 昇順で列挙する＝`(chord, ラベル群)`。
+    fn conflicts(&self) -> Vec<(String, Vec<String>)> {
+        self.inner
+            .draft
+            .borrow()
+            .iter()
+            .filter_map(|(chord, vals)| {
+                let labels: Vec<String> = vals
+                    .iter()
+                    .filter(|v| !v.trim().is_empty())
+                    .map(|v| binding_label(v))
+                    .collect();
+                (labels.len() > 1).then(|| (chord.clone(), labels))
+            })
+            .collect()
+    }
+
+    /// 衝突が 1 つでもあるか。
+    fn has_conflicts(&self) -> bool {
+        self.inner.draft.borrow().values().any(|vals| {
+            vals.iter().filter(|v| !v.trim().is_empty()).count() > 1
+        })
+    }
+
+    /// 衝突をステータスへ書き出す（OK/適用が弾いた理由を見せる）。
+    fn note_conflicts(&self) {
+        let desc: Vec<String> = self
+            .conflicts()
+            .into_iter()
+            .map(|(chord, labels)| format!("{}（{}）", chord, labels.join(", ")))
+            .collect();
+        *self.inner.status.borrow_mut() =
+            format!("キーの重複を解決してください: {}", desc.join(" / "));
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    /// 下書きから機能順 `rows`・キー順 `key_rows` を組み直す（空 Vec＝unbind は除く）。
     fn rebuild_rows(&self) {
-        let mut by_cmd: HashMap<Command, Vec<String>> = HashMap::new();
+        let mut by_cmd: HashMap<Command, Vec<ChordRef>> = HashMap::new();
         let mut key_rows: Vec<KeyChordRow> = Vec::new();
-        self.with_map(|map| {
-            for (chord, inv) in map.iter() {
-                if inv.trim().is_empty() {
+        {
+            let draft = self.inner.draft.borrow();
+            for (chord, vals) in draft.iter() {
+                let nonempty: Vec<&String> =
+                    vals.iter().filter(|v| !v.trim().is_empty()).collect();
+                if nonempty.is_empty() {
                     continue;
                 }
-                if let Some(parsed) = Invocation::parse(inv) {
-                    by_cmd.entry(parsed.command).or_default().push(chord.clone());
-                    key_rows.push(KeyChordRow { chord: chord.clone(), command: parsed.command });
+                let conflicted = nonempty.len() > 1;
+                let labels: Vec<String> = nonempty.iter().map(|v| binding_label(v)).collect();
+                key_rows.push(KeyChordRow { chord: chord.clone(), labels });
+                for v in &nonempty {
+                    if let Some(inv) = Invocation::parse(v) {
+                        by_cmd
+                            .entry(inv.command)
+                            .or_default()
+                            .push(ChordRef { token: chord.clone(), conflicted });
+                    }
                 }
             }
-        });
+        }
         let ctx = self.inner.category.context();
         let rows: Vec<KeyRow> = Command::all()
             .filter(|c| c.available_in(ctx))
             .map(|command| {
                 let mut chords = by_cmd.remove(&command).unwrap_or_default();
-                chords.sort();
+                chords.sort_by(|a, b| a.token.cmp(&b.token));
                 KeyRow { command, chords }
             })
             .collect();
@@ -2961,7 +3057,7 @@ impl KeyEditor {
                 .filter(|(_, r)| {
                     q.is_empty()
                         || r.command.as_token().to_lowercase().contains(&q)
-                        || r.chords.iter().any(|c| c.to_lowercase().contains(&q))
+                        || r.chords.iter().any(|c| c.token.to_lowercase().contains(&q))
                 })
                 .map(|(i, _)| i)
                 .collect(),
@@ -2974,7 +3070,7 @@ impl KeyEditor {
                 .filter(|(_, r)| {
                     q.is_empty()
                         || r.chord.to_lowercase().contains(&q)
-                        || r.command.as_token().to_lowercase().contains(&q)
+                        || r.labels.iter().any(|l| l.to_lowercase().contains(&q))
                 })
                 .map(|(i, _)| i)
                 .collect(),
@@ -3020,12 +3116,17 @@ impl KeyEditor {
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
-    /// 選択行のコマンド（機能順＝その行の機能／キー順＝その chord が起動する機能）。
+    /// 選択行のコマンド（機能順＝その行の機能／キー順＝その chord を定義する先頭の既知機能）。
     fn selected_command(&self) -> Option<Command> {
         let ri = *self.inner.view.borrow().get(self.inner.sel.get())?;
         match self.inner.view_mode.get() {
             KeyView::ByCommand => self.inner.rows.borrow().get(ri).map(|r| r.command),
-            KeyView::ByKey => self.inner.key_rows.borrow().get(ri).map(|r| r.command),
+            KeyView::ByKey => self
+                .inner
+                .key_rows
+                .borrow()
+                .get(ri)
+                .and_then(|r| r.labels.iter().find_map(|l| Command::from_token(l))),
         }
     }
 
@@ -3038,29 +3139,45 @@ impl KeyEditor {
         self.inner.key_rows.borrow().get(ri).map(|r| r.chord.clone())
     }
 
-    /// chord を選択行のコマンドへ割り当てる（chord は一意なので既存があれば移動＝上書き）。
+    /// chord を選択行のコマンドへ割り当てる。**既存の機能は消さず追記する**＝同じ chord に
+    /// 別機能があれば衝突になる（マークして OK/適用で解決を促す）。
     fn assign(&self, command: Command, chord: KeyChord) {
         let Some(tok) = chord.to_token() else {
             *self.inner.status.borrow_mut() = "未対応のキーです".to_string();
             return;
         };
         let value = Invocation::bare(command).to_token_string();
-        self.with_map(|map| {
-            map.insert(tok.clone(), value);
-        });
-        *self.inner.status.borrow_mut() = format!("{} に {} を割り当てました", command.as_token(), tok);
+        let conflict = {
+            let mut draft = self.inner.draft.borrow_mut();
+            let e = draft.entry(tok.clone()).or_default();
+            // 空 unbind マーカーは取り除く（今バインドし直すので）。
+            e.retain(|v| !v.trim().is_empty());
+            // 同じ機能が既にこの chord にあるなら追記しない。
+            let already = e
+                .iter()
+                .any(|v| Invocation::parse(v).map(|i| i.command) == Some(command));
+            if !already {
+                e.push(value);
+            }
+            e.len() > 1
+        };
+        *self.inner.status.borrow_mut() = if conflict {
+            format!("{} に {} を割り当て（このキーは衝突しています）", command.as_token(), tok)
+        } else {
+            format!("{} に {} を割り当てました", command.as_token(), tok)
+        };
         self.rebuild_rows();
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
-    /// 選択行の割り当てを解除する（既定キーは空値で打ち消す＝差分保存で永続）。
-    /// 機能順＝その機能の全キー／キー順＝選択中のその1キーだけ。
+    /// 選択行の割り当てを解除する（既定キーは空 Vec で打ち消す＝差分保存で永続）。
+    /// 機能順＝その機能の全キー／キー順＝選択中のその1キー（その定義を丸ごと）。
     fn unbind_selected(&self) {
-        let Some(command) = self.selected_command() else {
-            return;
-        };
-        let (chords, status): (Vec<String>, String) = match self.inner.view_mode.get() {
+        let status = match self.inner.view_mode.get() {
             KeyView::ByCommand => {
+                let Some(command) = self.selected_command() else {
+                    return;
+                };
                 let chords: Vec<String> = {
                     let view = self.inner.view.borrow();
                     match view.get(self.inner.sel.get()) {
@@ -3069,31 +3186,33 @@ impl KeyEditor {
                             .rows
                             .borrow()
                             .get(ri)
-                            .map(|r| r.chords.clone())
+                            .map(|r| r.chords.iter().map(|c| c.token.clone()).collect())
                             .unwrap_or_default(),
                         None => return,
                     }
                 };
-                let s = format!("{} の割り当てを解除しました", command.as_token());
-                (chords, s)
+                if chords.is_empty() {
+                    *self.inner.status.borrow_mut() = "割り当てがありません".to_string();
+                    return;
+                }
+                // その機能の値だけを各 chord から取り除く（他機能との衝突分は残す）。
+                let mut draft = self.inner.draft.borrow_mut();
+                for c in &chords {
+                    if let Some(vals) = draft.get_mut(c) {
+                        vals.retain(|v| Invocation::parse(v).map(|i| i.command) != Some(command));
+                    }
+                }
+                format!("{} の割り当てを解除しました", command.as_token())
             }
             KeyView::ByKey => {
                 let Some(chord) = self.selected_chord() else {
                     return;
                 };
-                let s = format!("{} の割り当てを解除しました", chord);
-                (vec![chord], s)
+                // そのキー定義を丸ごと外す＝空 Vec（unbind マーカー）にする。
+                self.inner.draft.borrow_mut().insert(chord.clone(), Vec::new());
+                format!("{} の割り当てを解除しました", chord)
             }
         };
-        if chords.is_empty() {
-            *self.inner.status.borrow_mut() = "割り当てがありません".to_string();
-            return;
-        }
-        self.with_map(|map| {
-            for c in &chords {
-                map.insert(c.clone(), String::new());
-            }
-        });
         *self.inner.status.borrow_mut() = status;
         self.rebuild_rows();
         let _ = self.hwnd().InvalidateRect(None, false);
@@ -3102,7 +3221,17 @@ impl KeyEditor {
     /// このページを既定キーマップへ戻す。
     fn reset(&self) {
         let def = self.inner.category.default_map();
-        self.with_map(|map| *map = def);
+        let draft: BTreeMap<String, Vec<String>> = def
+            .into_iter()
+            .map(|(chord, val)| {
+                if val.trim().is_empty() {
+                    (chord, Vec::new())
+                } else {
+                    (chord, vec![val])
+                }
+            })
+            .collect();
+        *self.inner.draft.borrow_mut() = draft;
         *self.inner.status.borrow_mut() = "既定に戻しました".to_string();
         self.inner.capturing.set(false);
         self.rebuild_rows();
@@ -3292,9 +3421,11 @@ impl KeyEditor {
         let capturing = self.inner.capturing.get();
         let key_x = gui::dpi_x(8);
         let chord_x = gui::dpi_x(260);
-        let vis = (ch / row_h).max(1) as usize;
-        // 可視範囲の各行を現モードで (左, 右, 右を淡色表示するか) に文字列化する。
-        // 機能順＝(機能, キー群 or "—"), キー順＝(キー, 機能)。
+        // 最下部 1 行はステータス（操作結果・衝突メッセージ）に充てる。
+        let body_h = (ch - row_h).max(row_h);
+        let vis = (body_h / row_h).max(1) as usize;
+        // 可視範囲の各行を現モードで (左, 右, 右を淡色表示するか) に文字列化する。衝突は ⚠ を付す。
+        // 機能順＝(機能, キー群 or "—"), キー順＝(キー, 全機能ラベル)。
         let lines: Vec<(String, String, bool)> = match self.inner.view_mode.get() {
             KeyView::ByCommand => {
                 let rows = self.inner.rows.borrow();
@@ -3305,7 +3436,19 @@ impl KeyEditor {
                             if r.chords.is_empty() {
                                 (r.command.as_token().to_string(), "—".to_string(), true)
                             } else {
-                                (r.command.as_token().to_string(), r.chords.join(", "), false)
+                                let joined = r
+                                    .chords
+                                    .iter()
+                                    .map(|c| {
+                                        if c.conflicted {
+                                            format!("{} ⚠", c.token)
+                                        } else {
+                                            c.token.clone()
+                                        }
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                (r.command.as_token().to_string(), joined, false)
                             }
                         })
                     })
@@ -3317,7 +3460,11 @@ impl KeyEditor {
                     .filter_map(|vi| {
                         view.get(top + vi).map(|&ri| {
                             let r = &krows[ri];
-                            (r.chord.clone(), r.command.as_token().to_string(), false)
+                            let mut right = r.labels.join(", ");
+                            if r.labels.len() > 1 {
+                                right.push_str(" ⚠");
+                            }
+                            (r.chord.clone(), right, false)
                         })
                     })
                     .collect()
@@ -3342,6 +3489,15 @@ impl KeyEditor {
                 }
                 dc.TextOut(chord_x, ty, right)?;
             }
+        }
+        // 最下部のステータス行（薄い区切り線＋直近メッセージ）。
+        let sep_y = ch - row_h;
+        let sep_brush = w::HBRUSH::GetSysColorBrush(co::COLOR::BTNSHADOW)?;
+        dc.FillRect(w::RECT { left: 0, top: sep_y, right: cw, bottom: sep_y + 1 }, &sep_brush)?;
+        let status = self.inner.status.borrow();
+        if !status.is_empty() {
+            dc.SetTextColor(text_col)?;
+            dc.TextOut(key_x, sep_y + (row_h - fh) / 2, &status)?;
         }
         Ok(())
     }
@@ -3540,23 +3696,50 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         });
     }
 
-    // 適用：閉じずに現在の設定を反映する。
+    // キー編集の検証＋反映：3 ページのどれかにキー重複（衝突）があれば反映せず false を返し
+    // （理由は各ページのステータスへ）、無ければ下書きを config へ書き戻して true。
+    let validate_and_flush: Rc<dyn Fn() -> bool> = {
+        let editors = vec![keys.clone(), keys_text.clone(), keys_image.clone()];
+        Rc::new(move || {
+            let mut ok = true;
+            for e in &editors {
+                if e.has_conflicts() {
+                    e.note_conflicts();
+                    ok = false;
+                }
+            }
+            if ok {
+                for e in &editors {
+                    e.flush_draft();
+                }
+            }
+            ok
+        })
+    };
+
+    // 適用：検証を通れば閉じずに現在の設定を反映する。重複があれば反映しない（閉じない）。
     {
         let on_apply = on_apply.clone();
         let shared = shared.clone();
+        let validate_and_flush = validate_and_flush.clone();
         apply.on().bn_clicked(move || {
-            on_apply(&shared.cfg.borrow());
+            if validate_and_flush() {
+                on_apply(&shared.cfg.borrow());
+            }
             Ok(())
         });
     }
-    // OK：反映して閉じる。
+    // OK：検証を通れば反映して閉じる。重複があれば反映せず**閉じない**（継続編集）。
     {
         let on_apply = on_apply.clone();
         let shared = shared.clone();
         let wnd2 = wnd.clone();
+        let validate_and_flush = validate_and_flush.clone();
         ok.on().bn_clicked(move || {
-            on_apply(&shared.cfg.borrow());
-            wnd2.close();
+            if validate_and_flush() {
+                on_apply(&shared.cfg.borrow());
+                wnd2.close();
+            }
             Ok(())
         });
     }

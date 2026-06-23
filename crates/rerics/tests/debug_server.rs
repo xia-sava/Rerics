@@ -1740,10 +1740,10 @@ fn settings_new_pages_reachable_and_snapshot() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
-/// 設定ダイアログのキー編集ページを headless で駆動する：割り当て（実打鍵キャプチャと同じ
-/// assign 経路）・衝突は移動・解除・既定戻し。開いていなければ 404。
+/// 設定ダイアログのキー編集ページを headless で駆動する：割り当て（追記）・解除・既定戻し。
+/// 開いていなければ 404・未知コマンドは 400。
 #[test]
-fn settings_key_editor_binds_moves_unbinds_resets() {
+fn settings_key_editor_binds_unbinds_resets() {
     let server = Server::start(&["a.txt"], "");
     // 設定を開く前は 404。
     assert_eq!(
@@ -1755,26 +1755,23 @@ fn settings_key_editor_binds_moves_unbinds_resets() {
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // 既定：MakeDirectory=K、SelectMask=未割当。
+    // 既定：MakeDirectory=K、SelectMask=未割当、衝突なし。
     let s = keys();
     assert!(s.contains(r#"["MakeDirectory",["K"]]"#), "既定 MakeDirectory=K: {s}");
     assert!(s.contains(r#"["SelectMask",[]]"#), "既定 SelectMask 未割当: {s}");
+    assert!(s.contains(r#""conflicts":[]"#), "既定は衝突なし: {s}");
 
-    // 割り当て（実打鍵キャプチャと同じ assign 経路を叩く）。
+    // 未使用キーを割り当て（実打鍵キャプチャと同じ assign 経路・衝突なし）。
     assert_eq!(
         server.req("POST", "/keys/filer/bind", r#"["SelectMask","Ctrl+Shift+M"]"#).unwrap().0,
         200,
         "bind は ok"
     );
-    assert!(keys().contains("Ctrl+Shift+M"), "割り当てが反映される");
-
-    // 衝突＝chord は一意なので移動する。K を SelectMask へ割り当てると MakeDirectory から外れる。
-    server.req("POST", "/keys/filer/bind", r#"["SelectMask","K"]"#).unwrap();
     let s = keys();
-    assert!(s.contains(r#"["MakeDirectory",[]]"#), "K が MakeDirectory から外れる: {s}");
-    assert!(s.contains("\"K\""), "SelectMask が K を得る: {s}");
+    assert!(s.contains(r#"["SelectMask",["Ctrl+Shift+M"]]"#), "割り当てが反映: {s}");
+    assert!(s.contains(r#""conflicts":[]"#), "未使用キーなので衝突なし: {s}");
 
-    // unbind：直前の bind で選択は SelectMask。その割り当てを全解除。
+    // unbind：直前の bind で選択は SelectMask。その割り当てを解除。
     server.req("POST", "/keys/filer/unbind", "").unwrap();
     assert!(keys().contains(r#"["SelectMask",[]]"#), "SelectMask の割り当てが消える");
 
@@ -1790,6 +1787,45 @@ fn settings_key_editor_binds_moves_unbinds_resets() {
     );
 
     server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
+/// 既存キーへの割り当ては機能を消さず**追記**＝衝突マークが立つ。衝突があると OK は反映せず
+/// **閉じない**（ステータスに重複メッセージ）。衝突を解消すると OK で閉じられる。
+#[test]
+fn settings_key_editor_conflicts_block_ok_until_resolved() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // K は既定で MakeDirectory。これを SelectMask にも割り当てる＝消えずに衝突。
+    server.req("POST", "/keys/filer/bind", r#"["SelectMask","K"]"#).unwrap();
+    let s = keys();
+    assert!(s.contains(r#"["MakeDirectory",["K"]]"#), "MakeDirectory は K を保持: {s}");
+    assert!(s.contains(r#"["SelectMask",["K"]]"#), "SelectMask も K を得る: {s}");
+    assert!(
+        s.contains(r#""conflicts":[["K",["MakeDirectory","SelectMask"]]]"#),
+        "K の衝突が立つ: {s}"
+    );
+
+    // OK を押しても衝突で閉じない（モーダルは残る・ステータスに重複メッセージ）。
+    server.req("POST", "/modal/command/ok", "").expect("ok");
+    poll(&server, "/keys/filer", |b| b.contains("重複"));
+    assert_ne!(
+        server.req("GET", "/state/modal", "").unwrap().1.trim(),
+        "null",
+        "衝突中は OK で閉じない"
+    );
+
+    // 衝突を解消：選択中（SelectMask）の割り当てを外す＝K は MakeDirectory だけに戻る。
+    server.req("POST", "/keys/filer/unbind", "").unwrap();
+    let s = keys();
+    assert!(s.contains(r#""conflicts":[]"#), "衝突が解消: {s}");
+    assert!(s.contains(r#"["MakeDirectory",["K"]]"#), "MakeDirectory=K に戻る: {s}");
+
+    // 解消後は OK で閉じられる。
+    server.req("POST", "/modal/command/ok", "").expect("ok");
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
