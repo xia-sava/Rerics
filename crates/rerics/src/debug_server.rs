@@ -137,14 +137,16 @@ pub mod modal_registry {
     /// キー編集ページの観測状態（debug-server で読む）。
     #[derive(serde::Serialize)]
     pub struct KeyEditorState {
-        /// 機能順の行＝(コマンドのトークン名, 割り当て chord トークン群)。
+        /// 検索で絞り込んだ後の行＝(コマンドのトークン名, 割り当て chord トークン群)。
         pub rows: Vec<(String, Vec<String>)>,
-        /// 選択行 index。
+        /// 選択行 index（絞り込み後の `rows` 上の位置）。
         pub selected: usize,
         /// キャプチャ待ちか。
         pub capturing: bool,
         /// 直近の操作結果メッセージ。
         pub status: String,
+        /// 現在の検索クエリ（空なら全件）。
+        pub query: String,
     }
 
     /// (コマンドのトークン名, chord トークン) を割り当てるフック。未知コマンド等は Err。
@@ -159,6 +161,8 @@ pub mod modal_registry {
         pub unbind: Box<dyn Fn()>,
         /// このページを既定キーマップへ戻す。
         pub reset: Box<dyn Fn()>,
+        /// 検索クエリを適用して表示を絞り込む（機能名・キーへの部分一致）。
+        pub search: Box<dyn Fn(&str)>,
     }
 
     thread_local! {
@@ -248,6 +252,9 @@ pub enum Request {
     KeysUnbind { category: String },
     /// `POST /keys/<category>/reset`：このページを既定キーマップへ戻す。
     KeysReset { category: String },
+    /// `POST /keys/<category>/search`：body の文字列で表示を絞り込む（機能名・キーへの部分一致・
+    /// 大小無視）。空 body で全件へ戻す。
+    KeysSearch { category: String, query: String },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -469,6 +476,10 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                     }
                 } else if let Some(cat) = rest.strip_suffix("/unbind") {
                     Some(Request::KeysUnbind { category: cat.to_string() })
+                } else if let Some(cat) = rest.strip_suffix("/search") {
+                    let mut query = String::new();
+                    let _ = std::io::Read::read_to_string(req.as_reader(), &mut query);
+                    Some(Request::KeysSearch { category: cat.to_string(), query })
                 } else {
                     rest.strip_suffix("/reset")
                         .map(|cat| Request::KeysReset { category: cat.to_string() })

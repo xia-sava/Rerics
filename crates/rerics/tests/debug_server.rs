@@ -1793,6 +1793,54 @@ fn settings_key_editor_binds_moves_unbinds_resets() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// キー編集ページの検索（機能名・キーへの部分一致・大小無視）。クエリで一覧が絞り込まれ、
+/// 空クエリで全件へ戻る。`config` は変わらない（割り当ては不変）。
+#[test]
+fn settings_key_editor_search_filters_by_name_and_key() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+    // 行数＝JSON 配列 `[...]` の個数（rows の各行が `["Cmd",[...]]`）。`],[` の数＋1。
+    let count = |s: &str| s.matches("],[").count() + if s.contains("\"rows\":[]") { 0 } else { 1 };
+
+    let full = keys();
+    let full_n = count(&full);
+    assert!(full_n > 40, "既定は Filer 全コマンドが並ぶ: {full_n}");
+    assert!(full.contains(r#""query":"""#), "初期クエリは空: {full}");
+
+    // 機能名で絞り込む："copy" は Copy/ClipCopy/ViewerCopy… を含み、MakeDirectory は除外。
+    assert_eq!(
+        server.req("POST", "/keys/filer/search", "copy").unwrap().0,
+        200,
+        "search は ok"
+    );
+    let s = keys();
+    assert!(s.contains(r#""query":"copy""#), "クエリが反映される: {s}");
+    assert!(s.contains(r#"["Copy",["C"]]"#), "Copy が残る: {s}");
+    assert!(s.contains("ClipCopy"), "ClipCopy が残る: {s}");
+    assert!(!s.contains("MakeDirectory"), "無関係な機能は消える: {s}");
+    let copy_n = count(&s);
+    assert!(copy_n > 0 && copy_n < full_n, "件数が減る: {copy_n} < {full_n}");
+
+    // キーで絞り込む：既定 K は MakeDirectory のみ（大小無視なので chord "K" に一致）。
+    server.req("POST", "/keys/filer/search", "K").unwrap();
+    let s = keys();
+    assert!(s.contains("MakeDirectory"), "K を持つ MakeDirectory が出る: {s}");
+
+    // 空クエリで全件へ戻る。
+    server.req("POST", "/keys/filer/search", "").unwrap();
+    let s = keys();
+    assert_eq!(count(&s), full_n, "空クエリで全件に戻る: {s}");
+    assert!(s.contains(r#""query":"""#), "クエリが空に戻る");
+
+    // 絞り込みは config を変えない（割り当ては不変）＝Copy=C のまま。
+    assert!(keys().contains(r#"["Copy",["C"]]"#), "割り当ては検索で変わらない");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// `/modal/resize/<w>x<h>` がモーダルへ WM_SIZE を飛ばし、クライアント寸法が要求サイズへ
 /// 変わる（手動ドラッグの代替＝リサイズ追従ダイアログを headless で検証する基盤）。
 #[test]

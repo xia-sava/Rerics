@@ -133,6 +133,12 @@ impl MainWindow {
                         Ok(())
                     }));
                 }
+                debug_server::Request::KeysSearch { category, query } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| {
+                        (h.search)(&query);
+                        Ok(())
+                    }));
+                }
             }
         }
     }

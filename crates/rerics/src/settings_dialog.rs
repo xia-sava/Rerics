@@ -2616,6 +2616,10 @@ struct KeyEditorInner {
     shared: Rc<Shared>,
     category: KeyCategory,
     rows: RefCell<Vec<KeyRow>>,
+    /// 検索で絞り込んだ表示対象＝`rows` へのインデックス（表示順）。`sel`/`top` はこの上の位置。
+    view: RefCell<Vec<usize>>,
+    /// 検索クエリ（機能名・キーへの部分一致・大小無視）。空なら全件表示。
+    query: RefCell<String>,
     sel: Cell<usize>,
     /// 表示先頭行（スクロール）。
     top: Cell<usize>,
@@ -2631,6 +2635,7 @@ struct KeyEditorInner {
 #[derive(Clone)]
 struct KeyEditor {
     list: gui::WindowControl,
+    search: gui::Edit,
     inner: Rc<KeyEditorInner>,
 }
 
@@ -2643,11 +2648,22 @@ impl KeyEditor {
             12,
             560,
         );
+        label(parent, "検索:", 16, 44, 40);
+        let search = gui::Edit::new(
+            parent,
+            gui::EditOpts {
+                control_style: co::ES::AUTOHSCROLL,
+                position: gui::dpi(60, 40),
+                width: gui::dpi_x(700),
+                height: gui::dpi_y(24),
+                ..Default::default()
+            },
+        );
         let list = gui::WindowControl::new(
             parent,
             gui::WindowControlOpts {
-                position: gui::dpi(16, 40),
-                size: gui::dpi(744, 446),
+                position: gui::dpi(16, 72),
+                size: gui::dpi(744, 414),
                 class_bg_brush: gui::Brush::Color(co::COLOR::WINDOW),
                 style: co::WS::CHILD
                     | co::WS::VISIBLE
@@ -2689,10 +2705,13 @@ impl KeyEditor {
         );
         let me = Self {
             list,
+            search,
             inner: Rc::new(KeyEditorInner {
                 shared: shared.clone(),
                 category,
                 rows: RefCell::new(Vec::new()),
+                view: RefCell::new(Vec::new()),
+                query: RefCell::new(String::new()),
                 sel: Cell::new(0),
                 top: Cell::new(0),
                 row_h: Cell::new(gui::dpi_y(22)),
@@ -2702,6 +2721,14 @@ impl KeyEditor {
         };
         me.rebuild_rows();
         me.setup_events();
+        {
+            let this = me.clone();
+            me.search.on().en_change(move || {
+                let q = this.search.text().unwrap_or_default();
+                this.apply_query(&q);
+                Ok(())
+            });
+        }
         {
             let this = me.clone();
             add.on().bn_clicked(move || {
@@ -2739,25 +2766,31 @@ impl KeyEditor {
         let read = {
             let this = self.clone();
             Box::new(move || {
-                let rows = this
-                    .inner
-                    .rows
-                    .borrow()
-                    .iter()
-                    .map(|r| (r.command.as_token().to_string(), r.chords.clone()))
-                    .collect();
+                let rows = {
+                    let all = this.inner.rows.borrow();
+                    this.inner
+                        .view
+                        .borrow()
+                        .iter()
+                        .map(|&ri| {
+                            let r = &all[ri];
+                            (r.command.as_token().to_string(), r.chords.clone())
+                        })
+                        .collect()
+                };
                 KeyEditorState {
                     rows,
                     selected: this.inner.sel.get(),
                     capturing: this.inner.capturing.get(),
                     status: this.inner.status.borrow().clone(),
+                    query: this.inner.query.borrow().clone(),
                 }
             }) as Box<dyn Fn() -> KeyEditorState>
         };
         let select = {
             let this = self.clone();
             Box::new(move |index: usize| {
-                if index < this.inner.rows.borrow().len() {
+                if index < this.inner.view.borrow().len() {
                     this.inner.sel.set(index);
                     this.ensure_visible();
                     let _ = this.hwnd().InvalidateRect(None, false);
@@ -2771,8 +2804,12 @@ impl KeyEditor {
                     .ok_or_else(|| format!("unknown command: {command}"))?;
                 let ch = KeyChord::parse(chord)
                     .ok_or_else(|| format!("unknown chord: {chord}"))?;
-                if let Some(i) = this.inner.rows.borrow().iter().position(|r| r.command == cmd) {
-                    this.inner.sel.set(i);
+                let pos = {
+                    let rows = this.inner.rows.borrow();
+                    this.inner.view.borrow().iter().position(|&ri| rows[ri].command == cmd)
+                };
+                if let Some(di) = pos {
+                    this.inner.sel.set(di);
                 }
                 this.assign(cmd, ch);
                 Ok(())
@@ -2786,9 +2823,16 @@ impl KeyEditor {
             let this = self.clone();
             Box::new(move || this.reset()) as Box<dyn Fn()>
         };
+        let search = {
+            let this = self.clone();
+            Box::new(move |q: &str| {
+                let _ = this.search.set_text(q);
+                this.apply_query(q);
+            }) as Box<dyn Fn(&str)>
+        };
         crate::debug_server::modal_registry::register_key_editor(
             self.inner.category.debug_str(),
-            KeyEditorHooks { read, select, bind, unbind, reset },
+            KeyEditorHooks { read, select, bind, unbind, reset, search },
         );
     }
 
@@ -2829,16 +2873,55 @@ impl KeyEditor {
                 KeyRow { command, chords }
             })
             .collect();
-        let n = rows.len();
         *self.inner.rows.borrow_mut() = rows;
-        if n > 0 && self.inner.sel.get() >= n {
+        self.rebuild_view();
+    }
+
+    /// 検索クエリで `rows` を絞り込み、表示対象 `view` を組み直す。選択を範囲内へ収める。
+    fn rebuild_view(&self) {
+        let q = self.inner.query.borrow().to_lowercase();
+        let view: Vec<usize> = {
+            let rows = self.inner.rows.borrow();
+            rows.iter()
+                .enumerate()
+                .filter(|(_, r)| {
+                    q.is_empty()
+                        || r.command.as_token().to_lowercase().contains(&q)
+                        || r.chords.iter().any(|c| c.to_lowercase().contains(&q))
+                })
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let n = view.len();
+        *self.inner.view.borrow_mut() = view;
+        if n == 0 {
+            self.inner.sel.set(0);
+            self.inner.top.set(0);
+        } else if self.inner.sel.get() >= n {
             self.inner.sel.set(n - 1);
         }
     }
 
+    /// 検索クエリを適用して表示を絞り込む（`config` は変更しない）。同じ値なら何もしない。
+    fn apply_query(&self, q: &str) {
+        {
+            let mut cur = self.inner.query.borrow_mut();
+            if *cur == q {
+                return;
+            }
+            *cur = q.to_string();
+        }
+        self.inner.sel.set(0);
+        self.inner.top.set(0);
+        self.rebuild_view();
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
     /// 選択行のコマンド。
     fn selected_command(&self) -> Option<Command> {
-        self.inner.rows.borrow().get(self.inner.sel.get()).map(|r| r.command)
+        let view = self.inner.view.borrow();
+        let ri = *view.get(self.inner.sel.get())?;
+        self.inner.rows.borrow().get(ri).map(|r| r.command)
     }
 
     /// chord を選択行のコマンドへ割り当てる（chord は一意なので既存があれば移動＝上書き）。
@@ -2861,13 +2944,19 @@ impl KeyEditor {
         let Some(command) = self.selected_command() else {
             return;
         };
-        let chords: Vec<String> = self
-            .inner
-            .rows
-            .borrow()
-            .get(self.inner.sel.get())
-            .map(|r| r.chords.clone())
-            .unwrap_or_default();
+        let chords: Vec<String> = {
+            let view = self.inner.view.borrow();
+            match view.get(self.inner.sel.get()) {
+                Some(&ri) => self
+                    .inner
+                    .rows
+                    .borrow()
+                    .get(ri)
+                    .map(|r| r.chords.clone())
+                    .unwrap_or_default(),
+                None => return,
+            }
+        };
         if chords.is_empty() {
             *self.inner.status.borrow_mut() = "割り当てがありません".to_string();
             return;
@@ -2930,7 +3019,7 @@ impl KeyEditor {
     }
 
     fn move_sel(&self, dir: isize) {
-        let n = self.inner.rows.borrow().len() as isize;
+        let n = self.inner.view.borrow().len() as isize;
         if n == 0 {
             return;
         }
@@ -2979,7 +3068,7 @@ impl KeyEditor {
             }
             let rh = this.inner.row_h.get().max(1);
             let row = this.inner.top.get() + (p.coords.y / rh) as usize;
-            if row < this.inner.rows.borrow().len() {
+            if row < this.inner.view.borrow().len() {
                 this.inner.sel.set(row);
                 this.ensure_visible();
                 let _ = this.hwnd().InvalidateRect(None, false);
@@ -3070,6 +3159,7 @@ impl KeyEditor {
         let hl_bg = w::HBRUSH::GetSysColorBrush(co::COLOR::HIGHLIGHT)?;
 
         let rows = self.inner.rows.borrow();
+        let view = self.inner.view.borrow();
         let top = self.inner.top.get();
         let sel = self.inner.sel.get();
         let capturing = self.inner.capturing.get();
@@ -3077,24 +3167,24 @@ impl KeyEditor {
         let chord_x = gui::dpi_x(260);
         let vis = (ch / row_h).max(1) as usize;
         for vi in 0..vis {
-            let i = top + vi;
-            if i >= rows.len() {
+            let di = top + vi;
+            if di >= view.len() {
                 break;
             }
-            let row = &rows[i];
+            let row = &rows[view[di]];
             let y = vi as i32 * row_h;
             let ty = y + (row_h - fh) / 2;
-            if i == sel {
+            if di == sel {
                 dc.FillRect(w::RECT { left: 0, top: y, right: cw, bottom: y + row_h }, &hl_bg)?;
                 dc.SetTextColor(hl_text)?;
             } else {
                 dc.SetTextColor(text_col)?;
             }
             dc.TextOut(key_x, ty, row.command.as_token())?;
-            if i == sel && capturing {
+            if di == sel && capturing {
                 dc.TextOut(chord_x, ty, "← キーを押してください（Escで中止）")?;
             } else if row.chords.is_empty() {
-                if i != sel {
+                if di != sel {
                     dc.SetTextColor(gray_col)?;
                 }
                 dc.TextOut(chord_x, ty, "—")?;
