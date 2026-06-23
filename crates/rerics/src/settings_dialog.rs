@@ -3038,6 +3038,7 @@ impl KeyEditor {
             let this = self.clone();
             Box::new(move |index: usize| {
                 if index < this.inner.view.borrow().len() {
+                    this.clear_status();
                     this.inner.sel.set(index);
                     this.inner.sub.set(0);
                     this.ensure_visible();
@@ -3375,6 +3376,7 @@ impl KeyEditor {
             }
             *cur = q.to_string();
         }
+        self.clear_status();
         self.inner.sel.set(0);
         self.inner.top.set(0);
         self.rebuild_view();
@@ -3449,6 +3451,7 @@ impl KeyEditor {
         if n <= 1 {
             return;
         }
+        self.clear_status();
         let i = (self.inner.sub.get() as isize + dir).clamp(0, n - 1);
         self.inner.sub.set(i as usize);
         let _ = self.hwnd().InvalidateRect(None, false);
@@ -3876,11 +3879,23 @@ impl KeyEditor {
         self.update_scrollbar();
     }
 
+    /// 直近の操作結果メッセージ（「中止しました」等）を消す。次の操作で残骸を残さないため、
+    /// 移動・選択・検索のたびに呼ぶ。キャプチャ中・ピック中の案内はライブなので消さない。
+    fn clear_status(&self) {
+        if self.inner.capturing.get() || self.inner.picking.borrow().is_some() {
+            return;
+        }
+        if !self.inner.status.borrow().is_empty() {
+            self.inner.status.borrow_mut().clear();
+        }
+    }
+
     fn move_sel(&self, dir: isize) {
         let n = self.inner.view.borrow().len() as isize;
         if n == 0 {
             return;
         }
+        self.clear_status();
         let i = (self.inner.sel.get() as isize + dir).clamp(0, n - 1);
         self.inner.sel.set(i as usize);
         self.inner.sub.set(0);
@@ -3929,6 +3944,7 @@ impl KeyEditor {
             let rh = this.inner.row_h.get().max(1);
             let row = this.inner.top.get() + (p.coords.y / rh) as usize;
             if row < this.inner.view.borrow().len() {
+                this.clear_status();
                 this.inner.sel.set(row);
                 // ピック中は行選択のみ。通常はクリックしたキーをサブ選択（行内 hit-test）。
                 let sub = if this.inner.picking.borrow().is_some() {
@@ -4151,6 +4167,8 @@ impl KeyEditor {
         let gray_col = w::GetSysColor(co::COLOR::GRAYTEXT);
         let hl_text = w::GetSysColor(co::COLOR::HIGHLIGHTTEXT);
         let hl_bg = w::HBRUSH::GetSysColorBrush(co::COLOR::HIGHLIGHT)?;
+        // キャプチャ中の当該行・メッセージ行・ピッカー地に使うアイボリー。
+        let ivory = w::HBRUSH::GetSysColorBrush(co::COLOR::INFOBK)?;
 
         let view = self.inner.view.borrow();
         let top = self.inner.top.get();
@@ -4278,7 +4296,11 @@ impl KeyEditor {
             let di = top + vi;
             let y = vi as i32 * row_h;
             let ty = y + (row_h - fh) / 2;
-            if di == sel {
+            if di == sel && capturing {
+                // キャプチャ中の当該行はアイボリーで「今ここに割り当てている」を示す（青反転にしない）。
+                dc.FillRect(w::RECT { left: 0, top: y, right: cw, bottom: y + row_h }, &ivory)?;
+                dc.SetTextColor(text_col)?;
+            } else if di == sel {
                 dc.FillRect(w::RECT { left: 0, top: y, right: cw, bottom: y + row_h }, &hl_bg)?;
                 dc.SetTextColor(hl_text)?;
             } else {
@@ -4325,11 +4347,15 @@ impl KeyEditor {
                 dc.TextOut(chord_x, ty, right)?;
             }
         }
-        // 最下部のステータス行（薄い区切り線＋直近メッセージ）。
+        // 最下部のステータス行（薄い区切り線＋直近メッセージ）。メッセージがある時だけ
+        // 行をアイボリーで塗って目立たせる（空のときは地のまま）。
         let sep_y = ch - row_h;
+        let status = self.inner.status.borrow();
+        if !status.is_empty() {
+            dc.FillRect(w::RECT { left: 0, top: sep_y, right: cw, bottom: ch }, &ivory)?;
+        }
         let sep_brush = w::HBRUSH::GetSysColorBrush(co::COLOR::BTNSHADOW)?;
         dc.FillRect(w::RECT { left: 0, top: sep_y, right: cw, bottom: sep_y + 1 }, &sep_brush)?;
-        let status = self.inner.status.borrow();
         if !status.is_empty() {
             dc.SetTextColor(text_col)?;
             dc.TextOut(key_x, sep_y + (row_h - fh) / 2, &status)?;

@@ -1770,14 +1770,20 @@ fn settings_key_editor_binds_unbinds_resets() {
     let s = keys();
     assert!(s.contains(r#"["SelectMask",["Ctrl+Shift+M"]]"#), "割り当てが反映: {s}");
     assert!(s.contains(r#""conflicts":[]"#), "未使用キーなので衝突なし: {s}");
+    assert!(s.contains("を割り当てました"), "割り当て直後はメッセージが出る: {s}");
 
     // unbind：直前の bind で選択は SelectMask。その割り当てを解除。
     server.req("POST", "/keys/filer/unbind", "").unwrap();
     assert!(keys().contains(r#"["SelectMask",[]]"#), "SelectMask の割り当てが消える");
 
-    // reset：既定へ戻る（MakeDirectory=K が復活）。
+    // reset：既定へ戻る（MakeDirectory=K が復活）。直後はステータスにメッセージが残る。
     server.req("POST", "/keys/filer/reset", "").unwrap();
-    assert!(keys().contains(r#"["MakeDirectory",["K"]]"#), "reset で既定へ");
+    let s = keys();
+    assert!(s.contains(r#"["MakeDirectory",["K"]]"#), "reset で既定へ");
+    assert!(!s.contains(r#""status":"""#), "reset 直後はメッセージが残る: {s}");
+    // 次の操作（選択）でメッセージが消える＝残骸が居座らない。
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    assert!(keys().contains(r#""status":"""#), "選択など次の操作でメッセージが消える: {}", keys());
 
     // 未知コマンド/キーは 400。
     assert_eq!(
