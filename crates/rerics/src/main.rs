@@ -1,9 +1,12 @@
 mod chrome;
+mod script;
 // 常時ビルド（純粋関数＋ユニットテスト）。呼び出し元は debug-server feature 下なので OFF 時は未使用。
 #[allow(dead_code)]
 mod debug_json;
 #[cfg(feature = "debug-server")]
 mod debug_server;
+mod ui_marshal;
+mod script_host;
 mod dialog;
 mod file_list;
 mod icons;
@@ -256,6 +259,7 @@ struct MainWindow {
     archive_temp_dirs: Rc<RefCell<std::collections::HashMap<PathBuf, PathBuf>>>,
     #[cfg(feature = "debug-server")]
     debug: debug_server::Bridge,
+    script: script_host::ScriptBridge,
 }
 
 /// 1タブの保存状態（非アクティブ時の退避先）。アクティブタブの実体はライブ側
@@ -508,6 +512,7 @@ impl MainWindow {
             archive_temp_dirs: Rc::new(RefCell::new(std::collections::HashMap::new())),
             #[cfg(feature = "debug-server")]
             debug: debug_server::Bridge::new(debug_port, debug_allow_write, debug_headless),
+            script: script_host::ScriptBridge::new(),
         }
     }
 
@@ -585,6 +590,16 @@ impl MainWindow {
             let wake = winutil::msg::DEBUG_WAKE;
             self.wnd.on().wm(wake, move |_| {
                 this.drain_debug_requests();
+                Ok(0)
+            });
+        }
+
+        // スクリプトエンジンスレッドからの HostApi 要求を UI スレッドで捌く。
+        {
+            let this = self.clone();
+            let wake = winutil::msg::SCRIPT_WAKE;
+            self.wnd.on().wm(wake, move |_| {
+                this.drain_script_requests();
                 Ok(0)
             });
         }
@@ -684,6 +699,8 @@ impl MainWindow {
                 let hwnd_ptr = this.wnd.hwnd().ptr() as isize;
                 debug_server::start(port, this.debug.queue.clone(), hwnd_ptr);
             }
+            // スクリプトエンジンを別スレッドに建て、起動スクリプトを読み込む。
+            this.start_script_engine();
             // 設定読込エラーは、詳細をログへ出し、窓表示後にアラートを出す（遅延）。
             if let Some(detail) = &this.config_error {
                 this.log.error("設定ファイル config.toml を読み込めませんでした。既定の設定で起動しています。");
@@ -777,6 +794,7 @@ impl MainWindow {
             }
             return Ok(());
         }
+        self.fire_script_event("executeCommand", cmd.as_token());
         // 引数があれば実行直前にマクロを展開する。入力/選択のキャンセルは無音で実行中止。
         let args = if inv.args.is_empty() {
             Vec::new()
@@ -1444,6 +1462,10 @@ impl MainWindow {
         view.refresh()?;
         self.update_selected_info(is_left);
         self.cleanup_unreferenced_temps();
+        // 一覧確定後に changeDirectory を配る（実際に現在地が変わったときだけ・notify 側で判定）。
+        // ここなら activePane() や並べ替えコマンドがハンドラから効く。
+        let dir = self.pane(is_left).borrow().loc_display();
+        self.notify_dir_loaded(is_left, &dir);
         Ok(())
     }
 

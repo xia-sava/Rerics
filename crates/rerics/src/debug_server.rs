@@ -7,10 +7,7 @@
 //! 要求をキューへ積んで `winutil::msg::DEBUG_WAKE` を main 窓へ Post し、応答チャネルで待つ。
 //! 実際の状態読取/操作は UI スレッドの WM ハンドラ（main.rs）が行う。
 
-use std::collections::VecDeque;
-use std::ffi::c_void;
-use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use crate::ui_marshal;
 
 /// `--debug-server` の既定ポート。
 pub const DEFAULT_PORT: u16 = 8731;
@@ -179,6 +176,12 @@ pub enum Request {
     /// `POST /modal/resize/<w>x<h>`：開いているモーダルの窓サイズを w×h（物理px）へ変える。
     /// WM_SIZE が飛んでダイアログの再レイアウトが走るので、リサイズ追従を headless で検証できる。
     ModalResize { width: i32, height: i32 },
+    /// `GET /script/commands`：登録済みスクリプトコマンド名の一覧（JSON 文字列配列）。
+    ScriptCommands,
+    /// `POST /script/invoke/<name>`：登録済みスクリプトコマンドを名前で実行する（投げっぱなし）。
+    ScriptInvoke { name: String },
+    /// `POST /script/eval`：body の TS/JS ソースをスクリプトエンジンで評価する（投げっぱなし）。
+    ScriptEval { code: String },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -195,7 +198,7 @@ pub enum Response {
 }
 
 /// UI スレッドと HTTP スレッドが共有する要求キュー。
-pub type SharedQueue = Arc<Mutex<VecDeque<(Request, Sender<Response>)>>>;
+pub type SharedQueue = ui_marshal::WakeQueue<Request, Response>;
 
 /// MainWindow が 1 フィールドとして保持するブリッジ（キュー＋起動ポート＋書込み許可）。
 #[derive(Clone)]
@@ -212,7 +215,7 @@ pub struct Bridge {
 impl Bridge {
     pub fn new(port: Option<u16>, allow_write: bool, headless: bool) -> Self {
         Self {
-            queue: Arc::new(Mutex::new(VecDeque::new())),
+            queue: ui_marshal::new_queue(),
             port,
             allow_write,
             headless,
@@ -289,6 +292,8 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
             } else if let Some(rest) = path.strip_prefix("/snapshot/") {
                 let spec = rest.trim_end_matches('/').trim_end_matches(".png");
                 Some(Request::Snapshot { spec: spec.to_string() })
+            } else if path == "/script/commands" {
+                Some(Request::ScriptCommands)
             } else {
                 None
             }
@@ -360,6 +365,14 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                         height: h.parse().ok()?,
                     })
                 })
+            } else if let Some(name) = path.strip_prefix("/script/invoke/") {
+                Some(Request::ScriptInvoke {
+                    name: name.trim_end_matches('/').to_string(),
+                })
+            } else if path == "/script/eval" {
+                let mut code = String::new();
+                let _ = std::io::Read::read_to_string(req.as_reader(), &mut code);
+                Some(Request::ScriptEval { code })
             } else {
                 None
             }
@@ -370,10 +383,8 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
         let _ = req.respond(tiny_http::Response::from_string("not found").with_status_code(404));
         return;
     };
-    let (tx, rx) = std::sync::mpsc::channel();
-    queue.lock().unwrap().push_back((kind, tx));
-    post_wake(hwnd_ptr);
-    match rx.recv() {
+    let reply = ui_marshal::call(queue, hwnd_ptr, crate::winutil::msg::DEBUG_WAKE.raw(), kind);
+    match reply {
         Ok(Response::Json(s)) => {
             let _ = req.respond(json_response(s));
         }
@@ -428,15 +439,4 @@ fn json_response(body: String) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> 
         tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..])
             .expect("valid header");
     tiny_http::Response::from_string(body).with_header(header)
-}
-
-/// HTTP スレッドから main 窓を起こす（生ハンドルへ `PostMessageW`）。
-fn post_wake(hwnd_ptr: isize) {
-    #[link(name = "user32")]
-    unsafe extern "system" {
-        fn PostMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> i32;
-    }
-    unsafe {
-        PostMessageW(hwnd_ptr as *mut c_void, crate::winutil::msg::DEBUG_WAKE.raw(), 0, 0);
-    }
 }

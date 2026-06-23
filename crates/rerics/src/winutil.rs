@@ -38,4 +38,6 @@ pub mod msg {
     pub const ICONS_READY: co::WM = unsafe { co::WM::from_raw(0x8002) };
     /// 起動後に設定読み込み失敗のアラートを出す。
     pub const CONFIG_WARN: co::WM = unsafe { co::WM::from_raw(0x8003) };
+    /// スクリプトエンジンスレッドが UI スレッドを起こす。
+    pub const SCRIPT_WAKE: co::WM = unsafe { co::WM::from_raw(0x8004) };
 }

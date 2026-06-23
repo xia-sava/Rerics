@@ -132,12 +132,19 @@ pub enum WorkerEvent {
     /// 属性付きファイルの削除可否を UI に問い合わせる。
     AskDeleteWarn { name: String, attr: String, reply: Sender<MessageResult> },
     /// 操作完了。タスク id と関与したディレクトリを伴う（除去・再読込の判定に使う）。
+    /// `cancelled`/`failed` は結末（[`OpSummary`] 由来）で、スクリプトの `await` を成功で
+    /// 解くか例外で reject するかの判定に使う。
     Done {
         id: u64,
         kind: OpKind,
         src_dir: PathBuf,
         dst_dir: PathBuf,
+        cancelled: bool,
+        failed: bool,
     },
+    /// 進捗（インプレース更新中の本文）。スクリプトの `onProgress` へ流すためタスク id を伴う。
+    /// タスクマネージャのログ行更新は別経路（`LogLine`/`LogUpdate`）が担う。
+    Progress { task_id: u64, text: String },
     /// 書庫一括展開の完了。成功なら `temp_root` を提供先として登録する。完了反映は
     /// 「この書庫を指して読込中のペイン」を UI 側で走査して行うため side は持たない。
     ArchiveDone {
@@ -173,6 +180,9 @@ pub struct ChannelHost {
     pub delete_warn_cache: RefCell<Option<DeleteWarnChoice>>,
     /// ディレクトリコピー時の属性/日時複製の設定。既定は複製しない。
     pub copy_opts: CopyOptions,
+    /// 紐づくタスク id。`Some` のとき進捗を `WorkerEvent::Progress` でも流す（スクリプトの
+    /// `onProgress` 用）。スクリプトが待ち得る操作（コピー/移動/削除）でのみ設定する。
+    pub task_id: Option<u64>,
 }
 
 impl ChannelHost {
@@ -190,6 +200,7 @@ impl ChannelHost {
             conflict_cache: RefCell::new(None),
             delete_warn_cache: RefCell::new(None),
             copy_opts: CopyOptions::default(),
+            task_id: None,
         }
     }
 
@@ -197,6 +208,19 @@ impl ChannelHost {
     pub fn with_copy_options(mut self, opts: CopyOptions) -> Self {
         self.copy_opts = opts;
         self
+    }
+
+    /// 進捗をスクリプトへ流すためのタスク id を紐づける。
+    pub fn with_task_id(mut self, id: u64) -> Self {
+        self.task_id = Some(id);
+        self
+    }
+
+    /// 紐づくタスク id があれば進捗本文を `WorkerEvent::Progress` で流す（スクリプト用）。
+    fn emit_script_progress(&self, text: &str) {
+        if let Some(task_id) = self.task_id {
+            let _ = self.tx.send(WorkerEvent::Progress { task_id, text: text.to_owned() });
+        }
     }
 }
 
@@ -222,11 +246,13 @@ impl OperationHost for ChannelHost {
     fn begin_progress(&self, level: LogLevel, text: &str) -> ProgressHandle {
         let id = self.progress_seq.fetch_add(1, Ordering::Relaxed);
         let _ = self.tx.send(WorkerEvent::LogLine { id, level, text: text.to_owned() });
+        self.emit_script_progress(text);
         ProgressHandle(id)
     }
 
     fn update_progress(&self, handle: ProgressHandle, text: &str) {
         let _ = self.tx.send(WorkerEvent::LogUpdate { id: handle.0, text: text.to_owned() });
+        self.emit_script_progress(text);
     }
 
     fn resolve_conflict(&self, name: &str) -> ConflictResolution {

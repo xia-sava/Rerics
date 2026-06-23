@@ -164,12 +164,14 @@ impl MainWindow {
         self.register_task(id, "圧縮", desc, control)?;
         let src_dir = dir.clone();
         std::thread::spawn(move || {
-            rerics_core::run_compress(&host, &src_dir, &names, &dst_zip);
+            let sum = rerics_core::run_compress(&host, &src_dir, &names, &dst_zip);
             let _ = host.tx.send(WorkerEvent::Done {
                 id,
                 kind: OpKind::Copy,
                 src_dir: src_dir.clone(),
                 dst_dir: src_dir,
+                cancelled: sum.cancelled,
+                failed: sum.err > 0,
             });
         });
         Ok(())
@@ -194,6 +196,8 @@ impl MainWindow {
         self.register_task(id, "圧縮", desc, control)?;
         let src_dir = dir.clone();
         std::thread::spawn(move || {
+            let mut cancelled = false;
+            let mut failed = false;
             for name in &names {
                 let dst = src_dir.join(format!("{name}.zip"));
                 if dst.exists() {
@@ -204,7 +208,9 @@ impl MainWindow {
                     continue;
                 }
                 let sum = rerics_core::run_compress(&host, &src_dir, std::slice::from_ref(name), &dst);
+                failed |= sum.err > 0;
                 if sum.cancelled {
+                    cancelled = true;
                     break;
                 }
             }
@@ -213,6 +219,8 @@ impl MainWindow {
                 kind: OpKind::Copy,
                 src_dir: src_dir.clone(),
                 dst_dir: src_dir,
+                cancelled,
+                failed,
             });
         });
         Ok(())
@@ -264,7 +272,8 @@ impl MainWindow {
         }
         let src_dir = self.pane(is_left).borrow().path().to_path_buf();
         let dst_dir = self.pane(!is_left).borrow().path().to_path_buf();
-        self.start_copy(src_dir, dst_dir, names, move_it)
+        self.start_copy(src_dir, dst_dir, names, move_it)?;
+        Ok(())
     }
 
     /// 選択中（無ければカーソル位置）の項目名を集める。`..` は除外する。
@@ -311,16 +320,25 @@ impl MainWindow {
         // （書庫名フォルダを作る設定では dst_dir はその下層になり表示ペインと一致しないため）。
         let dst_done = reload_dir;
         std::thread::spawn(move || {
-            match rerics_core::open_archive(&archive) {
+            let (cancelled, failed) = match rerics_core::open_archive(&archive) {
                 Ok(backend) => match backend.list() {
                     Ok(entries) => {
-                        rerics_core::run_extract(&host, backend.as_ref(), &entries, &inner, &names, &dst_dir);
+                        let sum = rerics_core::run_extract(
+                            &host,
+                            backend.as_ref(),
+                            &entries,
+                            &inner,
+                            &names,
+                            &dst_dir,
+                        );
+                        (sum.cancelled, sum.err > 0)
                     }
                     Err(e) => {
                         let _ = host.tx.send(WorkerEvent::Log {
                             level: LogLevel::Error,
                             text: format!("書庫の読取に失敗しました: {}", e),
                         });
+                        (false, true)
                     }
                 },
                 Err(e) => {
@@ -328,27 +346,32 @@ impl MainWindow {
                         level: LogLevel::Error,
                         text: format!("書庫を開けません: {}", e),
                     });
+                    (false, true)
                 }
-            }
+            };
             // src は書庫（実パス無し＝空）として渡す。dst（実FS）が再読込される。
             let _ = host.tx.send(WorkerEvent::Done {
                 id,
                 kind: OpKind::Copy,
                 src_dir: PathBuf::new(),
                 dst_dir: dst_done,
+                cancelled,
+                failed,
             });
         });
         Ok(())
     }
 
     /// コピー/移動をワーカースレッドで起動する。完了は `wm_timer` 経由で取り込む。
+    /// コピー/移動をワーカースレッドで起動し、払い出したタスク `id` を返す。`id` は完了
+    /// （`WorkerEvent::Done`）の突合に使える（スクリプトの async 操作が完了を待つのに利用）。
     pub(crate) fn start_copy(
         &self,
         src_dir: PathBuf,
         dst_dir: PathBuf,
         names: Vec<String>,
         move_it: bool,
-    ) -> w::AnyResult<()> {
+    ) -> w::AnyResult<u64> {
         let control = Arc::new(TaskControl::new());
         let copy_opts = {
             let f = self.config.borrow().file_ops;
@@ -357,23 +380,31 @@ impl MainWindow {
                 copy_date: f.copy_date,
             }
         };
+        let id = self.next_id();
         let host = ChannelHost::new(
             self.task_tx.clone(),
             self.shutdown.clone(),
             control.clone(),
             self.progress_seq.clone(),
         )
-        .with_copy_options(copy_opts);
+        .with_copy_options(copy_opts)
+        .with_task_id(id);
         let kind = if move_it { OpKind::Move } else { OpKind::Copy };
-        let id = self.next_id();
         let text = if move_it { "移動" } else { "コピー" };
         let desc = format!("{} -> {}", short_desc(&names), dst_dir.display());
         self.register_task(id, text, desc, control)?;
         std::thread::spawn(move || {
-            rerics_core::run_copy(&host, &src_dir, &dst_dir, &names, move_it);
-            let _ = host.tx.send(WorkerEvent::Done { id, kind, src_dir, dst_dir });
+            let sum = rerics_core::run_copy(&host, &src_dir, &dst_dir, &names, move_it);
+            let _ = host.tx.send(WorkerEvent::Done {
+                id,
+                kind,
+                src_dir,
+                dst_dir,
+                cancelled: sum.cancelled,
+                failed: sum.err > 0,
+            });
         });
-        Ok(())
+        Ok(id)
     }
 
     /// カーソル位置の項目を入力ダイアログでリネームする。完了後は新名へカーソルを移す。
@@ -653,7 +684,8 @@ impl MainWindow {
             }
         }
         let dir = self.pane(is_left).borrow().path().to_path_buf();
-        self.start_delete(dir, names)
+        self.start_delete(dir, names)?;
+        Ok(())
     }
 
     /// 選択（無ければカーソル）をゴミ箱へ送る（確認ダイアログ付き・実FSのみ・同期）。
@@ -796,8 +828,15 @@ impl MainWindow {
         self.register_task(id, text, format!("{total} 件"), control)?;
         let dst2 = dst.clone();
         std::thread::spawn(move || {
+            let mut cancelled = false;
+            let mut failed = false;
             for (src, names) in groups {
-                rerics_core::run_copy(&host, &src, &dst2, &names, move_it);
+                let sum = rerics_core::run_copy(&host, &src, &dst2, &names, move_it);
+                failed |= sum.err > 0;
+                if sum.cancelled {
+                    cancelled = true;
+                    break;
+                }
             }
             let kind = if move_it { OpKind::Move } else { OpKind::Copy };
             let _ = host.tx.send(WorkerEvent::Done {
@@ -805,6 +844,8 @@ impl MainWindow {
                 kind,
                 src_dir: dst2.clone(),
                 dst_dir: dst2,
+                cancelled,
+                failed,
             });
         });
         Ok(())
@@ -1170,26 +1211,31 @@ impl MainWindow {
         let _ = self.reload_side(is_left);
     }
 
-    pub(crate) fn start_delete(&self, dir: PathBuf, names: Vec<String>) -> w::AnyResult<()> {
+    /// 削除をワーカースレッドで起動し、払い出したタスク `id` を返す（[`start_copy`] と同様、
+    /// スクリプトの async 操作が完了を待つのに使える）。
+    pub(crate) fn start_delete(&self, dir: PathBuf, names: Vec<String>) -> w::AnyResult<u64> {
         let control = Arc::new(TaskControl::new());
+        let id = self.next_id();
         let host = ChannelHost::new(
             self.task_tx.clone(),
             self.shutdown.clone(),
             control.clone(),
             self.progress_seq.clone(),
-        );
-        let id = self.next_id();
+        )
+        .with_task_id(id);
         self.register_task(id, "削除", short_desc(&names), control)?;
         std::thread::spawn(move || {
-            rerics_core::run_delete(&host, &dir, &names);
+            let sum = rerics_core::run_delete(&host, &dir, &names);
             let _ = host.tx.send(WorkerEvent::Done {
                 id,
                 kind: OpKind::Delete,
                 src_dir: dir.clone(),
                 dst_dir: dir,
+                cancelled: sum.cancelled,
+                failed: sum.err > 0,
             });
         });
-        Ok(())
+        Ok(id)
     }
 
     /// 削除をワーカースレッドで起動する。

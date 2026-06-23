@@ -154,6 +154,33 @@ impl Server {
         Server { child, port, base }
     }
 
+    /// `start` と同じ隔離起動だが、`data/scripts/` にユーザスクリプト（名前→中身）を
+    /// 置いてから起動する。起動時に名前順で読み込まれる。
+    fn start_with_scripts(sandbox_files: &[&str], scripts: &[(&str, &str)]) -> Server {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("rerics_it_{}_{}", std::process::id(), n));
+        let data = base.join("data");
+        let sbx = base.join("sbx");
+        std::fs::create_dir_all(data.join("scripts")).unwrap();
+        std::fs::create_dir_all(&sbx).unwrap();
+        for f in sandbox_files {
+            std::fs::write(sbx.join(f), b"x").unwrap();
+        }
+        for (name, body) in scripts {
+            std::fs::write(data.join("scripts").join(name), body.as_bytes()).unwrap();
+        }
+        std::fs::write(
+            data.join("state.toml"),
+            format!(
+                "active_tab = 0\nsplit_ratio = 0.5\n[[tabs]]\nleft = '{p}'\nright = '{p}'\nactive_right = false\n",
+                p = sbx.display()
+            ),
+        )
+        .unwrap();
+        let (child, port) = spawn_and_wait(&data, false);
+        Server { child, port, base }
+    }
+
     /// HTTP リクエストを投げる。`(status, body)` を返す。
     fn req(&self, method: &str, path: &str, body: &str) -> Option<(u16, String)> {
         req(self.port, method, path, body)
@@ -2115,4 +2142,412 @@ fn text_viewer_search_mnemonic_yields_to_user_keybind() {
     // Alt+C は被っているのでユーザーバインド（ViewerClose）が走る＝ビューアが閉じる。
     server.req("POST", "/view/search/mnemonic/c", "").expect("mnemonic c");
     poll(&server, "/state/active_view", |b| b.trim().trim_matches('"') == "none");
+}
+
+/// scripting：起動時に scripts を読み込み、登録されたコマンドが `/script/commands` に並ぶ。
+#[test]
+fn script_commands_register_on_startup() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[(
+            "00-cmds.ts",
+            r#"rerics.registerCommand("logHi", () => { rerics.log("hi from script"); });
+               rerics.registerCommand("goUp", () => { rerics.navigate(rerics.currentDir() + "/.."); });"#,
+        )],
+    );
+    let list = poll(&server, "/script/commands", |b| b.contains("logHi"));
+    assert!(
+        list.contains("logHi") && list.contains("goUp"),
+        "registered commands should be listed: {list}"
+    );
+}
+
+/// scripting：`/script/eval` で評価したコードのログがアプリのログ欄へ出る（エンジン→UI 配線）。
+#[test]
+fn script_eval_runs_and_logs_to_app() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    let (st, _) = server
+        .req("POST", "/script/eval", r#"rerics.log("eval-marker-42");"#)
+        .expect("eval");
+    assert_eq!(st, 200, "eval accepted");
+    let log = poll(&server, "/state/log", |b| b.contains("eval-marker-42"));
+    assert!(log.contains("eval-marker-42"), "eval log should reach app: {log}");
+}
+
+/// scripting：`/script/invoke` で登録コマンドを呼ぶと、ペイン操作（navigate）が UI に反映される。
+#[test]
+fn script_invoke_navigates_active_pane() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[(
+            "00-cmds.ts",
+            r#"rerics.registerCommand("goUp", () => { rerics.navigate(rerics.currentDir() + "/.."); });"#,
+        )],
+    );
+    let loc0 = server.req("GET", "/state/panes/left/location", "").unwrap().1;
+    assert!(loc0.contains("sbx"), "should start in the sandbox: {loc0}");
+
+    server.req("POST", "/script/invoke/goUp", "").expect("invoke");
+    let loc1 = poll(&server, "/state/panes/left/location", |b| !b.contains("sbx"));
+    assert!(
+        !loc1.contains("sbx"),
+        "active pane should leave the sandbox after goUp: {loc1}"
+    );
+}
+
+/// scripting：`rerics.confirm` がモーダルを出し、Yes 応答が boolean で返る（同期往復）。
+#[test]
+fn script_confirm_opens_modal_and_returns_choice() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    server
+        .req("POST", "/script/eval", r#"rerics.log("confirm=" + rerics.confirm("ok?"));"#)
+        .expect("eval");
+    // confirm 中もモーダルのメッセージループが回るので /state・/modal が応答する（デッドロックしない）。
+    wait_modal(&server);
+    server.req("POST", "/modal/key/y", "").expect("yes");
+    let log = poll(&server, "/state/log", |b| b.contains("confirm=true"));
+    assert!(log.contains("confirm=true"), "yes should yield true: {log}");
+}
+
+/// scripting：`rerics.prompt` が入力モーダルを出し、入力文字列が返る。
+#[test]
+fn script_prompt_opens_modal_and_returns_text() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    server
+        .req("POST", "/script/eval", r#"rerics.log("name=" + rerics.prompt("name?", "def"));"#)
+        .expect("eval");
+    wait_modal(&server);
+    server.req("POST", "/modal/text", "hello").expect("text");
+    server.req("POST", "/modal/key/enter", "").expect("enter");
+    let log = poll(&server, "/state/log", |b| b.contains("name=hello"));
+    assert!(log.contains("name=hello"), "prompt should return typed text: {log}");
+}
+
+/// scripting：`rerics.select` が一覧モーダルを出し、選んだ行の index が返る。
+#[test]
+fn script_select_opens_list_and_returns_index() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"rerics.log("idx=" + rerics.select("pick", ["x", "y", "z"]));"#,
+        )
+        .expect("eval");
+    wait_modal(&server);
+    server.req("POST", "/modal/select/1", "").expect("select");
+    server.req("POST", "/modal/command/ok", "").expect("ok");
+    let log = poll(&server, "/state/log", |b| b.contains("idx=1"));
+    assert!(log.contains("idx=1"), "select should return chosen index: {log}");
+}
+
+/// scripting：`rerics.activePane()` が実ペインの項目・選択・カーソルを読み取れる
+/// （オブジェクトモデルの実 GUI 経路＝スナップショットが UI スレッドから組み上がる）。
+#[test]
+fn script_active_pane_reads_items_selection_and_cursor() {
+    let server = Server::start_with_scripts(&["a.txt", "b.txt", "c.txt"], &[]);
+    // 左 items は [.., a.txt, b.txt, c.txt]。CursorDown×1 で a.txt → MarkToggle で
+    // a.txt を選択しカーソルは b.txt（index 2）へ。
+    server.req("POST", "/command/CursorDown", "").expect("down");
+    server.req("POST", "/command/MarkToggle", "").expect("mark");
+
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"const p = rerics.activePane();
+               rerics.log("om count=" + p.items.length
+                 + " sel=" + p.selectedItems.map(i => i.name).join(",")
+                 + " cur=" + (p.cursorItem ? p.cursorItem.name : "none")
+                 + " inSbx=" + (p.dir.indexOf("sbx") >= 0));"#,
+        )
+        .expect("eval");
+
+    let log = poll(&server, "/state/log", |b| b.contains("om count="));
+    assert!(
+        log.contains("om count=4 sel=a.txt cur=b.txt inSbx=true"),
+        "activePane should reflect real items/selection/cursor: {log}"
+    );
+
+    // 反対ペインも読める（同じサンドボックスを開いている＝項目数は一致、選択は無し）。
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"const o = rerics.oppositePane();
+               rerics.log("opp count=" + o.items.length + " sel=" + o.selectedItems.length);"#,
+        )
+        .expect("eval opp");
+    let log2 = poll(&server, "/state/log", |b| b.contains("opp count="));
+    assert!(
+        log2.contains("opp count=4 sel=0"),
+        "oppositePane should read the other side: {log2}"
+    );
+}
+
+/// scripting：選択の書き戻し。`apply()` のバッチ反映と即時 `selected=` が、実ペインの
+/// 選択状態（`/state` の `marked`）へ届くことを検証する（オブジェクトモデル書き戻しの実経路）。
+#[test]
+fn script_selection_write_back_reaches_pane() {
+    let server = Server::start_with_scripts(&["a.txt", "b.dat", "c.txt"], &[]);
+    // 前提：まだ何も選択されていない。
+    let items0 = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert_eq!(count_substr(&items0, "\"marked\":true"), 0, "no selection yet: {items0}");
+
+    // バッチ：apply() の中で .txt を全選択 → 1 往復で a.txt と c.txt が marked になる。
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"rerics.activePane().apply((d) => {
+                 for (const it of d.items) if (it.ext === "txt") it.selected = true;
+               });"#,
+        )
+        .expect("apply eval");
+    let items1 = poll(&server, "/state/panes/left/items", |b| {
+        count_substr(b, "\"marked\":true") == 2
+    });
+    assert_eq!(
+        count_substr(&items1, "\"marked\":true"),
+        2,
+        "apply should mark both .txt files: {items1}"
+    );
+
+    // 即時：先頭の .txt（a.txt）を 1 つだけ即時に外す → marked は 1 件へ。
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"rerics.activePane().items.find((it) => it.ext === "txt").selected = false;"#,
+        )
+        .expect("immediate eval");
+    let items2 = poll(&server, "/state/panes/left/items", |b| {
+        count_substr(b, "\"marked\":true") == 1
+    });
+    assert_eq!(
+        count_substr(&items2, "\"marked\":true"),
+        1,
+        "immediate write should deselect one: {items2}"
+    );
+}
+
+/// scripting：`rerics.command()` が内蔵コマンドを実行し（カーソル移動が UI に反映）、
+/// 不明な名前は JS の例外になる（throw を catch できる）。
+#[test]
+fn script_command_invokes_builtin_and_throws_on_unknown() {
+    let server = Server::start_with_scripts(&["a.txt", "b.txt"], &[]);
+    let c0 = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(c0.trim(), "0", "initial cursor");
+
+    // 内蔵コマンドを実行＝カーソルが 1 へ進む。
+    server
+        .req("POST", "/script/eval", r#"rerics.command("CursorDown");"#)
+        .expect("command eval");
+    let c1 = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+    assert_eq!(c1.trim(), "1", "rerics.command should run the builtin: {c1}");
+
+    // 不明コマンドは例外になり、catch でメッセージを拾える。
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"try { rerics.command("NoSuchCmd"); }
+               catch (e) { rerics.log("cmd-error:" + e.message); }"#,
+        )
+        .expect("unknown eval");
+    let log = poll(&server, "/state/log", |b| b.contains("cmd-error:"));
+    assert!(
+        log.contains("cmd-error:") && log.contains("NoSuchCmd"),
+        "unknown command should throw with its name: {log}"
+    );
+}
+
+/// scripting：`rerics.on` のイベントが実 GUI で配られる。executeCommand は全コマンドで、
+/// changeDirectory は実移動のときだけ発火する（在席コマンドでは出ない）。
+#[test]
+fn script_events_fire_on_command_and_navigation() {
+    let server = Server::start_with_scripts(
+        &["a.txt", "b.txt"],
+        &[(
+            "00-ev.ts",
+            r#"rerics.registerCommand("ready", () => {});
+               rerics.on("executeCommand", (name) => rerics.log("EV cmd:" + name));
+               rerics.on("changeDirectory", (dir) => rerics.log("EV cd:" + dir));"#,
+        )],
+    );
+    // ハンドラ登録の完了を待つ（コマンドをビーコンに使う）。
+    poll(&server, "/script/commands", |b| b.contains("ready"));
+
+    // 在席コマンド：executeCommand は出るが changeDirectory は出ない（移動でないため）。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    let log = poll(&server, "/state/log", |b| b.contains("EV cmd:CursorDown"));
+    assert!(log.contains("EV cmd:CursorDown"), "executeCommand should fire: {log}");
+    assert_eq!(
+        count_substr(&log, "EV cd:"),
+        0,
+        "in-place command must not fire changeDirectory: {log}"
+    );
+
+    // 親へ移動：移動なので changeDirectory も発火する。
+    server.req("POST", "/command/ToParent", "").unwrap();
+    let log2 = poll(&server, "/state/log", |b| b.contains("EV cd:"));
+    assert!(log2.contains("EV cd:"), "navigation should fire changeDirectory: {log2}");
+    assert!(
+        log2.contains("EV cmd:ToParent"),
+        "ToParent should also fire executeCommand: {log2}"
+    );
+}
+
+/// scripting：`await rerics.copy()` がワーカー完了で resolve し、コピーが実ペインに反映される
+/// （非同期操作ブリッジの実経路＝UI スレッドのワーカー完了がエンジンの await を解く）。
+#[test]
+fn script_async_copy_awaits_worker_completion() {
+    let server = Server::start_with_scripts(&["a.txt", "b.txt"], &[]);
+    // 右ペインを親へ移し、左=sbx／右=親 にする（src≠dst で同名衝突を避ける）。
+    server.req("POST", "/command/FocusRight", "").unwrap();
+    server.req("POST", "/command/ToParent", "").unwrap();
+    let parent = server.req("GET", "/state/panes/right/location", "").unwrap().1;
+    assert!(!parent.contains("sbx"), "right pane should be the parent: {parent}");
+    server.req("POST", "/command/FocusLeft", "").unwrap();
+
+    // 左で a.txt を選択して await copy → 親へコピーされ、完了後にログが出る。
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"(async () => {
+                 rerics.activePane().apply((d) => {
+                   for (const it of d.items) if (it.name === "a.txt") it.selected = true;
+                 });
+                 await rerics.copy();
+                 rerics.log("ASYNC COPY DONE");
+               })();"#,
+        )
+        .expect("eval");
+
+    // await が解けて完了ログが出る（＝ワーカー完了がエンジンへ橋渡しされた）。
+    let log = poll(&server, "/state/log", |b| b.contains("ASYNC COPY DONE"));
+    assert!(log.contains("ASYNC COPY DONE"), "await copy should resolve after the worker: {log}");
+    // 右ペイン（親）に a.txt がコピーされている。
+    let right = poll(&server, "/state/panes/right/items", |b| b.contains("\"name\":\"a.txt\""));
+    assert!(right.contains("\"name\":\"a.txt\""), "copied file should appear in the dest pane: {right}");
+}
+
+/// scripting：非同期操作の job が awaitable かつ `.cancel()` を持つ（キャンセル経路が実
+/// GuiHost を通って壊れない）。実際に中止されるかはタイミング依存なのでフロー完走だけ見る。
+#[test]
+fn script_async_op_job_is_cancelable() {
+    let server = Server::start_with_scripts(&["a.txt", "b.txt"], &[]);
+    server.req("POST", "/command/FocusRight", "").unwrap();
+    server.req("POST", "/command/ToParent", "").unwrap();
+    server.req("POST", "/command/FocusLeft", "").unwrap();
+
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"(async () => {
+                 rerics.activePane().apply((d) => {
+                   for (const it of d.items) if (it.name === "a.txt") it.selected = true;
+                 });
+                 const job = rerics.copy();
+                 job.cancel();
+                 try { await job; } catch (e) { /* 中止なら例外 */ }
+                 rerics.log("CANCEL FLOW DONE");
+               })();"#,
+        )
+        .expect("eval");
+
+    let log = poll(&server, "/state/log", |b| b.contains("CANCEL FLOW DONE"));
+    assert!(log.contains("CANCEL FLOW DONE"), "cancel flow should complete without error: {log}");
+}
+
+/// scripting：`await rerics.delete()` がアクティブペインの選択を削除し、完了で resolve する。
+#[test]
+fn script_async_delete_awaits_completion() {
+    let server = Server::start_with_scripts(&["a.txt", "b.txt", "c.txt"], &[]);
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"(async () => {
+                 rerics.activePane().apply((d) => {
+                   for (const it of d.items) if (it.name === "a.txt") it.selected = true;
+                 });
+                 await rerics.delete();
+                 rerics.log("DELETE DONE");
+               })();"#,
+        )
+        .expect("eval");
+
+    let log = poll(&server, "/state/log", |b| b.contains("DELETE DONE"));
+    assert!(log.contains("DELETE DONE"), "await delete should resolve: {log}");
+    // a.txt が消え、他は残る。
+    let items = poll(&server, "/state/panes/left/items", |b| !b.contains("\"name\":\"a.txt\""));
+    assert!(!items.contains("\"name\":\"a.txt\""), "a.txt should be deleted: {items}");
+    assert!(items.contains("\"name\":\"b.txt\""), "b.txt must remain: {items}");
+}
+
+/// scripting：明示引数版 `rerics.copy(items, dest)`＝項目のフルパスと行き先を渡してコピーする。
+#[test]
+fn script_async_copy_explicit_items_and_dest() {
+    let server = Server::start_with_scripts(&["a.txt", "b.txt"], &[]);
+    // 右ペインを親へ（行き先）。左＝sbx のファイルをフルパスで渡す。
+    server.req("POST", "/command/FocusRight", "").unwrap();
+    server.req("POST", "/command/ToParent", "").unwrap();
+    server.req("POST", "/command/FocusLeft", "").unwrap();
+
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"(async () => {
+                 const p = rerics.activePane();
+                 const items = p.items.filter((it) => !it.isDir).map((it) => it.fullName);
+                 await rerics.copy(items, rerics.oppositePane().dir);
+                 rerics.log("EXPLICIT COPY DONE");
+               })();"#,
+        )
+        .expect("eval");
+
+    let log = poll(&server, "/state/log", |b| b.contains("EXPLICIT COPY DONE"));
+    assert!(log.contains("EXPLICIT COPY DONE"), "explicit copy should resolve: {log}");
+    // 行き先＝sbx の親（＝サンドボックスのベース）。両ファイルがそこへ書かれている。
+    assert!(
+        server.base.join("a.txt").exists() && server.base.join("b.txt").exists(),
+        "explicit copy should write both files to the dest dir"
+    );
+}
+
+/// scripting：`copy({ onProgress })` の進捗コールバックがコピー中に発火する（ワーカーの
+/// 進捗が token 経由でストリームされ、完了前に onProgress が呼ばれる実経路）。
+#[test]
+fn script_async_copy_reports_progress() {
+    let server = Server::start_with_scripts(&["a.txt", "b.txt"], &[]);
+    // 右ペインを親へ（src≠dst）。
+    server.req("POST", "/command/FocusRight", "").unwrap();
+    server.req("POST", "/command/ToParent", "").unwrap();
+    server.req("POST", "/command/FocusLeft", "").unwrap();
+
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"(async () => {
+                 let count = 0;
+                 rerics.activePane().apply((d) => {
+                   for (const it of d.items) if (it.name === "a.txt") it.selected = true;
+                 });
+                 await rerics.copy({ onProgress: (p) => { if (p && p.text) count++; } });
+                 rerics.log("PROGRESS COUNT " + count);
+               })();"#,
+        )
+        .expect("eval");
+
+    let log = poll(&server, "/state/log", |b| b.contains("PROGRESS COUNT "));
+    // 最低 1 回は届く（begin_progress＋完了更新で 2 回以上のはず）。0 でないことを確かめる。
+    assert!(
+        log.contains("PROGRESS COUNT ") && !log.contains("PROGRESS COUNT 0"),
+        "onProgress should fire at least once during copy: {log}"
+    );
 }
