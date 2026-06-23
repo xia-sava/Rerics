@@ -1192,8 +1192,18 @@ impl MainWindow {
                 self.wnd.hwnd().DestroyWindow()?;
                 return Ok(());
             }
-            Command::ApplicationExit | Command::End | Command::Quit => {
+            Command::End => {
+                // 強制終了：タブ数に関係なくアプリを終了する。
                 self.wnd.hwnd().DestroyWindow()?;
+                return Ok(());
+            }
+            Command::Quit => {
+                // 賢いクローズ：タブが複数あれば現タブを閉じ、最後の 1 枚ならアプリを終了する。
+                if self.tabs.borrow().len() > 1 {
+                    self.close_tab()?;
+                } else {
+                    self.wnd.hwnd().DestroyWindow()?;
+                }
                 return Ok(());
             }
             // ビューア専用コマンドはファイラー文脈では何もしない。

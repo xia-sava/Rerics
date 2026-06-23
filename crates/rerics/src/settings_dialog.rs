@@ -2668,9 +2668,7 @@ fn command_genre(cmd: Command) -> (u8, &'static str) {
         | CreateShortcut | ClipCopy | ClipCut | ClipPaste | CreateFile | Edit | PropertyDialog
         | Compress | Extract => (6, "ファイル操作"),
         OpenTaskManager | OpenSettings | KeyBindsDialog | CopyLog | ClearLog | Nop
-        | ApplicationExit | End | Restart | Quit | MaximizeWindow | MinimizeWindow => {
-            (7, "アプリ・その他")
-        }
+        | End | Restart | Quit | MaximizeWindow | MinimizeWindow => (7, "アプリ・その他"),
         ViewerScrollUp | ViewerScrollDown | ViewerPageUp | ViewerPageDown | ViewerScrollTop
         | ViewerScrollBottom => (8, "スクロール"),
         ViewerSearchDialog | ViewerFindNext | ViewerFindPrevious => (9, "検索"),

@@ -2938,3 +2938,18 @@ fn script_async_copy_reports_progress() {
         "onProgress should fire at least once during copy: {log}"
     );
 }
+
+/// Quit は「賢いクローズ」：タブが複数あれば現タブを閉じ、最後の 1 枚ならアプリを終了する。
+/// ここでは複数タブ時に現タブが閉じてアプリが生き続けること（＝強制終了でない）を検証する。
+#[test]
+fn quit_closes_tab_when_multiple_keeps_app_alive() {
+    let server = Server::start(&["a.txt"], "");
+    let count = || server.req("GET", "/state/tabs/count", "").expect("count").1;
+    assert_eq!(count().trim(), "1", "初期は 1 タブ");
+    server.req("POST", "/command/NewTab", "").expect("NewTab");
+    assert_eq!(count().trim(), "2", "NewTab で 2 タブ");
+    // タブが複数あるので Quit は現タブを閉じるだけ（アプリは終了しない）。
+    server.req("POST", "/command/Quit", "").expect("Quit");
+    assert_eq!(count().trim(), "1", "Quit で 1 タブに減る");
+    assert!(server.req("GET", "/state", "").is_some(), "アプリは終了していない");
+}
