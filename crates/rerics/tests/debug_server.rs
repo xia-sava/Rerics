@@ -1863,6 +1863,32 @@ fn settings_key_editor_per_chord_delete_in_command_view() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// 機能順でキーを「変更（リマップ）」：サブ選択中のキーを新しいキーへ移し替える（旧キーは外れる・
+/// 機能は同じ）。実機ではキーのダブルクリック→打鍵に対応する経路。
+#[test]
+fn settings_key_editor_rebinds_selected_chord() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // MakeDirectory に 2 つ目のキーを足して選択を寄せる＝[Ctrl+Shift+M, K]・sel=MakeDirectory。
+    server.req("POST", "/keys/filer/bind", r#"["MakeDirectory","Ctrl+Shift+M"]"#).unwrap();
+    assert!(keys().contains(r#"["MakeDirectory",["Ctrl+Shift+M","K"]]"#), "2 キー: {}", keys());
+
+    // K（index 1）をサブ選択して Ctrl+Alt+K へ変更＝K は外れ Ctrl+Alt+K になる。
+    server.req("POST", "/keys/filer/sub/1", "").unwrap();
+    server.req("POST", "/keys/filer/rebind", "Ctrl+Alt+K").unwrap();
+    let s = keys();
+    assert!(
+        s.contains(r#"["MakeDirectory",["Ctrl+Alt+K","Ctrl+Shift+M"]]"#),
+        "K が Ctrl+Alt+K に移る: {s}"
+    );
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// キー編集ページの検索（機能名・キーへの部分一致・大小無視）。クエリで一覧が絞り込まれ、
 /// 空クエリで全件へ戻る。`config` は変わらない（割り当ては不変）。
 #[test]

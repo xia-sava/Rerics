@@ -151,6 +151,9 @@ impl MainWindow {
                         Ok(())
                     }));
                 }
+                debug_server::Request::KeysRebind { category, chord } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| (h.rebind)(&chord)));
+                }
             }
         }
     }

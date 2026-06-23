@@ -2659,14 +2659,13 @@ struct KeyEditorInner {
     sel: Cell<usize>,
     /// 機能順で選択行のキー群のうち、サブ選択中のキー index（個別削除・個別変更の対象）。
     sub: Cell<usize>,
-    /// 直近 render で算出した、選択行のキー群の x 範囲＝`(キー index, x0, x1)`。クリックの
-    /// ヒットテスト用（機能順のみ）。
-    chord_rects: RefCell<Vec<(usize, i32, i32)>>,
     /// 表示先頭行（スクロール）。
     top: Cell<usize>,
     row_h: Cell<i32>,
     /// 次の打鍵を選択行のコマンドへ割り当てる待ち状態。
     capturing: Cell<bool>,
+    /// キャプチャがサブ選択キーの「変更（リマップ）」か（`true`）、新規追加か（`false`）。
+    capturing_remap: Cell<bool>,
     /// 直近の操作結果（観測・状態表示用）。
     status: RefCell<String>,
 }
@@ -2779,10 +2778,10 @@ impl KeyEditor {
                 query: RefCell::new(String::new()),
                 sel: Cell::new(0),
                 sub: Cell::new(0),
-                chord_rects: RefCell::new(Vec::new()),
                 top: Cell::new(0),
                 row_h: Cell::new(gui::dpi_y(22)),
                 capturing: Cell::new(false),
+                capturing_remap: Cell::new(false),
                 status: RefCell::new(String::new()),
             }),
         };
@@ -2939,9 +2938,28 @@ impl KeyEditor {
                 }
             }) as Box<dyn Fn(usize)>
         };
+        let rebind = {
+            let this = self.clone();
+            Box::new(move |chord: &str| {
+                let ch = KeyChord::parse(chord)
+                    .ok_or_else(|| format!("unknown chord: {chord}"))?;
+                this.remap_sub(ch);
+                Ok(())
+            }) as Box<dyn Fn(&str) -> Result<(), String>>
+        };
         crate::debug_server::modal_registry::register_key_editor(
             self.inner.category.debug_str(),
-            KeyEditorHooks { read, select, bind, unbind, reset, search, set_view, select_chord },
+            KeyEditorHooks {
+                read,
+                select,
+                bind,
+                unbind,
+                reset,
+                search,
+                set_view,
+                select_chord,
+                rebind,
+            },
         );
     }
 
@@ -3193,6 +3211,89 @@ impl KeyEditor {
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
+    /// クリック x が機能順・指定表示行のどのキーに当たるか（行内のキーを実測して判定）。
+    fn chord_hit(&self, row_di: usize, x: i32) -> Option<usize> {
+        if self.inner.view_mode.get() != KeyView::ByCommand {
+            return None;
+        }
+        let ri = *self.inner.view.borrow().get(row_di)?;
+        let chords: Vec<(String, bool)> = self
+            .inner
+            .rows
+            .borrow()
+            .get(ri)?
+            .chords
+            .iter()
+            .map(|c| (c.token.clone(), c.conflicted))
+            .collect();
+        if chords.is_empty() {
+            return None;
+        }
+        let dc = self.hwnd().GetDC().ok()?;
+        let font = w::HFONT::GetStockObject(co::STOCK_FONT::DEFAULT_GUI).ok()?;
+        let _sel = dc.SelectObject(&font).ok()?;
+        let mut cx = gui::dpi_x(260);
+        let sep = dc.GetTextExtentPoint32(", ").map(|z| z.cx).unwrap_or(0);
+        for (ci, (tok, conflicted)) in chords.iter().enumerate() {
+            let mut label = tok.clone();
+            if *conflicted {
+                label.push_str(" ⚠");
+            }
+            let tw = dc.GetTextExtentPoint32(&label).map(|z| z.cx).unwrap_or(0);
+            if x >= cx && x < cx + tw {
+                return Some(ci);
+            }
+            cx += tw + sep;
+        }
+        None
+    }
+
+    /// サブ選択キーの「変更（リマップ）」キャプチャを始める（次の打鍵で旧キー→新キーへ移す）。
+    fn begin_remap(&self) {
+        if self.selected_command().is_none() || self.sub_chord().is_none() {
+            return;
+        }
+        self.inner.capturing.set(true);
+        self.inner.capturing_remap.set(true);
+        *self.inner.status.borrow_mut() = "新しいキーを押してください（右クリックで中止）".to_string();
+        self.hwnd().SetFocus();
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    /// サブ選択キーをその機能のまま新しいキーへ移し替える（旧キーから当該機能を外す）。
+    fn remap_sub(&self, new: KeyChord) {
+        let Some(command) = self.selected_command() else {
+            return;
+        };
+        let Some(old) = self.sub_chord() else {
+            return;
+        };
+        let Some(new_tok) = new.to_token() else {
+            *self.inner.status.borrow_mut() = "未対応のキーです".to_string();
+            let _ = self.hwnd().InvalidateRect(None, false);
+            return;
+        };
+        if new_tok == old {
+            return;
+        }
+        let value = Invocation::bare(command).to_token_string();
+        {
+            let mut draft = self.inner.draft.borrow_mut();
+            if let Some(vals) = draft.get_mut(&old) {
+                vals.retain(|v| Invocation::parse(v).map(|i| i.command) != Some(command));
+            }
+            let e = draft.entry(new_tok.clone()).or_default();
+            e.retain(|v| !v.trim().is_empty());
+            if !e.iter().any(|v| Invocation::parse(v).map(|i| i.command) == Some(command)) {
+                e.push(value);
+            }
+        }
+        *self.inner.status.borrow_mut() =
+            format!("{} を {} から {} に変更しました", command.as_token(), old, new_tok);
+        self.rebuild_rows();
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
     /// chord を選択行のコマンドへ割り当てる。**既存の機能は消さず追記する**＝同じ chord に
     /// 別機能があれば衝突になる（マークして OK/適用で解決を促す）。
     fn assign(&self, command: Command, chord: KeyChord) {
@@ -3282,13 +3383,14 @@ impl KeyEditor {
             return;
         }
         self.inner.capturing.set(true);
-        *self.inner.status.borrow_mut() = "キーを押してください（Escで中止）".to_string();
+        *self.inner.status.borrow_mut() = "キーを押してください（右クリックで中止）".to_string();
         self.hwnd().SetFocus();
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
     fn cancel_capture(&self) {
         self.inner.capturing.set(false);
+        self.inner.capturing_remap.set(false);
         *self.inner.status.borrow_mut() = "中止しました".to_string();
         let _ = self.hwnd().InvalidateRect(None, false);
     }
@@ -3359,28 +3461,56 @@ impl KeyEditor {
         let this = self.clone();
         self.list.on().wm_l_button_down(move |p| {
             this.hwnd().SetFocus();
+            // キャプチャ中の左クリックは無視（中止は右クリック・左は「決定」感を避ける）。
             if this.inner.capturing.get() {
                 return Ok(());
             }
             let rh = this.inner.row_h.get().max(1);
             let row = this.inner.top.get() + (p.coords.y / rh) as usize;
             if row < this.inner.view.borrow().len() {
-                let same_row = this.inner.sel.get() == row;
                 this.inner.sel.set(row);
-                // 同じ行のキーをクリックしたらサブ選択をそこへ。行が変わった場合は先頭へ。
-                let hit = if same_row {
-                    this.inner
-                        .chord_rects
-                        .borrow()
-                        .iter()
-                        .find(|(_, x0, x1)| p.coords.x >= *x0 && p.coords.x < *x1)
-                        .map(|(ci, _, _)| *ci)
-                } else {
-                    None
-                };
-                this.inner.sub.set(hit.unwrap_or(0));
+                // クリックしたキーをサブ選択（行内 hit-test）。キー上でなければ先頭。
+                this.inner.sub.set(this.chord_hit(row, p.coords.x).unwrap_or(0));
                 this.ensure_visible();
                 let _ = this.hwnd().InvalidateRect(None, false);
+            }
+            Ok(())
+        });
+
+        // ダブルクリック：機能順でキーをダブルクリック＝そのキーを「変更」キャプチャへ。
+        let this = self.clone();
+        self.list.on().wm_l_button_dbl_clk(move |p| {
+            if this.inner.capturing.get() {
+                return Ok(());
+            }
+            let rh = this.inner.row_h.get().max(1);
+            let row = this.inner.top.get() + (p.coords.y / rh) as usize;
+            if row >= this.inner.view.borrow().len() {
+                return Ok(());
+            }
+            this.inner.sel.set(row);
+            let hit = if this.inner.view_mode.get() == KeyView::ByCommand {
+                this.chord_hit(row, p.coords.x)
+            } else {
+                None
+            };
+            if let Some(ci) = hit {
+                this.inner.sub.set(ci);
+                this.ensure_visible();
+                this.begin_remap();
+                return Ok(());
+            }
+            this.inner.sub.set(0);
+            this.ensure_visible();
+            let _ = this.hwnd().InvalidateRect(None, false);
+            Ok(())
+        });
+
+        // 右クリック：キャプチャ中なら中止（左クリックは「決定」感があるので中止に使わない）。
+        let this = self.clone();
+        self.list.on().wm_r_button_down(move |_| {
+            if this.inner.capturing.get() {
+                this.cancel_capture();
             }
             Ok(())
         });
@@ -3392,14 +3522,11 @@ impl KeyEditor {
         });
     }
 
-    /// キー入力処理。キャプチャ中は打鍵を chord 化して割り当て、通常時は ↑↓ で選択移動。
+    /// キー入力処理。キャプチャ中は打鍵を chord 化して割り当て（中止はクリック＝ESC も
+    /// 普通にキャプチャできる）、通常時は ↑↓ で行移動・←→ でキーのサブ選択。
     fn on_key(&self, vk: u16) {
         use rerics_core::vk as k;
         if self.inner.capturing.get() {
-            if vk == k::ESCAPE {
-                self.cancel_capture();
-                return;
-            }
             // 修飾キー単体（Shift/Ctrl/Alt の VK）は確定打鍵としない（実キーが来るまで待つ）。
             if matches!(vk, 0x10..=0x12) {
                 return;
@@ -3409,7 +3536,9 @@ impl KeyEditor {
             let alt = w::GetAsyncKeyState(co::VK::MENU);
             let chord = KeyChord::new(vk, ctrl, shift, alt);
             self.inner.capturing.set(false);
-            if let Some(command) = self.selected_command() {
+            if self.inner.capturing_remap.replace(false) {
+                self.remap_sub(chord);
+            } else if let Some(command) = self.selected_command() {
                 self.assign(command, chord);
             }
             return;
@@ -3541,7 +3670,6 @@ impl KeyEditor {
         } else {
             Vec::new()
         };
-        self.inner.chord_rects.borrow_mut().clear();
         for (vi, (left, right, muted)) in lines.iter().enumerate() {
             let di = top + vi;
             let y = vi as i32 * row_h;
@@ -3554,11 +3682,10 @@ impl KeyEditor {
             }
             dc.TextOut(key_x, ty, left)?;
             if di == sel && capturing {
-                dc.TextOut(chord_x, ty, "← キーを押してください（Escで中止）")?;
+                dc.TextOut(chord_x, ty, "← キーを押してください（右クリックで中止）")?;
             } else if di == sel && !sel_chords.is_empty() {
                 // 選択行のキーを個別に描く。サブ選択は WINDOW 地のチップで強調する。
                 let mut x = chord_x;
-                let mut rects = self.inner.chord_rects.borrow_mut();
                 for (ci, (tok, conflicted)) in sel_chords.iter().enumerate() {
                     let mut label = tok.clone();
                     if *conflicted {
@@ -3581,7 +3708,6 @@ impl KeyEditor {
                     } else {
                         dc.TextOut(x, ty, &label)?;
                     }
-                    rects.push((ci, x, x + tw));
                     x += tw;
                     if ci + 1 < sel_chords.len() {
                         dc.TextOut(x, ty, ", ")?;

@@ -158,6 +158,9 @@ pub mod modal_registry {
     /// (コマンドのトークン名, chord トークン) を割り当てるフック。未知コマンド等は Err。
     pub type BindFn = Box<dyn Fn(&str, &str) -> Result<(), String>>;
 
+    /// 1 引数（chord トークン）を取り Err を返し得るフック。未知キー等は Err。
+    pub type ChordFn = Box<dyn Fn(&str) -> Result<(), String>>;
+
     /// キー編集ページを UI スレッドで読み書きするフック（gui をクロージャに閉じ込める）。
     pub struct KeyEditorHooks {
         pub read: Box<dyn Fn() -> KeyEditorState>,
@@ -173,6 +176,8 @@ pub mod modal_registry {
         pub set_view: Box<dyn Fn(bool)>,
         /// 機能順で選択行のキーのサブ選択 index を変える。
         pub select_chord: Box<dyn Fn(usize)>,
+        /// サブ選択中のキーを、その機能のまま新しいキー（chord トークン）へ移し替える。未知キーは Err。
+        pub rebind: ChordFn,
     }
 
     thread_local! {
@@ -269,6 +274,8 @@ pub enum Request {
     KeysSetView { category: String, by_key: bool },
     /// `POST /keys/<category>/sub/<index>`：機能順で選択行のキーのサブ選択を index にする。
     KeysSelectChord { category: String, index: usize },
+    /// `POST /keys/<category>/rebind`：サブ選択中のキーを body のキーへ移し替える（変更）。
+    KeysRebind { category: String, chord: String },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -499,6 +506,10 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                     let mut query = String::new();
                     let _ = std::io::Read::read_to_string(req.as_reader(), &mut query);
                     Some(Request::KeysSearch { category: cat.to_string(), query })
+                } else if let Some(cat) = rest.strip_suffix("/rebind") {
+                    let mut chord = String::new();
+                    let _ = std::io::Read::read_to_string(req.as_reader(), &mut chord);
+                    Some(Request::KeysRebind { category: cat.to_string(), chord: chord.trim().to_string() })
                 } else if let Some(cat) = rest.strip_suffix("/view") {
                     let mut body = String::new();
                     let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);
