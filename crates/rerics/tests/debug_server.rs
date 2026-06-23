@@ -2330,3 +2330,34 @@ fn script_selection_write_back_reaches_pane() {
         "immediate write should deselect one: {items2}"
     );
 }
+
+/// scripting：`rerics.command()` が内蔵コマンドを実行し（カーソル移動が UI に反映）、
+/// 不明な名前は JS の例外になる（throw を catch できる）。
+#[test]
+fn script_command_invokes_builtin_and_throws_on_unknown() {
+    let server = Server::start_with_scripts(&["a.txt", "b.txt"], &[]);
+    let c0 = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(c0.trim(), "0", "initial cursor");
+
+    // 内蔵コマンドを実行＝カーソルが 1 へ進む。
+    server
+        .req("POST", "/script/eval", r#"rerics.command("CursorDown");"#)
+        .expect("command eval");
+    let c1 = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+    assert_eq!(c1.trim(), "1", "rerics.command should run the builtin: {c1}");
+
+    // 不明コマンドは例外になり、catch でメッセージを拾える。
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"try { rerics.command("NoSuchCmd"); }
+               catch (e) { rerics.log("cmd-error:" + e.message); }"#,
+        )
+        .expect("unknown eval");
+    let log = poll(&server, "/state/log", |b| b.contains("cmd-error:"));
+    assert!(
+        log.contains("cmd-error:") && log.contains("NoSuchCmd"),
+        "unknown command should throw with its name: {log}"
+    );
+}

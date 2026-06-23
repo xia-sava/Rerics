@@ -31,6 +31,9 @@ pub trait HostApi {
     fn set_selected(&self, is_left: bool, index: usize, selected: bool);
     /// `is_left` 側ペインの複数行の選択状態をまとめて適用する（再描画は 1 回）。
     fn apply_selection(&self, is_left: bool, changes: &[(usize, bool)]);
+    /// 内蔵コマンドを名前で実行する（同期）。不明な名前・実行失敗はエラー文字列を返す。
+    /// ワーカーを起動する操作は「開始」までで戻り、完了は待たない。
+    fn command(&self, name: &str, args: &[String]) -> Result<(), String>;
 }
 
 /// ペイン 1 つぶんの状態スナップショット（スクリプトへ渡す）。JS では camelCase で見える。
@@ -151,6 +154,19 @@ fn op_apply_selection(
     state.borrow::<Host>().apply_selection(is_left, &changes);
 }
 
+/// 内蔵コマンドを名前で実行する同期 op。不明な名前・実行失敗は JS の例外になる。
+#[op2]
+fn op_command(
+    state: &mut OpState,
+    #[string] name: &str,
+    #[serde] args: Vec<String>,
+) -> Result<(), deno_error::JsErrorBox> {
+    state
+        .borrow::<Host>()
+        .command(name, &args)
+        .map_err(deno_error::JsErrorBox::generic)
+}
+
 /// ディレクトリ一覧の1エントリ（スクリプトへ渡す情報）。JS 側では camelCase で見える。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -209,6 +225,7 @@ extension!(
         op_pane_snapshot,
         op_set_selected,
         op_apply_selection,
+        op_command,
         op_list_dir
     ]
 );
@@ -294,6 +311,7 @@ const BOOTSTRAP: &str = r#"
     listDir: (p) => ops.op_list_dir(String(p)),
     activePane: () => makePane(ops.op_pane_snapshot(false)),
     oppositePane: () => makePane(ops.op_pane_snapshot(true)),
+    command: (name, ...args) => ops.op_command(String(name), args.map(String)),
     registerCommand: (name, fn) => {
       if (typeof fn !== "function") throw new TypeError("registerCommand: fn must be a function");
       commands.set(String(name), fn);
@@ -477,6 +495,9 @@ mod tests {
         opposite_pane: PaneSnapshot,
         set_selected: RefCell<Vec<(bool, usize, bool)>>,
         applied: RefCell<Vec<(bool, Vec<(usize, bool)>)>>,
+        commands: RefCell<Vec<(String, Vec<String>)>>,
+        /// この名前のコマンドは失敗させる（エラー経路の検証用）。
+        failing_command: Option<String>,
     }
 
     impl HostApi for MockHost {
@@ -510,6 +531,13 @@ mod tests {
         }
         fn apply_selection(&self, is_left: bool, changes: &[(usize, bool)]) {
             self.applied.borrow_mut().push((is_left, changes.to_vec()));
+        }
+        fn command(&self, name: &str, args: &[String]) -> Result<(), String> {
+            if self.failing_command.as_deref() == Some(name) {
+                return Err(format!("boom: {name}"));
+            }
+            self.commands.borrow_mut().push((name.to_string(), args.to_vec()));
+            Ok(())
         }
     }
 
@@ -773,6 +801,35 @@ mod tests {
             *host.applied.borrow(),
             vec![(true, vec![(1, true), (3, true)])]
         );
+    }
+
+    #[test]
+    fn command_invokes_host_and_throws_on_error() {
+        let host = Rc::new(MockHost {
+            failing_command: Some("Boom".into()),
+            ..Default::default()
+        });
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:command",
+            r#"
+              rerics.command("CursorDown");
+              rerics.command("SortBy", "name", "asc");
+              try { rerics.command("Boom"); rerics.log("no-throw"); }
+              catch (e) { rerics.log("caught:" + e.message); }
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            *host.commands.borrow(),
+            vec![
+                ("CursorDown".to_string(), vec![]),
+                ("SortBy".to_string(), vec!["name".to_string(), "asc".to_string()]),
+            ]
+        );
+        // 失敗コマンドは JS の例外になり、catch でメッセージを拾える。
+        assert_eq!(*host.logs.borrow(), vec!["caught:boom: Boom".to_string()]);
     }
 
     #[test]

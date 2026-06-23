@@ -98,6 +98,25 @@ rerics.registerCommand("toggleCursor", () => {
   if (it && !it.isParent) it.selected = !it.selected;
 });
 
+// select → 実行 の例：一時ファイル（.tmp/.bak）をまとめて選択して削除コマンドを呼ぶ。
+// 内蔵コマンドは rerics.command(name, ...args) で叩ける（不明名・失敗は例外）。
+rerics.registerCommand("cleanTemp", () => {
+  let n = 0;
+  rerics.activePane().apply((d) => {
+    for (const it of d.items) {
+      if (!it.isDir && (it.ext === "tmp" || it.ext === "bak")) {
+        it.selected = true;
+        n++;
+      }
+    }
+  });
+  if (n === 0) {
+    rerics.log("一時ファイルはありません");
+    return;
+  }
+  rerics.command("Delete"); // 確認ダイアログは本体側の設定に従う
+});
+
 // モーダルの例：確認・入力・一覧選択。
 rerics.registerCommand("askThings", async () => {
   if (!rerics.confirm("続けますか？")) {

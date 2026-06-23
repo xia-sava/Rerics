@@ -14,6 +14,8 @@ use winsafe::prelude::*;
 
 use crate::MainWindow;
 use crate::dialog::{InputMode, MessageResult, MessageStyle, input_box, list_box, message_box};
+use rerics_core::{Command, Invocation};
+
 use crate::script::{self, HostApi, PaneItem, PaneSnapshot};
 use crate::ui_marshal::{self, WakeQueue};
 use crate::winutil::msg::SCRIPT_WAKE;
@@ -29,6 +31,7 @@ pub enum HostCall {
     PaneSnapshot { opposite: bool },
     SetSelected { is_left: bool, index: usize, selected: bool },
     ApplySelection { is_left: bool, changes: Vec<(usize, bool)> },
+    Command { name: String, args: Vec<String> },
 }
 
 /// UI スレッド → エンジンスレッドへの応答。
@@ -39,6 +42,7 @@ pub enum HostResp {
     Text(Option<String>),
     Index(Option<usize>),
     Snapshot(script::PaneSnapshot),
+    CommandResult(Result<(), String>),
 }
 
 type ScriptQueue = WakeQueue<HostCall, HostResp>;
@@ -205,6 +209,21 @@ impl HostApi for GuiHost {
             },
         );
     }
+
+    fn command(&self, name: &str, args: &[String]) -> Result<(), String> {
+        match ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::Command {
+                name: name.to_string(),
+                args: args.to_vec(),
+            },
+        ) {
+            Ok(HostResp::CommandResult(r)) => r,
+            _ => Err("コマンドの実行に応答がありませんでした".to_string()),
+        }
+    }
 }
 
 /// スクリプトエンジンを別スレッドに建てる。起動スクリプト（`data_dir()/scripts`）を読み込み、
@@ -297,8 +316,23 @@ impl MainWindow {
                     self.apply_pane_selection(is_left, &changes);
                     let _ = tx.send(HostResp::Done);
                 }
+                HostCall::Command { name, args } => {
+                    let _ = tx.send(HostResp::CommandResult(self.run_script_command(&name, args)));
+                }
             }
         }
+    }
+
+    /// スクリプトからの内蔵コマンド要求を実行する。名前を解決し、アクティブペイン文脈で
+    /// `exec` する。不明な名前・実行失敗はエラー文字列にする。モーダルを開くコマンドは
+    /// ネストループが SCRIPT_WAKE を回し続けるのでデッドロックしない。
+    fn run_script_command(&self, name: &str, args: Vec<String>) -> Result<(), String> {
+        let Some(cmd) = Command::from_token(name) else {
+            return Err(format!("unknown command: {name}"));
+        };
+        let inv = Invocation::new(cmd, args);
+        let is_left = !self.active_right.get();
+        self.exec(is_left, &inv).map_err(|e| e.to_string())
     }
 
     /// 指定側ペインの選択状態を書き戻し、まとめて 1 回だけ再描画する。範囲外 index は無視する。

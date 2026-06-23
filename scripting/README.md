@@ -32,6 +32,7 @@ rerics.registerCommand("up", () => {
 | `rerics.select(title, items)` | 一覧から選択 → `number \| null`（選んだ index・キャンセルで null） |
 | `rerics.activePane()` | アクティブペインの状態スナップショット → `RericsPane` |
 | `rerics.oppositePane()` | 反対側ペインの状態スナップショット → `RericsPane` |
+| `rerics.command(name, ...args)` | 内蔵コマンドを実行（同期・不明名/失敗は例外） |
 | `await rerics.listDir(path)` | ディレクトリ走査（裏スレッド・`Promise<RericsDirEntry[]>`） |
 | `rerics.registerCommand(name, handler)` | 名前付きコマンドを登録（handler は同期/async どちらでも） |
 
@@ -73,6 +74,21 @@ rerics.activePane().apply((d) => {
 
 書き戻しは取得時の行 index を指すため、スナップショット取得後に一覧がリロードされると
 ずれる。読み取り→書き戻しは同じコマンド内で完結させること。
+
+### 内蔵コマンドの実行
+
+`rerics.command(name, ...args)` でファイラー本体のコマンドを名前で実行できる（カーソル移動・
+ソート・コピー・削除など）。アクティブペイン文脈・同期で、不明な名前や実行失敗は例外を投げる。
+
+```ts
+rerics.activePane().apply((d) => {
+  for (const it of d.items) if (it.ext === "tmp") it.selected = true;
+});
+rerics.command("Delete");  // 選んだ .tmp を削除（確認は本体設定に従う）
+```
+
+ワーカーを起動する操作（コピー/移動/削除など）は「開始」まで戻り、**完了は待たない**。
+完了を待ちたい操作向けの `await` 版は今後追加する。
 
 ## 共通処理・複数ファイル
 
