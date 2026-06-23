@@ -15,6 +15,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use winsafe::prelude::*;
 
 use crate::MainWindow;
+use crate::dialog::{InputMode, MessageResult, MessageStyle, input_box, list_box, message_box};
 use crate::script::{self, HostApi};
 use crate::ui_marshal::{self, WakeQueue};
 use crate::winutil::msg::SCRIPT_WAKE;
@@ -24,12 +25,18 @@ pub enum HostCall {
     Log(String),
     CurrentDir,
     Navigate(String),
+    Confirm(String),
+    Prompt { message: String, default: String },
+    Select { title: String, items: Vec<String> },
 }
 
 /// UI スレッド → エンジンスレッドへの応答。
 pub enum HostResp {
     Done,
     Dir(String),
+    Bool(bool),
+    Text(Option<String>),
+    Index(Option<usize>),
 }
 
 type ScriptQueue = WakeQueue<HostCall, HostResp>;
@@ -110,6 +117,48 @@ impl HostApi for GuiHost {
             HostCall::Navigate(path.to_string()),
         );
     }
+
+    fn confirm(&self, message: &str) -> bool {
+        matches!(
+            ui_marshal::call(
+                &self.queue,
+                self.hwnd_ptr,
+                SCRIPT_WAKE.raw(),
+                HostCall::Confirm(message.to_string()),
+            ),
+            Ok(HostResp::Bool(true))
+        )
+    }
+
+    fn prompt(&self, message: &str, default: &str) -> Option<String> {
+        match ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::Prompt {
+                message: message.to_string(),
+                default: default.to_string(),
+            },
+        ) {
+            Ok(HostResp::Text(text)) => text,
+            _ => None,
+        }
+    }
+
+    fn select(&self, title: &str, items: &[String]) -> Option<usize> {
+        match ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::Select {
+                title: title.to_string(),
+                items: items.to_vec(),
+            },
+        ) {
+            Ok(HostResp::Index(index)) => index,
+            _ => None,
+        }
+    }
 }
 
 /// スクリプトエンジンを別スレッドに建てる。起動スクリプト（`data_dir()/scripts`）を読み込み、
@@ -172,6 +221,18 @@ impl MainWindow {
                     let is_left = !self.active_right.get();
                     let _ = self.change_directory(is_left, Some(&path));
                     let _ = tx.send(HostResp::Done);
+                }
+                HostCall::Confirm(message) => {
+                    let result = message_box(&self.wnd, "確認", &message, MessageStyle::YesNo);
+                    let _ = tx.send(HostResp::Bool(result == MessageResult::Yes));
+                }
+                HostCall::Prompt { message, default } => {
+                    let text = input_box(&self.wnd, "入力", &message, &default, InputMode::Plain);
+                    let _ = tx.send(HostResp::Text(text));
+                }
+                HostCall::Select { title, items } => {
+                    let index = list_box(&self.wnd, &title, "script_select", &items, 0);
+                    let _ = tx.send(HostResp::Index(index));
                 }
             }
         }

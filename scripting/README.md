@@ -27,6 +27,9 @@ rerics.registerCommand("up", () => {
 | `rerics.log(message)` | ログ欄へ出力 |
 | `rerics.currentDir()` | アクティブペインの現在ディレクトリ |
 | `rerics.navigate(path)` | アクティブペインを移動 |
+| `rerics.confirm(message)` | 確認ダイアログ（はい/いいえ）→ `boolean` |
+| `rerics.prompt(message, default?)` | 入力ダイアログ → `string \| null`（キャンセルで null） |
+| `rerics.select(title, items)` | 一覧から選択 → `number \| null`（選んだ index・キャンセルで null） |
 | `await rerics.listDir(path)` | ディレクトリ走査（裏スレッド・`Promise<RericsDirEntry[]>`） |
 | `rerics.registerCommand(name, handler)` | 名前付きコマンドを登録（handler は同期/async どちらでも） |
 

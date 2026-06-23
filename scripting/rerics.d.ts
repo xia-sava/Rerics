@@ -30,6 +30,15 @@ declare namespace rerics {
   /** アクティブペインを `path` へ移動する。 */
   function navigate(path: string): void;
 
+  /** 確認ダイアログ（はい/いいえ）を出す。「はい」なら true。 */
+  function confirm(message: string): boolean;
+
+  /** 入力ダイアログを出す。OK なら入力文字列、キャンセルなら null。 */
+  function prompt(message: string, defaultValue?: string): string | null;
+
+  /** 一覧から 1 つ選ばせる。選んだ行の index、キャンセルなら null。 */
+  function select(title: string, items: string[]): number | null;
+
   /**
    * `path` 直下を裏スレッドで走査して返す。重いディレクトリでも UI を止めない。
    * `await` して使う。

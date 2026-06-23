@@ -2198,3 +2198,52 @@ fn script_invoke_navigates_active_pane() {
         "active pane should leave the sandbox after goUp: {loc1}"
     );
 }
+
+/// scripting：`rerics.confirm` がモーダルを出し、Yes 応答が boolean で返る（同期往復）。
+#[cfg(feature = "scripting")]
+#[test]
+fn script_confirm_opens_modal_and_returns_choice() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    server
+        .req("POST", "/script/eval", r#"rerics.log("confirm=" + rerics.confirm("ok?"));"#)
+        .expect("eval");
+    // confirm 中もモーダルのメッセージループが回るので /state・/modal が応答する（デッドロックしない）。
+    wait_modal(&server);
+    server.req("POST", "/modal/key/y", "").expect("yes");
+    let log = poll(&server, "/state/log", |b| b.contains("confirm=true"));
+    assert!(log.contains("confirm=true"), "yes should yield true: {log}");
+}
+
+/// scripting：`rerics.prompt` が入力モーダルを出し、入力文字列が返る。
+#[cfg(feature = "scripting")]
+#[test]
+fn script_prompt_opens_modal_and_returns_text() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    server
+        .req("POST", "/script/eval", r#"rerics.log("name=" + rerics.prompt("name?", "def"));"#)
+        .expect("eval");
+    wait_modal(&server);
+    server.req("POST", "/modal/text", "hello").expect("text");
+    server.req("POST", "/modal/key/enter", "").expect("enter");
+    let log = poll(&server, "/state/log", |b| b.contains("name=hello"));
+    assert!(log.contains("name=hello"), "prompt should return typed text: {log}");
+}
+
+/// scripting：`rerics.select` が一覧モーダルを出し、選んだ行の index が返る。
+#[cfg(feature = "scripting")]
+#[test]
+fn script_select_opens_list_and_returns_index() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"rerics.log("idx=" + rerics.select("pick", ["x", "y", "z"]));"#,
+        )
+        .expect("eval");
+    wait_modal(&server);
+    server.req("POST", "/modal/select/1", "").expect("select");
+    server.req("POST", "/modal/command/ok", "").expect("ok");
+    let log = poll(&server, "/state/log", |b| b.contains("idx=1"));
+    assert!(log.contains("idx=1"), "select should return chosen index: {log}");
+}

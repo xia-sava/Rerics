@@ -54,3 +54,19 @@ rerics.registerCommand("recentHere", async () => {
   const recent = (await filesHere()).filter((e) => e.mtime >= dayAgo);
   rerics.log(`24時間以内に更新: ${recent.length} 件`);
 });
+
+// モーダルの例：確認・入力・一覧選択。
+rerics.registerCommand("askThings", async () => {
+  if (!rerics.confirm("続けますか？")) {
+    rerics.log("キャンセルしました");
+    return;
+  }
+  const name = rerics.prompt("名前を入力", "");
+  if (name === null) return;
+  const dirs = (await rerics.listDir(rerics.currentDir())).filter((e) => e.isDir);
+  if (dirs.length > 0) {
+    const idx = rerics.select("移動先を選択", dirs.map((d) => d.name));
+    if (idx !== null) rerics.navigate(rerics.currentDir() + "/" + dirs[idx].name);
+  }
+  rerics.log(`こんにちは、${name}`);
+});

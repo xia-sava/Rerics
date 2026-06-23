@@ -18,6 +18,12 @@ pub trait HostApi {
     fn current_dir(&self) -> String;
     /// アクティブペインを `path` へ移動する。
     fn navigate(&self, path: &str);
+    /// 確認ダイアログ（Yes/No）を出し、Yes なら true。
+    fn confirm(&self, message: &str) -> bool;
+    /// 入力ダイアログを出し、OK なら入力文字列・キャンセルなら None。
+    fn prompt(&self, message: &str, default: &str) -> Option<String>;
+    /// 一覧から 1 つ選ばせ、選んだ行の index・キャンセルなら None。
+    fn select(&self, title: &str, items: &[String]) -> Option<usize>;
 }
 
 type Host = Rc<dyn HostApi>;
@@ -36,6 +42,38 @@ fn op_current_dir(state: &mut OpState) -> String {
 #[op2(fast)]
 fn op_navigate(state: &mut OpState, #[string] path: &str) {
     state.borrow::<Host>().navigate(path);
+}
+
+#[op2(fast)]
+fn op_confirm(state: &mut OpState, #[string] message: &str) -> bool {
+    state.borrow::<Host>().confirm(message)
+}
+
+/// 入力結果を `Vec` で包んで返す（`[]`＝キャンセル・`[s]`＝入力文字列）。op2 の同期 op は
+/// `Option` を直に返せないため、JS 側で長さ 0/1 を `null`/値へ畳む。
+#[op2]
+#[serde]
+fn op_prompt(state: &mut OpState, #[string] message: &str, #[string] default: &str) -> Vec<String> {
+    state
+        .borrow::<Host>()
+        .prompt(message, default)
+        .into_iter()
+        .collect()
+}
+
+/// 選択結果を `Vec` で包んで返す（`[]`＝キャンセル・`[i]`＝選択 index）。理由は [`op_prompt`] と同じ。
+#[op2]
+#[serde]
+fn op_select(
+    state: &mut OpState,
+    #[string] title: &str,
+    #[serde] items: Vec<String>,
+) -> Vec<u32> {
+    state
+        .borrow::<Host>()
+        .select(title, &items)
+        .map(|i| vec![i as u32])
+        .unwrap_or_default()
 }
 
 /// ディレクトリ一覧の1エントリ（スクリプトへ渡す情報）。JS 側では camelCase で見える。
@@ -86,7 +124,15 @@ async fn op_list_dir(#[string] path: String) -> Result<Vec<DirEntry>, deno_error
 
 extension!(
     rerics_ext,
-    ops = [op_log, op_current_dir, op_navigate, op_list_dir]
+    ops = [
+        op_log,
+        op_current_dir,
+        op_navigate,
+        op_confirm,
+        op_prompt,
+        op_select,
+        op_list_dir
+    ]
 );
 
 /// `globalThis.rerics` を ops から組み立てるブートストラップ。スクリプト本体の前に1回走らせる。
@@ -101,6 +147,15 @@ const BOOTSTRAP: &str = r#"
     log: (m) => ops.op_log(String(m)),
     currentDir: () => ops.op_current_dir(),
     navigate: (p) => ops.op_navigate(String(p)),
+    confirm: (m) => ops.op_confirm(String(m)),
+    prompt: (m, d) => {
+      const r = ops.op_prompt(String(m), d == null ? "" : String(d));
+      return r.length ? r[0] : null;
+    },
+    select: (t, items) => {
+      const r = ops.op_select(String(t), (items || []).map(String));
+      return r.length ? r[0] : null;
+    },
     listDir: (p) => ops.op_list_dir(String(p)),
     registerCommand: (name, fn) => {
       if (typeof fn !== "function") throw new TypeError("registerCommand: fn must be a function");
@@ -278,6 +333,9 @@ mod tests {
         logs: RefCell<Vec<String>>,
         dir: String,
         navigated: RefCell<Vec<String>>,
+        confirm_reply: bool,
+        prompt_reply: Option<String>,
+        select_reply: Option<usize>,
     }
 
     impl HostApi for MockHost {
@@ -289,6 +347,15 @@ mod tests {
         }
         fn navigate(&self, p: &str) {
             self.navigated.borrow_mut().push(p.to_string());
+        }
+        fn confirm(&self, _message: &str) -> bool {
+            self.confirm_reply
+        }
+        fn prompt(&self, _message: &str, _default: &str) -> Option<String> {
+            self.prompt_reply.clone()
+        }
+        fn select(&self, _title: &str, _items: &[String]) -> Option<usize> {
+            self.select_reply
         }
     }
 
@@ -418,6 +485,31 @@ mod tests {
         let errors = load_dir(&mut eng, std::path::Path::new("C:\\no\\such\\rerics-dir-xyz"));
         assert!(errors.is_empty());
         assert!(eng.registered_commands().is_empty());
+    }
+
+    #[test]
+    fn modal_apis_round_trip_through_host() {
+        let host = Rc::new(MockHost {
+            confirm_reply: true,
+            prompt_reply: Some("typed".into()),
+            select_reply: Some(2),
+            ..Default::default()
+        });
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:modal",
+            r#"
+              rerics.log("c=" + rerics.confirm("ok?"));
+              rerics.log("p=" + rerics.prompt("name?", "def"));
+              rerics.log("s=" + rerics.select("pick", ["a", "b", "c"]));
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            *host.logs.borrow(),
+            vec!["c=true".to_string(), "p=typed".to_string(), "s=2".to_string()]
+        );
     }
 
     #[test]
