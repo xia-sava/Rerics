@@ -2639,6 +2639,13 @@ fn binding_label(value: &str) -> String {
         .unwrap_or_else(|| value.trim().to_string())
 }
 
+/// キー順の機能ラベル（トークン）を画面表示用の日本語名へ変換する。未知トークンはそのまま。
+fn label_display(label: &str) -> String {
+    Command::from_token(label)
+        .map(|c| c.display_name().to_string())
+        .unwrap_or_else(|| label.to_string())
+}
+
 /// キー編集ページの並べ方。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum KeyView {
@@ -2695,7 +2702,7 @@ struct KeyEditorInner {
 }
 
 /// 「キー」ページ（割り当ての対話編集・自前描画）。機能順にコマンドを並べ、行を選んで
-/// 「キーを追加」→実際のキー打鍵で割り当てる。`config.keybinds` を直接編集し OK/適用で確定する。
+/// 「キー定義を追加」→実際のキー打鍵で割り当てる。`config.keybinds` を直接編集し OK/適用で確定する。
 #[derive(Clone)]
 struct KeyEditor {
     list: gui::WindowControl,
@@ -2713,7 +2720,7 @@ impl KeyEditor {
     fn new(parent: &gui::WindowControl, shared: &Rc<Shared>, category: KeyCategory) -> Self {
         label(
             parent,
-            "機能を選び「キーを追加」で割り当て（実際にキーを押す・Escで中止）",
+            "機能を選び「キー定義を追加」で割り当て（実際にキーを押す・右クリックで中止）",
             16,
             12,
             560,
@@ -3233,7 +3240,11 @@ impl KeyEditor {
                 .borrow()
                 .iter()
                 .enumerate()
-                .filter(|(_, c)| q.is_empty() || c.as_token().to_lowercase().contains(&q))
+                .filter(|(_, c)| {
+                    q.is_empty()
+                        || c.as_token().to_lowercase().contains(&q)
+                        || c.display_name().to_lowercase().contains(&q)
+                })
                 .map(|(i, _)| i)
                 .collect();
             let n = view.len();
@@ -3257,6 +3268,7 @@ impl KeyEditor {
                 .filter(|(_, r)| {
                     q.is_empty()
                         || r.command.as_token().to_lowercase().contains(&q)
+                        || r.command.display_name().to_lowercase().contains(&q)
                         || r.chords.iter().any(|c| c.token.to_lowercase().contains(&q))
                 })
                 .map(|(i, _)| i)
@@ -3271,6 +3283,7 @@ impl KeyEditor {
                     q.is_empty()
                         || r.chord.to_lowercase().contains(&q)
                         || r.labels.iter().any(|l| l.to_lowercase().contains(&q))
+                        || r.labels.iter().any(|l| label_display(l).to_lowercase().contains(&q))
                 })
                 .map(|(i, _)| i)
                 .collect(),
@@ -3466,7 +3479,7 @@ impl KeyEditor {
         let old_label = if old_value.is_empty() {
             "－".to_string()
         } else {
-            binding_label(&old_value)
+            label_display(&binding_label(&old_value))
         };
         let ctx = self.inner.category.context();
         *self.inner.pick_rows.borrow_mut() =
@@ -3514,7 +3527,7 @@ impl KeyEditor {
             // 機能が付いたので pending（空キー定義）からは外す。
             self.inner.pending.borrow_mut().retain(|c| *c != pick.chord);
             *self.inner.status.borrow_mut() =
-                format!("{} を {} に割り当てました", pick.chord, cmd.as_token());
+                format!("{} を {} に割り当てました", pick.chord, cmd.display_name());
         }
         self.exit_pick_common();
     }
@@ -3583,7 +3596,7 @@ impl KeyEditor {
             }
         }
         *self.inner.status.borrow_mut() =
-            format!("{} を {} から {} に変更しました", command.as_token(), old, new_tok);
+            format!("{} を {} から {} に変更しました", command.display_name(), old, new_tok);
         self.rebuild_rows();
         let _ = self.hwnd().InvalidateRect(None, false);
     }
@@ -3611,9 +3624,9 @@ impl KeyEditor {
             e.len() > 1
         };
         *self.inner.status.borrow_mut() = if conflict {
-            format!("{} に {} を割り当て（このキーは衝突しています）", command.as_token(), tok)
+            format!("{} に {} を割り当て（このキーは衝突しています）", command.display_name(), tok)
         } else {
-            format!("{} に {} を割り当てました", command.as_token(), tok)
+            format!("{} に {} を割り当てました", command.display_name(), tok)
         };
         self.rebuild_rows();
         let _ = self.hwnd().InvalidateRect(None, false);
@@ -3638,7 +3651,7 @@ impl KeyEditor {
                 if let Some(vals) = self.inner.draft.borrow_mut().get_mut(&chord) {
                     vals.retain(|v| Invocation::parse(v).map(|i| i.command) != Some(command));
                 }
-                format!("{} から {} を解除しました", chord, command.as_token())
+                format!("{} から {} を解除しました", chord, command.display_name())
             }
             KeyView::ByKey => {
                 let Some(chord) = self.selected_chord() else {
@@ -4089,7 +4102,7 @@ impl KeyEditor {
                 .filter_map(|vi| {
                     view.get(top + vi)
                         .and_then(|&i| pr.get(i))
-                        .map(|c| (c.as_token().to_string(), String::new(), false))
+                        .map(|c| (c.display_name().to_string(), String::new(), false))
                 })
                 .collect()
         } else {
@@ -4101,7 +4114,7 @@ impl KeyEditor {
                         view.get(top + vi).map(|&ri| {
                             let r = &rows[ri];
                             if r.chords.is_empty() {
-                                (r.command.as_token().to_string(), "—".to_string(), true)
+                                (r.command.display_name().to_string(), "—".to_string(), true)
                             } else {
                                 let joined = r
                                     .chords
@@ -4115,7 +4128,7 @@ impl KeyEditor {
                                     })
                                     .collect::<Vec<_>>()
                                     .join(", ");
-                                (r.command.as_token().to_string(), joined, false)
+                                (r.command.display_name().to_string(), joined, false)
                             }
                         })
                     })
@@ -4131,7 +4144,12 @@ impl KeyEditor {
                                 // 機能未割当の空キー定義は － を淡色で（機能を割り当ててください）。
                                 (r.chord.clone(), "－".to_string(), true)
                             } else {
-                                let mut right = r.labels.join(", ");
+                                let mut right = r
+                                    .labels
+                                    .iter()
+                                    .map(|l| label_display(l))
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
                                 if r.labels.len() > 1 {
                                     right.push_str(" ⚠");
                                 }

@@ -2031,6 +2031,14 @@ fn settings_key_editor_search_filters_by_name_and_key() {
     let copy_n = count(&s);
     assert!(copy_n > 0 && copy_n < full_n, "件数が減る: {copy_n} < {full_n}");
 
+    // 日本語の表示名でも絞り込める："コピー" は Copy（表示名「コピー」）/ClipCopy
+    //（「クリップボードにコピー」）に一致し、MakeDirectory（「フォルダ作成」）は除外。
+    server.req("POST", "/keys/filer/search", "コピー").unwrap();
+    let s = keys();
+    assert!(s.contains(r#"["Copy",["C"]]"#), "表示名検索で Copy が残る: {s}");
+    assert!(s.contains("ClipCopy"), "表示名検索で ClipCopy が残る: {s}");
+    assert!(!s.contains("MakeDirectory"), "表示名検索で無関係な機能は消える: {s}");
+
     // キーで絞り込む：既定 K は MakeDirectory のみ（大小無視なので chord "K" に一致）。
     server.req("POST", "/keys/filer/search", "K").unwrap();
     let s = keys();
