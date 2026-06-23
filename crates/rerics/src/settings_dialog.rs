@@ -2639,6 +2639,13 @@ enum KeyView {
     ByKey,
 }
 
+/// 機能ピッカー（インライン）の対象。キー順で機能ラベルをダブルクリックすると、その chord の
+/// `old_value`（差し替え対象の生 invocation）を別機能へ置き換えるためにこの状態へ入る。
+struct PickState {
+    chord: String,
+    old_value: String,
+}
+
 /// 「キー」ページの編集状態。
 struct KeyEditorInner {
     shared: Rc<Shared>,
@@ -2650,6 +2657,10 @@ struct KeyEditorInner {
     rows: RefCell<Vec<KeyRow>>,
     /// キー順ビューの行（chord でソート）。`draft` から組む。
     key_rows: RefCell<Vec<KeyChordRow>>,
+    /// ピックモード中ならその対象。`Some` の間はリストが機能ピッカー（全機能一覧）へ切り替わる。
+    picking: RefCell<Option<PickState>>,
+    /// ピックモードで選べる機能一覧（文脈で絞り済み）。`view` はこれを検索で絞った index。
+    pick_rows: RefCell<Vec<Command>>,
     /// 並べ方（機能順／キー順）。
     view_mode: Cell<KeyView>,
     /// 検索で絞り込んだ表示対象＝現モードの行配列へのインデックス（表示順）。`sel`/`top` はこの上の位置。
@@ -2773,6 +2784,8 @@ impl KeyEditor {
                 draft: RefCell::new(BTreeMap::new()),
                 rows: RefCell::new(Vec::new()),
                 key_rows: RefCell::new(Vec::new()),
+                picking: RefCell::new(None),
+                pick_rows: RefCell::new(Vec::new()),
                 view_mode: Cell::new(KeyView::ByCommand),
                 view: RefCell::new(Vec::new()),
                 query: RefCell::new(String::new()),
@@ -2840,9 +2853,16 @@ impl KeyEditor {
         let read = {
             let this = self.clone();
             Box::new(move || {
+                let picking = this.inner.picking.borrow().is_some();
                 let by_key = this.inner.view_mode.get() == KeyView::ByKey;
                 let view = this.inner.view.borrow();
-                let rows = if by_key {
+                let rows = if picking {
+                    let pr = this.inner.pick_rows.borrow();
+                    view.iter()
+                        .filter_map(|&i| pr.get(i))
+                        .map(|c| (c.as_token().to_string(), Vec::new()))
+                        .collect()
+                } else if by_key {
                     let all = this.inner.key_rows.borrow();
                     view.iter()
                         .map(|&ri| {
@@ -2867,6 +2887,7 @@ impl KeyEditor {
                     selected: this.inner.sel.get(),
                     sub: this.inner.sub.get(),
                     capturing: this.inner.capturing.get(),
+                    picking,
                     status: this.inner.status.borrow().clone(),
                     query: this.inner.query.borrow().clone(),
                     mode: if by_key { "key" } else { "command" }.to_string(),
@@ -2947,6 +2968,18 @@ impl KeyEditor {
                 Ok(())
             }) as Box<dyn Fn(&str) -> Result<(), String>>
         };
+        let pick = {
+            let this = self.clone();
+            Box::new(move |li: usize| this.enter_pick(li)) as Box<dyn Fn(usize)>
+        };
+        let pick_commit = {
+            let this = self.clone();
+            Box::new(move || this.commit_pick()) as Box<dyn Fn()>
+        };
+        let pick_cancel = {
+            let this = self.clone();
+            Box::new(move || this.cancel_pick()) as Box<dyn Fn()>
+        };
         crate::debug_server::modal_registry::register_key_editor(
             self.inner.category.debug_str(),
             KeyEditorHooks {
@@ -2959,6 +2992,9 @@ impl KeyEditor {
                 set_view,
                 select_chord,
                 rebind,
+                pick,
+                pick_commit,
+                pick_cancel,
             },
         );
     }
@@ -3081,8 +3117,29 @@ impl KeyEditor {
     }
 
     /// 検索クエリで現モードの行を絞り込み、表示対象 `view` を組み直す。選択を範囲内へ収める。
+    /// ピックモード中は機能一覧（`pick_rows`）を絞り込む。
     fn rebuild_view(&self) {
         let q = self.inner.query.borrow().to_lowercase();
+        if self.inner.picking.borrow().is_some() {
+            let view: Vec<usize> = self
+                .inner
+                .pick_rows
+                .borrow()
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| q.is_empty() || c.as_token().to_lowercase().contains(&q))
+                .map(|(i, _)| i)
+                .collect();
+            let n = view.len();
+            *self.inner.view.borrow_mut() = view;
+            if n == 0 {
+                self.inner.sel.set(0);
+                self.inner.top.set(0);
+            } else if self.inner.sel.get() >= n {
+                self.inner.sel.set(n - 1);
+            }
+            return;
+        }
         let view: Vec<usize> = match self.inner.view_mode.get() {
             KeyView::ByCommand => self
                 .inner
@@ -3248,6 +3305,122 @@ impl KeyEditor {
         None
     }
 
+    /// クリック x がキー順・指定表示行のどの機能ラベルに当たるか（右カラムを実測）。
+    fn label_hit(&self, row_di: usize, x: i32) -> Option<usize> {
+        if self.inner.view_mode.get() != KeyView::ByKey {
+            return None;
+        }
+        let ri = *self.inner.view.borrow().get(row_di)?;
+        let labels: Vec<String> = self.inner.key_rows.borrow().get(ri)?.labels.clone();
+        if labels.is_empty() {
+            return None;
+        }
+        let dc = self.hwnd().GetDC().ok()?;
+        let font = w::HFONT::GetStockObject(co::STOCK_FONT::DEFAULT_GUI).ok()?;
+        let _sel = dc.SelectObject(&font).ok()?;
+        let mut cx = gui::dpi_x(260);
+        let sep = dc.GetTextExtentPoint32(", ").map(|z| z.cx).unwrap_or(0);
+        for (li, lab) in labels.iter().enumerate() {
+            let tw = dc.GetTextExtentPoint32(lab).map(|z| z.cx).unwrap_or(0);
+            if x >= cx && x < cx + tw {
+                return Some(li);
+            }
+            cx += tw + sep;
+        }
+        None
+    }
+
+    /// キー順で選択行の li 番目の機能を「別機能へ差し替える」ピックモードへ入る（インライン）。
+    fn enter_pick(&self, li: usize) {
+        if self.inner.view_mode.get() != KeyView::ByKey || self.inner.capturing.get() {
+            return;
+        }
+        let Some(&ri) = self.inner.view.borrow().get(self.inner.sel.get()) else {
+            return;
+        };
+        let chord = match self.inner.key_rows.borrow().get(ri) {
+            Some(r) => r.chord.clone(),
+            None => return,
+        };
+        let old_value = {
+            let draft = self.inner.draft.borrow();
+            let nonempty: Vec<String> = draft
+                .get(&chord)
+                .map(|vs| vs.iter().filter(|v| !v.trim().is_empty()).cloned().collect())
+                .unwrap_or_default();
+            match nonempty.get(li) {
+                Some(v) => v.clone(),
+                None => return,
+            }
+        };
+        let old_label = binding_label(&old_value);
+        let ctx = self.inner.category.context();
+        *self.inner.pick_rows.borrow_mut() =
+            Command::all().filter(|c| c.available_in(ctx)).collect();
+        *self.inner.picking.borrow_mut() = Some(PickState {
+            chord: chord.clone(),
+            old_value,
+        });
+        self.inner.sel.set(0);
+        self.inner.top.set(0);
+        *self.inner.query.borrow_mut() = String::new();
+        let _ = self.search.set_text("");
+        *self.inner.status.borrow_mut() = format!(
+            "{} に割り当てる機能を選択（{} を置換・右クリック/Escで中止）",
+            chord, old_label
+        );
+        self.rebuild_view();
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    /// ピックモードで選択中の機能を確定し、対象キーの定義を差し替える。
+    fn commit_pick(&self) {
+        let Some(pick) = self.inner.picking.borrow_mut().take() else {
+            return;
+        };
+        let new_cmd = self
+            .inner
+            .view
+            .borrow()
+            .get(self.inner.sel.get())
+            .and_then(|&i| self.inner.pick_rows.borrow().get(i).copied());
+        if let Some(cmd) = new_cmd {
+            let new_val = Invocation::bare(cmd).to_token_string();
+            {
+                let mut draft = self.inner.draft.borrow_mut();
+                if let Some(vals) = draft.get_mut(&pick.chord) {
+                    vals.retain(|v| *v != pick.old_value);
+                    if !vals.iter().any(|v| Invocation::parse(v).map(|i| i.command) == Some(cmd)) {
+                        vals.push(new_val);
+                    }
+                }
+            }
+            *self.inner.status.borrow_mut() =
+                format!("{} を {} に変更しました", pick.chord, cmd.as_token());
+        }
+        self.exit_pick_common();
+    }
+
+    /// ピックモードを中止して元のキー一覧へ戻る。
+    fn cancel_pick(&self) {
+        if self.inner.picking.borrow_mut().take().is_none() {
+            return;
+        }
+        *self.inner.status.borrow_mut() = "中止しました".to_string();
+        self.exit_pick_common();
+    }
+
+    /// ピック解除の後始末（検索クリア・選択リセット・再構築・再描画）。
+    fn exit_pick_common(&self) {
+        self.inner.pick_rows.borrow_mut().clear();
+        *self.inner.query.borrow_mut() = String::new();
+        let _ = self.search.set_text("");
+        self.inner.sel.set(0);
+        self.inner.top.set(0);
+        self.rebuild_rows();
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
     /// サブ選択キーの「変更（リマップ）」キャプチャを始める（次の打鍵で旧キー→新キーへ移す）。
     fn begin_remap(&self) {
         if self.selected_command().is_none() || self.sub_chord().is_none() {
@@ -3379,7 +3552,7 @@ impl KeyEditor {
 
     /// キャプチャ開始（次の打鍵を選択行へ割り当てる）。リストへフォーカスを移す。
     fn begin_capture(&self) {
-        if self.selected_command().is_none() {
+        if self.inner.picking.borrow().is_some() || self.selected_command().is_none() {
             return;
         }
         self.inner.capturing.set(true);
@@ -3430,7 +3603,7 @@ impl KeyEditor {
     fn setup_events(&self) {
         let this = self.clone();
         self.list.on().wm_get_dlg_code(move |_| {
-            let flags = if this.inner.capturing.get() {
+            let flags = if this.inner.capturing.get() || this.inner.picking.borrow().is_some() {
                 co::DLGC::WANTALLKEYS.raw()
             } else {
                 co::DLGC::WANTARROWS.raw()
@@ -3469,15 +3642,21 @@ impl KeyEditor {
             let row = this.inner.top.get() + (p.coords.y / rh) as usize;
             if row < this.inner.view.borrow().len() {
                 this.inner.sel.set(row);
-                // クリックしたキーをサブ選択（行内 hit-test）。キー上でなければ先頭。
-                this.inner.sub.set(this.chord_hit(row, p.coords.x).unwrap_or(0));
+                // ピック中は行選択のみ。通常はクリックしたキーをサブ選択（行内 hit-test）。
+                let sub = if this.inner.picking.borrow().is_some() {
+                    0
+                } else {
+                    this.chord_hit(row, p.coords.x).unwrap_or(0)
+                };
+                this.inner.sub.set(sub);
                 this.ensure_visible();
                 let _ = this.hwnd().InvalidateRect(None, false);
             }
             Ok(())
         });
 
-        // ダブルクリック：機能順でキーをダブルクリック＝そのキーを「変更」キャプチャへ。
+        // ダブルクリック：機能順=キーを「変更」キャプチャへ／キー順=機能を機能ピッカーへ／
+        // ピック中=その機能で確定。
         let this = self.clone();
         self.list.on().wm_l_button_dbl_clk(move |p| {
             if this.inner.capturing.get() {
@@ -3489,16 +3668,26 @@ impl KeyEditor {
                 return Ok(());
             }
             this.inner.sel.set(row);
-            let hit = if this.inner.view_mode.get() == KeyView::ByCommand {
-                this.chord_hit(row, p.coords.x)
-            } else {
-                None
-            };
-            if let Some(ci) = hit {
-                this.inner.sub.set(ci);
-                this.ensure_visible();
-                this.begin_remap();
+            if this.inner.picking.borrow().is_some() {
+                this.commit_pick();
                 return Ok(());
+            }
+            match this.inner.view_mode.get() {
+                KeyView::ByCommand => {
+                    if let Some(ci) = this.chord_hit(row, p.coords.x) {
+                        this.inner.sub.set(ci);
+                        this.ensure_visible();
+                        this.begin_remap();
+                        return Ok(());
+                    }
+                }
+                KeyView::ByKey => {
+                    if let Some(li) = this.label_hit(row, p.coords.x) {
+                        this.ensure_visible();
+                        this.enter_pick(li);
+                        return Ok(());
+                    }
+                }
             }
             this.inner.sub.set(0);
             this.ensure_visible();
@@ -3506,11 +3695,13 @@ impl KeyEditor {
             Ok(())
         });
 
-        // 右クリック：キャプチャ中なら中止（左クリックは「決定」感があるので中止に使わない）。
+        // 右クリック：キャプチャ中／ピック中なら中止（左クリックは「決定」感があるので使わない）。
         let this = self.clone();
         self.list.on().wm_r_button_down(move |_| {
             if this.inner.capturing.get() {
                 this.cancel_capture();
+            } else if this.inner.picking.borrow().is_some() {
+                this.cancel_pick();
             }
             Ok(())
         });
@@ -3540,6 +3731,17 @@ impl KeyEditor {
                 self.remap_sub(chord);
             } else if let Some(command) = self.selected_command() {
                 self.assign(command, chord);
+            }
+            return;
+        }
+        // ピックモード：↑↓ で機能を選び、Enter で確定・Esc で中止。
+        if self.inner.picking.borrow().is_some() {
+            match vk {
+                k::UP => self.move_sel(-1),
+                k::DOWN => self.move_sel(1),
+                k::RETURN => self.commit_pick(),
+                k::ESCAPE => self.cancel_pick(),
+                _ => {}
             }
             return;
         }
@@ -3611,7 +3813,19 @@ impl KeyEditor {
         let vis = (body_h / row_h).max(1) as usize;
         // 可視範囲の各行を現モードで (左, 右, 右を淡色表示するか) に文字列化する。衝突は ⚠ を付す。
         // 機能順＝(機能, キー群 or "—"), キー順＝(キー, 全機能ラベル)。
-        let lines: Vec<(String, String, bool)> = match self.inner.view_mode.get() {
+        let picking = self.inner.picking.borrow().is_some();
+        let lines: Vec<(String, String, bool)> = if picking {
+            // ピックモード：機能一覧（pick_rows を view で絞ったもの）を並べる。
+            let pr = self.inner.pick_rows.borrow();
+            (0..vis)
+                .filter_map(|vi| {
+                    view.get(top + vi)
+                        .and_then(|&i| pr.get(i))
+                        .map(|c| (c.as_token().to_string(), String::new(), false))
+                })
+                .collect()
+        } else {
+            match self.inner.view_mode.get() {
             KeyView::ByCommand => {
                 let rows = self.inner.rows.borrow();
                 (0..vis)
@@ -3654,10 +3868,13 @@ impl KeyEditor {
                     })
                     .collect()
             }
+            }
         };
         // 機能順・選択行のキー群（サブ選択のチップ描画・ヒットテスト用）。
         let sub = self.inner.sub.get();
-        let sel_chords: Vec<(String, bool)> = if self.inner.view_mode.get() == KeyView::ByCommand {
+        let sel_chords: Vec<(String, bool)> = if !picking
+            && self.inner.view_mode.get() == KeyView::ByCommand
+        {
             view.get(sel)
                 .and_then(|&ri| {
                     self.inner

@@ -145,6 +145,8 @@ pub mod modal_registry {
         pub sub: usize,
         /// キャプチャ待ちか。
         pub capturing: bool,
+        /// 機能ピッカー（インライン）中か。`true` の間は `rows` が機能一覧になる。
+        pub picking: bool,
         /// 直近の操作結果メッセージ。
         pub status: String,
         /// 現在の検索クエリ（空なら全件）。
@@ -178,6 +180,12 @@ pub mod modal_registry {
         pub select_chord: Box<dyn Fn(usize)>,
         /// サブ選択中のキーを、その機能のまま新しいキー（chord トークン）へ移し替える。未知キーは Err。
         pub rebind: ChordFn,
+        /// キー順で選択行の li 番目の機能を差し替えるピックモードへ入る（インライン機能ピッカー）。
+        pub pick: Box<dyn Fn(usize)>,
+        /// ピックモードで選択中の機能を確定する。
+        pub pick_commit: Box<dyn Fn()>,
+        /// ピックモードを中止する。
+        pub pick_cancel: Box<dyn Fn()>,
     }
 
     thread_local! {
@@ -276,6 +284,12 @@ pub enum Request {
     KeysSelectChord { category: String, index: usize },
     /// `POST /keys/<category>/rebind`：サブ選択中のキーを body のキーへ移し替える（変更）。
     KeysRebind { category: String, chord: String },
+    /// `POST /keys/<category>/pick/<labelIndex>`：キー順で選択行の機能ピッカーへ入る。
+    KeysPick { category: String, label: usize },
+    /// `POST /keys/<category>/pickcommit`：ピックで選択中の機能を確定する。
+    KeysPickCommit { category: String },
+    /// `POST /keys/<category>/pickcancel`：ピックを中止する。
+    KeysPickCancel { category: String },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -477,6 +491,15 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                     idx.parse::<usize>().ok().map(|index| Request::KeysSelectChord {
                         category: cat.to_string(),
                         index,
+                    })
+                } else if let Some(cat) = rest.strip_suffix("/pickcommit") {
+                    Some(Request::KeysPickCommit { category: cat.to_string() })
+                } else if let Some(cat) = rest.strip_suffix("/pickcancel") {
+                    Some(Request::KeysPickCancel { category: cat.to_string() })
+                } else if let Some((cat, idx)) = rest.rsplit_once("/pick/") {
+                    idx.parse::<usize>().ok().map(|label| Request::KeysPick {
+                        category: cat.to_string(),
+                        label,
                     })
                 } else if let Some(cat) = rest.strip_suffix("/bind") {
                     let mut body = String::new();

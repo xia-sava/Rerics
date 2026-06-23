@@ -1889,6 +1889,50 @@ fn settings_key_editor_rebinds_selected_chord() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// キー順で機能名をダブルクリック相当＝インライン機能ピッカーで別機能へ差し替える。
+/// 機能一覧は検索ボックスで絞り込め、確定でそのキーの定義が変わる（中止なら不変）。
+#[test]
+fn settings_key_editor_inline_function_picker_changes_binding() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // 未使用キー Ctrl+Shift+Q を SelectMask に割り当て、キー順でその行を出す。
+    server.req("POST", "/keys/filer/bind", r#"["SelectMask","Ctrl+Shift+Q"]"#).unwrap();
+    server.req("POST", "/keys/filer/view", "key").unwrap();
+    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
+    assert!(keys().contains(r#"["Ctrl+Shift+Q",["SelectMask"]]"#), "対象キー行: {}", keys());
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+
+    // その機能（label 0＝SelectMask）のピッカーへ。中止すると不変。
+    server.req("POST", "/keys/filer/pick/0", "").unwrap();
+    assert!(keys().contains(r#""picking":true"#), "ピックモードに入る: {}", keys());
+    server.req("POST", "/keys/filer/pickcancel", "").unwrap();
+    assert!(keys().contains(r#""picking":false"#), "中止でピック解除");
+    // 中止後（検索クリア・キー順へ復帰）も割り当ては不変。
+    server.req("POST", "/keys/filer/view", "key").unwrap();
+    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
+    assert!(keys().contains(r#"["Ctrl+Shift+Q",["SelectMask"]]"#), "中止で不変: {}", keys());
+
+    // 再びピッカーへ入り、検索で MakeDirectory に絞って確定＝定義が差し替わる。
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/pick/0", "").unwrap();
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    assert!(keys().contains(r#"["MakeDirectory",[]]"#), "ピッカーに機能が並ぶ: {}", keys());
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/pickcommit", "").unwrap();
+
+    // 確定後（キー順・検索クリア）：Ctrl+Shift+Q は MakeDirectory に、SelectMask からは外れる。
+    server.req("POST", "/keys/filer/view", "key").unwrap();
+    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
+    let s = keys();
+    assert!(s.contains(r#"["Ctrl+Shift+Q",["MakeDirectory"]]"#), "機能が差し替わる: {s}");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// キー編集ページの検索（機能名・キーへの部分一致・大小無視）。クエリで一覧が絞り込まれ、
 /// 空クエリで全件へ戻る。`config` は変わらない（割り当ては不変）。
 #[test]
