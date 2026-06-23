@@ -2361,3 +2361,39 @@ fn script_command_invokes_builtin_and_throws_on_unknown() {
         "unknown command should throw with its name: {log}"
     );
 }
+
+/// scripting：`rerics.on` のイベントが実 GUI で配られる。executeCommand は全コマンドで、
+/// changeDirectory は実移動のときだけ発火する（在席コマンドでは出ない）。
+#[test]
+fn script_events_fire_on_command_and_navigation() {
+    let server = Server::start_with_scripts(
+        &["a.txt", "b.txt"],
+        &[(
+            "00-ev.ts",
+            r#"rerics.registerCommand("ready", () => {});
+               rerics.on("executeCommand", (name) => rerics.log("EV cmd:" + name));
+               rerics.on("changeDirectory", (dir) => rerics.log("EV cd:" + dir));"#,
+        )],
+    );
+    // ハンドラ登録の完了を待つ（コマンドをビーコンに使う）。
+    poll(&server, "/script/commands", |b| b.contains("ready"));
+
+    // 在席コマンド：executeCommand は出るが changeDirectory は出ない（移動でないため）。
+    server.req("POST", "/command/CursorDown", "").unwrap();
+    let log = poll(&server, "/state/log", |b| b.contains("EV cmd:CursorDown"));
+    assert!(log.contains("EV cmd:CursorDown"), "executeCommand should fire: {log}");
+    assert_eq!(
+        count_substr(&log, "EV cd:"),
+        0,
+        "in-place command must not fire changeDirectory: {log}"
+    );
+
+    // 親へ移動：移動なので changeDirectory も発火する。
+    server.req("POST", "/command/ToParent", "").unwrap();
+    let log2 = poll(&server, "/state/log", |b| b.contains("EV cd:"));
+    assert!(log2.contains("EV cd:"), "navigation should fire changeDirectory: {log2}");
+    assert!(
+        log2.contains("EV cmd:ToParent"),
+        "ToParent should also fire executeCommand: {log2}"
+    );
+}

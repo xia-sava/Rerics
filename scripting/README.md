@@ -35,6 +35,7 @@ rerics.registerCommand("up", () => {
 | `rerics.command(name, ...args)` | 内蔵コマンドを実行（同期・不明名/失敗は例外） |
 | `await rerics.listDir(path)` | ディレクトリ走査（裏スレッド・`Promise<RericsDirEntry[]>`） |
 | `rerics.registerCommand(name, handler)` | 名前付きコマンドを登録（handler は同期/async どちらでも） |
+| `rerics.on(event, handler)` | 本体のイベントを購読（`changeDirectory` / `executeCommand`） |
 
 詳細な型は `rerics.d.ts` を参照。
 
@@ -89,6 +90,24 @@ rerics.command("Delete");  // 選んだ .tmp を削除（確認は本体設定�
 
 ワーカーを起動する操作（コピー/移動/削除など）は「開始」まで戻り、**完了は待たない**。
 完了を待ちたい操作向けの `await` 版は今後追加する。
+
+### イベントの購読
+
+`rerics.on(event, handler)` で本体のイベントに反応できる。同じイベントに複数登録でき、登録順に
+呼ばれる。ハンドラは同期でも `async` でもよい。
+
+- `changeDirectory(dir)`：いずれかのペインの現在地が**実際に変わった**とき（在席再読込・F5・
+  操作後の再読込では発火しない）。引数は新しい現在地パス。
+- `executeCommand(name)`：内蔵コマンドが実行されたとき。引数はコマンド名。スクリプト発の
+  `rerics.command()` 実行中は**発火しない**（自己再帰を避けるため）。
+
+```ts
+rerics.on("changeDirectory", (dir) => {
+  if (dir.endsWith("photos")) rerics.command("SortByDate");
+});
+```
+
+`changeDirectory` ハンドラの中で**無条件に移動すると無限ループ**になりうる。条件を付けること。
 
 ## 共通処理・複数ファイル
 

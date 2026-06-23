@@ -117,6 +117,17 @@ rerics.registerCommand("cleanTemp", () => {
   rerics.command("Delete"); // 確認ダイアログは本体側の設定に従う
 });
 
+// イベントの例：ディレクトリ移動を購読し、ログへ出す（changeDirectory）。
+rerics.on("changeDirectory", (dir) => {
+  rerics.log(`移動: ${dir}`);
+});
+
+// イベントの例：実行されたコマンドを記録する（executeCommand）。
+// rerics.command() 発のコマンドは自己再帰回避のため発火しないので、ここでは無限ループしない。
+rerics.on("executeCommand", (name) => {
+  rerics.log(`コマンド: ${name}`);
+});
+
 // モーダルの例：確認・入力・一覧選択。
 rerics.registerCommand("askThings", async () => {
   if (!rerics.confirm("続けますか？")) {

@@ -6,7 +6,7 @@
 //! `HostApi` 経由で UI を待つ間に UI がエンジンを待つとデッドロックするため、UI→エンジンの
 //! コマンドは投げっぱなし（完了を待たない）。一覧取得だけは `HostApi` を呼ばないので同期で待てる。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -65,6 +65,8 @@ pub enum EngineCmd {
     Eval(String),
     /// 現在登録されているコマンド名を返す（同期・`HostApi` を呼ばないのでデッドロックしない）。
     ListCommands(Sender<Vec<String>>),
+    /// ファイラー本体の出来事を `rerics.on` ハンドラへ配る（投げっぱなし）。
+    FireEvent { event: String, arg: String },
 }
 
 /// `MainWindow` が 1 フィールドとして持つスクリプトブリッジ（UI 側の窓口）。
@@ -72,9 +74,13 @@ pub enum EngineCmd {
 #[derive(Clone)]
 pub struct ScriptBridge {
     pub queue: ScriptQueue,
-    #[cfg_attr(not(feature = "debug-server"), allow(dead_code))]
     cmd_tx: Sender<EngineCmd>,
     cmd_rx: Rc<RefCell<Option<Receiver<EngineCmd>>>>,
+    /// スクリプト発のコマンド実行中は true。executeCommand の自己再帰発火を抑える。
+    suppress_events: Rc<Cell<bool>>,
+    /// 各ペイン（[左, 右]）で最後に changeDirectory を撃った現在地。実移動の検出に使う
+    /// （在席再読込・F5・操作後 Focus では現在地が変わらないので撃たない）。
+    last_dir: Rc<RefCell<[String; 2]>>,
 }
 
 impl ScriptBridge {
@@ -84,6 +90,8 @@ impl ScriptBridge {
             queue: ui_marshal::new_queue(),
             cmd_tx,
             cmd_rx: Rc::new(RefCell::new(Some(cmd_rx))),
+            suppress_events: Rc::new(Cell::new(false)),
+            last_dir: Rc::new(RefCell::new([String::new(), String::new()])),
         }
     }
 
@@ -256,6 +264,11 @@ pub fn spawn_engine(queue: ScriptQueue, hwnd_ptr: isize, cmd_rx: Receiver<Engine
                 EngineCmd::ListCommands(tx) => {
                     let _ = tx.send(engine.registered_commands());
                 }
+                EngineCmd::FireEvent { event, arg } => {
+                    if let Err(e) = engine.fire_event(&event, &arg) {
+                        host.log(&format!("イベント発火エラー [{event}]: {e}"));
+                    }
+                }
             }
         }
     });
@@ -332,7 +345,41 @@ impl MainWindow {
         };
         let inv = Invocation::new(cmd, args);
         let is_left = !self.active_right.get();
-        self.exec(is_left, &inv).map_err(|e| e.to_string())
+        // スクリプト発のコマンド実行中は executeCommand を抑止する（無限再帰を防ぐ）。
+        self.script.suppress_events.set(true);
+        let result = self.exec(is_left, &inv);
+        self.script.suppress_events.set(false);
+        result.map_err(|e| e.to_string())
+    }
+
+    /// ペインの一覧読込が完了したとき呼ぶ。前回撃った現在地と違えば changeDirectory を配る
+    /// ＝実際にディレクトリが変わったときだけ（在席再読込・F5・操作後の Focus では撃たない）。
+    pub(crate) fn notify_dir_loaded(&self, is_left: bool, dir: &str) {
+        let idx = if is_left { 0 } else { 1 };
+        let changed = {
+            let mut last = self.script.last_dir.borrow_mut();
+            if last[idx] != dir {
+                last[idx] = dir.to_string();
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            self.fire_script_event("changeDirectory", dir);
+        }
+    }
+
+    /// ファイラー本体の出来事を `rerics.on` ハンドラへ届ける（投げっぱなし）。スクリプト発の
+    /// コマンド実行中（`suppress_events`）は撃たない＝ハンドラからの自己再帰を断つ。
+    pub(crate) fn fire_script_event(&self, event: &str, arg: &str) {
+        if self.script.suppress_events.get() {
+            return;
+        }
+        let _ = self.script.cmd_tx.send(EngineCmd::FireEvent {
+            event: event.to_string(),
+            arg: arg.to_string(),
+        });
     }
 
     /// 指定側ペインの選択状態を書き戻し、まとめて 1 回だけ再描画する。範囲外 index は無視する。

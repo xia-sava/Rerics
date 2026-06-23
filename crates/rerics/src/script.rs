@@ -238,6 +238,7 @@ const BOOTSTRAP: &str = r#"
 (() => {
   const ops = Deno.core.ops;
   const commands = new Map();
+  const eventHandlers = new Map();
   // スナップショットから 1 ペインを組む。`sink(index, selected)` は item.selected を
   // 書いたときの送り先で、即時版は op を直に撃ち、apply() の draft 版は配列へ溜める。
   const buildPane = (snap, sink) => {
@@ -316,6 +317,28 @@ const BOOTSTRAP: &str = r#"
       if (typeof fn !== "function") throw new TypeError("registerCommand: fn must be a function");
       commands.set(String(name), fn);
     },
+    on: (event, fn) => {
+      if (typeof fn !== "function") throw new TypeError("on: fn must be a function");
+      const key = String(event);
+      const list = eventHandlers.get(key);
+      if (list) list.push(fn);
+      else eventHandlers.set(key, [fn]);
+    },
+  };
+  // ファイラー本体の出来事を登録ハンドラへ配る。1 つが投げても残りは続行する。
+  globalThis.__fireEvent = (event, arg) => {
+    const list = eventHandlers.get(String(event));
+    if (!list) return;
+    const report = (e) =>
+      rerics.log("event error [" + event + "]: " + ((e && e.stack) || e));
+    for (const fn of list) {
+      try {
+        const r = fn(arg);
+        if (r && typeof r.then === "function") r.then(undefined, report);
+      } catch (e) {
+        report(e);
+      }
+    }
   };
   globalThis.__commandNames = () => [...commands.keys()];
   globalThis.__invokeCommand = (name) => {
@@ -437,6 +460,16 @@ impl Engine {
         deno_core::scope!(scope, &mut self.runtime);
         let local = deno_core::v8::Local::new(scope, global);
         deno_core::serde_v8::from_v8::<Vec<String>>(scope, local).unwrap_or_default()
+    }
+
+    /// 登録済みイベントハンドラを発火する（`rerics.on` で登録したもの）。`arg` は単一の
+    /// 文字列ペイロード。未登録イベントは無音。ハンドラが非同期でも Promise を完了させる。
+    pub fn fire_event(&mut self, event: &str, arg: &str) -> Result<(), String> {
+        let e = serde_json::to_string(event).map_err(|e| e.to_string())?;
+        let a = serde_json::to_string(arg).map_err(|e| e.to_string())?;
+        let code = format!("globalThis.__fireEvent({e}, {a});");
+        self.run_to_completion("rerics:event", code)
+            .map_err(|e| e.to_string())
     }
 
     /// 登録済みコマンドを名前で実行する。コールバックが非同期でも Promise を完了させる。
@@ -830,6 +863,33 @@ mod tests {
         );
         // 失敗コマンドは JS の例外になり、catch でメッセージを拾える。
         assert_eq!(*host.logs.borrow(), vec!["caught:boom: Boom".to_string()]);
+    }
+
+    #[test]
+    fn event_handlers_fire_with_payload_and_can_call_host() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:on",
+            r#"
+              rerics.on("changeDirectory", (dir) => rerics.log("cd1:" + dir));
+              rerics.on("changeDirectory", (dir) => rerics.navigate(dir + "/x"));
+              rerics.on("executeCommand", (name) => rerics.log("cmd:" + name));
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        // 未登録イベントは無音。
+        eng.fire_event("noSuchEvent", "").unwrap();
+        // changeDirectory は両ハンドラが順に走る（ログ＋ホスト呼び出し）。
+        eng.fire_event("changeDirectory", "C:\\d").unwrap();
+        eng.fire_event("executeCommand", "CursorDown").unwrap();
+
+        assert_eq!(
+            *host.logs.borrow(),
+            vec!["cd1:C:\\d".to_string(), "cmd:CursorDown".to_string()]
+        );
+        assert_eq!(*host.navigated.borrow(), vec!["C:\\d/x".to_string()]);
     }
 
     #[test]

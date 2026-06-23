@@ -85,6 +85,14 @@ interface RericsPane {
   apply(fn: (draft: RericsPane) => void): RericsPane;
 }
 
+/**
+ * `rerics.on` で購読できるイベント名。引数はイベントごとに異なる。
+ * - `changeDirectory`：いずれかのペインの現在地が実際に変わったとき。引数＝新しい現在地パス。
+ * - `executeCommand`：内蔵コマンドが実行されたとき。引数＝コマンド名。
+ *   （スクリプト発の `rerics.command()` 実行中は自己再帰を避けるため発火しない。）
+ */
+type RericsEvent = "changeDirectory" | "executeCommand";
+
 /** Rerics 本体が提供するホスト API。グローバル `rerics` から呼ぶ。 */
 declare namespace rerics {
   /** アプリのログ欄へメッセージを出す。 */
@@ -141,4 +149,18 @@ declare namespace rerics {
    * 同名で再登録すると後勝ちで上書きする。
    */
   function registerCommand(name: string, handler: () => void | Promise<void>): void;
+
+  /**
+   * ファイラー本体のイベントにハンドラを登録する。同じイベントに複数登録でき、登録順に
+   * 呼ばれる。ハンドラは同期でも `async` でもよい。引数はイベントごとに異なる（{@link RericsEvent}）。
+   *
+   * 注意：`changeDirectory` ハンドラの中で無条件に移動すると無限ループになりうる。条件を付けること。
+   *
+   * ```ts
+   * rerics.on("changeDirectory", (dir) => {
+   *   if (dir.endsWith("photos")) rerics.command("SortByDate");
+   * });
+   * ```
+   */
+  function on(event: RericsEvent, handler: (arg: string) => void | Promise<void>): void;
 }

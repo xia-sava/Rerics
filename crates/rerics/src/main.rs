@@ -794,6 +794,7 @@ impl MainWindow {
             }
             return Ok(());
         }
+        self.fire_script_event("executeCommand", cmd.as_token());
         // 引数があれば実行直前にマクロを展開する。入力/選択のキャンセルは無音で実行中止。
         let args = if inv.args.is_empty() {
             Vec::new()
@@ -1461,6 +1462,10 @@ impl MainWindow {
         view.refresh()?;
         self.update_selected_info(is_left);
         self.cleanup_unreferenced_temps();
+        // 一覧確定後に changeDirectory を配る（実際に現在地が変わったときだけ・notify 側で判定）。
+        // ここなら activePane() や並べ替えコマンドがハンドラから効く。
+        let dir = self.pane(is_left).borrow().loc_display();
+        self.notify_dir_loaded(is_left, &dir);
         Ok(())
     }
 
