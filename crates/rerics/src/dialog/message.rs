@@ -134,8 +134,8 @@ pub fn message_box(
         Ok(())
     });
 
-    if let Some(idi) = style.icon() {
-        if let Ok(mut guard) = w::HINSTANCE::NULL.LoadIcon(w::IdIdiStr::Idi(idi)) {
+    if let Some(idi) = style.icon()
+        && let Ok(mut guard) = w::HINSTANCE::NULL.LoadIcon(w::IdIdiStr::Idi(idi)) {
             let hicon_ptr = guard.leak().ptr() as usize;
             let wnd2 = wnd.clone();
             wnd.on().wm_paint(move || {
@@ -156,13 +156,12 @@ pub fn message_box(
                 Ok(())
             });
         }
-    }
 
     let _ = wnd.show_modal(parent);
     if has_all {
         keyhook::pop();
     }
     let _ = buttons;
-    let r = *result.borrow();
-    r
+    
+    *result.borrow()
 }

@@ -958,13 +958,16 @@ const NAV_ROWS: &[NavRow] = &[
     NavRow::Page { label: "画像ビューア", pane: 11 },
 ];
 
+/// 選択変更時に pane 番号を渡すコールバック。
+type SelectHandler = Box<dyn Fn(usize)>;
+
 struct NavInner {
     /// 選択中ページの `NAV_ROWS` インデックス。
     sel: Cell<usize>,
     /// 1行の高さ（px・描画時にフォント高から決める）。
     row_h: Cell<i32>,
     /// 選択変更時に pane 番号を渡すコールバック。
-    on_select: RefCell<Option<Box<dyn Fn(usize)>>>,
+    on_select: RefCell<Option<SelectHandler>>,
 }
 
 /// 設定の左ナビ。ジャンル見出し＋ページの平坦リストを自前描画し、見出しは選択させない。
@@ -1717,10 +1720,13 @@ fn build_cursor(parent: &gui::WindowControl, shared: &Rc<Shared>) {
     }
 }
 
+/// 「ファイル操作」ページの1行（ラベル・Y 位置・初期値・反映先セッター）。
+type FileOpRow = (&'static str, i32, bool, fn(&mut FileOpSettings, bool));
+
 /// 「ファイル操作」ページ（コピー/移動/削除前の確認ダイアログ）。各操作を即 `Shared` へ反映する。
 fn build_fileops(parent: &gui::WindowControl, shared: &Rc<Shared>) {
     let f = shared.cfg.borrow().file_ops;
-    let rows: [(&str, i32, bool, fn(&mut FileOpSettings, bool)); 6] = [
+    let rows: [FileOpRow; 6] = [
         ("コピーの前に確認する(&C)", 16, f.ask_before_copy, |s, v| s.ask_before_copy = v),
         ("移動の前に確認する(&M)", 50, f.ask_before_move, |s, v| s.ask_before_move = v),
         ("削除・ゴミ箱送りの前に確認する(&D)", 84, f.ask_before_delete, |s, v| s.ask_before_delete = v),
@@ -1973,11 +1979,10 @@ impl ColumnsEditor {
             let shared = shared.clone();
             let sl = sort_list.clone();
             sort_list.on().lbn_sel_change(move || {
-                if let Some(i) = unsafe { sl.hwnd().SendMessage(lb::GetCurSel {}) } {
-                    if let Some((st, _)) = SORT_TYPES.get(i as usize) {
+                if let Some(i) = unsafe { sl.hwnd().SendMessage(lb::GetCurSel {}) }
+                    && let Some((st, _)) = SORT_TYPES.get(i as usize) {
                         shared.cfg.borrow_mut().default_sort = *st;
                     }
-                }
                 Ok(())
             });
         }
@@ -2059,12 +2064,11 @@ impl ColumnsEditor {
                         (),
                     );
                 }
-                if let Some(i) = sel {
-                    if let Some(it) = shown.items().iter().nth(i) {
+                if let Some(i) = sel
+                    && let Some(it) = shown.items().iter().nth(i) {
                         let _ = it.select(true);
                         let _ = it.focus();
                     }
-                }
                 selected.set(sel);
             }
         });
@@ -2132,8 +2136,8 @@ impl ColumnsEditor {
             let rebuild = rebuild.clone();
             let available = available.clone();
             to_shown.on().bn_clicked(move || {
-                if let Some(ki) = unsafe { available.hwnd().SendMessage(lb::GetCurSel {}) } {
-                    if let Some((kind, _)) = COLUMN_KINDS.get(ki as usize) {
+                if let Some(ki) = unsafe { available.hwnd().SendMessage(lb::GetCurSel {}) }
+                    && let Some((kind, _)) = COLUMN_KINDS.get(ki as usize) {
                         let col = Column {
                             kind: *kind,
                             text: kind.header_label().to_owned(),
@@ -2147,7 +2151,6 @@ impl ColumnsEditor {
                         };
                         rebuild(Some(idx));
                     }
-                }
                 Ok(())
             });
         }
@@ -2395,12 +2398,11 @@ impl RegisteredPane {
                         (),
                     );
                 }
-                if let Some(i) = sel {
-                    if let Some(it) = list.items().iter().nth(i) {
+                if let Some(i) = sel
+                    && let Some(it) = list.items().iter().nth(i) {
                         let _ = it.select(true);
                         let _ = it.focus();
                     }
-                }
                 selected.set(sel);
             }
         });

@@ -172,6 +172,6 @@ pub fn input_box_full(
 
     let _ = wnd.show_modal(parent);
     let _ = cancel;
-    let r = result.borrow().clone();
-    r
+    
+    result.borrow().clone()
 }

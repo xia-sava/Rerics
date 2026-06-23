@@ -1063,8 +1063,8 @@ impl MainWindow {
                 let t = template.hwnd().GetWindowText().unwrap_or_default();
                 let s = start.text().unwrap_or_default().trim().parse::<u64>().unwrap_or(0);
                 let st = step.text().unwrap_or_default().trim().parse::<u64>().unwrap_or(1).max(1);
-                let bc = rerics_core::SeqCase::from_index(base_case.selected_index().unwrap_or(0) as usize);
-                let ec = rerics_core::SeqCase::from_index(ext_case.selected_index().unwrap_or(0) as usize);
+                let bc = rerics_core::SeqCase::from_index(base_case.selected_index().unwrap_or(0));
+                let ec = rerics_core::SeqCase::from_index(ext_case.selected_index().unwrap_or(0));
                 (t, s, st, bc, ec)
             }
         };

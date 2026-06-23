@@ -8,7 +8,7 @@ impl MainWindow {
     /// 終了時（wm_destroy）と再起動時（Restart）の両方から呼ぶ。
     pub(crate) fn save_session_state(&self) {
         self.save_active();
-        let window = window_state::capture(&self.wnd.hwnd());
+        let window = window_state::capture(self.wnd.hwnd());
         let tabs: Vec<rerics_core::TabState> = self
             .tabs
             .borrow()

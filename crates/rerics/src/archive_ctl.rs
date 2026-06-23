@@ -56,11 +56,10 @@ impl MainWindow {
             return backend.read(inner);
         }
         // キャッシュ済みパスワードを先に試す。
-        if let Some(pw) = self.archive_passwords.borrow().get(archive).cloned() {
-            if let Ok(b) = backend.read_with_password(inner, Some(&pw)) {
+        if let Some(pw) = self.archive_passwords.borrow().get(archive).cloned()
+            && let Ok(b) = backend.read_with_password(inner, Some(&pw)) {
                 return Ok(b);
             }
-        }
         for _ in 0..3 {
             let Some(pw) = self.prompt_password(archive) else {
                 return Err(std::io::Error::new(
@@ -276,8 +275,8 @@ impl MainWindow {
                 let mut last_pct = u32::MAX;
                 backend
                     .extract_all(&root, &mut |_inner, done, total| {
-                        if total > 0 {
-                            let pct = (done.min(total) * 100 / total) as u32;
+                        if let Some(pct) = (done.min(total) * 100).checked_div(total) {
+                            let pct = pct as u32;
                             if pct != last_pct {
                                 last_pct = pct;
                                 let _ = tx.send(WorkerEvent::LogUpdate {
@@ -645,6 +644,8 @@ impl MainWindow {
 
     /// 書庫への追加をワーカースレッドで起動する。`mode` に応じて append／再構築を選び、
     /// move なら全件成功後に実FS の元を削除する。完了で関与した両ペインを再読込させる。
+    // 引数はいずれも性質の違う必須パラメータ（束ねると逆に不明瞭になる）。
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_archive_add(
         &self,
         archive: PathBuf,

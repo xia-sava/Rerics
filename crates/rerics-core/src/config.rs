@@ -17,23 +17,19 @@ use crate::input::KeyMap;
 /// 場合はカレントディレクトリ。この関数はディレクトリを作らない。
 pub fn data_dir() -> PathBuf {
     // テスト/ツール用の明示オーバーライド（最優先・本番は未設定）。
-    if let Ok(dir) = std::env::var("RERICS_DATA_DIR") {
-        if !dir.is_empty() {
+    if let Ok(dir) = std::env::var("RERICS_DATA_DIR")
+        && !dir.is_empty() {
             return PathBuf::from(dir);
         }
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            if dir.join("Rerics.portable").exists() {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+            && dir.join("Rerics.portable").exists() {
                 return dir.to_path_buf();
             }
-        }
-    }
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        if !appdata.is_empty() {
+    if let Ok(appdata) = std::env::var("APPDATA")
+        && !appdata.is_empty() {
             return PathBuf::from(appdata).join("Rerics");
         }
-    }
     PathBuf::from(".")
 }
 
@@ -136,30 +132,24 @@ impl Default for Layout {
 /// 配色テーマの選択。`System` は OS のライト/ダーク設定に追従する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Theme {
     Dark,
     Light,
+    #[default]
     System,
 }
 
-impl Default for Theme {
-    fn default() -> Self {
-        Theme::System
-    }
-}
 
 /// `System` を OS 設定で解決した後の実テーマ（ダークかライトのいずれか）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ResolvedTheme {
+    #[default]
     Dark,
     Light,
 }
 
-impl Default for ResolvedTheme {
-    fn default() -> Self {
-        ResolvedTheme::Dark
-    }
-}
 
 /// テーマ別の配色セット。実効色は解決済みテーマに応じてどちらかを選ぶ。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

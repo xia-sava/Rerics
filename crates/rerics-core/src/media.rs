@@ -250,7 +250,7 @@ pub fn composite_over_checker(bgra: &mut [u8], width: u32, sq: u32) {
     for (i, px) in bgra.chunks_exact_mut(4).enumerate() {
         let x = i % w;
         let y = i / w;
-        let bg = if (x / sq + y / sq) % 2 == 0 { 0xFFu32 } else { 0xCCu32 };
+        let bg = if (x / sq + y / sq).is_multiple_of(2) { 0xFFu32 } else { 0xCCu32 };
         let a = px[3] as u32;
         for c in px.iter_mut().take(3) {
             *c = ((*c as u32 * a + bg * (255 - a)) / 255) as u8;
@@ -259,8 +259,11 @@ pub fn composite_over_checker(bgra: &mut [u8], width: u32, sq: u32) {
     }
 }
 
+/// アニメ1フレーム＝`(幅, 高, RGBA, delay_ms)`。
+type AnimFrame = (u32, u32, Vec<u8>, u32);
+
 /// アニメフレームを `(幅, 高, RGBA, delay_ms)` で全展開する。アニメ非対応なら `None`。
-fn collect_frames(bytes: &[u8]) -> Option<Vec<(u32, u32, Vec<u8>, u32)>> {
+fn collect_frames(bytes: &[u8]) -> Option<Vec<AnimFrame>> {
     use image::AnimationDecoder;
     let format = image::guess_format(bytes).ok()?;
     let data = bytes.to_vec();
@@ -285,7 +288,7 @@ fn collect_frames(bytes: &[u8]) -> Option<Vec<(u32, u32, Vec<u8>, u32)>> {
         let f = f.ok()?;
         let (n, d) = f.delay().numer_denom_ms();
         // 0/極小 delay は実用上 100ms 扱い（ブラウザ慣習）。最低 20ms にクランプ。
-        let raw = if d == 0 { 0 } else { n / d };
+        let raw = n.checked_div(d).unwrap_or(0);
         let delay_ms = if raw < 20 { 100 } else { raw };
         let buf = f.into_buffer();
         let (w, h) = buf.dimensions();

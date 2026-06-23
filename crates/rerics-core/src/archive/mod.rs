@@ -96,11 +96,10 @@ pub trait ArchiveBackend {
         let entries = self.list()?;
         let total = entries.iter().filter(|e| !e.is_dir).count() as u64;
         for e in &entries {
-            if e.is_dir {
-                if let Some(p) = safe_join(dest, &e.path) {
+            if e.is_dir
+                && let Some(p) = safe_join(dest, &e.path) {
                     std::fs::create_dir_all(p)?;
                 }
-            }
         }
         let mut done = 0u64;
         for e in &entries {

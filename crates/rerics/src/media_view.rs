@@ -71,6 +71,9 @@ impl DisplayMode {
     }
 }
 
+/// 右クリック時に画面座標を渡すコールバック（メニュー表示は MainWindow が担う）。
+type MenuHandler = Box<dyn Fn(w::POINT)>;
+
 struct Inner {
     /// 巡回件数と現在位置（実パスは `resolver` が index から解決する）。
     nav_len: Cell<usize>,
@@ -119,7 +122,7 @@ struct Inner {
     /// ズーム1段あたりの拡大率（倍率係数）。設定の `zoom_step_percent` から決まる。
     zoom_step: f64,
     /// 右クリック時に呼ぶコールバック（画面座標）。コンテキストメニュー表示は MainWindow が担う。
-    on_menu: RefCell<Option<Box<dyn Fn(w::POINT)>>>,
+    on_menu: RefCell<Option<MenuHandler>>,
 }
 
 /// 画像/動画ビューア表示パネル。

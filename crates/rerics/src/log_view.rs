@@ -165,8 +165,8 @@ impl LogView {
     /// 現在のフォントの行高（物理 px）を実測してキャッシュへ反映し、返す。実測できなければ
     /// 直近のキャッシュ値を返す。
     fn measure_line_height(&self) -> i32 {
-        if let Ok(dc) = self.hwnd().GetDC() {
-            if let Ok(font) = self.create_font(false) {
+        if let Ok(dc) = self.hwnd().GetDC()
+            && let Ok(font) = self.create_font(false) {
                 let _sel = dc.SelectObject(&*font);
                 if let Ok(tm) = dc.GetTextMetrics() {
                     let lh = tm.tmHeight + tm.tmExternalLeading;
@@ -174,7 +174,6 @@ impl LogView {
                     return lh;
                 }
             }
-        }
         self.inner.line_height.get()
     }
 
@@ -306,8 +305,8 @@ impl LogView {
     fn on_l_button_down(&self, pt: w::POINT) -> w::AnyResult<()> {
         let rc = self.hwnd().GetClientRect()?;
         let (cw, ch) = (rc.right - rc.left, rc.bottom - rc.top);
-        if let Some((bar_x, _track_top, _track_h, thumb_top, thumb_h)) = self.scrollbar_geom(cw, ch) {
-            if pt.x >= bar_x {
+        if let Some((bar_x, _track_top, _track_h, thumb_top, thumb_h)) = self.scrollbar_geom(cw, ch)
+            && pt.x >= bar_x {
                 if pt.y >= thumb_top && pt.y < thumb_top + thumb_h {
                     self.inner.sb_drag.set(Some(pt.y - thumb_top));
                 } else {
@@ -320,7 +319,6 @@ impl LogView {
                     self.refresh()?;
                 }
             }
-        }
         Ok(())
     }
 

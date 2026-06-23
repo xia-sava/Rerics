@@ -148,8 +148,8 @@ fn rewrite_archive(
     }
 
     // 追加項目を足す（rebuild=追加/置換のときだけ）。
-    if !sum.cancelled {
-        if let Some((src_dir, names, inner_prefix)) = extra {
+    if !sum.cancelled
+        && let Some((src_dir, names, inner_prefix)) = extra {
             for name in names {
                 if should_stop(host) {
                     sum.cancelled = true;
@@ -163,7 +163,6 @@ fn rewrite_archive(
                 }
             }
         }
-    }
 
     let finished = zw.finish();
     if sum.cancelled || sum.err > 0 {

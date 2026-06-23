@@ -11,13 +11,16 @@ use winsafe::{self as w, co, gui, prelude::*};
 
 use crate::chrome;
 
+/// タブクリック時に index を渡すコールバック。
+type ClickHandler = Box<dyn Fn(usize)>;
+
 struct Inner {
     labels: RefCell<Vec<String>>,
     active: Cell<usize>,
     font_family: RefCell<String>,
     font_size: Cell<i32>,
     font_height: Cell<i32>,
-    on_click: RefCell<Option<Box<dyn Fn(usize)>>>,
+    on_click: RefCell<Option<ClickHandler>>,
 }
 
 /// 水平タブ帯コントロール。
@@ -132,11 +135,10 @@ impl TabBar {
             return Ok(());
         }
         let index = ((pt.x * n as i32) / cw) as usize;
-        if index < n {
-            if let Some(cb) = self.inner.on_click.borrow().as_ref() {
+        if index < n
+            && let Some(cb) = self.inner.on_click.borrow().as_ref() {
                 cb(index);
             }
-        }
         Ok(())
     }
 

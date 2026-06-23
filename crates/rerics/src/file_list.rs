@@ -615,8 +615,8 @@ impl FileListView {
         }
         let rc = self.hwnd().GetClientRect()?;
         let (cw, ch) = (rc.right - rc.left, rc.bottom - rc.top);
-        if let Some((bar_x, _track_top, _track_h, thumb_top, thumb_h)) = self.scrollbar_geom(cw, ch) {
-            if pt.x >= bar_x {
+        if let Some((bar_x, _track_top, _track_h, thumb_top, thumb_h)) = self.scrollbar_geom(cw, ch)
+            && pt.x >= bar_x {
                 if pt.y >= thumb_top && pt.y < thumb_top + thumb_h {
                     self.inner.sb_drag.set(Some(pt.y - thumb_top));
                 } else {
@@ -631,7 +631,6 @@ impl FileListView {
                 }
                 return Ok(());
             }
-        }
         let hh = self.header_height();
         if pt.y < hh {
             if let Some(col) = self.hit_column_border(pt.x) {
@@ -730,8 +729,8 @@ impl FileListView {
             }
             return Ok(());
         }
-        if self.inner.mouse_event.get() == MouseEvent::HeaderDrag {
-            if let Some(d) = self.inner.drag.get() {
+        if self.inner.mouse_event.get() == MouseEvent::HeaderDrag
+            && let Some(d) = self.inner.drag.get() {
                 let new_w = (d.start_width + (pt.x - d.start_x)).max(8);
                 {
                     let mut s = self.inner.state.borrow_mut();
@@ -742,16 +741,14 @@ impl FileListView {
                 }
                 self.refresh()?;
             }
-        }
         Ok(())
     }
 
     fn on_l_button_dbl_clk(&self, pt: w::POINT) -> w::AnyResult<()> {
-        if let Some(idx) = self.row_at(pt.y) {
-            if let Some(cb) = self.inner.on_activate.borrow().as_ref() {
+        if let Some(idx) = self.row_at(pt.y)
+            && let Some(cb) = self.inner.on_activate.borrow().as_ref() {
                 cb(idx);
             }
-        }
         Ok(())
     }
 
@@ -872,7 +869,7 @@ impl FileListView {
                 w::RECT { left: total_w, top: 0, right: cw, bottom: header_h },
                 &face_brush,
             )?;
-            self.draw_3d_frame(dc, total_w, 0, cw, header_h, hl, sh)?;
+            self.draw_3d_frame(dc, w::RECT { left: total_w, top: 0, right: cw, bottom: header_h }, hl, sh)?;
         }
 
         // 3. 行。
@@ -924,14 +921,14 @@ impl FileListView {
                 let mut text_left = left + margin;
                 let is_name_col =
                     matches!(col.kind, ColumnKind::FileName | ColumnKind::FileBaseName);
-                if is_name_col {
-                    if let Some(cache) = icon_cache.as_ref().filter(|_| show_icons) {
+                if is_name_col
+                    && let Some(cache) = icon_cache.as_ref().filter(|_| show_icons) {
                         let iy = y + (item_h - icon_px) / 2;
                         let mut drawn = false;
                         // 実FSのファイル（ディレクトリ・親・書庫内を除く）は per-file の固有
                         // アイコン/サムネを試み、未取得なら汎用を描いて非同期取得を依頼する。
-                        if !item.is_dir && !item.is_parent {
-                            if let Some(d) = dir.as_ref() {
+                        if !item.is_dir && !item.is_parent
+                            && let Some(d) = dir.as_ref() {
                                 let full = d.join(&item.name);
                                 let mtime = item_mtime(item);
                                 if cache.draw_file(dc, &full, mtime, text_left, iy, icon_px) {
@@ -944,7 +941,6 @@ impl FileListView {
                                     cache.request_file(&full, mtime, thumb);
                                 }
                             }
-                        }
                         if !drawn {
                             cache.draw_generic(
                                 dc, item.is_dir, &item.extension, text_left, iy, icon_px,
@@ -955,7 +951,6 @@ impl FileListView {
                         }
                         text_left += icon_px + gui::dpi_x(2);
                     }
-                }
                 // 左は n 幅マージン（＋アイコン幅）、右パディングは 0（原作の左 4/右 0 に倣う）。
                 let rect = w::RECT { left: text_left, top: y, right, bottom: y + item_h };
                 dc.DrawText(&text, rect, flags)?;
@@ -1016,7 +1011,7 @@ impl FileListView {
         col: Option<&rerics_core::Column>,
     ) -> w::AnyResult<()> {
         dc.FillRect(w::RECT { left, top: 0, right, bottom: header_h }, face_brush)?;
-        self.draw_3d_frame(dc, left, 0, right, header_h, hl, sh)?;
+        self.draw_3d_frame(dc, w::RECT { left, top: 0, right, bottom: header_h }, hl, sh)?;
         let Some(col) = col else {
             return Ok(());
         };
@@ -1050,17 +1045,15 @@ impl FileListView {
         Ok(())
     }
 
-    /// 明(左上)/暗(右下)の 3D 枠を描く。
+    /// 明(左上)/暗(右下)の 3D 枠を `rect` の範囲に描く。
     fn draw_3d_frame(
         &self,
         dc: &w::HDC,
-        left: i32,
-        top: i32,
-        right: i32,
-        bottom: i32,
+        rect: w::RECT,
         hl: w::COLORREF,
         sh: w::COLORREF,
     ) -> w::AnyResult<()> {
+        let w::RECT { left, top, right, bottom } = rect;
         let pen_hl = w::HPEN::CreatePen(co::PS::SOLID, 1, hl)?;
         {
             let _sel = dc.SelectObject(&*pen_hl)?;
@@ -1136,6 +1129,11 @@ fn draw_parent_arrow(dc: &w::HDC, x: i32, y: i32, size: i32) -> w::AnyResult<()>
     Ok(())
 }
 
+/// `Rgb` を COLORREF へ変換する。
+fn rgb(c: Rgb) -> w::COLORREF {
+    w::COLORREF::from_rgb(c.r, c.g, c.b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::wheel_lines;
@@ -1148,9 +1146,4 @@ mod tests {
         assert_eq!(wheel_lines(1, u32::MAX, 20), 20); // ページスクロール = 1 画面
         assert_eq!(wheel_lines(-1, u32::MAX, 20), -20);
     }
-}
-
-/// `Rgb` を COLORREF へ変換する。
-fn rgb(c: Rgb) -> w::COLORREF {
-    w::COLORREF::from_rgb(c.r, c.g, c.b)
 }

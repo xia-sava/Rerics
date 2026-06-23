@@ -328,13 +328,10 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                     .next()
                     .map(|key| Request::ViewSearchMnemonic { key })
             } else if let Some(rest) = path.strip_prefix("/view/search/option/") {
-                match rest.trim_end_matches('/').rsplit_once('/') {
-                    Some((name, val)) => Some(Request::ViewSearchOption {
+                rest.trim_end_matches('/').rsplit_once('/').map(|(name, val)| Request::ViewSearchOption {
                         name: name.to_string(),
                         on: val.eq_ignore_ascii_case("on"),
-                    }),
-                    None => None,
-                }
+                    })
             } else if let Some(key) = path.strip_prefix("/view/search/key/") {
                 Some(Request::ViewSearchKey { key: key.trim_end_matches('/').to_string() })
             } else if path == "/view/search" {

@@ -352,13 +352,11 @@ impl MainWindow {
         let focus_in_modal = w::HWND::GetFocus()
             .map(|f| f.ptr() == modal.ptr() || modal.IsChild(&f))
             .unwrap_or(false);
-        if !focus_in_modal {
-            if let Ok(first) = modal.GetNextDlgTabItem(&w::HWND::NULL, false) {
-                if !first.ptr().is_null() {
+        if !focus_in_modal
+            && let Ok(first) = modal.GetNextDlgTabItem(&w::HWND::NULL, false)
+                && !first.ptr().is_null() {
                     first.SetFocus();
                 }
-            }
-        }
         let focus = w::HWND::GetFocus();
         let target = focus.as_ref().unwrap_or(&modal);
         unsafe {
@@ -762,7 +760,7 @@ impl MainWindow {
         bmi.bmiHeader.biCompression = co::BI::RGB;
         let mut buf = vec![0u8; (cw as usize) * (ch as usize) * 4];
         unsafe {
-            memdc.GetDIBits(&*bmp, 0, ch as u32, Some(&mut buf), &mut bmi, co::DIB::RGB_COLORS)?;
+            memdc.GetDIBits(&bmp, 0, ch as u32, Some(&mut buf), &mut bmi, co::DIB::RGB_COLORS)?;
         }
         Ok((buf, cw, ch))
     }
@@ -828,7 +826,7 @@ impl MainWindow {
         bmi.bmiHeader.biCompression = co::BI::RGB;
         let mut buf = vec![0u8; (cw as usize) * (ch as usize) * 4];
         unsafe {
-            target.GetDIBits(&*bmp, 0, ch as u32, Some(&mut buf), &mut bmi, co::DIB::RGB_COLORS)?;
+            target.GetDIBits(&bmp, 0, ch as u32, Some(&mut buf), &mut bmi, co::DIB::RGB_COLORS)?;
         }
         Ok((buf, cw, ch))
     }

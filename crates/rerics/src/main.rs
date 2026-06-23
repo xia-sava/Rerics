@@ -663,7 +663,7 @@ impl MainWindow {
                 }
             };
             if let Some(ws) = &effective_window {
-                let applied = window_state::apply(&this.wnd.hwnd(), ws);
+                let applied = window_state::apply(this.wnd.hwnd(), ws);
                 // 最小化起動時は最大化復元を抑止する（最小化が打ち消されないように）。
                 if applied && ws.maximized && !debug_minimized {
                     unsafe {
@@ -718,7 +718,7 @@ impl MainWindow {
 
         let this = self.clone();
         self.wnd.on().wm(winutil::msg::RESTORE_MAXIMIZE, move |_| {
-            window_state::maximize(&this.wnd.hwnd());
+            window_state::maximize(this.wnd.hwnd());
             Ok(0)
         });
 
@@ -1386,11 +1386,10 @@ impl MainWindow {
     /// 指す（tar.gz 等を毎回再解凍しない）。それ以外（実FS・RA書庫・未展開）は現在地そのまま。
     fn resolve_read_location(&self, is_left: bool) -> Location {
         let loc = self.pane(is_left).borrow().loc().clone();
-        if let Location::Archive { archive, inner } = &loc {
-            if let Some(root) = self.archive_extracted.borrow().get(archive).cloned() {
+        if let Location::Archive { archive, inner } = &loc
+            && let Some(root) = self.archive_extracted.borrow().get(archive).cloned() {
                 return Location::Real(root.join(Self::inner_to_pathbuf(inner)));
             }
-        }
         loc
     }
 

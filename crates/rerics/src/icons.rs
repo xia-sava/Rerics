@@ -19,7 +19,8 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use winsafe::{self as w};
 
-#[allow(non_snake_case)]
+// Win32 構造体の名前をそのまま写した FFI 宣言（命名は Win32 準拠）。
+#[allow(non_snake_case, clippy::upper_case_acronyms)]
 #[repr(C)]
 struct SHFILEINFOW {
     hIcon: *mut c_void,
@@ -29,7 +30,7 @@ struct SHFILEINFOW {
     szTypeName: [u16; 80],
 }
 
-#[allow(non_snake_case)]
+#[allow(non_snake_case, clippy::upper_case_acronyms)]
 #[repr(C)]
 struct BITMAPINFOHEADER {
     biSize: u32,
@@ -373,11 +374,10 @@ impl IconCache {
 
     /// 実FSファイルの per-file アイコン/サムネ取得を依頼する（未取得・未解決のときのみ）。
     pub fn request_file(&self, path: &std::path::Path, mtime: u64, thumb: bool) {
-        if let Some((m, _)) = self.per_file.borrow().get(path) {
-            if *m == mtime {
+        if let Some((m, _)) = self.per_file.borrow().get(path)
+            && *m == mtime {
                 return; // 解決済み（成功/失敗どちらも）。
             }
-        }
         if self.pending.borrow().contains(path) {
             return;
         }

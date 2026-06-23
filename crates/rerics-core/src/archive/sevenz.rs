@@ -112,12 +112,11 @@ impl ArchiveBackend for SevenZBackend {
                 if !each(&path, done, total) {
                     return Ok(false);
                 }
-                if let Some(parent) = p.parent() {
-                    if let Err(e) = std::fs::create_dir_all(parent) {
+                if let Some(parent) = p.parent()
+                    && let Err(e) = std::fs::create_dir_all(parent) {
                         io_err = Some(e);
                         return Ok(false);
                     }
-                }
                 let mut buf = Vec::with_capacity(entry.size as usize);
                 if let Err(e) = rd.read_to_end(&mut buf) {
                     io_err = Some(e);

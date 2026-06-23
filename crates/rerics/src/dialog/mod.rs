@@ -123,7 +123,7 @@ pub mod keyhook {
         if let Ok(mut cur) = parent.GetWindow(co::GW::CHILD) {
             loop {
                 unsafe {
-                    ffi::SetWindowSubclass(cur.ptr() as *mut c_void, sub_proc, SUBCLASS_ID, 0);
+                    ffi::SetWindowSubclass(cur.ptr(), sub_proc, SUBCLASS_ID, 0);
                 }
                 match cur.GetWindow(co::GW::HWNDNEXT) {
                     Ok(n) => cur = n,

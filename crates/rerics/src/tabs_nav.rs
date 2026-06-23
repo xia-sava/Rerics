@@ -465,13 +465,12 @@ impl MainWindow {
                         move || probe_drive_info(&root),
                         move |_mw, (vol, free, total)| {
                             pending2.borrow_mut()[i] = false;
-                            if alive2.get() {
-                                if let Some(it) = list2.items().iter().nth(i) {
+                            if alive2.get()
+                                && let Some(it) = list2.items().iter().nth(i) {
                                     let _ = it.set_text(1, &vol);
                                     let _ = it.set_text(3, &free);
                                     let _ = it.set_text(4, &total);
                                 }
-                            }
                             Ok(())
                         },
                     );
@@ -526,11 +525,10 @@ impl MainWindow {
                     s.glyph()
                 };
                 for (i, busy) in pending2.borrow().iter().enumerate() {
-                    if *busy {
-                        if let Some(it) = list2.items().iter().nth(i) {
+                    if *busy
+                        && let Some(it) = list2.items().iter().nth(i) {
                             let _ = it.set_text(1, glyph);
                         }
-                    }
                 }
                 Ok(())
             });

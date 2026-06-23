@@ -303,8 +303,9 @@
         let sum = run_delete(&host, &dir.path, &["a.txt".to_owned()]);
         assert_eq!(sum.ok, 0);
         assert!(ro.exists());
-        // 後始末のため属性を戻す。
+        // 後始末のため属性を戻す（Windows の読み取り専用ビットを落とす意図）。
         let mut perms = std::fs::metadata(&ro).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
         perms.set_readonly(false);
         std::fs::set_permissions(&ro, perms).unwrap();
     }
@@ -357,8 +358,9 @@
         assert_eq!(sum.ok, 1); // plain.txt のみ削除。
         assert!(ro.exists());
         assert!(d.exists());
-        // 後始末。
+        // 後始末（Windows の読み取り専用ビットを落とす意図）。
         let mut perms = std::fs::metadata(&ro).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
         perms.set_readonly(false);
         std::fs::set_permissions(&ro, perms).unwrap();
     }

@@ -1091,7 +1091,7 @@ fn format_size(n: u64) -> String {
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     let len = bytes.len();
     for (i, b) in bytes.iter().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(*b as char);
@@ -1304,14 +1304,13 @@ fn expand_seq_template(template: &str, base: &str, ext: &str, no: u64) -> String
     let mut out = String::new();
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] == '<' {
-            if let Some(rel) = chars[i + 1..].iter().position(|&c| c == '>') {
+        if chars[i] == '<'
+            && let Some(rel) = chars[i + 1..].iter().position(|&c| c == '>') {
                 let token: String = chars[i + 1..i + 1 + rel].iter().collect();
                 out.push_str(&expand_seq_token(&token, base, ext, no));
                 i += rel + 2;
                 continue;
             }
-        }
         out.push(chars[i]);
         i += 1;
     }

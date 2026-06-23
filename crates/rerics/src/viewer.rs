@@ -29,6 +29,13 @@ const HISTORY_CAP: usize = 32;
 /// 履歴ドロップダウンに一度に見せる最大行数（超過分はスクロール）。
 const HISTORY_DROPDOWN_ROWS: usize = 12;
 
+/// 全一致リストのキャッシュ（検索語・オプション・行世代・全一致の (表示行, 開始桁)）。
+type MatchCache = (String, SearchOptions, u64, Rc<Vec<(usize, usize)>>);
+/// キーチョードがユーザーのビューアキーバインドに割当済みなら実行して true を返すコールバック。
+type ChordHandler = Box<dyn Fn(rerics_core::KeyChord) -> bool>;
+/// 右クリック時に画面座標を渡すコールバック（メニュー表示は MainWindow が担う）。
+type MenuHandler = Box<dyn Fn(w::POINT)>;
+
 struct Inner {
     model: RefCell<ViewerModel>,
     title: RefCell<String>,
@@ -58,7 +65,7 @@ struct Inner {
     lines_gen: Cell<u64>,
     /// 全一致リストのキャッシュ（検索語・オプション・行世代が変わるまで使い回す）。
     /// 内容は起動中に変わらないので、移動のたびに全行を走査し直さないための要。
-    match_cache: RefCell<Option<(String, SearchOptions, u64, Rc<Vec<(usize, usize)>>)>>,
+    match_cache: RefCell<Option<MatchCache>>,
     /// 現在ヒットしている表示行（ハイライト対象）。
     /// 現在の検索一致（表示行 index, 行内の開始桁）。検索ハイライト/ナビの基準。
     match_pos: Cell<Option<(usize, usize)>>,
@@ -85,14 +92,14 @@ struct Inner {
     on_search_close: RefCell<Option<Box<dyn Fn()>>>,
     /// キーチョードがユーザーのビューアキーバインドに割り当て済みなら実行して true を返す
     /// コールバック。検索バー内のニーモニック（Alt+C 等）と被ったらユーザー側を優先するのに使う。
-    on_chord: RefCell<Option<Box<dyn Fn(rerics_core::KeyChord) -> bool>>>,
+    on_chord: RefCell<Option<ChordHandler>>,
     /// マウス選択の始点・終点（None なら選択なし）。
     sel_anchor: Cell<Option<Pos>>,
     sel_cursor: Cell<Option<Pos>>,
     /// ドラッグ中か。
     selecting: Cell<bool>,
     /// 右クリック時に呼ぶコールバック（画面座標）。メニュー表示は MainWindow が担う。
-    on_menu: RefCell<Option<Box<dyn Fn(w::POINT)>>>,
+    on_menu: RefCell<Option<MenuHandler>>,
 }
 
 /// ビューア表示パネル。
@@ -860,11 +867,10 @@ impl ViewerView {
     fn matcher(&self) -> Matcher {
         let term = self.inner.search_term.borrow();
         let opts = self.inner.search_opts.get();
-        if let Some((t, o, m)) = self.inner.matcher_cache.borrow().as_ref() {
-            if t == &*term && *o == opts {
+        if let Some((t, o, m)) = self.inner.matcher_cache.borrow().as_ref()
+            && t == &*term && *o == opts {
                 return m.clone();
             }
-        }
         let m = build_matcher(&term, &opts);
         *self.inner.matcher_cache.borrow_mut() = Some((term.clone(), opts, m.clone()));
         m
@@ -876,11 +882,10 @@ impl ViewerView {
         let term = self.inner.search_term.borrow();
         let opts = self.inner.search_opts.get();
         let generation = self.inner.lines_gen.get();
-        if let Some((t, o, g, m)) = self.inner.match_cache.borrow().as_ref() {
-            if t == &*term && *o == opts && *g == generation {
+        if let Some((t, o, g, m)) = self.inner.match_cache.borrow().as_ref()
+            && t == &*term && *o == opts && *g == generation {
                 return m.clone();
             }
-        }
         let matches = if term.is_empty() {
             Vec::new()
         } else {
@@ -1502,8 +1507,8 @@ impl ViewerView {
             let line = &lines[i];
             // マウス選択のハイライト（行内の桁範囲）。選択は検索ハイライトより優先。
             let mut highlighted = false;
-            if let Some((s, e)) = sel {
-                if i >= s.0 && i <= e.0 {
+            if let Some((s, e)) = sel
+                && i >= s.0 && i <= e.0 {
                     let left = if i == s.0 { self.col_x(&line.body, s.1, content_left, cwd) } else { content_left };
                     let right = if i == e.0 { self.col_x(&line.body, e.1, content_left, cwd) } else { cw };
                     if right > left {
@@ -1511,7 +1516,6 @@ impl ViewerView {
                     }
                     highlighted = true;
                 }
-            }
             // 検索一致（選択していない行のみ）。行内の各一致を桁単位で塗り、現在一致は選択色で区別する。
             let spans: Vec<(usize, usize)> = if highlighted || !has_term {
                 Vec::new()
@@ -1552,8 +1556,8 @@ impl ViewerView {
         }
 
         // テキストモードでは本文末尾に [EOF] マーカーを出す（記号色）。
-        if is_text && i == lines.len() {
-            if let Some(last) = lines.last() {
+        if is_text && i == lines.len()
+            && let Some(last) = lines.last() {
                 let eof_y = y - lh;
                 if eof_y >= 0 {
                     let end_col = last.body.chars().count();
@@ -1565,7 +1569,6 @@ impl ViewerView {
                     dc.DrawText("[EOF]", rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
                 }
             }
-        }
 
         // 下端の状態行（chrome のグレー帯）。
         let status_h = self.status_height();

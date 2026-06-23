@@ -357,7 +357,7 @@ fn req(port: u16, method: &str, path: &str, body: &str) -> Option<(u16, String)>
     let mut resp = String::new();
     s.read_to_string(&mut resp).ok()?;
     let status: u16 = resp.split_whitespace().nth(1)?.parse().ok()?;
-    let body = resp.splitn(2, "\r\n\r\n").nth(1).unwrap_or("").to_string();
+    let body = resp.split_once("\r\n\r\n").map(|x| x.1).unwrap_or("").to_string();
     Some((status, body))
 }
 
@@ -986,12 +986,11 @@ fn path_history_records_and_persists() {
     let hist_path = server.base.join("data").join("history.toml");
     let mut hist = String::new();
     for _ in 0..50 {
-        if let Ok(s) = std::fs::read_to_string(&hist_path) {
-            if s.contains("pathhistory") {
+        if let Ok(s) = std::fs::read_to_string(&hist_path)
+            && s.contains("pathhistory") {
                 hist = s;
                 break;
             }
-        }
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
     assert!(hist.contains("pathhistory"), "history.toml should persist the pathhistory bucket: {hist}");
@@ -1049,12 +1048,11 @@ fn input_history_changedir_persists() {
     let hist_path = server.base.join("data").join("history.toml");
     let mut hist = String::new();
     for _ in 0..50 {
-        if let Ok(s) = std::fs::read_to_string(&hist_path) {
-            if s.contains("changedir") {
+        if let Ok(s) = std::fs::read_to_string(&hist_path)
+            && s.contains("changedir") {
                 hist = s;
                 break;
             }
-        }
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
     assert!(hist.contains("changedir"), "history.toml should have the changedir bucket: {hist}");

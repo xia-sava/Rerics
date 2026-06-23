@@ -136,6 +136,6 @@ pub fn list_box(
 
     let _ = wnd.show_modal(parent);
     let _ = (ok, cancel, list);
-    let r = *result.borrow();
-    r
+    
+    *result.borrow()
 }

@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use winsafe::{self as w, co};
 
-#[allow(non_snake_case)]
+// Win32 構造体の名前をそのまま写した FFI 宣言（命名は Win32 準拠）。
+#[allow(non_snake_case, clippy::upper_case_acronyms)]
 #[repr(C)]
 struct SHFILEOPSTRUCTW {
     hwnd: *mut c_void,
@@ -94,7 +95,7 @@ pub fn show_properties(owner: &w::HWND, path: &Path) -> Result<(), String> {
     let obj = wide(path);
     let ok = unsafe {
         SHObjectProperties(
-            owner.ptr() as *mut c_void,
+            owner.ptr(),
             SHOP_FILEPATH,
             obj.as_ptr(),
             std::ptr::null(),

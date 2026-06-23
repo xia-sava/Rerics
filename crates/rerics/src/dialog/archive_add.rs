@@ -98,6 +98,6 @@ pub fn archive_add_box(parent: &impl GuiParent, summary: &str) -> Option<Archive
 
     let _ = wnd.show_modal(parent);
     let _ = (ok, cancel);
-    let r = *result.borrow();
-    r
+    
+    *result.borrow()
 }

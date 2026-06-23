@@ -287,6 +287,6 @@ mod tests {
         let r = Location::Real(PathBuf::from("C:\\x\\y"));
         assert_eq!(r.as_real_path(), Some(Path::new("C:\\x\\y")));
         assert!(!r.is_archive());
-        assert!(matches!(r.loc_join("z"), Location::Real(p) if p == PathBuf::from("C:\\x\\y\\z")));
+        assert!(matches!(r.loc_join("z"), Location::Real(p) if p == *"C:\\x\\y\\z"));
     }
 }

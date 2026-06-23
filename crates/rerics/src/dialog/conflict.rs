@@ -221,6 +221,6 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
     let _ = wnd.show_modal(parent);
     keyhook::pop();
     let _ = (ok, cancel);
-    let r = result.borrow().clone();
-    r
+    
+    result.borrow().clone()
 }

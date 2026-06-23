@@ -125,6 +125,6 @@ pub fn compress_box(
 
     let _ = wnd.show_modal(parent);
     let _ = (ok, cancel);
-    let r = result.borrow().clone();
-    r
+    
+    result.borrow().clone()
 }

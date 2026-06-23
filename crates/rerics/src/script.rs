@@ -676,6 +676,9 @@ impl Engine {
 mod tests {
     use super::*;
 
+    /// `apply_selection` 1 回ぶんの記録＝(is_left, 変更 (index, selected) の列)。
+    type AppliedSelection = (bool, Vec<(usize, bool)>);
+
     #[derive(Default)]
     struct MockHost {
         logs: RefCell<Vec<String>>,
@@ -687,7 +690,7 @@ mod tests {
         active_pane: PaneSnapshot,
         opposite_pane: PaneSnapshot,
         set_selected: RefCell<Vec<(bool, usize, bool)>>,
-        applied: RefCell<Vec<(bool, Vec<(usize, bool)>)>>,
+        applied: RefCell<Vec<AppliedSelection>>,
         commands: RefCell<Vec<(String, Vec<String>)>>,
         /// この名前のコマンドは失敗させる（エラー経路の検証用）。
         failing_command: Option<String>,

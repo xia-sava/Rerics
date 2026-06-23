@@ -106,7 +106,7 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
         ok.on().bn_clicked(move || {
             let base = kinds
                 .selected_index()
-                .and_then(|i| SORT_KINDS.get(i as usize))
+                .and_then(|i| SORT_KINDS.get(i))
                 .map(|(_, t)| *t)
                 .unwrap_or(SortType::FileName);
             let ty = match (base, explike.is_checked()) {
@@ -130,6 +130,6 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
 
     let _ = wnd.show_modal(parent);
     let _ = (ok, cancel);
-    let r = *result.borrow();
-    r
+    
+    *result.borrow()
 }

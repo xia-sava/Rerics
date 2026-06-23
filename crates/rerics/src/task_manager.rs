@@ -255,21 +255,19 @@ fn populate(list: &gui::ListView<u64>, tasks: &Registry) {
             entry.control.state_label().to_owned(),
             elapsed,
         ];
-        if let Ok(item) = list.items().add(&row, None, entry.id) {
-            if Some(entry.id) == prev {
+        if let Ok(item) = list.items().add(&row, None, entry.id)
+            && Some(entry.id) == prev {
                 let _ = item.select(true);
                 let _ = item.focus();
                 selected_any = true;
             }
-        }
     }
     // 前回選択が無い（初回表示など）ときは先頭行を選んでおく（そのまま操作できる）。
-    if !selected_any {
-        if let Some(item) = list.items().iter().next() {
+    if !selected_any
+        && let Some(item) = list.items().iter().next() {
             let _ = item.select(true);
             let _ = item.focus();
         }
-    }
 }
 
 /// 経過時間を `HH:MM:SS` で整形する。
