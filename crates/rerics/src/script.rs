@@ -10,9 +10,43 @@ use std::rc::Rc;
 
 use deno_core::{JsRuntime, OpState, RuntimeOptions, extension, op2};
 
-/// 進行中の非同期操作の完了受け口（トークン→`oneshot` 受信）。`op_op_start` が登録し、
-/// `op_op_await` が取り出して待つ。OpState に常駐させ、ops 間で共有する。
-type JobAwaiters = Rc<RefCell<HashMap<u64, tokio::sync::oneshot::Receiver<Result<(), String>>>>>;
+/// 非同期操作の進捗本文（`onProgress` へ渡す）。今は本文のみ・将来 件数等を足せる器。
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgressInfo {
+    pub text: String,
+}
+
+/// 進行中の非同期操作から JS へ 1 件ずつ流すイベント。進捗（`progress`）は 0 回以上続き、
+/// 最後に完了（`done=true`・失敗/中止なら `error` 付き）が 1 度来てストリームが閉じる。
+#[derive(serde::Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct JobEvent {
+    /// 完了イベントなら true（このあと受信側は閉じる）。
+    pub done: bool,
+    /// 失敗・中止の理由（`done=true` 時のみ・成功は None）。
+    pub error: Option<String>,
+    /// 進捗イベントの本文（`done=false` 時のみ）。
+    pub progress: Option<ProgressInfo>,
+}
+
+impl JobEvent {
+    /// 進捗イベント。
+    pub fn progress(text: String) -> Self {
+        Self { done: false, error: None, progress: Some(ProgressInfo { text }) }
+    }
+    /// 完了イベント（`err`＝失敗/中止の理由・成功は None）。
+    pub fn done(err: Option<String>) -> Self {
+        Self { done: true, error: err, progress: None }
+    }
+}
+
+/// 操作トークンへ流すイベントの送り口（ホスト＝UI 側が持つ）。進捗を複数回送れる。
+pub type JobSender = tokio::sync::mpsc::UnboundedSender<JobEvent>;
+
+/// 進行中の非同期操作のイベント受け口（トークン→`mpsc` 受信）。`op_op_start` が登録し、
+/// `op_op_next` が 1 件ずつ取り出す。OpState に常駐させ、ops 間で共有する。
+type JobReceivers = Rc<RefCell<HashMap<u64, tokio::sync::mpsc::UnboundedReceiver<JobEvent>>>>;
 
 /// スクリプトからのホスト操作を受ける窓口。実 GUI 実装は UI スレッドへマーシャルし、
 /// テストはモックで記録する。`&self` で受けるのは V8 アイソレートと同一スレッドから
@@ -40,16 +74,16 @@ pub trait HostApi {
     /// 内蔵コマンドを名前で実行する（同期）。不明な名前・実行失敗はエラー文字列を返す。
     /// ワーカーを起動する操作は「開始」までで戻り、完了は待たない。
     fn command(&self, name: &str, args: &[String]) -> Result<(), String>;
-    /// 非同期ファイル操作を起動する。起動できたら**トークン**を返し、完了時に `done` へ結果を
-    /// 送る（Ok＝成功・Err＝失敗/中止）。`items` が空なら対象＝アクティブペインの選択（行き先＝
-    /// 反対ペイン）、非空なら対象＝そのパス群・行き先＝`dest`（delete では `dest` は無視）。
-    /// 起動できなければ（対象なし等）`Err`（その場合 `done` は使われない）。
+    /// 非同期ファイル操作を起動する。起動できたら**トークン**を返し、進行中は `events` へ進捗を
+    /// 流し、完了時に完了イベント（成功 or 失敗/中止）を 1 度送る。`items` が空なら対象＝アクティブ
+    /// ペインの選択（行き先＝反対ペイン）、非空なら対象＝そのパス群・行き先＝`dest`（delete では
+    /// `dest` は無視）。起動できなければ（対象なし等）`Err`（その場合 `events` は使われない）。
     fn begin_operation(
         &self,
         op: ScriptOp,
         items: Vec<String>,
         dest: String,
-        done: tokio::sync::oneshot::Sender<Result<(), String>>,
+        events: JobSender,
     ) -> Result<u64, String>;
     /// トークンで進行中の操作を中止する（未知のトークンは無視）。
     fn cancel_operation(&self, token: u64);
@@ -231,8 +265,8 @@ fn read_dir_entries(path: &str) -> std::io::Result<Vec<DirEntry>> {
 }
 
 /// 非同期ファイル操作を起動する同期 op。ホストへ起動を依頼し、得たトークン（タスク id）を
-/// 返す。完了受信用の `oneshot` を作り、受信側を `JobAwaiters` に登録する（`op_op_await` が待つ）。
-/// 起動できなければ例外。
+/// 返す。イベント受信用の `mpsc` を作り、受信側を `JobReceivers` に登録する（`op_op_next` が
+/// 1 件ずつ取り出す）。起動できなければ例外。
 #[op2]
 fn op_op_start(
     state: &mut OpState,
@@ -247,32 +281,40 @@ fn op_op_start(
         _ => return Err(deno_error::JsErrorBox::generic("unknown operation kind")),
     };
     let host = state.borrow::<Host>().clone();
-    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<JobEvent>();
     let token = host
         .begin_operation(op, items, dest.to_string(), tx)
         .map_err(deno_error::JsErrorBox::generic)?;
-    state.borrow::<JobAwaiters>().borrow_mut().insert(token, rx);
+    state.borrow::<JobReceivers>().borrow_mut().insert(token, rx);
     Ok(token as u32)
 }
 
-/// トークンの操作完了を待つ非同期 op。`JobAwaiters` から受信側を取り出して待ち、結果を返す
-/// ＝ UI スレッドのワーカー完了がここで resolve する。失敗・中止は例外。
+/// トークンの操作の次のイベントを 1 件待つ非同期 op。進捗なら `{progress}`、完了なら
+/// `{done:true}`（失敗/中止は `{done:true, error}`）を返す。`JobReceivers` から受信側を
+/// 借り出して待ち、完了でないなら受信側を戻す（完了なら破棄してストリームを閉じる）。
+/// borrow を await 跨ぎにしないため take→await→reinsert する。
 #[op2(async(lazy), nofast)]
-async fn op_op_await(
+#[serde]
+async fn op_op_next(
     state: Rc<RefCell<OpState>>,
     token: u32,
-) -> Result<(), deno_error::JsErrorBox> {
-    let rx = state
-        .borrow()
-        .borrow::<JobAwaiters>()
-        .borrow_mut()
-        .remove(&(token as u64));
-    match rx {
-        Some(rx) => match rx.await {
-            Ok(r) => r.map_err(deno_error::JsErrorBox::generic),
-            Err(_) => Err(deno_error::JsErrorBox::generic("operation was dropped")),
-        },
-        None => Err(deno_error::JsErrorBox::generic("unknown job token")),
+) -> Result<JobEvent, deno_error::JsErrorBox> {
+    let token = token as u64;
+    let mut rx = match state.borrow().borrow::<JobReceivers>().borrow_mut().remove(&token) {
+        Some(rx) => rx,
+        None => return Err(deno_error::JsErrorBox::generic("unknown job token")),
+    };
+    let ev = rx.recv().await;
+    match ev {
+        Some(ev) => {
+            // 完了でなければ次の受信に備えて受信側を戻す。完了ならそのまま閉じる。
+            if !ev.done {
+                state.borrow().borrow::<JobReceivers>().borrow_mut().insert(token, rx);
+            }
+            Ok(ev)
+        }
+        // 送り手が完了を送らずに落ちた（job が捨てられた）。
+        None => Ok(JobEvent::done(Some("operation was dropped".to_string()))),
     }
 }
 
@@ -307,7 +349,7 @@ extension!(
         op_apply_selection,
         op_command,
         op_op_start,
-        op_op_await,
+        op_op_next,
         op_op_cancel,
         op_list_dir
     ]
@@ -381,15 +423,35 @@ const BOOTSTRAP: &str = r#"
   const makePane = (snap) =>
     buildPane(snap, (idx, v) => ops.op_set_selected(snap.isLeft, idx, v));
   // 非同期操作を起動し、await できて .cancel() も持つ job を返す。op_op_start は起動失敗を
-  // 例外にし、op_op_await はワーカー完了で resolve（失敗/中止は reject）する。
-  // 非同期操作を起動し、await できて .cancel() も持つ job を返す。引数なしは選択ベース、
-  // (items, dest) を渡すと明示ベース（items＝パス配列・dest＝行き先ディレクトリ）。
-  const startOp = (kind, items, dest) => {
+  // 例外にし、op_op_next を完了まで回す（進捗は onProgress へ・失敗/中止は reject）。
+  // items が配列なら明示ベース（items＝パス配列・dest＝行き先）、null なら選択ベース。
+  // opts.onProgress があれば進捗ごとに呼ぶ。
+  const startOp = (kind, items, dest, opts) => {
+    const onProgress = opts && typeof opts.onProgress === "function" ? opts.onProgress : null;
     const token = ops.op_op_start(kind, (items || []).map(String), dest == null ? "" : String(dest));
-    const job = ops.op_op_await(token);
+    const job = (async () => {
+      for (;;) {
+        const ev = await ops.op_op_next(token);
+        if (!ev.done) {
+          if (onProgress && ev.progress) {
+            try {
+              onProgress(ev.progress);
+            } catch (e) {
+              rerics.log("onProgress error: " + ((e && e.stack) || e));
+            }
+          }
+          continue;
+        }
+        if (ev.error != null) throw new Error(ev.error);
+        return;
+      }
+    })();
     job.cancel = () => ops.op_op_cancel(token);
     return job;
   };
+  // copy/move：第1引数が配列なら明示(items, dest, opts)、オブジェクトなら選択ベース(opts)。
+  const copyLike = (kind, a, b, c) =>
+    Array.isArray(a) ? startOp(kind, a, b, c) : startOp(kind, null, null, a);
   globalThis.rerics = {
     log: (m) => ops.op_log(String(m)),
     currentDir: () => ops.op_current_dir(),
@@ -407,9 +469,10 @@ const BOOTSTRAP: &str = r#"
     activePane: () => makePane(ops.op_pane_snapshot(false)),
     oppositePane: () => makePane(ops.op_pane_snapshot(true)),
     command: (name, ...args) => ops.op_command(String(name), args.map(String)),
-    copy: (items, dest) => startOp(0, items, dest),
-    move: (items, dest) => startOp(1, items, dest),
-    delete: (items) => startOp(2, items, ""),
+    copy: (a, b, c) => copyLike(0, a, b, c),
+    move: (a, b, c) => copyLike(1, a, b, c),
+    delete: (a, b) =>
+      Array.isArray(a) ? startOp(2, a, "", b) : startOp(2, null, "", a),
     registerCommand: (name, fn) => {
       if (typeof fn !== "function") throw new TypeError("registerCommand: fn must be a function");
       commands.set(String(name), fn);
@@ -541,7 +604,7 @@ impl Engine {
             let state = runtime.op_state();
             let mut state = state.borrow_mut();
             state.put::<Host>(host);
-            state.put::<JobAwaiters>(Rc::new(RefCell::new(HashMap::new())));
+            state.put::<JobReceivers>(Rc::new(RefCell::new(HashMap::new())));
         }
         runtime
             .execute_script("rerics:bootstrap", BOOTSTRAP)
@@ -630,6 +693,10 @@ mod tests {
         failing_command: Option<String>,
         operations: RefCell<Vec<&'static str>>,
         cancelled: RefCell<Vec<u64>>,
+        /// begin_operation が完了前に流す進捗本文（onProgress 検証用）。
+        op_progress: Vec<String>,
+        /// Some なら操作を失敗（中止）として完了させる（reject 検証用）。
+        op_error: Option<String>,
     }
 
     impl HostApi for MockHost {
@@ -676,15 +743,18 @@ mod tests {
             op: ScriptOp,
             _items: Vec<String>,
             _dest: String,
-            done: tokio::sync::oneshot::Sender<Result<(), String>>,
+            events: JobSender,
         ) -> Result<u64, String> {
             self.operations.borrow_mut().push(match op {
                 ScriptOp::Copy => "copy",
                 ScriptOp::Move => "move",
                 ScriptOp::Delete => "delete",
             });
-            // 完了を即座に通知する（実 GUI ではワーカー完了で送られる）。トークンは件数で代用。
-            let _ = done.send(Ok(()));
+            // 進捗→完了を即座に流す（実 GUI ではワーカーから順次送られる）。トークンは件数で代用。
+            for text in &self.op_progress {
+                let _ = events.send(JobEvent::progress(text.clone()));
+            }
+            let _ = events.send(JobEvent::done(self.op_error.clone()));
             Ok(self.operations.borrow().len() as u64)
         }
         fn cancel_operation(&self, token: u64) {
@@ -1049,6 +1119,52 @@ mod tests {
         // copy のトークンは 1（operations 件数で代用）。cancel がそのトークンで届く。
         assert_eq!(*host.cancelled.borrow(), vec![1u64]);
         assert_eq!(*host.logs.borrow(), vec!["after".to_string()]);
+    }
+
+    #[test]
+    fn async_op_streams_progress_then_completes() {
+        // 完了前に流れた進捗が onProgress に順番どおり届き、最後に await が解ける。
+        let host = Rc::new(MockHost {
+            op_progress: vec!["1/2".into(), "2/2".into()],
+            ..Default::default()
+        });
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:progress",
+            r#"(async () => {
+                 const seen = [];
+                 await rerics.copy({ onProgress: (p) => seen.push(p.text) });
+                 rerics.log("progress:" + seen.join(","));
+               })();"#
+                .to_string(),
+        )
+        .unwrap();
+        assert_eq!(*host.operations.borrow(), vec!["copy"]);
+        assert_eq!(*host.logs.borrow(), vec!["progress:1/2,2/2".to_string()]);
+    }
+
+    #[test]
+    fn async_op_failure_rejects_the_await() {
+        // 失敗（中止）で完了したら await は例外になり、try/catch で捕まえられる。
+        let host = Rc::new(MockHost {
+            op_error: Some("中止しました".into()),
+            ..Default::default()
+        });
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:fail",
+            r#"(async () => {
+                 try {
+                   await rerics.delete();
+                   rerics.log("no-throw");
+                 } catch (e) {
+                   rerics.log("caught:" + e.message);
+                 }
+               })();"#
+                .to_string(),
+        )
+        .unwrap();
+        assert_eq!(*host.logs.borrow(), vec!["caught:中止しました".to_string()]);
     }
 
     #[test]

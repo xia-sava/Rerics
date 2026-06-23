@@ -137,6 +137,15 @@ rerics.registerCommand("copyTxt", async () => {
   rerics.log("コピー完了");
 });
 
+// 進捗つきコピーの例：onProgress で処理中のファイル・割合をログへ流す。
+rerics.registerCommand("copyTxtVerbose", async () => {
+  rerics.activePane().apply((d) => {
+    for (const it of d.items) if (it.ext === "txt") it.selected = true;
+  });
+  await rerics.copy({ onProgress: (p) => rerics.log(p.text) });
+  rerics.log("コピー完了");
+});
+
 // 非同期削除の例：一時ファイルを選択して削除し、完了を待つ（await で順番を保てる）。
 rerics.registerCommand("purgeTemp", async () => {
   let n = 0;

@@ -36,7 +36,7 @@ rerics.registerCommand("up", () => {
 | `await rerics.listDir(path)` | ディレクトリ走査（裏スレッド・`Promise<RericsDirEntry[]>`） |
 | `rerics.registerCommand(name, handler)` | 名前付きコマンドを登録（handler は同期/async どちらでも） |
 | `rerics.on(event, handler)` | 本体のイベントを購読（`changeDirectory` / `executeCommand`） |
-| `await rerics.copy()` / `await rerics.move()` / `await rerics.delete()` | 選択をコピー/移動/削除（ワーカー実行・完了を待てる・`cancel()` 可） |
+| `await rerics.copy()` / `await rerics.move()` / `await rerics.delete()` | 選択をコピー/移動/削除（ワーカー実行・完了を待てる・`cancel()` 可・`onProgress` で進捗） |
 
 詳細な型は `rerics.d.ts` を参照。
 
@@ -124,6 +124,15 @@ await job;
 const p = rerics.activePane();
 const items = p.items.filter((it) => !it.isDir).map((it) => it.fullName);
 await rerics.copy(items, rerics.oppositePane().dir);   // 明示ベース
+```
+
+進捗を受け取りたいときは末尾に `{ onProgress }` を渡す。選択ベースなら `copy(options)`、明示ベース
+なら `copy(items, dest, options)`。`onProgress` は処理が進むたびに `{ text }` で呼ばれる。
+
+```ts
+await rerics.copy({
+  onProgress: (p) => rerics.log(p.text),   // 処理中のファイル・割合など
+});
 ```
 
 ### イベントの購読

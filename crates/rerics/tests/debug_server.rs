@@ -2518,3 +2518,36 @@ fn script_async_copy_explicit_items_and_dest() {
         "explicit copy should write both files to the dest dir"
     );
 }
+
+/// scripting：`copy({ onProgress })` の進捗コールバックがコピー中に発火する（ワーカーの
+/// 進捗が token 経由でストリームされ、完了前に onProgress が呼ばれる実経路）。
+#[test]
+fn script_async_copy_reports_progress() {
+    let server = Server::start_with_scripts(&["a.txt", "b.txt"], &[]);
+    // 右ペインを親へ（src≠dst）。
+    server.req("POST", "/command/FocusRight", "").unwrap();
+    server.req("POST", "/command/ToParent", "").unwrap();
+    server.req("POST", "/command/FocusLeft", "").unwrap();
+
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"(async () => {
+                 let count = 0;
+                 rerics.activePane().apply((d) => {
+                   for (const it of d.items) if (it.name === "a.txt") it.selected = true;
+                 });
+                 await rerics.copy({ onProgress: (p) => { if (p && p.text) count++; } });
+                 rerics.log("PROGRESS COUNT " + count);
+               })();"#,
+        )
+        .expect("eval");
+
+    let log = poll(&server, "/state/log", |b| b.contains("PROGRESS COUNT "));
+    // 最低 1 回は届く（begin_progress＋完了更新で 2 回以上のはず）。0 でないことを確かめる。
+    assert!(
+        log.contains("PROGRESS COUNT ") && !log.contains("PROGRESS COUNT 0"),
+        "onProgress should fire at least once during copy: {log}"
+    );
+}

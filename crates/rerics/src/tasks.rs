@@ -128,11 +128,14 @@ impl MainWindow {
                     self.in_dialog.set(false);
                     let _ = reply.send(r);
                 }
-                WorkerEvent::Done { id, kind, src_dir, dst_dir } => {
+                WorkerEvent::Done { id, kind, src_dir, dst_dir, cancelled, failed } => {
                     self.on_op_done(kind, &src_dir, &dst_dir)?;
                     self.tasks.borrow_mut().retain(|e| e.id != id);
-                    self.notify_script_op_done(id);
+                    self.notify_script_op_done(id, cancelled, failed);
                     self.maybe_kill_task_timer();
+                }
+                WorkerEvent::Progress { task_id, text } => {
+                    self.notify_script_op_progress(task_id, &text);
                 }
                 WorkerEvent::ArchiveDone { id, archive, temp_root, outcome } => {
                     self.tasks.borrow_mut().retain(|e| e.id != id);

@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use tokio::sync::oneshot;
 use winsafe::prelude::*;
 
 use crate::MainWindow;
@@ -38,7 +37,7 @@ pub enum HostCall {
         op: ScriptOp,
         items: Vec<String>,
         dest: String,
-        done: OpDone,
+        events: OpDone,
     },
     CancelOperation { token: u64 },
 }
@@ -57,16 +56,20 @@ pub enum HostResp {
 
 type ScriptQueue = WakeQueue<HostCall, HostResp>;
 
-/// 非同期操作の完了通知の送り先（Ok＝成功・Err＝失敗/中止メッセージ）。
-type OpDone = oneshot::Sender<Result<(), String>>;
+/// 非同期操作のイベント送り先（進捗を複数回・最後に完了を 1 度流す）。
+type OpDone = script::JobSender;
 
 /// 1 つのスクリプト操作（job）。複数ディレクトリに分かれる場合は複数タスクを束ねるので、
-/// 全タスクの完了で 1 度だけ `done` を発火する。トークン＝先頭タスク id。
+/// 進捗は随時流し、全タスクの完了で 1 度だけ完了イベントを送る。トークン＝先頭タスク id。
 struct JobGroup {
-    /// 未完了タスク数。0 で完了通知する。
+    /// 未完了タスク数。0 で完了を通知する。
     remaining: usize,
-    /// 完了通知の送り先（発火時に取り出す）。
-    done: Option<OpDone>,
+    /// イベント送り先（進捗・完了をここへ流す）。
+    events: OpDone,
+    /// いずれかのタスクが中止されたか（完了イベントの error に反映）。
+    cancelled: bool,
+    /// いずれかのタスクが失敗したか（完了イベントの error に反映）。
+    failed: bool,
     /// 束ねているタスク id 群（キャンセルで全停止する）。
     task_ids: Vec<u64>,
 }
@@ -276,9 +279,9 @@ impl HostApi for GuiHost {
         op: ScriptOp,
         items: Vec<String>,
         dest: String,
-        done: OpDone,
+        events: OpDone,
     ) -> Result<u64, String> {
-        // 起動依頼を UI へ送りトークンを得る（同期）。完了は `done`（oneshot）で後から届く。
+        // 起動依頼を UI へ送りトークンを得る（同期）。進捗・完了は `events`（mpsc）で後から届く。
         match ui_marshal::call(
             &self.queue,
             self.hwnd_ptr,
@@ -287,7 +290,7 @@ impl HostApi for GuiHost {
                 op,
                 items,
                 dest,
-                done,
+                events,
             },
         ) {
             Ok(HostResp::OpStarted(r)) => r,
@@ -407,9 +410,9 @@ impl MainWindow {
                     op,
                     items,
                     dest,
-                    done,
+                    events,
                 } => {
-                    let r = self.begin_script_operation(op, items, dest, done);
+                    let r = self.begin_script_operation(op, items, dest, events);
                     let _ = tx.send(HostResp::OpStarted(r));
                 }
                 HostCall::CancelOperation { token } => {
@@ -446,7 +449,7 @@ impl MainWindow {
         op: ScriptOp,
         items: Vec<String>,
         dest: String,
-        done: OpDone,
+        events: OpDone,
     ) -> Result<u64, String> {
         let is_left = !self.active_right.get();
         let needs_dst = !matches!(op, ScriptOp::Delete);
@@ -507,7 +510,9 @@ impl MainWindow {
             token,
             JobGroup {
                 remaining: task_ids.len(),
-                done: Some(done),
+                events,
+                cancelled: false,
+                failed: false,
                 task_ids,
             },
         );
@@ -515,22 +520,44 @@ impl MainWindow {
     }
 
     /// ワーカー完了（`WorkerEvent::Done`）を受けたとき、その id が属する job のカウントを減らし、
-    /// 全タスクが揃ったら完了を通知する（`await` を解く）。スクリプト発でない id は無視される。
-    pub(crate) fn notify_script_op_done(&self, id: u64) {
+    /// 中止/失敗を集約する。全タスクが揃ったら完了イベントを 1 度流す（成功なら `await` を解き、
+    /// 中止/失敗なら例外にする）。スクリプト発でない id は無視される。
+    pub(crate) fn notify_script_op_done(&self, id: u64, cancelled: bool, failed: bool) {
         let mut reg = self.script.jobs.borrow_mut();
         let Some(token) = reg.task_to_token.remove(&id) else {
             return;
         };
-        let fire = reg.jobs.get_mut(&token).and_then(|g| {
-            g.remaining = g.remaining.saturating_sub(1);
-            if g.remaining == 0 { g.done.take() } else { None }
-        });
-        if fire.is_some() {
-            reg.jobs.remove(&token);
+        let Some(group) = reg.jobs.get_mut(&token) else {
+            return;
+        };
+        group.cancelled |= cancelled;
+        group.failed |= failed;
+        group.remaining = group.remaining.saturating_sub(1);
+        if group.remaining > 0 {
+            return;
         }
+        // 全タスク完了。job を取り出して完了イベントを 1 度流す。
+        let group = reg.jobs.remove(&token).expect("token just resolved exists");
         drop(reg);
-        if let Some(done) = fire {
-            let _ = done.send(Ok(()));
+        let err = if group.cancelled {
+            Some("操作は中止されました".to_string())
+        } else if group.failed {
+            Some("操作に失敗しました".to_string())
+        } else {
+            None
+        };
+        let _ = group.events.send(script::JobEvent::done(err));
+    }
+
+    /// ワーカー進捗（`WorkerEvent::Progress`）を、その task_id が属する job の購読側へ流す。
+    /// スクリプト発でない task_id（メニュー操作など）は無視される。
+    pub(crate) fn notify_script_op_progress(&self, task_id: u64, text: &str) {
+        let reg = self.script.jobs.borrow();
+        let Some(&token) = reg.task_to_token.get(&task_id) else {
+            return;
+        };
+        if let Some(group) = reg.jobs.get(&token) {
+            let _ = group.events.send(script::JobEvent::progress(text.to_string()));
         }
     }
 

@@ -95,6 +95,18 @@ interface RericsPane {
  */
 type RericsEvent = "changeDirectory" | "executeCommand";
 
+/** 非同期ファイル操作の進捗（`onProgress` に渡る）。今は本文のみ。 */
+interface RericsProgress {
+  /** 進捗の本文（処理中のファイル名と割合など）。 */
+  readonly text: string;
+}
+
+/** 非同期ファイル操作のオプション。 */
+interface RericsOpOptions {
+  /** 進捗があるたびに呼ばれる（完了前に 0 回以上）。 */
+  onProgress?: (progress: RericsProgress) => void;
+}
+
 /**
  * 非同期ファイル操作のハンドル。`await` で完了を待て、`cancel()` で中止できる。
  * 失敗・中止すると `await` は例外になる。
@@ -186,13 +198,14 @@ declare const rerics: {
    * - 引数なし＝アクティブペインの選択（無ければカーソル）→ 反対ペイン。
    * - `copy(items, dest)`＝`items`（フルパス配列。`item.fullName` を使う）→ `dest` ディレクトリ。
    *   `items` が複数ディレクトリにまたがってもよい（job は全完了で resolve）。
+   * - 末尾に `{ onProgress }` を渡すと進捗を受け取れる（`copy(options)` / `copy(items, dest, options)`）。
    *
    * ```ts
-   * // 選択ベース
+   * // 選択ベース（進捗つき）
    * rerics.activePane().apply((d) => {
    *   for (const it of d.items) if (it.ext === "txt") it.selected = true;
    * });
-   * await rerics.copy();
+   * await rerics.copy({ onProgress: (p) => rerics.log(p.text) });
    *
    * // 明示ベース
    * const p = rerics.activePane();
@@ -200,14 +213,17 @@ declare const rerics: {
    * await rerics.copy(items, rerics.oppositePane().dir);
    * ```
    */
-  copy(items?: string[], dest?: string): RericsJob;
+  copy(options?: RericsOpOptions): RericsJob;
+  copy(items: string[], dest: string, options?: RericsOpOptions): RericsJob;
 
   /** コピーと同じだが移動（成功後に元を削除）。詳細は {@link copy}。 */
-  move(items?: string[], dest?: string): RericsJob;
+  move(options?: RericsOpOptions): RericsJob;
+  move(items: string[], dest: string, options?: RericsOpOptions): RericsJob;
 
   /**
    * 項目を削除する。引数なし＝アクティブペインの選択（無ければカーソル）、`delete(items)`＝
-   * `items`（フルパス配列）。詳細は {@link copy}。
+   * `items`（フルパス配列）。末尾に `{ onProgress }` を渡せる。詳細は {@link copy}。
    */
-  delete(items?: string[]): RericsJob;
+  delete(options?: RericsOpOptions): RericsJob;
+  delete(items: string[], options?: RericsOpOptions): RericsJob;
 };
