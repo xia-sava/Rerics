@@ -90,7 +90,7 @@ pub mod vk {
 }
 
 /// ファイラのコマンド（段階的に拡張していく）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Command {
     CursorUp,
     CursorDown,
@@ -177,7 +177,6 @@ pub enum Command {
     MaximizeCurrent,
     MaximizeWindow,
     MinimizeWindow,
-    ApplicationExit,
     End,
     Restart,
     Quit,
@@ -224,129 +223,128 @@ pub enum CommandContext {
 }
 
 impl Command {
-    /// コマンドと設定トークン名の対応表（双方向変換の単一の出どころ）。
-    const ALL: &'static [(Command, &'static str)] = {
+    /// コマンドと「設定トークン名・表示名（日本語）」の対応表（変換の単一の出どころ）。
+    const ALL: &'static [(Command, &'static str, &'static str)] = {
         use Command::*;
         &[
-            (CursorUp, "CursorUp"),
-            (CursorDown, "CursorDown"),
-            (CursorTop, "CursorTop"),
-            (CursorEnd, "CursorEnd"),
-            (CursorPageUp, "CursorPageUp"),
-            (CursorPageDown, "CursorPageDown"),
-            (SetCursorPosition, "SetCursorPosition"),
-            (EnterDir, "EnterDir"),
-            (View, "View"),
-            (ToParent, "ToParent"),
-            (ToRoot, "ToRoot"),
-            (HistoryBack, "HistoryBack"),
-            (HistoryForward, "HistoryForward"),
-            (PathHistoryDialog, "PathHistoryDialog"),
-            (ChangeDirectory, "ChangeDirectory"),
-            (ChangeDirectoryDialog, "ChangeDirectoryDialog"),
-            (ChangeDrive, "ChangeDrive"),
-            (ChangeDriveDialog, "ChangeDriveDialog"),
-            (JumpDialog, "JumpDialog"),
-            (RegisterPath, "RegisterPath"),
-            (IncrementalSearchDialog, "IncrementalSearchDialog"),
-            (DirectoryInformation, "DirectoryInformation"),
-            (RenameSequenceDialog, "RenameSequenceDialog"),
-            (FocusLeft, "FocusLeft"),
-            (FocusRight, "FocusRight"),
-            (MarkToggle, "MarkToggle"),
-            (SelectAll, "SelectAll"),
-            (ClearAll, "ClearAll"),
-            (ReverseAll, "ReverseAll"),
-            (SelectAllFile, "SelectAllFile"),
-            (ReverseAllFile, "ReverseAllFile"),
-            (Reload, "Reload"),
-            (SortByName, "SortByName"),
-            (SortByExtension, "SortByExtension"),
-            (SortBySize, "SortBySize"),
-            (SortByDate, "SortByDate"),
-            (Sort, "Sort"),
-            (SortDialog, "SortDialog"),
-            (SortReverseToggle, "SortReverseToggle"),
-            (PageNext, "PageNext"),
-            (PagePrevious, "PagePrevious"),
-            (NewTab, "NewTab"),
-            (CloseTab, "CloseTab"),
-            (MakeDirectory, "MakeDirectory"),
-            (Copy, "Copy"),
-            (Move, "Move"),
-            (SwapPath, "SwapPath"),
-            (OppositeToCurrent, "OppositeToCurrent"),
-            (CurrentToOpposite, "CurrentToOpposite"),
-            (Rename, "Rename"),
-            (Delete, "Delete"),
-            (SendToRecycled, "SendToRecycled"),
-            (CreateShortcut, "CreateShortcut"),
-            (ClipCopy, "ClipCopy"),
-            (ClipCut, "ClipCut"),
-            (ClipPaste, "ClipPaste"),
-            (CreateFile, "CreateFile"),
-            (ViewFile, "ViewFile"),
-            (Edit, "Edit"),
-            (PropertyDialog, "PropertyDialog"),
-            (Compress, "Compress"),
-            (Extract, "Extract"),
-            (NextDrive, "NextDrive"),
-            (PreviousDrive, "PreviousDrive"),
-            (PathMask, "PathMask"),
-            (SelectMask, "SelectMask"),
-            (OpenTaskManager, "OpenTaskManager"),
-            (OpenSettings, "OpenSettings"),
-            (KeyBindsDialog, "KeyBindsDialog"),
-            (CopyLog, "CopyLog"),
-            (ClearLog, "ClearLog"),
-            (MaximizeLeft, "MaximizeLeft"),
-            (MaximizeRight, "MaximizeRight"),
-            (MaximizeLeftForce, "MaximizeLeftForce"),
-            (MaximizeRightForce, "MaximizeRightForce"),
-            (BorderLeft, "BorderLeft"),
-            (BorderRight, "BorderRight"),
-            (BorderReset, "BorderReset"),
-            (CursorOpposite, "CursorOpposite"),
-            (SelectFile, "SelectFile"),
-            (Refresh, "Refresh"),
-            (Nop, "Nop"),
-            (MaximizeCurrent, "MaximizeCurrent"),
-            (MaximizeWindow, "MaximizeWindow"),
-            (MinimizeWindow, "MinimizeWindow"),
-            (ApplicationExit, "ApplicationExit"),
-            (End, "End"),
-            (Restart, "Restart"),
-            (Quit, "Quit"),
-            (ViewerClose, "ViewerClose"),
-            (ViewerScrollUp, "ViewerScrollUp"),
-            (ViewerScrollDown, "ViewerScrollDown"),
-            (ViewerPageUp, "ViewerPageUp"),
-            (ViewerPageDown, "ViewerPageDown"),
-            (ViewerScrollTop, "ViewerScrollTop"),
-            (ViewerScrollBottom, "ViewerScrollBottom"),
-            (ViewerSearchDialog, "ViewerSearchDialog"),
-            (ViewerFindNext, "ViewerFindNext"),
-            (ViewerFindPrevious, "ViewerFindPrevious"),
-            (ViewerSelectAll, "ViewerSelectAll"),
-            (ViewerToggleMode, "ViewerToggleMode"),
-            (ViewerChangeEncoding, "ViewerChangeEncoding"),
-            (ViewerCopy, "ViewerCopy"),
-            (ViewerContextMenu, "ViewerContextMenu"),
-            (ImageNext, "ImageNext"),
-            (ImagePrevious, "ImagePrevious"),
-            (ImageZoomIn, "ImageZoomIn"),
-            (ImageZoomOut, "ImageZoomOut"),
-            (ImageFitWindow, "ImageFitWindow"),
-            (ImageActualSize, "ImageActualSize"),
-            (ImageFitWidth, "ImageFitWidth"),
-            (ImageFitHeight, "ImageFitHeight"),
-            (ImageFitLarge, "ImageFitLarge"),
-            (ImageRotateRight, "ImageRotateRight"),
-            (ImageRotateLeft, "ImageRotateLeft"),
-            (ImageFlipHorizontal, "ImageFlipHorizontal"),
-            (ImageFlipVertical, "ImageFlipVertical"),
-            (ImageCopy, "ImageCopy"),
-            (MediaTogglePlay, "MediaTogglePlay"),
+            (CursorUp, "CursorUp", "カーソルを上へ"),
+            (CursorDown, "CursorDown", "カーソルを下へ"),
+            (CursorTop, "CursorTop", "先頭行へ移動"),
+            (CursorEnd, "CursorEnd", "最終行へ移動"),
+            (CursorPageUp, "CursorPageUp", "1ページ上へ"),
+            (CursorPageDown, "CursorPageDown", "1ページ下へ"),
+            (SetCursorPosition, "SetCursorPosition", "指定位置へカーソル移動"),
+            (EnterDir, "EnterDir", "開く（ディレクトリ・書庫へ）"),
+            (View, "View", "ビューアで表示"),
+            (ToParent, "ToParent", "親ディレクトリへ移動"),
+            (ToRoot, "ToRoot", "ルートディレクトリへ移動"),
+            (HistoryBack, "HistoryBack", "履歴を1つ戻る"),
+            (HistoryForward, "HistoryForward", "履歴を1つ進める"),
+            (PathHistoryDialog, "PathHistoryDialog", "ディレクトリ履歴"),
+            (ChangeDirectory, "ChangeDirectory", "ディレクトリの変更"),
+            (ChangeDirectoryDialog, "ChangeDirectoryDialog", "ディレクトリ変更ダイアログ"),
+            (ChangeDrive, "ChangeDrive", "ドライブの変更"),
+            (ChangeDriveDialog, "ChangeDriveDialog", "ドライブリスト"),
+            (JumpDialog, "JumpDialog", "登録ディレクトリ"),
+            (RegisterPath, "RegisterPath", "登録ディレクトリに追加"),
+            (IncrementalSearchDialog, "IncrementalSearchDialog", "インクリメンタルサーチ"),
+            (DirectoryInformation, "DirectoryInformation", "ディレクトリの容量計算"),
+            (RenameSequenceDialog, "RenameSequenceDialog", "連番リネーム"),
+            (FocusLeft, "FocusLeft", "左パスへ移動"),
+            (FocusRight, "FocusRight", "右パスへ移動"),
+            (MarkToggle, "MarkToggle", "選択／解除（カーソル位置）"),
+            (SelectAll, "SelectAll", "すべて選択"),
+            (ClearAll, "ClearAll", "すべて選択解除"),
+            (ReverseAll, "ReverseAll", "すべて選択反転"),
+            (SelectAllFile, "SelectAllFile", "ファイルのみ選択"),
+            (ReverseAllFile, "ReverseAllFile", "ファイルのみ選択反転"),
+            (Reload, "Reload", "最新の情報に更新"),
+            (SortByName, "SortByName", "名前順で並べ替え"),
+            (SortByExtension, "SortByExtension", "拡張子順で並べ替え"),
+            (SortBySize, "SortBySize", "サイズ順で並べ替え"),
+            (SortByDate, "SortByDate", "日付順で並べ替え"),
+            (Sort, "Sort", "並べ替え方法の指定"),
+            (SortDialog, "SortDialog", "ソート設定"),
+            (SortReverseToggle, "SortReverseToggle", "昇順／降順を反転"),
+            (PageNext, "PageNext", "次のタブへ"),
+            (PagePrevious, "PagePrevious", "前のタブへ"),
+            (NewTab, "NewTab", "新しいタブ"),
+            (CloseTab, "CloseTab", "タブを閉じる"),
+            (MakeDirectory, "MakeDirectory", "ディレクトリの作成"),
+            (Copy, "Copy", "コピー"),
+            (Move, "Move", "移動"),
+            (SwapPath, "SwapPath", "左右のパスを入れ替え"),
+            (OppositeToCurrent, "OppositeToCurrent", "反対側をカレントと同じに"),
+            (CurrentToOpposite, "CurrentToOpposite", "カレントを反対側と同じに"),
+            (Rename, "Rename", "名前の変更"),
+            (Delete, "Delete", "削除"),
+            (SendToRecycled, "SendToRecycled", "ごみ箱へ送る"),
+            (CreateShortcut, "CreateShortcut", "ショートカットの作成"),
+            (ClipCopy, "ClipCopy", "クリップボードにコピー"),
+            (ClipCut, "ClipCut", "クリップボードに切り取り"),
+            (ClipPaste, "ClipPaste", "クリップボードから貼り付け"),
+            (CreateFile, "CreateFile", "新規ファイルの作成"),
+            (ViewFile, "ViewFile", "ビューアで開く"),
+            (Edit, "Edit", "エディタで開く"),
+            (PropertyDialog, "PropertyDialog", "プロパティの表示"),
+            (Compress, "Compress", "圧縮"),
+            (Extract, "Extract", "解凍"),
+            (NextDrive, "NextDrive", "次のドライブへ"),
+            (PreviousDrive, "PreviousDrive", "前のドライブへ"),
+            (PathMask, "PathMask", "パスマスク"),
+            (SelectMask, "SelectMask", "マスクで選択"),
+            (OpenTaskManager, "OpenTaskManager", "タスクマネージャ"),
+            (OpenSettings, "OpenSettings", "設定を開く"),
+            (KeyBindsDialog, "KeyBindsDialog", "キーバインドリスト"),
+            (CopyLog, "CopyLog", "ログをコピー"),
+            (ClearLog, "ClearLog", "ログクリア"),
+            (MaximizeLeft, "MaximizeLeft", "左リストを最大化"),
+            (MaximizeRight, "MaximizeRight", "右リストを最大化"),
+            (MaximizeLeftForce, "MaximizeLeftForce", "左リストを最大化（強制）"),
+            (MaximizeRightForce, "MaximizeRightForce", "右リストを最大化（強制）"),
+            (BorderLeft, "BorderLeft", "境界線を左へ"),
+            (BorderRight, "BorderRight", "境界線を右へ"),
+            (BorderReset, "BorderReset", "境界線を定位置へ"),
+            (CursorOpposite, "CursorOpposite", "反対側パスへ移動"),
+            (SelectFile, "SelectFile", "ファイルを選択（カーソル位置）"),
+            (Refresh, "Refresh", "表示を更新"),
+            (Nop, "Nop", "無効コマンド"),
+            (MaximizeCurrent, "MaximizeCurrent", "現在のリストを最大化"),
+            (MaximizeWindow, "MaximizeWindow", "ウィンドウの最大化"),
+            (MinimizeWindow, "MinimizeWindow", "ウィンドウの最小化"),
+            (End, "End", "アプリケーションの終了"),
+            (Restart, "Restart", "再起動"),
+            (Quit, "Quit", "閉じる（最後ならアプリ終了）"),
+            (ViewerClose, "ViewerClose", "ビューアを閉じる"),
+            (ViewerScrollUp, "ViewerScrollUp", "1行上へ"),
+            (ViewerScrollDown, "ViewerScrollDown", "1行下へ"),
+            (ViewerPageUp, "ViewerPageUp", "1ページ上へ"),
+            (ViewerPageDown, "ViewerPageDown", "1ページ下へ"),
+            (ViewerScrollTop, "ViewerScrollTop", "先頭行へ移動"),
+            (ViewerScrollBottom, "ViewerScrollBottom", "最終行へ移動"),
+            (ViewerSearchDialog, "ViewerSearchDialog", "検索"),
+            (ViewerFindNext, "ViewerFindNext", "次を検索"),
+            (ViewerFindPrevious, "ViewerFindPrevious", "前を検索"),
+            (ViewerSelectAll, "ViewerSelectAll", "すべて選択"),
+            (ViewerToggleMode, "ViewerToggleMode", "バイナリ／テキスト切替"),
+            (ViewerChangeEncoding, "ViewerChangeEncoding", "文字コードを切替"),
+            (ViewerCopy, "ViewerCopy", "選択範囲をコピー"),
+            (ViewerContextMenu, "ViewerContextMenu", "コンテキストメニュー"),
+            (ImageNext, "ImageNext", "次の画像"),
+            (ImagePrevious, "ImagePrevious", "前の画像"),
+            (ImageZoomIn, "ImageZoomIn", "拡大"),
+            (ImageZoomOut, "ImageZoomOut", "縮小"),
+            (ImageFitWindow, "ImageFitWindow", "画面に合わせて縮小"),
+            (ImageActualSize, "ImageActualSize", "等倍表示"),
+            (ImageFitWidth, "ImageFitWidth", "横幅に合わせる"),
+            (ImageFitHeight, "ImageFitHeight", "縦幅に合わせる"),
+            (ImageFitLarge, "ImageFitLarge", "なるべく大きく表示"),
+            (ImageRotateRight, "ImageRotateRight", "右回転"),
+            (ImageRotateLeft, "ImageRotateLeft", "左回転"),
+            (ImageFlipHorizontal, "ImageFlipHorizontal", "左右反転"),
+            (ImageFlipVertical, "ImageFlipVertical", "上下反転"),
+            (ImageCopy, "ImageCopy", "クリップボードにコピー"),
+            (MediaTogglePlay, "MediaTogglePlay", "再生／一時停止"),
         ]
     };
 
@@ -354,8 +352,17 @@ impl Command {
     pub fn as_token(self) -> &'static str {
         Self::ALL
             .iter()
-            .find(|(c, _)| *c == self)
-            .map(|(_, s)| *s)
+            .find(|(c, _, _)| *c == self)
+            .map(|(_, s, _)| *s)
+            .unwrap_or("")
+    }
+
+    /// 表示名（日本語）を返す。UI でユーザに見せる親しみやすい名前。
+    pub fn display_name(self) -> &'static str {
+        Self::ALL
+            .iter()
+            .find(|(c, _, _)| *c == self)
+            .map(|(_, _, l)| *l)
             .unwrap_or("")
     }
 
@@ -363,13 +370,13 @@ impl Command {
     pub fn from_token(s: &str) -> Option<Command> {
         Self::ALL
             .iter()
-            .find(|(_, t)| *t == s)
-            .map(|(c, _)| *c)
+            .find(|(_, t, _)| *t == s)
+            .map(|(c, _, _)| *c)
     }
 
     /// 全コマンドを列挙する（設定 UI 用）。
     pub fn all() -> impl Iterator<Item = Command> {
-        Self::ALL.iter().map(|(c, _)| *c)
+        Self::ALL.iter().map(|(c, _, _)| *c)
     }
 
     /// このコマンドが有効な文脈を返す。設定 UI はこれでページごとに候補を絞る。
@@ -1087,6 +1094,13 @@ mod tests {
             assert_eq!(Command::from_token(c.as_token()), Some(c));
         }
         assert!(Command::from_token("Nonexistent").is_none());
+    }
+
+    #[test]
+    fn every_command_has_display_name() {
+        for c in Command::all() {
+            assert!(!c.display_name().is_empty(), "{} has no display name", c.as_token());
+        }
     }
 
     #[test]

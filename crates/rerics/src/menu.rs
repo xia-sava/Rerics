@@ -61,7 +61,7 @@ const MENUS: &[MenuDef] = &[
             SEP,
             on("タブを閉じる(&C)", Command::CloseTab),
             on("再起動(&R)", Command::Restart),
-            on("終了(&X)", Command::Quit),
+            on("終了(&X)", Command::End),
             off("Debug"),
         ],
     },

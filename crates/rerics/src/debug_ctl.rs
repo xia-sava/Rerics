@@ -109,6 +109,78 @@ impl MainWindow {
                     self.script_send(crate::script_host::EngineCmd::Eval(code));
                     let _ = tx.send(debug_server::Response::Json("\"ok\"".to_string()));
                 }
+                debug_server::Request::KeysState { category } => {
+                    let _ = tx.send(self.debug_keys_state(&category));
+                }
+                debug_server::Request::KeysSelect { category, index } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| {
+                        (h.select)(index);
+                        Ok(())
+                    }));
+                }
+                debug_server::Request::KeysBind { category, command, chord } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| (h.bind)(&command, &chord)));
+                }
+                debug_server::Request::KeysUnbind { category } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| {
+                        (h.unbind)();
+                        Ok(())
+                    }));
+                }
+                debug_server::Request::KeysReset { category } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| {
+                        (h.reset)();
+                        Ok(())
+                    }));
+                }
+                debug_server::Request::KeysSearch { category, query } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| {
+                        (h.search)(&query);
+                        Ok(())
+                    }));
+                }
+                debug_server::Request::KeysSetView { category, by_key } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| {
+                        (h.set_view)(by_key);
+                        Ok(())
+                    }));
+                }
+                debug_server::Request::KeysSelectChord { category, index } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| {
+                        (h.select_chord)(index);
+                        Ok(())
+                    }));
+                }
+                debug_server::Request::KeysRebind { category, chord } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| (h.rebind)(&chord)));
+                }
+                debug_server::Request::KeysPick { category, label } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| {
+                        (h.pick)(label);
+                        Ok(())
+                    }));
+                }
+                debug_server::Request::KeysPickCommit { category } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| {
+                        (h.pick_commit)();
+                        Ok(())
+                    }));
+                }
+                debug_server::Request::KeysPickCancel { category } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| {
+                        (h.pick_cancel)();
+                        Ok(())
+                    }));
+                }
+                debug_server::Request::KeysScroll { category, top } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| {
+                        (h.scroll)(top);
+                        Ok(())
+                    }));
+                }
+                debug_server::Request::KeysAddKeyDef { category, chord } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| (h.add_keydef)(&chord)));
+                }
             }
         }
     }
@@ -1029,5 +1101,29 @@ impl MainWindow {
         let st = view.state();
         let s = st.borrow();
         debug_json::pane_state_json(&s, &chrome)
+    }
+
+    /// 設定ダイアログのキー編集ページの状態を JSON で返す（開いていなければ 404）。
+    pub(crate) fn debug_keys_state(&self, category: &str) -> debug_server::Response {
+        match debug_server::modal_registry::with_key_editor(category, |h| (h.read)()) {
+            Some(state) => match serde_json::to_string(&state) {
+                Ok(json) => debug_server::Response::Json(json),
+                Err(e) => debug_server::Response::Error(e.to_string()),
+            },
+            None => debug_server::Response::NotFound,
+        }
+    }
+
+    /// 設定ダイアログのキー編集ページを操作する（開いていなければ 404・操作失敗は 400）。
+    pub(crate) fn debug_keys_op(
+        &self,
+        category: &str,
+        f: impl FnOnce(&debug_server::modal_registry::KeyEditorHooks) -> Result<(), String>,
+    ) -> debug_server::Response {
+        match debug_server::modal_registry::with_key_editor(category, f) {
+            Some(Ok(())) => debug_server::Response::Json("\"ok\"".to_string()),
+            Some(Err(e)) => debug_server::Response::BadRequest(e),
+            None => debug_server::Response::NotFound,
+        }
     }
 }

@@ -1740,6 +1740,395 @@ fn settings_new_pages_reachable_and_snapshot() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// 設定ダイアログのキー編集ページを headless で駆動する：割り当て（追記）・解除・既定戻し。
+/// 開いていなければ 404・未知コマンドは 400。
+#[test]
+fn settings_key_editor_binds_unbinds_resets() {
+    let server = Server::start(&["a.txt"], "");
+    // 設定を開く前は 404。
+    assert_eq!(
+        server.req("GET", "/keys/filer", "").expect("keys closed").0,
+        404,
+        "設定が開いていなければ 404"
+    );
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // 既定：MakeDirectory=K、SelectMask=未割当、衝突なし。
+    let s = keys();
+    assert!(s.contains(r#"["MakeDirectory",["K"]]"#), "既定 MakeDirectory=K: {s}");
+    assert!(s.contains(r#"["SelectMask",[]]"#), "既定 SelectMask 未割当: {s}");
+    assert!(s.contains(r#""conflicts":[]"#), "既定は衝突なし: {s}");
+
+    // 未使用キーを割り当て（実打鍵キャプチャと同じ assign 経路・衝突なし）。
+    assert_eq!(
+        server.req("POST", "/keys/filer/bind", r#"["SelectMask","Ctrl+Shift+M"]"#).unwrap().0,
+        200,
+        "bind は ok"
+    );
+    let s = keys();
+    assert!(s.contains(r#"["SelectMask",["Ctrl+Shift+M"]]"#), "割り当てが反映: {s}");
+    assert!(s.contains(r#""conflicts":[]"#), "未使用キーなので衝突なし: {s}");
+    assert!(s.contains("を割り当てました"), "割り当て直後はメッセージが出る: {s}");
+
+    // unbind：直前の bind で選択は SelectMask。その割り当てを解除。
+    server.req("POST", "/keys/filer/unbind", "").unwrap();
+    assert!(keys().contains(r#"["SelectMask",[]]"#), "SelectMask の割り当てが消える");
+
+    // reset：既定へ戻る（MakeDirectory=K が復活）。直後はステータスにメッセージが残る。
+    server.req("POST", "/keys/filer/reset", "").unwrap();
+    let s = keys();
+    assert!(s.contains(r#"["MakeDirectory",["K"]]"#), "reset で既定へ");
+    assert!(!s.contains(r#""status":"""#), "reset 直後はメッセージが残る: {s}");
+    // 次の操作（選択）でメッセージが消える＝残骸が居座らない。
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    assert!(keys().contains(r#""status":"""#), "選択など次の操作でメッセージが消える: {}", keys());
+
+    // 未知コマンド/キーは 400。
+    assert_eq!(
+        server.req("POST", "/keys/filer/bind", r#"["Nonexistent","K"]"#).unwrap().0,
+        400,
+        "未知コマンドは 400"
+    );
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
+/// 既存キーへの割り当ては機能を消さず**追記**＝衝突マークが立つ。衝突があると OK は反映せず
+/// **閉じない**（ステータスに重複メッセージ）。衝突を解消すると OK で閉じられる。
+#[test]
+fn settings_key_editor_conflicts_block_ok_until_resolved() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // K は既定で MakeDirectory。これを SelectMask にも割り当てる＝消えずに衝突。
+    server.req("POST", "/keys/filer/bind", r#"["SelectMask","K"]"#).unwrap();
+    let s = keys();
+    assert!(s.contains(r#"["MakeDirectory",["K"]]"#), "MakeDirectory は K を保持: {s}");
+    assert!(s.contains(r#"["SelectMask",["K"]]"#), "SelectMask も K を得る: {s}");
+    assert!(
+        s.contains(r#""conflicts":[["K",["MakeDirectory","SelectMask"]]]"#),
+        "K の衝突が立つ: {s}"
+    );
+
+    // OK を押しても衝突で閉じない（モーダルは残る・ステータスに重複メッセージ）。
+    server.req("POST", "/modal/command/ok", "").expect("ok");
+    poll(&server, "/keys/filer", |b| b.contains("重複"));
+    assert_ne!(
+        server.req("GET", "/state/modal", "").unwrap().1.trim(),
+        "null",
+        "衝突中は OK で閉じない"
+    );
+
+    // 衝突を解消：選択中（SelectMask）の割り当てを外す＝K は MakeDirectory だけに戻る。
+    server.req("POST", "/keys/filer/unbind", "").unwrap();
+    let s = keys();
+    assert!(s.contains(r#""conflicts":[]"#), "衝突が解消: {s}");
+    assert!(s.contains(r#"["MakeDirectory",["K"]]"#), "MakeDirectory=K に戻る: {s}");
+
+    // 解消後は OK で閉じられる。
+    server.req("POST", "/modal/command/ok", "").expect("ok");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
+/// 機能順での個別削除：1 機能に複数キーがある時、サブ選択したキーだけを外す。
+#[test]
+fn settings_key_editor_per_chord_delete_in_command_view() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // MakeDirectory に未使用キーを足す＝[Ctrl+Shift+M, K]（衝突なし・トークン昇順）。
+    server.req("POST", "/keys/filer/bind", r#"["MakeDirectory","Ctrl+Shift+M"]"#).unwrap();
+    let s = keys();
+    assert!(
+        s.contains(r#"["MakeDirectory",["Ctrl+Shift+M","K"]]"#),
+        "MakeDirectory が 2 キーを持つ: {s}"
+    );
+
+    // サブ選択を index 1（K）にして削除＝K だけ外れ、Ctrl+Shift+M が残る。
+    server.req("POST", "/keys/filer/sub/1", "").unwrap();
+    assert!(keys().contains(r#""sub":1"#), "サブ選択が K に: {}", keys());
+    server.req("POST", "/keys/filer/unbind", "").unwrap();
+    let s = keys();
+    assert!(
+        s.contains(r#"["MakeDirectory",["Ctrl+Shift+M"]]"#),
+        "K だけ外れ Ctrl+Shift+M が残る: {s}"
+    );
+
+    // 残ったキーも削除＝未割当に。
+    server.req("POST", "/keys/filer/unbind", "").unwrap();
+    assert!(keys().contains(r#"["MakeDirectory",[]]"#), "MakeDirectory が未割当に: {}", keys());
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
+/// 機能順でキーを「変更（リマップ）」：サブ選択中のキーを新しいキーへ移し替える（旧キーは外れる・
+/// 機能は同じ）。実機ではキーのダブルクリック→打鍵に対応する経路。
+#[test]
+fn settings_key_editor_rebinds_selected_chord() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // MakeDirectory に 2 つ目のキーを足して選択を寄せる＝[Ctrl+Shift+M, K]・sel=MakeDirectory。
+    server.req("POST", "/keys/filer/bind", r#"["MakeDirectory","Ctrl+Shift+M"]"#).unwrap();
+    assert!(keys().contains(r#"["MakeDirectory",["Ctrl+Shift+M","K"]]"#), "2 キー: {}", keys());
+
+    // K（index 1）をサブ選択して Ctrl+Alt+K へ変更＝K は外れ Ctrl+Alt+K になる。
+    server.req("POST", "/keys/filer/sub/1", "").unwrap();
+    server.req("POST", "/keys/filer/rebind", "Ctrl+Alt+K").unwrap();
+    let s = keys();
+    assert!(
+        s.contains(r#"["MakeDirectory",["Ctrl+Alt+K","Ctrl+Shift+M"]]"#),
+        "K が Ctrl+Alt+K に移る: {s}"
+    );
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
+/// キー順で機能名をダブルクリック相当＝インライン機能ピッカーで別機能へ差し替える。
+/// 機能一覧は検索ボックスで絞り込め、確定でそのキーの定義が変わる（中止なら不変）。
+#[test]
+fn settings_key_editor_inline_function_picker_changes_binding() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // 未使用キー Ctrl+Shift+Q を SelectMask に割り当て、キー順でその行を出す。
+    server.req("POST", "/keys/filer/bind", r#"["SelectMask","Ctrl+Shift+Q"]"#).unwrap();
+    server.req("POST", "/keys/filer/view", "key").unwrap();
+    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
+    assert!(keys().contains(r#"["Ctrl+Shift+Q",["SelectMask"]]"#), "対象キー行: {}", keys());
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+
+    // その機能（label 0＝SelectMask）のピッカーへ。中止すると不変。
+    server.req("POST", "/keys/filer/pick/0", "").unwrap();
+    assert!(keys().contains(r#""picking":true"#), "ピックモードに入る: {}", keys());
+    // ピッカーはジャンル順に並ぶ（カーソル移動ジャンルが先頭＝CursorUp が最初）。
+    assert!(
+        keys().contains(r#""rows":[["CursorUp",[]]"#),
+        "機能ピッカーはジャンル順（先頭 CursorUp）: {}",
+        keys()
+    );
+    server.req("POST", "/keys/filer/pickcancel", "").unwrap();
+    assert!(keys().contains(r#""picking":false"#), "中止でピック解除");
+    // 中止後（検索クリア・キー順へ復帰）も割り当ては不変。
+    server.req("POST", "/keys/filer/view", "key").unwrap();
+    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
+    assert!(keys().contains(r#"["Ctrl+Shift+Q",["SelectMask"]]"#), "中止で不変: {}", keys());
+
+    // 再びピッカーへ入り、検索で MakeDirectory に絞って確定＝定義が差し替わる。
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/pick/0", "").unwrap();
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    assert!(keys().contains(r#"["MakeDirectory",[]]"#), "ピッカーに機能が並ぶ: {}", keys());
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/pickcommit", "").unwrap();
+
+    // 確定後（キー順・検索クリア）：Ctrl+Shift+Q は MakeDirectory に、SelectMask からは外れる。
+    server.req("POST", "/keys/filer/view", "key").unwrap();
+    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
+    let s = keys();
+    assert!(s.contains(r#"["Ctrl+Shift+Q",["MakeDirectory"]]"#), "機能が差し替わる: {s}");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
+/// 長い一覧をスクロールできる（先頭行が動く・選択は不変・範囲外はクランプ）。ホイール／
+/// スクロールバーと同じ scroll 経路を headless から叩く。
+#[test]
+fn settings_key_editor_scrolls_long_list() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // 既定は先頭・選択 0。Filer は全コマンドが並ぶので 1 画面に収まらない。
+    let s = keys();
+    assert!(s.contains(r#""top":0"#), "初期は先頭: {s}");
+
+    // 下へスクロール＝先頭行が動く・選択は不変。
+    server.req("POST", "/keys/filer/scroll/5", "").unwrap();
+    let s = keys();
+    assert!(s.contains(r#""top":5"#), "先頭行が 5 へ: {s}");
+    assert!(s.contains(r#""selected":0"#), "スクロールで選択は動かない: {s}");
+
+    // 範囲外は末尾へクランプ（巨大値でも top は範囲内＝0 でも 100000 でもない）。
+    server.req("POST", "/keys/filer/scroll/100000", "").unwrap();
+    let s = keys();
+    assert!(!s.contains(r#""top":100000"#), "範囲外はクランプ: {s}");
+    assert!(!s.contains(r#""top":0"#), "末尾近くまでは進む: {s}");
+
+    // 先頭へ戻す。
+    server.req("POST", "/keys/filer/scroll/0", "").unwrap();
+    assert!(keys().contains(r#""top":0"#), "先頭へ戻る");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
+/// キー順で「キー定義を追加」＝空キー定義（機能未割当・－）を作り、後から機能ピッカーで
+/// 機能を割り当てられる。
+#[test]
+fn settings_key_editor_add_empty_key_def_then_assign() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+    server.req("POST", "/keys/filer/view", "key").unwrap();
+
+    // 未使用キーの空キー定義を作る＝labels が空の行（機能未割当）。
+    server.req("POST", "/keys/filer/addkeydef", "Ctrl+Shift+Z").unwrap();
+    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Z").unwrap();
+    assert!(keys().contains(r#"["Ctrl+Shift+Z",[]]"#), "空キー定義の行: {}", keys());
+
+    // その行を選び、機能ピッカーで MakeDirectory を割り当てる。
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/pick/0", "").unwrap();
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/pickcommit", "").unwrap();
+
+    // 割り当て後：Ctrl+Shift+Z → MakeDirectory（空キー定義が解消）。
+    server.req("POST", "/keys/filer/view", "key").unwrap();
+    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Z").unwrap();
+    assert!(
+        keys().contains(r#"["Ctrl+Shift+Z",["MakeDirectory"]]"#),
+        "空キー定義に機能が付く: {}",
+        keys()
+    );
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
+/// キー編集ページの検索（機能名・キーへの部分一致・大小無視）。クエリで一覧が絞り込まれ、
+/// 空クエリで全件へ戻る。`config` は変わらない（割り当ては不変）。
+#[test]
+fn settings_key_editor_search_filters_by_name_and_key() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+    // 行数＝JSON 配列 `[...]` の個数（rows の各行が `["Cmd",[...]]`）。`],[` の数＋1。
+    let count = |s: &str| s.matches("],[").count() + if s.contains("\"rows\":[]") { 0 } else { 1 };
+
+    let full = keys();
+    let full_n = count(&full);
+    assert!(full_n > 40, "既定は Filer 全コマンドが並ぶ: {full_n}");
+    assert!(full.contains(r#""query":"""#), "初期クエリは空: {full}");
+
+    // 機能名で絞り込む："copy" は Copy/ClipCopy/ViewerCopy… を含み、MakeDirectory は除外。
+    assert_eq!(
+        server.req("POST", "/keys/filer/search", "copy").unwrap().0,
+        200,
+        "search は ok"
+    );
+    let s = keys();
+    assert!(s.contains(r#""query":"copy""#), "クエリが反映される: {s}");
+    assert!(s.contains(r#"["Copy",["C"]]"#), "Copy が残る: {s}");
+    assert!(s.contains("ClipCopy"), "ClipCopy が残る: {s}");
+    assert!(!s.contains("MakeDirectory"), "無関係な機能は消える: {s}");
+    let copy_n = count(&s);
+    assert!(copy_n > 0 && copy_n < full_n, "件数が減る: {copy_n} < {full_n}");
+
+    // 日本語の表示名でも絞り込める："コピー" は Copy（表示名「コピー」）/ClipCopy
+    //（「クリップボードにコピー」）に一致し、MakeDirectory（「フォルダ作成」）は除外。
+    server.req("POST", "/keys/filer/search", "コピー").unwrap();
+    let s = keys();
+    assert!(s.contains(r#"["Copy",["C"]]"#), "表示名検索で Copy が残る: {s}");
+    assert!(s.contains("ClipCopy"), "表示名検索で ClipCopy が残る: {s}");
+    assert!(!s.contains("MakeDirectory"), "表示名検索で無関係な機能は消える: {s}");
+
+    // キーで絞り込む：既定 K は MakeDirectory のみ（大小無視なので chord "K" に一致）。
+    server.req("POST", "/keys/filer/search", "K").unwrap();
+    let s = keys();
+    assert!(s.contains("MakeDirectory"), "K を持つ MakeDirectory が出る: {s}");
+
+    // 空クエリで全件へ戻る。
+    server.req("POST", "/keys/filer/search", "").unwrap();
+    let s = keys();
+    assert_eq!(count(&s), full_n, "空クエリで全件に戻る: {s}");
+    assert!(s.contains(r#""query":"""#), "クエリが空に戻る");
+
+    // 絞り込みは config を変えない（割り当ては不変）＝Copy=C のまま。
+    assert!(keys().contains(r#"["Copy",["C"]]"#), "割り当ては検索で変わらない");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
+/// キー編集ページの機能順／キー順ビュー切替。キー順では行が「キー→機能」になり、検索も効く。
+/// キー順の削除は選択中の 1 キーだけを外す（同じ機能の別キーは残る）。
+#[test]
+fn settings_key_editor_toggles_command_and_key_views() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // 既定は機能順：行は (機能, [キー…])。MakeDirectory=K。
+    let s = keys();
+    assert!(s.contains(r#""mode":"command""#), "初期は機能順: {s}");
+    assert!(s.contains(r#"["MakeDirectory",["K"]]"#), "機能順 MakeDirectory=K: {s}");
+
+    // キー順へ切替：行は (キー, [機能])。K→MakeDirectory。
+    assert_eq!(server.req("POST", "/keys/filer/view", "key").unwrap().0, 200, "view 切替 ok");
+    let s = keys();
+    assert!(s.contains(r#""mode":"key""#), "キー順になる: {s}");
+    assert!(s.contains(r#"["K",["MakeDirectory"]]"#), "キー順 K→MakeDirectory: {s}");
+
+    // キー順でも検索が効く（キー・機能名どちらにも一致）。
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    assert!(keys().contains(r#"["K",["MakeDirectory"]]"#), "キー順で機能名検索が効く");
+    server.req("POST", "/keys/filer/search", "").unwrap();
+
+    // 機能順へ戻して、同じ機能に 2 キーを割り当てる（per-chord 削除の検証用）。
+    server.req("POST", "/keys/filer/view", "command").unwrap();
+    server.req("POST", "/keys/filer/bind", r#"["SelectMask","Ctrl+Shift+M"]"#).unwrap();
+    server.req("POST", "/keys/filer/bind", r#"["SelectMask","Ctrl+Shift+N"]"#).unwrap();
+    assert!(
+        keys().contains(r#"["SelectMask",["Ctrl+Shift+M","Ctrl+Shift+N"]]"#),
+        "SelectMask が 2 キーを持つ: {}",
+        keys()
+    );
+
+    // キー順で Ctrl+Shift+M の行だけを選び、削除＝その 1 キーだけ外れる。
+    server.req("POST", "/keys/filer/view", "key").unwrap();
+    server.req("POST", "/keys/filer/search", "Ctrl+Shift+M").unwrap();
+    let s = keys();
+    // 絞り込みで M の行だけ（N の行は出ない）。rows 配列を厳密に見る（status 文言の巻き込みを避ける）。
+    assert!(
+        s.contains(r#""rows":[["Ctrl+Shift+M",["SelectMask"]]]"#),
+        "M の行だけが出る: {s}"
+    );
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/unbind", "").unwrap();
+
+    // 機能順へ戻すと、SelectMask は N だけ残る（M だけが外れた）。
+    server.req("POST", "/keys/filer/search", "").unwrap();
+    server.req("POST", "/keys/filer/view", "command").unwrap();
+    assert!(
+        keys().contains(r#"["SelectMask",["Ctrl+Shift+N"]]"#),
+        "M だけ外れ N が残る: {}",
+        keys()
+    );
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// `/modal/resize/<w>x<h>` がモーダルへ WM_SIZE を飛ばし、クライアント寸法が要求サイズへ
 /// 変わる（手動ドラッグの代替＝リサイズ追従ダイアログを headless で検証する基盤）。
 #[test]
@@ -2548,4 +2937,19 @@ fn script_async_copy_reports_progress() {
         log.contains("PROGRESS COUNT ") && !log.contains("PROGRESS COUNT 0"),
         "onProgress should fire at least once during copy: {log}"
     );
+}
+
+/// Quit は「賢いクローズ」：タブが複数あれば現タブを閉じ、最後の 1 枚ならアプリを終了する。
+/// ここでは複数タブ時に現タブが閉じてアプリが生き続けること（＝強制終了でない）を検証する。
+#[test]
+fn quit_closes_tab_when_multiple_keeps_app_alive() {
+    let server = Server::start(&["a.txt"], "");
+    let count = || server.req("GET", "/state/tabs/count", "").expect("count").1;
+    assert_eq!(count().trim(), "1", "初期は 1 タブ");
+    server.req("POST", "/command/NewTab", "").expect("NewTab");
+    assert_eq!(count().trim(), "2", "NewTab で 2 タブ");
+    // タブが複数あるので Quit は現タブを閉じるだけ（アプリは終了しない）。
+    server.req("POST", "/command/Quit", "").expect("Quit");
+    assert_eq!(count().trim(), "1", "Quit で 1 タブに減る");
+    assert!(server.req("GET", "/state", "").is_some(), "アプリは終了していない");
 }
