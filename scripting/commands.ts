@@ -75,6 +75,29 @@ rerics.registerCommand("selectedSize", () => {
   rerics.log(`選択 ${files.length} ファイル — 合計 ${fmtSize(total)}`);
 });
 
+// 書き戻しの例：拡張子を入力させ、その拡張子のファイルをまとめて選択する。
+// apply() の中で代入した selected は、コールバック終了時に 1 往復でまとめて反映される。
+rerics.registerCommand("selectByExt", () => {
+  const ext = rerics.prompt("選択する拡張子（例: txt）", "txt");
+  if (ext === null) return;
+  let n = 0;
+  rerics.activePane().apply((d) => {
+    for (const it of d.items) {
+      if (!it.isDir && it.ext === ext) {
+        it.selected = true;
+        n++;
+      }
+    }
+  });
+  rerics.log(`${ext} を ${n} 件選択しました`);
+});
+
+// 即時書き戻しの例：カーソル直下の選択をその場でトグルする。
+rerics.registerCommand("toggleCursor", () => {
+  const it = rerics.activePane().cursorItem;
+  if (it && !it.isParent) it.selected = !it.selected;
+});
+
 // モーダルの例：確認・入力・一覧選択。
 rerics.registerCommand("askThings", async () => {
   if (!rerics.confirm("続けますか？")) {

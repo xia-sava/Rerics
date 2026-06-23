@@ -2284,3 +2284,49 @@ fn script_active_pane_reads_items_selection_and_cursor() {
         "oppositePane should read the other side: {log2}"
     );
 }
+
+/// scripting：選択の書き戻し。`apply()` のバッチ反映と即時 `selected=` が、実ペインの
+/// 選択状態（`/state` の `marked`）へ届くことを検証する（オブジェクトモデル書き戻しの実経路）。
+#[test]
+fn script_selection_write_back_reaches_pane() {
+    let server = Server::start_with_scripts(&["a.txt", "b.dat", "c.txt"], &[]);
+    // 前提：まだ何も選択されていない。
+    let items0 = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert_eq!(count_substr(&items0, "\"marked\":true"), 0, "no selection yet: {items0}");
+
+    // バッチ：apply() の中で .txt を全選択 → 1 往復で a.txt と c.txt が marked になる。
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"rerics.activePane().apply((d) => {
+                 for (const it of d.items) if (it.ext === "txt") it.selected = true;
+               });"#,
+        )
+        .expect("apply eval");
+    let items1 = poll(&server, "/state/panes/left/items", |b| {
+        count_substr(b, "\"marked\":true") == 2
+    });
+    assert_eq!(
+        count_substr(&items1, "\"marked\":true"),
+        2,
+        "apply should mark both .txt files: {items1}"
+    );
+
+    // 即時：先頭の .txt（a.txt）を 1 つだけ即時に外す → marked は 1 件へ。
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"rerics.activePane().items.find((it) => it.ext === "txt").selected = false;"#,
+        )
+        .expect("immediate eval");
+    let items2 = poll(&server, "/state/panes/left/items", |b| {
+        count_substr(b, "\"marked\":true") == 1
+    });
+    assert_eq!(
+        count_substr(&items2, "\"marked\":true"),
+        1,
+        "immediate write should deselect one: {items2}"
+    );
+}

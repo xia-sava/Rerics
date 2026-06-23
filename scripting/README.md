@@ -54,7 +54,25 @@ for (const it of p.items) {
 }
 ```
 
-項目の `selected` は現状 **読み取り専用**（選択の書き戻し配線は次の段階で入る）。
+#### 選択の書き戻し
+
+項目の `selected` は **代入できる**。`activePane()`/`oppositePane()` から得た項目への代入は
+即時にペインへ反映される。多数をループで選ぶときは `pane.apply()` を使うと、コールバック内の
+変更を **1 往復でまとめて反映**する（項目ごとのスレッド往復を避けられて軽い）。
+
+```ts
+// 即時：カーソル直下をその場でトグル
+const it = rerics.activePane().cursorItem;
+if (it) it.selected = !it.selected;
+
+// まとめて：.txt を全部選択（apply の draft は即時反映しないペイン）
+rerics.activePane().apply((d) => {
+  for (const it of d.items) if (it.ext === "txt") it.selected = true;
+});
+```
+
+書き戻しは取得時の行 index を指すため、スナップショット取得後に一覧がリロードされると
+ずれる。読み取り→書き戻しは同じコマンド内で完結させること。
 
 ## 共通処理・複数ファイル
 

@@ -27,6 +27,10 @@ pub trait HostApi {
     /// ペイン（`opposite=false` でアクティブ・`true` で反対側）の現在状態を一括取得する。
     /// 別スレッド往復を 1 回で済ませるため、項目一覧ごとスナップショットで返す。
     fn pane_snapshot(&self, opposite: bool) -> PaneSnapshot;
+    /// `is_left` 側ペインの `index` 行の選択状態を `selected` にする（即時・1 行）。
+    fn set_selected(&self, is_left: bool, index: usize, selected: bool);
+    /// `is_left` 側ペインの複数行の選択状態をまとめて適用する（再描画は 1 回）。
+    fn apply_selection(&self, is_left: bool, changes: &[(usize, bool)]);
 }
 
 /// ペイン 1 つぶんの状態スナップショット（スクリプトへ渡す）。JS では camelCase で見える。
@@ -38,6 +42,8 @@ pub struct PaneSnapshot {
     pub dir: String,
     /// 書庫内にいるか。
     pub is_archive: bool,
+    /// 左ペインか（書き戻しを active/opposite ではなく具体側で指すための内部用）。
+    pub is_left: bool,
     /// カーソル行の index（`items` の添字）。
     pub cursor: usize,
     /// 表示順の項目一覧（".." を含む）。
@@ -126,6 +132,25 @@ fn op_pane_snapshot(state: &mut OpState, opposite: bool) -> PaneSnapshot {
     state.borrow::<Host>().pane_snapshot(opposite)
 }
 
+/// 1 行の選択状態を即時に書き戻す同期 op。
+#[op2(fast)]
+fn op_set_selected(state: &mut OpState, is_left: bool, index: u32, selected: bool) {
+    state
+        .borrow::<Host>()
+        .set_selected(is_left, index as usize, selected);
+}
+
+/// 複数行の選択状態をまとめて書き戻す同期 op（`changes` は `[index, selected]` の配列）。
+#[op2]
+fn op_apply_selection(
+    state: &mut OpState,
+    is_left: bool,
+    #[serde] changes: Vec<(u32, bool)>,
+) {
+    let changes: Vec<(usize, bool)> = changes.into_iter().map(|(i, v)| (i as usize, v)).collect();
+    state.borrow::<Host>().apply_selection(is_left, &changes);
+}
+
 /// ディレクトリ一覧の1エントリ（スクリプトへ渡す情報）。JS 側では camelCase で見える。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -182,6 +207,8 @@ extension!(
         op_prompt,
         op_select,
         op_pane_snapshot,
+        op_set_selected,
+        op_apply_selection,
         op_list_dir
     ]
 );
@@ -194,17 +221,63 @@ const BOOTSTRAP: &str = r#"
 (() => {
   const ops = Deno.core.ops;
   const commands = new Map();
-  const makePane = (snap) => {
-    const items = snap.items;
-    return {
+  // スナップショットから 1 ペインを組む。`sink(index, selected)` は item.selected を
+  // 書いたときの送り先で、即時版は op を直に撃ち、apply() の draft 版は配列へ溜める。
+  const buildPane = (snap, sink) => {
+    const items = snap.items.map((raw) => {
+      let sel = raw.selected;
+      const it = {
+        index: raw.index,
+        name: raw.name,
+        baseName: raw.baseName,
+        ext: raw.ext,
+        isDir: raw.isDir,
+        isParent: raw.isParent,
+        size: raw.size,
+        mtime: raw.mtime,
+        readonly: raw.readonly,
+        hidden: raw.hidden,
+      };
+      Object.defineProperty(it, "selected", {
+        enumerable: true,
+        get: () => sel,
+        set: (v) => {
+          sel = !!v;
+          sink(raw.index, sel);
+        },
+      });
+      return it;
+    });
+    const pane = {
       dir: snap.dir,
       isArchive: snap.isArchive,
       cursor: snap.cursor,
       items,
-      selectedItems: items.filter((it) => it.selected),
-      cursorItem: items[snap.cursor] ?? null,
+      get selectedItems() {
+        return items.filter((it) => it.selected);
+      },
+      get cursorItem() {
+        return items[snap.cursor] ?? null;
+      },
+      [Symbol.iterator]() {
+        return items[Symbol.iterator]();
+      },
+      // 即時反映しない draft を渡し、コールバック内の選択変更を 1 往復でまとめて適用する。
+      apply(fn) {
+        const changes = [];
+        const draft = buildPane(snap, (idx, v) => {
+          changes.push([idx, v]);
+        });
+        fn(draft);
+        if (changes.length) ops.op_apply_selection(snap.isLeft, changes);
+        return pane;
+      },
     };
+    return pane;
   };
+  // 即時版：item.selected への代入がその場で UI に反映される。
+  const makePane = (snap) =>
+    buildPane(snap, (idx, v) => ops.op_set_selected(snap.isLeft, idx, v));
   globalThis.rerics = {
     log: (m) => ops.op_log(String(m)),
     currentDir: () => ops.op_current_dir(),
@@ -402,6 +475,8 @@ mod tests {
         select_reply: Option<usize>,
         active_pane: PaneSnapshot,
         opposite_pane: PaneSnapshot,
+        set_selected: RefCell<Vec<(bool, usize, bool)>>,
+        applied: RefCell<Vec<(bool, Vec<(usize, bool)>)>>,
     }
 
     impl HostApi for MockHost {
@@ -430,15 +505,26 @@ mod tests {
                 self.active_pane.clone()
             }
         }
+        fn set_selected(&self, is_left: bool, index: usize, selected: bool) {
+            self.set_selected.borrow_mut().push((is_left, index, selected));
+        }
+        fn apply_selection(&self, is_left: bool, changes: &[(usize, bool)]) {
+            self.applied.borrow_mut().push((is_left, changes.to_vec()));
+        }
     }
 
     /// テスト用に名前・ディレクトリ種別・選択状態だけ与えた項目を作る。
+    /// `base_name`/`ext` は名前の末尾ドットから導く（ファイルのみ）。
     fn item(index: usize, name: &str, is_dir: bool, selected: bool) -> PaneItem {
+        let (base_name, ext) = match name.rfind('.') {
+            Some(p) if !is_dir && p > 0 => (name[..p].to_string(), name[p + 1..].to_string()),
+            _ => (name.to_string(), String::new()),
+        };
         PaneItem {
             index,
             name: name.to_string(),
-            base_name: name.to_string(),
-            ext: String::new(),
+            base_name,
+            ext,
             is_dir,
             is_parent: name == "..",
             size: 0,
@@ -608,6 +694,7 @@ mod tests {
             active_pane: PaneSnapshot {
                 dir: "C:\\work".into(),
                 is_archive: false,
+                is_left: true,
                 cursor: 2,
                 items: vec![
                     item(0, "..", true, false),
@@ -645,6 +732,46 @@ mod tests {
                 "cursor=a.txt".to_string(),
                 "opp=C:\\other".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn selection_write_back_immediate_and_batched() {
+        let host = Rc::new(MockHost {
+            active_pane: PaneSnapshot {
+                dir: "C:\\work".into(),
+                is_left: true,
+                cursor: 1,
+                items: vec![
+                    item(0, "..", true, false),
+                    item(1, "a.txt", false, false),
+                    item(2, "b.dat", false, false),
+                    item(3, "c.txt", false, false),
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:write-back",
+            r#"
+              // 即時：カーソル行を選択 → その場で set_selected(index=1)。
+              rerics.activePane().cursorItem.selected = true;
+              // バッチ：.txt を全部選択 → apply で 1 回 apply_selection。
+              rerics.activePane().apply((d) => {
+                for (const it of d.items) if (it.ext === "txt") it.selected = true;
+              });
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        // 即時は (左=true, index=1, true) が 1 件。
+        assert_eq!(*host.set_selected.borrow(), vec![(true, 1, true)]);
+        // バッチは index 1 と 3（a.txt/c.txt）がまとまって 1 回。
+        assert_eq!(
+            *host.applied.borrow(),
+            vec![(true, vec![(1, true), (3, true)])]
         );
     }
 

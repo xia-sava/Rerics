@@ -27,6 +27,8 @@ pub enum HostCall {
     Prompt { message: String, default: String },
     Select { title: String, items: Vec<String> },
     PaneSnapshot { opposite: bool },
+    SetSelected { is_left: bool, index: usize, selected: bool },
+    ApplySelection { is_left: bool, changes: Vec<(usize, bool)> },
 }
 
 /// UI スレッド → エンジンスレッドへの応答。
@@ -178,6 +180,31 @@ impl HostApi for GuiHost {
             _ => PaneSnapshot::default(),
         }
     }
+
+    fn set_selected(&self, is_left: bool, index: usize, selected: bool) {
+        let _ = ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::SetSelected {
+                is_left,
+                index,
+                selected,
+            },
+        );
+    }
+
+    fn apply_selection(&self, is_left: bool, changes: &[(usize, bool)]) {
+        let _ = ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::ApplySelection {
+                is_left,
+                changes: changes.to_vec(),
+            },
+        );
+    }
 }
 
 /// スクリプトエンジンを別スレッドに建てる。起動スクリプト（`data_dir()/scripts`）を読み込み、
@@ -258,8 +285,34 @@ impl MainWindow {
                     let is_left = if opposite { !active_left } else { active_left };
                     let _ = tx.send(HostResp::Snapshot(self.build_pane_snapshot(is_left)));
                 }
+                HostCall::SetSelected {
+                    is_left,
+                    index,
+                    selected,
+                } => {
+                    self.apply_pane_selection(is_left, &[(index, selected)]);
+                    let _ = tx.send(HostResp::Done);
+                }
+                HostCall::ApplySelection { is_left, changes } => {
+                    self.apply_pane_selection(is_left, &changes);
+                    let _ = tx.send(HostResp::Done);
+                }
             }
         }
+    }
+
+    /// 指定側ペインの選択状態を書き戻し、まとめて 1 回だけ再描画する。範囲外 index は無視する。
+    fn apply_pane_selection(&self, is_left: bool, changes: &[(usize, bool)]) {
+        {
+            let state = self.view(is_left).state();
+            let mut s = state.borrow_mut();
+            for &(index, selected) in changes {
+                if let Some(it) = s.items.get_mut(index) {
+                    it.selected = selected;
+                }
+            }
+        }
+        let _ = self.view(is_left).refresh();
     }
 
     /// 指定側ペインの現在状態をスナップショットに写す（現在地は `Pane`・項目と選択は
@@ -279,7 +332,8 @@ impl MainWindow {
                 index,
                 name: it.name.clone(),
                 base_name: it.base_name.clone(),
-                ext: it.extension.clone(),
+                // スクリプト API はドット無しに統一する（コアはドット付きで持つ）。
+                ext: it.extension.trim_start_matches('.').to_string(),
                 is_dir: it.is_dir,
                 is_parent: it.is_parent,
                 size: it.size.unwrap_or(0),
@@ -292,6 +346,7 @@ impl MainWindow {
         PaneSnapshot {
             dir,
             is_archive,
+            is_left,
             cursor: s.cursor,
             items,
         }

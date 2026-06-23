@@ -38,11 +38,12 @@ interface RericsItem {
   /** 最終更新時刻（Unix epoch ミリ秒）。`new Date(mtime)` で扱える。取得不可なら 0。 */
   readonly mtime: number;
   /**
-   * 選択（マーク）されているか。
+   * 選択（マーク）されているか。**代入できる**。
    *
-   * 現状は読み取り専用（書き戻し配線は次の段階で入る）。値を代入しても今は反映されない。
+   * `activePane()`/`oppositePane()` から得た項目への代入は即時にペインへ反映される。
+   * `pane.apply()` の draft から得た項目への代入はコールバック終了時にまとめて反映される。
    */
-  readonly selected: boolean;
+  selected: boolean;
   readonly readonly: boolean;
   readonly hidden: boolean;
 }
@@ -66,6 +67,22 @@ interface RericsPane {
   readonly selectedItems: RericsItem[];
   /** カーソル行の項目（範囲外なら null）。 */
   readonly cursorItem: RericsItem | null;
+
+  /** `for (const it of pane)` で項目を走査できる（`pane.items` と同じ並び）。 */
+  [Symbol.iterator](): Iterator<RericsItem>;
+
+  /**
+   * 選択変更をまとめて 1 回で反映する。`draft` は「即時反映しないペイン」で、その項目へ
+   * 代入した `selected` はコールバック終了時に一括適用される（項目ごとのスレッド往復を
+   * 避けるので、多数選択のループはこちらが軽い）。自分自身を返す。
+   *
+   * ```ts
+   * rerics.activePane().apply((d) => {
+   *   for (const it of d.items) if (it.ext === "txt") it.selected = true;
+   * });
+   * ```
+   */
+  apply(fn: (draft: RericsPane) => void): RericsPane;
 }
 
 /** Rerics 本体が提供するホスト API。グローバル `rerics` から呼ぶ。 */
