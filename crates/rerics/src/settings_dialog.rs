@@ -3320,7 +3320,7 @@ impl KeyEditor {
             self.update_scrollbar();
             return;
         }
-        let view: Vec<usize> = match self.inner.view_mode.get() {
+        let mut view: Vec<usize> = match self.inner.view_mode.get() {
             KeyView::ByCommand => self
                 .inner
                 .rows
@@ -3350,6 +3350,11 @@ impl KeyEditor {
                 .map(|(i, _)| i)
                 .collect(),
         };
+        // 機能順はジャンルごとに固める（同ジャンル内は元の並び＝enum 順）。見出しは描画時に境界で出す。
+        if self.inner.view_mode.get() == KeyView::ByCommand {
+            let rows = self.inner.rows.borrow();
+            view.sort_by_key(|&i| command_genre(rows[i].command).0);
+        }
         let n = view.len();
         *self.inner.view.borrow_mut() = view;
         if n == 0 {
@@ -3476,7 +3481,8 @@ impl KeyEditor {
         let dc = self.hwnd().GetDC().ok()?;
         let font = w::HFONT::GetStockObject(co::STOCK_FONT::DEFAULT_GUI).ok()?;
         let _sel = dc.SelectObject(&font).ok()?;
-        let mut cx = gui::dpi_x(260);
+        // 機能順のキー列開始 x（render の chord_x と一致させる＝見出し列ぶん右）。
+        let mut cx = gui::dpi_x(388);
         let sep = dc.GetTextExtentPoint32(", ").map(|z| z.cx).unwrap_or(0);
         for (ci, (tok, conflicted)) in chords.iter().enumerate() {
             let mut label = tok.clone();
@@ -4187,7 +4193,10 @@ impl KeyEditor {
         let sel = self.inner.sel.get();
         let capturing = self.inner.capturing.get();
         let key_x = gui::dpi_x(8);
-        let chord_x = gui::dpi_x(260);
+        // 機能順は左にジャンル見出し列を設けるので、機能名は右へずらしキー列も広げる。
+        let by_command = !picking && self.inner.view_mode.get() == KeyView::ByCommand;
+        let left_x = if by_command { gui::dpi_x(150) } else { key_x };
+        let chord_x = if by_command { gui::dpi_x(388) } else { gui::dpi_x(260) };
         // 最下部 1 行はステータス（操作結果・衝突メッセージ）に充てる。
         let body_h = (ch - row_h).max(row_h);
         let vis = (body_h / row_h).max(1) as usize;
@@ -4304,6 +4313,23 @@ impl KeyEditor {
         } else {
             Vec::new()
         };
+        // 機能順は左の見出し列に、各ジャンルの先頭行（と可視範囲の最上行）でジャンル名を出す。
+        let genre_labels: Vec<Option<&'static str>> = if by_command {
+            let rows = self.inner.rows.borrow();
+            let genre_of = |di: usize| -> Option<&'static str> {
+                view.get(di).and_then(|&ri| rows.get(ri)).map(|r| command_genre(r.command).1)
+            };
+            (0..lines.len())
+                .map(|vi| {
+                    let di = top + vi;
+                    let g = genre_of(di)?;
+                    let prev = if vi == 0 { None } else { genre_of(di - 1) };
+                    (prev != Some(g)).then_some(g)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         for (vi, (left, right, muted)) in lines.iter().enumerate() {
             let di = top + vi;
             let y = vi as i32 * row_h;
@@ -4318,7 +4344,15 @@ impl KeyEditor {
             } else {
                 dc.SetTextColor(text_col)?;
             }
-            dc.TextOut(key_x, ty, left)?;
+            // 機能順：左の見出し列にジャンル名（境界行のみ・淡色）。
+            if let Some(g) = genre_labels.get(vi).copied().flatten() {
+                let gc = if di == sel && !capturing { hl_text } else { gray_col };
+                dc.SetTextColor(gc)?;
+                dc.TextOut(key_x, ty, g)?;
+                let restore = if di == sel && !capturing { hl_text } else { text_col };
+                dc.SetTextColor(restore)?;
+            }
+            dc.TextOut(left_x, ty, left)?;
             if di == sel && capturing {
                 dc.TextOut(chord_x, ty, "← キーを押してください（右クリックで中止）")?;
             } else if di == sel && !sel_chords.is_empty() {
