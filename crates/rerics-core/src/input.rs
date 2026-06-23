@@ -90,7 +90,7 @@ pub mod vk {
 }
 
 /// ファイラのコマンド（段階的に拡張していく）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Command {
     CursorUp,
     CursorDown,

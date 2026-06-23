@@ -1740,6 +1740,59 @@ fn settings_new_pages_reachable_and_snapshot() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// 設定ダイアログのキー編集ページを headless で駆動する：割り当て（実打鍵キャプチャと同じ
+/// assign 経路）・衝突は移動・解除・既定戻し。開いていなければ 404。
+#[test]
+fn settings_key_editor_binds_moves_unbinds_resets() {
+    let server = Server::start(&["a.txt"], "");
+    // 設定を開く前は 404。
+    assert_eq!(
+        server.req("GET", "/keys/filer", "").expect("keys closed").0,
+        404,
+        "設定が開いていなければ 404"
+    );
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // 既定：MakeDirectory=K、SelectMask=未割当。
+    let s = keys();
+    assert!(s.contains(r#"["MakeDirectory",["K"]]"#), "既定 MakeDirectory=K: {s}");
+    assert!(s.contains(r#"["SelectMask",[]]"#), "既定 SelectMask 未割当: {s}");
+
+    // 割り当て（実打鍵キャプチャと同じ assign 経路を叩く）。
+    assert_eq!(
+        server.req("POST", "/keys/filer/bind", r#"["SelectMask","Ctrl+Shift+M"]"#).unwrap().0,
+        200,
+        "bind は ok"
+    );
+    assert!(keys().contains("Ctrl+Shift+M"), "割り当てが反映される");
+
+    // 衝突＝chord は一意なので移動する。K を SelectMask へ割り当てると MakeDirectory から外れる。
+    server.req("POST", "/keys/filer/bind", r#"["SelectMask","K"]"#).unwrap();
+    let s = keys();
+    assert!(s.contains(r#"["MakeDirectory",[]]"#), "K が MakeDirectory から外れる: {s}");
+    assert!(s.contains("\"K\""), "SelectMask が K を得る: {s}");
+
+    // unbind：直前の bind で選択は SelectMask。その割り当てを全解除。
+    server.req("POST", "/keys/filer/unbind", "").unwrap();
+    assert!(keys().contains(r#"["SelectMask",[]]"#), "SelectMask の割り当てが消える");
+
+    // reset：既定へ戻る（MakeDirectory=K が復活）。
+    server.req("POST", "/keys/filer/reset", "").unwrap();
+    assert!(keys().contains(r#"["MakeDirectory",["K"]]"#), "reset で既定へ");
+
+    // 未知コマンド/キーは 400。
+    assert_eq!(
+        server.req("POST", "/keys/filer/bind", r#"["Nonexistent","K"]"#).unwrap().0,
+        400,
+        "未知コマンドは 400"
+    );
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// `/modal/resize/<w>x<h>` がモーダルへ WM_SIZE を飛ばし、クライアント寸法が要求サイズへ
 /// 変わる（手動ドラッグの代替＝リサイズ追従ダイアログを headless で検証する基盤）。
 #[test]

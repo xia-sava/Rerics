@@ -133,6 +133,60 @@ pub mod modal_registry {
     pub fn with_top<R>(f: impl FnOnce(Option<&ModalEntry>) -> R) -> R {
         STACK.with(|s| f(s.borrow().last()))
     }
+
+    /// キー編集ページの観測状態（debug-server で読む）。
+    #[derive(serde::Serialize)]
+    pub struct KeyEditorState {
+        /// 機能順の行＝(コマンドのトークン名, 割り当て chord トークン群)。
+        pub rows: Vec<(String, Vec<String>)>,
+        /// 選択行 index。
+        pub selected: usize,
+        /// キャプチャ待ちか。
+        pub capturing: bool,
+        /// 直近の操作結果メッセージ。
+        pub status: String,
+    }
+
+    /// (コマンドのトークン名, chord トークン) を割り当てるフック。未知コマンド等は Err。
+    pub type BindFn = Box<dyn Fn(&str, &str) -> Result<(), String>>;
+
+    /// キー編集ページを UI スレッドで読み書きするフック（gui をクロージャに閉じ込める）。
+    pub struct KeyEditorHooks {
+        pub read: Box<dyn Fn() -> KeyEditorState>,
+        pub select: Box<dyn Fn(usize)>,
+        pub bind: BindFn,
+        /// 選択行のコマンドの割り当てを全解除する。
+        pub unbind: Box<dyn Fn()>,
+        /// このページを既定キーマップへ戻す。
+        pub reset: Box<dyn Fn()>,
+    }
+
+    thread_local! {
+        /// 開いている設定ダイアログのキー編集ページ（カテゴリ名→フック）。設定を開くたびに
+        /// [`clear_key_editors`] で作り直す。
+        static KEY_EDITORS: RefCell<Vec<(&'static str, KeyEditorHooks)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+
+    /// キー編集ページのフックを登録する（`KeyEditor` が生成時に呼ぶ）。
+    pub fn register_key_editor(category: &'static str, hooks: KeyEditorHooks) {
+        KEY_EDITORS.with(|e| e.borrow_mut().push((category, hooks)));
+    }
+
+    /// 登録済みのキー編集ページを全消去する（設定ダイアログを開く直前に呼ぶ）。
+    pub fn clear_key_editors() {
+        KEY_EDITORS.with(|e| e.borrow_mut().clear());
+    }
+
+    /// 指定カテゴリのキー編集ページに対して処理する（無ければ `None`）。
+    pub fn with_key_editor<R>(category: &str, f: impl FnOnce(&KeyEditorHooks) -> R) -> Option<R> {
+        KEY_EDITORS.with(|e| {
+            e.borrow()
+                .iter()
+                .find(|(c, _)| *c == category)
+                .map(|(_, h)| f(h))
+        })
+    }
 }
 
 /// HTTP スレッド → UI スレッドへ渡す要求。応答は同梱の `Sender` で返す。
@@ -182,6 +236,18 @@ pub enum Request {
     ScriptInvoke { name: String },
     /// `POST /script/eval`：body の TS/JS ソースをスクリプトエンジンで評価する（投げっぱなし）。
     ScriptEval { code: String },
+    /// `GET /keys/<category>`：設定ダイアログのキー編集ページ状態（行・選択・キャプチャ・状態）。
+    /// `category` は `filer`/`text`/`image`。設定ダイアログが開いていなければ 404。
+    KeysState { category: String },
+    /// `POST /keys/<category>/select/<index>`：キー編集ページの選択行を index にする。
+    KeysSelect { category: String, index: usize },
+    /// `POST /keys/<category>/bind`：選択不要・body の JSON 配列 `["Command","Ctrl+K"]` を割り当てる
+    /// （実打鍵キャプチャと同じ assign 経路を叩く）。
+    KeysBind { category: String, command: String, chord: String },
+    /// `POST /keys/<category>/unbind`：選択行のコマンドの割り当てを全解除する。
+    KeysUnbind { category: String },
+    /// `POST /keys/<category>/reset`：このページを既定キーマップへ戻す。
+    KeysReset { category: String },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -295,7 +361,9 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
             } else if path == "/script/commands" {
                 Some(Request::ScriptCommands)
             } else {
-                None
+                path.strip_prefix("/keys/").map(|cat| Request::KeysState {
+                    category: cat.trim_end_matches('/').to_string(),
+                })
             }
         }
         tiny_http::Method::Post => {
@@ -370,6 +438,41 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 let mut code = String::new();
                 let _ = std::io::Read::read_to_string(req.as_reader(), &mut code);
                 Some(Request::ScriptEval { code })
+            } else if let Some(rest) = path.strip_prefix("/keys/") {
+                let rest = rest.trim_end_matches('/');
+                if let Some((cat, idx)) = rest.rsplit_once("/select/") {
+                    idx.parse::<usize>().ok().map(|index| Request::KeysSelect {
+                        category: cat.to_string(),
+                        index,
+                    })
+                } else if let Some(cat) = rest.strip_suffix("/bind") {
+                    let mut body = String::new();
+                    let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);
+                    match parse_command_args(&body) {
+                        Ok(args) if args.len() == 2 => Some(Request::KeysBind {
+                            category: cat.to_string(),
+                            command: args[0].clone(),
+                            chord: args[1].clone(),
+                        }),
+                        Ok(_) => {
+                            let _ = req.respond(
+                                tiny_http::Response::from_string("bind body must be [\"Command\",\"Chord\"]")
+                                    .with_status_code(400),
+                            );
+                            return;
+                        }
+                        Err(msg) => {
+                            let _ = req
+                                .respond(tiny_http::Response::from_string(msg).with_status_code(400));
+                            return;
+                        }
+                    }
+                } else if let Some(cat) = rest.strip_suffix("/unbind") {
+                    Some(Request::KeysUnbind { category: cat.to_string() })
+                } else {
+                    rest.strip_suffix("/reset")
+                        .map(|cat| Request::KeysReset { category: cat.to_string() })
+                }
             } else {
                 None
             }

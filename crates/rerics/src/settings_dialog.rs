@@ -8,11 +8,13 @@
 //! 継続、`OK` は閉じる。`キャンセル` は最後の `適用` 以降の編集を破棄して閉じる。
 
 use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use rerics_core::{
-    Bookmark, Colors, Column, ColumnKind, Config, FileOpSettings, IconSize, Layout, Rgb,
-    ResolvedTheme, SizeFormat, SortType, Theme, WheelAction,
+    Bookmark, Colors, Column, ColumnKind, Command, CommandContext, Config, FileOpSettings, IconSize,
+    Invocation, KeyChord, KeyMap, Layout, Rgb, ResolvedTheme, SizeFormat, SortType, Theme,
+    WheelAction,
 };
 use winsafe::{self as w, co, gui, msg::lb, prelude::*};
 
@@ -2565,57 +2567,557 @@ impl RegisteredPane {
     }
 }
 
-/// 「キー」ページが表示する対象のキーマップ。
-#[derive(Clone, Copy)]
+/// 「キー」ページが編集する対象のキーマップ。
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum KeyCategory {
     Filer,
     TextViewer,
     ImageViewer,
 }
 
-/// 「キー」ページ（割り当ての一覧表示・読み取り専用）。
-#[derive(Clone)]
-struct KeysPane {
-    list: gui::ListBox,
-    rows: Rc<Vec<String>>,
+impl KeyCategory {
+    /// このカテゴリで有効なコマンド文脈。
+    fn context(self) -> CommandContext {
+        match self {
+            KeyCategory::Filer => CommandContext::Filer,
+            KeyCategory::TextViewer => CommandContext::TextViewer,
+            KeyCategory::ImageViewer => CommandContext::ImageViewer,
+        }
+    }
+
+    /// このカテゴリの既定キーマップ（文字列マップ）。
+    fn default_map(self) -> BTreeMap<String, String> {
+        match self {
+            KeyCategory::Filer => KeyMap::default().to_string_map(),
+            KeyCategory::TextViewer => KeyMap::default_textviewer().to_string_map(),
+            KeyCategory::ImageViewer => KeyMap::default_imageviewer().to_string_map(),
+        }
+    }
+
+    /// debug-server で指すカテゴリ名。
+    #[cfg(feature = "debug-server")]
+    fn debug_str(self) -> &'static str {
+        match self {
+            KeyCategory::Filer => "filer",
+            KeyCategory::TextViewer => "text",
+            KeyCategory::ImageViewer => "image",
+        }
+    }
 }
 
-impl KeysPane {
+/// 「キー」ページの 1 行＝1 コマンドと、それに割り当たっている chord（トークン）群。
+struct KeyRow {
+    command: Command,
+    chords: Vec<String>,
+}
+
+/// 「キー」ページの編集状態。
+struct KeyEditorInner {
+    shared: Rc<Shared>,
+    category: KeyCategory,
+    rows: RefCell<Vec<KeyRow>>,
+    sel: Cell<usize>,
+    /// 表示先頭行（スクロール）。
+    top: Cell<usize>,
+    row_h: Cell<i32>,
+    /// 次の打鍵を選択行のコマンドへ割り当てる待ち状態。
+    capturing: Cell<bool>,
+    /// 直近の操作結果（観測・状態表示用）。
+    status: RefCell<String>,
+}
+
+/// 「キー」ページ（割り当ての対話編集・自前描画）。機能順にコマンドを並べ、行を選んで
+/// 「キーを追加」→実際のキー打鍵で割り当てる。`config.keybinds` を直接編集し OK/適用で確定する。
+#[derive(Clone)]
+struct KeyEditor {
+    list: gui::WindowControl,
+    inner: Rc<KeyEditorInner>,
+}
+
+impl KeyEditor {
     fn new(parent: &gui::WindowControl, shared: &Rc<Shared>, category: KeyCategory) -> Self {
         label(
             parent,
-            "現在のキー割り当て（変更は config.toml で行います）",
+            "機能を選び「キーを追加」で割り当て（実際にキーを押す・Escで中止）",
             16,
             12,
-            500,
+            560,
         );
-        let list = gui::ListBox::new(
+        let list = gui::WindowControl::new(
             parent,
-            gui::ListBoxOpts {
-                position: gui::dpi(16, 36),
-                size: gui::dpi(760, 500),
+            gui::WindowControlOpts {
+                position: gui::dpi(16, 40),
+                size: gui::dpi(744, 446),
+                class_bg_brush: gui::Brush::Color(co::COLOR::WINDOW),
+                style: co::WS::CHILD
+                    | co::WS::VISIBLE
+                    | co::WS::CLIPSIBLINGS
+                    | co::WS::TABSTOP
+                    | co::WS::BORDER,
                 ..Default::default()
             },
         );
-        let cfg = shared.cfg.borrow();
-        let map = match category {
-            KeyCategory::Filer => &cfg.keybinds,
-            KeyCategory::TextViewer => &cfg.keybinds_textviewer,
-            KeyCategory::ImageViewer => &cfg.keybinds_imageviewer,
+        let add = gui::Button::new(
+            parent,
+            gui::ButtonOpts {
+                text: "キーを追加(&K)",
+                position: gui::dpi(16, 496),
+                width: gui::dpi_x(140),
+                height: gui::dpi_y(28),
+                ..Default::default()
+            },
+        );
+        let del = gui::Button::new(
+            parent,
+            gui::ButtonOpts {
+                text: "削除(&D)",
+                position: gui::dpi(164, 496),
+                width: gui::dpi_x(110),
+                height: gui::dpi_y(28),
+                ..Default::default()
+            },
+        );
+        let reset = gui::Button::new(
+            parent,
+            gui::ButtonOpts {
+                text: "既定に戻す(&R)",
+                position: gui::dpi(282, 496),
+                width: gui::dpi_x(140),
+                height: gui::dpi_y(28),
+                ..Default::default()
+            },
+        );
+        let me = Self {
+            list,
+            inner: Rc::new(KeyEditorInner {
+                shared: shared.clone(),
+                category,
+                rows: RefCell::new(Vec::new()),
+                sel: Cell::new(0),
+                top: Cell::new(0),
+                row_h: Cell::new(gui::dpi_y(22)),
+                capturing: Cell::new(false),
+                status: RefCell::new(String::new()),
+            }),
         };
-        let rows: Vec<String> = map.iter().map(|(k, v)| format!("{k:<16} {v}")).collect();
-        Self { list, rows: Rc::new(rows) }
+        me.rebuild_rows();
+        me.setup_events();
+        {
+            let this = me.clone();
+            add.on().bn_clicked(move || {
+                this.begin_capture();
+                Ok(())
+            });
+        }
+        {
+            let this = me.clone();
+            del.on().bn_clicked(move || {
+                this.unbind_selected();
+                Ok(())
+            });
+        }
+        {
+            let this = me.clone();
+            reset.on().bn_clicked(move || {
+                this.reset();
+                Ok(())
+            });
+        }
+        me.register_debug();
+        me
     }
 
-    /// window 生成後に一覧を流し込む（生成前の add は無効化されるため）。
+    fn hwnd(&self) -> &w::HWND {
+        self.list.hwnd()
+    }
+
+    /// debug-server からこのページを観測・駆動できるようフックを登録する。実打鍵キャプチャと
+    /// 同じ `assign`/`unbind_selected`/`reset` を叩く＝挙動が一本化される。
+    #[cfg(feature = "debug-server")]
+    fn register_debug(&self) {
+        use crate::debug_server::modal_registry::{KeyEditorHooks, KeyEditorState};
+        let read = {
+            let this = self.clone();
+            Box::new(move || {
+                let rows = this
+                    .inner
+                    .rows
+                    .borrow()
+                    .iter()
+                    .map(|r| (r.command.as_token().to_string(), r.chords.clone()))
+                    .collect();
+                KeyEditorState {
+                    rows,
+                    selected: this.inner.sel.get(),
+                    capturing: this.inner.capturing.get(),
+                    status: this.inner.status.borrow().clone(),
+                }
+            }) as Box<dyn Fn() -> KeyEditorState>
+        };
+        let select = {
+            let this = self.clone();
+            Box::new(move |index: usize| {
+                if index < this.inner.rows.borrow().len() {
+                    this.inner.sel.set(index);
+                    this.ensure_visible();
+                    let _ = this.hwnd().InvalidateRect(None, false);
+                }
+            }) as Box<dyn Fn(usize)>
+        };
+        let bind = {
+            let this = self.clone();
+            Box::new(move |command: &str, chord: &str| {
+                let cmd = Command::from_token(command)
+                    .ok_or_else(|| format!("unknown command: {command}"))?;
+                let ch = KeyChord::parse(chord)
+                    .ok_or_else(|| format!("unknown chord: {chord}"))?;
+                if let Some(i) = this.inner.rows.borrow().iter().position(|r| r.command == cmd) {
+                    this.inner.sel.set(i);
+                }
+                this.assign(cmd, ch);
+                Ok(())
+            }) as Box<dyn Fn(&str, &str) -> Result<(), String>>
+        };
+        let unbind = {
+            let this = self.clone();
+            Box::new(move || this.unbind_selected()) as Box<dyn Fn()>
+        };
+        let reset = {
+            let this = self.clone();
+            Box::new(move || this.reset()) as Box<dyn Fn()>
+        };
+        crate::debug_server::modal_registry::register_key_editor(
+            self.inner.category.debug_str(),
+            KeyEditorHooks { read, select, bind, unbind, reset },
+        );
+    }
+
+    /// debug-server 無効ビルドでは何もしない。
+    #[cfg(not(feature = "debug-server"))]
+    fn register_debug(&self) {}
+
+    /// `config` の当該カテゴリのキーマップへの参照。
+    fn with_map<R>(&self, f: impl FnOnce(&mut BTreeMap<String, String>) -> R) -> R {
+        let mut cfg = self.inner.shared.cfg.borrow_mut();
+        let map = match self.inner.category {
+            KeyCategory::Filer => &mut cfg.keybinds,
+            KeyCategory::TextViewer => &mut cfg.keybinds_textviewer,
+            KeyCategory::ImageViewer => &mut cfg.keybinds_imageviewer,
+        };
+        f(map)
+    }
+
+    /// 現在のキーマップから機能順の行を組み直す（空値＝未バインドは除く）。
+    fn rebuild_rows(&self) {
+        let mut by_cmd: HashMap<Command, Vec<String>> = HashMap::new();
+        self.with_map(|map| {
+            for (chord, inv) in map.iter() {
+                if inv.trim().is_empty() {
+                    continue;
+                }
+                if let Some(parsed) = Invocation::parse(inv) {
+                    by_cmd.entry(parsed.command).or_default().push(chord.clone());
+                }
+            }
+        });
+        let ctx = self.inner.category.context();
+        let rows: Vec<KeyRow> = Command::all()
+            .filter(|c| c.available_in(ctx))
+            .map(|command| {
+                let mut chords = by_cmd.remove(&command).unwrap_or_default();
+                chords.sort();
+                KeyRow { command, chords }
+            })
+            .collect();
+        let n = rows.len();
+        *self.inner.rows.borrow_mut() = rows;
+        if n > 0 && self.inner.sel.get() >= n {
+            self.inner.sel.set(n - 1);
+        }
+    }
+
+    /// 選択行のコマンド。
+    fn selected_command(&self) -> Option<Command> {
+        self.inner.rows.borrow().get(self.inner.sel.get()).map(|r| r.command)
+    }
+
+    /// chord を選択行のコマンドへ割り当てる（chord は一意なので既存があれば移動＝上書き）。
+    fn assign(&self, command: Command, chord: KeyChord) {
+        let Some(tok) = chord.to_token() else {
+            *self.inner.status.borrow_mut() = "未対応のキーです".to_string();
+            return;
+        };
+        let value = Invocation::bare(command).to_token_string();
+        self.with_map(|map| {
+            map.insert(tok.clone(), value);
+        });
+        *self.inner.status.borrow_mut() = format!("{} に {} を割り当てました", command.as_token(), tok);
+        self.rebuild_rows();
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    /// 選択行のコマンドの割り当てを全て解除する（既定キーは空値で打ち消す＝差分保存で永続）。
+    fn unbind_selected(&self) {
+        let Some(command) = self.selected_command() else {
+            return;
+        };
+        let chords: Vec<String> = self
+            .inner
+            .rows
+            .borrow()
+            .get(self.inner.sel.get())
+            .map(|r| r.chords.clone())
+            .unwrap_or_default();
+        if chords.is_empty() {
+            *self.inner.status.borrow_mut() = "割り当てがありません".to_string();
+            return;
+        }
+        self.with_map(|map| {
+            for c in &chords {
+                map.insert(c.clone(), String::new());
+            }
+        });
+        *self.inner.status.borrow_mut() = format!("{} の割り当てを解除しました", command.as_token());
+        self.rebuild_rows();
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    /// このページを既定キーマップへ戻す。
+    fn reset(&self) {
+        let def = self.inner.category.default_map();
+        self.with_map(|map| *map = def);
+        *self.inner.status.borrow_mut() = "既定に戻しました".to_string();
+        self.inner.capturing.set(false);
+        self.rebuild_rows();
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    /// キャプチャ開始（次の打鍵を選択行へ割り当てる）。リストへフォーカスを移す。
+    fn begin_capture(&self) {
+        if self.selected_command().is_none() {
+            return;
+        }
+        self.inner.capturing.set(true);
+        *self.inner.status.borrow_mut() = "キーを押してください（Escで中止）".to_string();
+        self.hwnd().SetFocus();
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    fn cancel_capture(&self) {
+        self.inner.capturing.set(false);
+        *self.inner.status.borrow_mut() = "中止しました".to_string();
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    /// 1 画面に収まる行数。
+    fn visible_rows(&self) -> usize {
+        let ch = self.hwnd().GetClientRect().map(|r| r.bottom - r.top).unwrap_or(0);
+        let rh = self.inner.row_h.get().max(1);
+        (ch / rh).max(1) as usize
+    }
+
+    /// 選択が見える位置までスクロールを調整する。
+    fn ensure_visible(&self) {
+        let sel = self.inner.sel.get();
+        let vis = self.visible_rows();
+        let mut top = self.inner.top.get();
+        if sel < top {
+            top = sel;
+        } else if sel >= top + vis {
+            top = sel + 1 - vis;
+        }
+        self.inner.top.set(top);
+    }
+
+    fn move_sel(&self, dir: isize) {
+        let n = self.inner.rows.borrow().len() as isize;
+        if n == 0 {
+            return;
+        }
+        let i = (self.inner.sel.get() as isize + dir).clamp(0, n - 1);
+        self.inner.sel.set(i as usize);
+        self.ensure_visible();
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    fn setup_events(&self) {
+        let this = self.clone();
+        self.list.on().wm_get_dlg_code(move |_| {
+            let flags = if this.inner.capturing.get() {
+                co::DLGC::WANTALLKEYS.raw()
+            } else {
+                co::DLGC::WANTARROWS.raw()
+            };
+            Ok(unsafe { co::DLGC::from_raw(flags) })
+        });
+
+        let this = self.clone();
+        self.list.on().wm_paint(move || this.on_paint());
+
+        let this = self.clone();
+        self.list.on().wm(unsafe { co::WM::from_raw(WM_PRINTCLIENT) }, move |p| {
+            this.on_print(p.wparam);
+            Ok(0)
+        });
+
+        let this = self.clone();
+        self.list.on().wm_set_focus(move |_| {
+            let _ = this.hwnd().InvalidateRect(None, false);
+            Ok(())
+        });
+        let this = self.clone();
+        self.list.on().wm_kill_focus(move |_| {
+            let _ = this.hwnd().InvalidateRect(None, false);
+            Ok(())
+        });
+
+        let this = self.clone();
+        self.list.on().wm_l_button_down(move |p| {
+            this.hwnd().SetFocus();
+            if this.inner.capturing.get() {
+                return Ok(());
+            }
+            let rh = this.inner.row_h.get().max(1);
+            let row = this.inner.top.get() + (p.coords.y / rh) as usize;
+            if row < this.inner.rows.borrow().len() {
+                this.inner.sel.set(row);
+                this.ensure_visible();
+                let _ = this.hwnd().InvalidateRect(None, false);
+            }
+            Ok(())
+        });
+
+        let this = self.clone();
+        self.list.on().wm_key_down(move |p| {
+            this.on_key(p.vkey_code.raw());
+            Ok(())
+        });
+    }
+
+    /// キー入力処理。キャプチャ中は打鍵を chord 化して割り当て、通常時は ↑↓ で選択移動。
+    fn on_key(&self, vk: u16) {
+        use rerics_core::vk as k;
+        if self.inner.capturing.get() {
+            if vk == k::ESCAPE {
+                self.cancel_capture();
+                return;
+            }
+            // 修飾キー単体（Shift/Ctrl/Alt の VK）は確定打鍵としない（実キーが来るまで待つ）。
+            if matches!(vk, 0x10..=0x12) {
+                return;
+            }
+            let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
+            let shift = w::GetAsyncKeyState(co::VK::SHIFT);
+            let alt = w::GetAsyncKeyState(co::VK::MENU);
+            let chord = KeyChord::new(vk, ctrl, shift, alt);
+            self.inner.capturing.set(false);
+            if let Some(command) = self.selected_command() {
+                self.assign(command, chord);
+            }
+            return;
+        }
+        if vk == k::UP {
+            self.move_sel(-1);
+        } else if vk == k::DOWN {
+            self.move_sel(1);
+        }
+    }
+
+    fn on_paint(&self) -> w::AnyResult<()> {
+        let hdc = self.hwnd().BeginPaint()?;
+        let rc = self.hwnd().GetClientRect()?;
+        let cw = rc.right - rc.left;
+        let ch = rc.bottom - rc.top;
+        if cw <= 0 || ch <= 0 {
+            return Ok(());
+        }
+        let mem = hdc.CreateCompatibleDC()?;
+        let bmp = hdc.CreateCompatibleBitmap(cw, ch)?;
+        let _sel = mem.SelectObject(&*bmp)?;
+        self.render(&mem, cw, ch)?;
+        hdc.BitBlt(
+            w::POINT { x: 0, y: 0 },
+            w::SIZE { cx: cw, cy: ch },
+            &mem,
+            w::POINT { x: 0, y: 0 },
+            co::ROP::SRCCOPY,
+        )?;
+        Ok(())
+    }
+
+    /// `WM_PRINTCLIENT`：与えられた DC へ直接描く（デバッグ制御サーバのスナップショット用）。
+    fn on_print(&self, hdc_ptr: usize) {
+        let hdc = unsafe { w::HDC::from_ptr(hdc_ptr as *mut std::ffi::c_void) };
+        if let Ok(rc) = self.hwnd().GetClientRect() {
+            let _ = self.render(&hdc, rc.right - rc.left, rc.bottom - rc.top);
+        }
+    }
+
+    fn render(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
+        let font = w::HFONT::GetStockObject(co::STOCK_FONT::DEFAULT_GUI)?;
+        let _fsel = dc.SelectObject(&font)?;
+        let fh = dc.GetTextMetrics().map(|tm| tm.tmHeight).unwrap_or(16);
+        let row_h = (fh + gui::dpi_y(10)).max(gui::dpi_y(20));
+        self.inner.row_h.set(row_h);
+        dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
+
+        let bg = w::HBRUSH::GetSysColorBrush(co::COLOR::WINDOW)?;
+        dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &bg)?;
+
+        let text_col = w::GetSysColor(co::COLOR::WINDOWTEXT);
+        let gray_col = w::GetSysColor(co::COLOR::GRAYTEXT);
+        let hl_text = w::GetSysColor(co::COLOR::HIGHLIGHTTEXT);
+        let hl_bg = w::HBRUSH::GetSysColorBrush(co::COLOR::HIGHLIGHT)?;
+
+        let rows = self.inner.rows.borrow();
+        let top = self.inner.top.get();
+        let sel = self.inner.sel.get();
+        let capturing = self.inner.capturing.get();
+        let key_x = gui::dpi_x(8);
+        let chord_x = gui::dpi_x(260);
+        let vis = (ch / row_h).max(1) as usize;
+        for vi in 0..vis {
+            let i = top + vi;
+            if i >= rows.len() {
+                break;
+            }
+            let row = &rows[i];
+            let y = vi as i32 * row_h;
+            let ty = y + (row_h - fh) / 2;
+            if i == sel {
+                dc.FillRect(w::RECT { left: 0, top: y, right: cw, bottom: y + row_h }, &hl_bg)?;
+                dc.SetTextColor(hl_text)?;
+            } else {
+                dc.SetTextColor(text_col)?;
+            }
+            dc.TextOut(key_x, ty, row.command.as_token())?;
+            if i == sel && capturing {
+                dc.TextOut(chord_x, ty, "← キーを押してください（Escで中止）")?;
+            } else if row.chords.is_empty() {
+                if i != sel {
+                    dc.SetTextColor(gray_col)?;
+                }
+                dc.TextOut(chord_x, ty, "—")?;
+            } else {
+                dc.TextOut(chord_x, ty, &row.chords.join(", "))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// window 生成後の初期化（スクロール調整・再描画）。
     fn populate(&self) {
-        let _ = self.list.items().add(&self.rows);
+        self.ensure_visible();
+        let _ = self.hwnd().InvalidateRect(None, false);
     }
 }
 
 /// 設定ダイアログを表示する。`OK`／`適用` で確定した [`Config`] を `on_apply` へ渡す
 /// （`適用` は閉じずに継続、`OK` は閉じる。`キャンセル` は破棄して閉じる）。
 pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config) + 'static) {
+    // 前回開いた設定ダイアログのキー編集フックを捨てる（このダイアログ生成で登録し直す）。
+    #[cfg(feature = "debug-server")]
+    crate::debug_server::modal_registry::clear_key_editors();
     let (wnd, arm) = crate::dialog::modal_window_sysmenu("設定", 960, 620);
 
     let shared = Rc::new(Shared {
@@ -2687,9 +3189,9 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     build_list(&pane_list, &shared);
     let columns_editor = ColumnsEditor::new(&pane_list, &shared);
     let registered = RegisteredPane::new(&pane_registered, &shared);
-    let keys = KeysPane::new(&pane_keys, &shared, KeyCategory::Filer);
-    let keys_text = KeysPane::new(&pane_keys_text, &shared, KeyCategory::TextViewer);
-    let keys_image = KeysPane::new(&pane_keys_image, &shared, KeyCategory::ImageViewer);
+    let keys = KeyEditor::new(&pane_keys, &shared, KeyCategory::Filer);
+    let keys_text = KeyEditor::new(&pane_keys_text, &shared, KeyCategory::TextViewer);
+    let keys_image = KeyEditor::new(&pane_keys_image, &shared, KeyCategory::ImageViewer);
 
     // 配色 pane（ファイル一覧・ログ）とテキストビューア pane（ビューア専用色）。
     // 色変更後はそれぞれ対応するプレビューだけを再描画する。
@@ -2827,6 +3329,9 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     }
 
     let _ = wnd.show_modal(parent);
+    // 閉じたらキー編集フックを捨てる（破棄済みウィンドウを debug 経路が触らないように）。
+    #[cfg(feature = "debug-server")]
+    crate::debug_server::modal_registry::clear_key_editors();
     let _ = (nav, panes, keys, keys_text, keys_image, registered, ok, cancel, apply, preview_label, preview, viewer_preview);
 }
 
