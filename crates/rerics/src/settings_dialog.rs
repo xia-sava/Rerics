@@ -2603,6 +2603,15 @@ impl KeyCategory {
             KeyCategory::ImageViewer => "image",
         }
     }
+
+    /// 画面表示用のページ名。
+    fn display(self) -> &'static str {
+        match self {
+            KeyCategory::Filer => "ファイラー",
+            KeyCategory::TextViewer => "テキストビューア",
+            KeyCategory::ImageViewer => "画像ビューア",
+        }
+    }
 }
 
 /// 機能順の 1 行＝1 コマンドと、それに割り当たっている chord 群。
@@ -3132,11 +3141,23 @@ impl KeyEditor {
             .collect()
     }
 
-    /// 衝突が 1 つでもあるか。
-    fn has_conflicts(&self) -> bool {
-        self.inner.draft.borrow().values().any(|vals| {
-            vals.iter().filter(|v| !v.trim().is_empty()).count() > 1
-        })
+    /// 衝突の短い要約（ダイアログ全域の警告用）。衝突が無ければ `None`。
+    fn conflict_brief(&self) -> Option<String> {
+        let c = self.conflicts();
+        if c.is_empty() {
+            return None;
+        }
+        let parts: Vec<String> = c
+            .iter()
+            .take(3)
+            .map(|(chord, labels)| format!("{}={}", chord, labels.join("/")))
+            .collect();
+        let more = if c.len() > 3 {
+            format!(" ほか{}件", c.len() - 3)
+        } else {
+            String::new()
+        };
+        Some(format!("{}: {}{}", self.inner.category.display(), parts.join(", "), more))
     }
 
     /// 衝突をステータスへ書き出す（OK/適用が弾いた理由を見せる）。
@@ -4302,6 +4323,17 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
         Rc::new(move || viewer_preview.refresh())
     }, VIEWER_COLOR_FIELDS);
 
+    // 下段左：検証メッセージ（キー重複で OK/適用が弾かれた理由を、どのページを見ていても出す）。
+    let validation_label = gui::Label::new(
+        &wnd,
+        gui::LabelOpts {
+            text: "",
+            position: gui::dpi(12, 584),
+            size: gui::dpi(632, 18),
+            ..Default::default()
+        },
+    );
+
     // 下段：OK / キャンセル / 適用。
     let ok = gui::Button::new(
         &wnd,
@@ -4401,20 +4433,28 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     // （理由は各ページのステータスへ）、無ければ下書きを config へ書き戻して true。
     let validate_and_flush: Rc<dyn Fn() -> bool> = {
         let editors = vec![keys.clone(), keys_text.clone(), keys_image.clone()];
+        let validation_label = validation_label.clone();
         Rc::new(move || {
-            let mut ok = true;
+            let mut briefs = Vec::new();
             for e in &editors {
-                if e.has_conflicts() {
+                if let Some(b) = e.conflict_brief() {
                     e.note_conflicts();
-                    ok = false;
+                    briefs.push(b);
                 }
             }
-            if ok {
+            if briefs.is_empty() {
                 for e in &editors {
                     e.flush_draft();
                 }
+                let _ = validation_label.hwnd().SetWindowText("");
+                true
+            } else {
+                let _ = validation_label.hwnd().SetWindowText(&format!(
+                    "キーが重複しています（解決するまで反映できません）— {}",
+                    briefs.join(" / ")
+                ));
+                false
             }
-            ok
         })
     };
 
