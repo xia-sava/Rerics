@@ -1966,6 +1966,41 @@ fn settings_key_editor_scrolls_long_list() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// キー順で「キー定義を追加」＝空キー定義（機能未割当・－）を作り、後から機能ピッカーで
+/// 機能を割り当てられる。
+#[test]
+fn settings_key_editor_add_empty_key_def_then_assign() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+    server.req("POST", "/keys/filer/view", "key").unwrap();
+
+    // 未使用キーの空キー定義を作る＝labels が空の行（機能未割当）。
+    server.req("POST", "/keys/filer/addkeydef", "Ctrl+Shift+Z").unwrap();
+    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Z").unwrap();
+    assert!(keys().contains(r#"["Ctrl+Shift+Z",[]]"#), "空キー定義の行: {}", keys());
+
+    // その行を選び、機能ピッカーで MakeDirectory を割り当てる。
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/pick/0", "").unwrap();
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/pickcommit", "").unwrap();
+
+    // 割り当て後：Ctrl+Shift+Z → MakeDirectory（空キー定義が解消）。
+    server.req("POST", "/keys/filer/view", "key").unwrap();
+    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Z").unwrap();
+    assert!(
+        keys().contains(r#"["Ctrl+Shift+Z",["MakeDirectory"]]"#),
+        "空キー定義に機能が付く: {}",
+        keys()
+    );
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// キー編集ページの検索（機能名・キーへの部分一致・大小無視）。クエリで一覧が絞り込まれ、
 /// 空クエリで全件へ戻る。`config` は変わらない（割り当ては不変）。
 #[test]

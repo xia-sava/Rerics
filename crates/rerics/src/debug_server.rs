@@ -190,6 +190,8 @@ pub mod modal_registry {
         pub pick_cancel: Box<dyn Fn()>,
         /// 表示先頭行を指定位置へ（ホイール／スクロールバーと同じ経路・範囲外はクランプ）。
         pub scroll: Box<dyn Fn(i32)>,
+        /// キー順で空キー定義（機能未割当・－表示）を作る。未知キーは Err。
+        pub add_keydef: ChordFn,
     }
 
     thread_local! {
@@ -296,6 +298,8 @@ pub enum Request {
     KeysPickCancel { category: String },
     /// `POST /keys/<category>/scroll/<top>`：表示先頭行を top へ（範囲外はクランプ）。
     KeysScroll { category: String, top: i32 },
+    /// `POST /keys/<category>/addkeydef`：キー順で body のキーの空キー定義（機能未割当）を作る。
+    KeysAddKeyDef { category: String, chord: String },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -511,6 +515,13 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                     idx.parse::<i32>().ok().map(|top| Request::KeysScroll {
                         category: cat.to_string(),
                         top,
+                    })
+                } else if let Some(cat) = rest.strip_suffix("/addkeydef") {
+                    let mut chord = String::new();
+                    let _ = std::io::Read::read_to_string(req.as_reader(), &mut chord);
+                    Some(Request::KeysAddKeyDef {
+                        category: cat.to_string(),
+                        chord: chord.trim().to_string(),
                     })
                 } else if let Some(cat) = rest.strip_suffix("/bind") {
                     let mut body = String::new();

@@ -2661,6 +2661,8 @@ struct KeyEditorInner {
     picking: RefCell<Option<PickState>>,
     /// ピックモードで選べる機能一覧（文脈で絞り済み）。`view` はこれを検索で絞った index。
     pick_rows: RefCell<Vec<Command>>,
+    /// キー順で「キー定義を追加」したが、まだ機能未割当のキー（－表示の空キー定義）。
+    pending: RefCell<Vec<String>>,
     /// 並べ方（機能順／キー順）。
     view_mode: Cell<KeyView>,
     /// 検索で絞り込んだ表示対象＝現モードの行配列へのインデックス（表示順）。`sel`/`top` はこの上の位置。
@@ -2677,6 +2679,8 @@ struct KeyEditorInner {
     capturing: Cell<bool>,
     /// キャプチャがサブ選択キーの「変更（リマップ）」か（`true`）、新規追加か（`false`）。
     capturing_remap: Cell<bool>,
+    /// キャプチャがキー順の「空キー定義の新規作成」か（`true`）。打鍵を pending へ入れる。
+    capturing_newdef: Cell<bool>,
     /// 直近の操作結果（観測・状態表示用）。
     status: RefCell<String>,
 }
@@ -2689,6 +2693,10 @@ struct KeyEditor {
     search: gui::Edit,
     /// 機能順／キー順の並べ替え切替。
     toggle: gui::RadioGroup,
+    /// 選択対象に効く左グループの 3 ボタン（モードでラベル/動作を切替）。
+    btn_a: gui::Button,
+    btn_b: gui::Button,
+    btn_c: gui::Button,
     inner: Rc<KeyEditorInner>,
 }
 
@@ -2745,32 +2753,44 @@ impl KeyEditor {
                 ..Default::default()
             },
         );
-        let add = gui::Button::new(
+        // 左グループ＝選択対象に効く 3 ボタン（初期は機能順ラベル）。
+        let btn_a = gui::Button::new(
             parent,
             gui::ButtonOpts {
                 text: "キーを追加(&K)",
                 position: gui::dpi(16, 496),
-                width: gui::dpi_x(140),
+                width: gui::dpi_x(150),
                 height: gui::dpi_y(28),
                 ..Default::default()
             },
         );
-        let del = gui::Button::new(
+        let btn_b = gui::Button::new(
             parent,
             gui::ButtonOpts {
-                text: "削除(&D)",
-                position: gui::dpi(164, 496),
-                width: gui::dpi_x(110),
+                text: "キーを変更(&C)",
+                position: gui::dpi(174, 496),
+                width: gui::dpi_x(150),
                 height: gui::dpi_y(28),
                 ..Default::default()
             },
         );
+        let btn_c = gui::Button::new(
+            parent,
+            gui::ButtonOpts {
+                text: "キーを削除(&D)",
+                position: gui::dpi(332, 496),
+                width: gui::dpi_x(150),
+                height: gui::dpi_y(28),
+                ..Default::default()
+            },
+        );
+        // 右に分離＝ページ全域に効く操作。
         let reset = gui::Button::new(
             parent,
             gui::ButtonOpts {
-                text: "既定に戻す(&R)",
-                position: gui::dpi(282, 496),
-                width: gui::dpi_x(140),
+                text: "このページを既定に戻す(&R)",
+                position: gui::dpi(580, 496),
+                width: gui::dpi_x(180),
                 height: gui::dpi_y(28),
                 ..Default::default()
             },
@@ -2779,6 +2799,9 @@ impl KeyEditor {
             list,
             search,
             toggle,
+            btn_a: btn_a.clone(),
+            btn_b: btn_b.clone(),
+            btn_c: btn_c.clone(),
             inner: Rc::new(KeyEditorInner {
                 shared: shared.clone(),
                 category,
@@ -2787,6 +2810,7 @@ impl KeyEditor {
                 key_rows: RefCell::new(Vec::new()),
                 picking: RefCell::new(None),
                 pick_rows: RefCell::new(Vec::new()),
+                pending: RefCell::new(Vec::new()),
                 view_mode: Cell::new(KeyView::ByCommand),
                 view: RefCell::new(Vec::new()),
                 query: RefCell::new(String::new()),
@@ -2796,6 +2820,7 @@ impl KeyEditor {
                 row_h: Cell::new(gui::dpi_y(22)),
                 capturing: Cell::new(false),
                 capturing_remap: Cell::new(false),
+                capturing_newdef: Cell::new(false),
                 status: RefCell::new(String::new()),
             }),
         };
@@ -2817,17 +2842,39 @@ impl KeyEditor {
                 Ok(())
             });
         }
+        // ボタン1：機能順＝キーを追加／キー順＝機能を変更（ピッカー）。
         {
             let this = me.clone();
-            add.on().bn_clicked(move || {
-                this.begin_capture();
+            btn_a.on().bn_clicked(move || {
+                if this.inner.view_mode.get() == KeyView::ByCommand {
+                    this.begin_capture();
+                } else {
+                    this.enter_pick(0);
+                }
                 Ok(())
             });
         }
+        // ボタン2：機能順＝キーを変更（リマップ）／キー順＝キーを削除。
         {
             let this = me.clone();
-            del.on().bn_clicked(move || {
-                this.unbind_selected();
+            btn_b.on().bn_clicked(move || {
+                if this.inner.view_mode.get() == KeyView::ByCommand {
+                    this.begin_remap();
+                } else {
+                    this.unbind_selected();
+                }
+                Ok(())
+            });
+        }
+        // ボタン3：機能順＝キー定義を削除／キー順＝キー定義を追加（空キー定義を作る）。
+        {
+            let this = me.clone();
+            btn_c.on().bn_clicked(move || {
+                if this.inner.view_mode.get() == KeyView::ByCommand {
+                    this.unbind_selected();
+                } else {
+                    this.add_key_def();
+                }
                 Ok(())
             });
         }
@@ -2840,6 +2887,17 @@ impl KeyEditor {
         }
         me.register_debug();
         me
+    }
+
+    /// 現在のモードに合わせて左グループ 3 ボタンのラベルを更新する。
+    fn relabel_buttons(&self) {
+        let (a, b, c) = match self.inner.view_mode.get() {
+            KeyView::ByCommand => ("キー定義を追加(&K)", "キー定義を変更(&C)", "キー定義を削除(&D)"),
+            KeyView::ByKey => ("機能定義を変更(&C)", "キー定義を削除(&D)", "キー定義を追加(&K)"),
+        };
+        let _ = self.btn_a.hwnd().SetWindowText(a);
+        let _ = self.btn_b.hwnd().SetWindowText(b);
+        let _ = self.btn_c.hwnd().SetWindowText(c);
     }
 
     fn hwnd(&self) -> &w::HWND {
@@ -2986,6 +3044,15 @@ impl KeyEditor {
             let this = self.clone();
             Box::new(move |top: i32| this.scroll_to(top as isize)) as Box<dyn Fn(i32)>
         };
+        let add_keydef = {
+            let this = self.clone();
+            Box::new(move |chord: &str| {
+                let ch = KeyChord::parse(chord)
+                    .ok_or_else(|| format!("unknown chord: {chord}"))?;
+                this.finish_newdef(ch);
+                Ok(())
+            }) as crate::debug_server::modal_registry::ChordFn
+        };
         crate::debug_server::modal_registry::register_key_editor(
             self.inner.category.debug_str(),
             KeyEditorHooks {
@@ -3002,6 +3069,7 @@ impl KeyEditor {
                 pick_commit,
                 pick_cancel,
                 scroll,
+                add_keydef,
             },
         );
     }
@@ -3105,6 +3173,16 @@ impl KeyEditor {
                             .or_default()
                             .push(ChordRef { token: chord.clone(), conflicted });
                     }
+                }
+            }
+        }
+        // 機能未割当の空キー定義（pending）をキー順に並べる（－表示）。既にバインドされたものは除く。
+        {
+            let bound: std::collections::HashSet<String> =
+                key_rows.iter().map(|r| r.chord.clone()).collect();
+            for chord in self.inner.pending.borrow().iter() {
+                if !bound.contains(chord) {
+                    key_rows.push(KeyChordRow { chord: chord.clone(), labels: Vec::new() });
                 }
             }
         }
@@ -3218,6 +3296,7 @@ impl KeyEditor {
         self.inner.top.set(0);
         self.toggle[0].select(!by_key);
         self.toggle[1].select(by_key);
+        self.relabel_buttons();
         self.rebuild_view();
         let _ = self.hwnd().InvalidateRect(None, false);
     }
@@ -3341,7 +3420,10 @@ impl KeyEditor {
 
     /// キー順で選択行の li 番目の機能を「別機能へ差し替える」ピックモードへ入る（インライン）。
     fn enter_pick(&self, li: usize) {
-        if self.inner.view_mode.get() != KeyView::ByKey || self.inner.capturing.get() {
+        if self.inner.view_mode.get() != KeyView::ByKey
+            || self.inner.capturing.get()
+            || self.inner.picking.borrow().is_some()
+        {
             return;
         }
         let Some(&ri) = self.inner.view.borrow().get(self.inner.sel.get()) else {
@@ -3351,18 +3433,20 @@ impl KeyEditor {
             Some(r) => r.chord.clone(),
             None => return,
         };
+        // 空キー定義（pending）なら old_value は空＝置換でなく新規割り当て。
         let old_value = {
             let draft = self.inner.draft.borrow();
             let nonempty: Vec<String> = draft
                 .get(&chord)
                 .map(|vs| vs.iter().filter(|v| !v.trim().is_empty()).cloned().collect())
                 .unwrap_or_default();
-            match nonempty.get(li) {
-                Some(v) => v.clone(),
-                None => return,
-            }
+            nonempty.get(li).cloned().unwrap_or_default()
         };
-        let old_label = binding_label(&old_value);
+        let old_label = if old_value.is_empty() {
+            "－".to_string()
+        } else {
+            binding_label(&old_value)
+        };
         let ctx = self.inner.category.context();
         *self.inner.pick_rows.borrow_mut() =
             Command::all().filter(|c| c.available_in(ctx)).collect();
@@ -3397,15 +3481,19 @@ impl KeyEditor {
             let new_val = Invocation::bare(cmd).to_token_string();
             {
                 let mut draft = self.inner.draft.borrow_mut();
-                if let Some(vals) = draft.get_mut(&pick.chord) {
+                let vals = draft.entry(pick.chord.clone()).or_default();
+                // 置換対象（old_value）があれば外す。空キー定義なら新規割り当て。
+                if !pick.old_value.is_empty() {
                     vals.retain(|v| *v != pick.old_value);
-                    if !vals.iter().any(|v| Invocation::parse(v).map(|i| i.command) == Some(cmd)) {
-                        vals.push(new_val);
-                    }
+                }
+                if !vals.iter().any(|v| Invocation::parse(v).map(|i| i.command) == Some(cmd)) {
+                    vals.push(new_val);
                 }
             }
+            // 機能が付いたので pending（空キー定義）からは外す。
+            self.inner.pending.borrow_mut().retain(|c| *c != pick.chord);
             *self.inner.status.borrow_mut() =
-                format!("{} を {} に変更しました", pick.chord, cmd.as_token());
+                format!("{} を {} に割り当てました", pick.chord, cmd.as_token());
         }
         self.exit_pick_common();
     }
@@ -3432,7 +3520,10 @@ impl KeyEditor {
 
     /// サブ選択キーの「変更（リマップ）」キャプチャを始める（次の打鍵で旧キー→新キーへ移す）。
     fn begin_remap(&self) {
-        if self.selected_command().is_none() || self.sub_chord().is_none() {
+        if self.inner.picking.borrow().is_some()
+            || self.selected_command().is_none()
+            || self.sub_chord().is_none()
+        {
             return;
         }
         self.inner.capturing.set(true);
@@ -3510,6 +3601,9 @@ impl KeyEditor {
     /// 選択行の割り当てを解除する（既定キーは空 Vec で打ち消す＝差分保存で永続）。
     /// 機能順＝サブ選択中の1キーからその機能を外す／キー順＝選択中のその1キー（定義を丸ごと）。
     fn unbind_selected(&self) {
+        if self.inner.picking.borrow().is_some() {
+            return;
+        }
         let status = match self.inner.view_mode.get() {
             KeyView::ByCommand => {
                 let Some(command) = self.selected_command() else {
@@ -3529,8 +3623,12 @@ impl KeyEditor {
                 let Some(chord) = self.selected_chord() else {
                     return;
                 };
-                // そのキー定義を丸ごと外す＝空 Vec（unbind マーカー）にする。
-                self.inner.draft.borrow_mut().insert(chord.clone(), Vec::new());
+                // そのキー定義を丸ごと外す＝空 Vec（unbind マーカー）にする。pending なら消すだけ。
+                let was_pending = self.inner.pending.borrow().contains(&chord);
+                self.inner.pending.borrow_mut().retain(|c| *c != chord);
+                if !was_pending {
+                    self.inner.draft.borrow_mut().insert(chord.clone(), Vec::new());
+                }
                 format!("{} の割り当てを解除しました", chord)
             }
         };
@@ -3541,6 +3639,9 @@ impl KeyEditor {
 
     /// このページを既定キーマップへ戻す。
     fn reset(&self) {
+        if self.inner.picking.borrow().is_some() {
+            return;
+        }
         let def = self.inner.category.default_map();
         let draft: BTreeMap<String, Vec<String>> = def
             .into_iter()
@@ -3553,6 +3654,7 @@ impl KeyEditor {
             })
             .collect();
         *self.inner.draft.borrow_mut() = draft;
+        self.inner.pending.borrow_mut().clear();
         *self.inner.status.borrow_mut() = "既定に戻しました".to_string();
         self.inner.capturing.set(false);
         self.rebuild_rows();
@@ -3573,7 +3675,52 @@ impl KeyEditor {
     fn cancel_capture(&self) {
         self.inner.capturing.set(false);
         self.inner.capturing_remap.set(false);
+        self.inner.capturing_newdef.set(false);
         *self.inner.status.borrow_mut() = "中止しました".to_string();
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    /// キー順で「キー定義を追加」：次の打鍵で機能未割当の空キー定義（－）を作る。
+    fn add_key_def(&self) {
+        if self.inner.view_mode.get() != KeyView::ByKey
+            || self.inner.picking.borrow().is_some()
+            || self.inner.capturing.get()
+        {
+            return;
+        }
+        self.inner.capturing.set(true);
+        self.inner.capturing_newdef.set(true);
+        *self.inner.status.borrow_mut() =
+            "追加するキーを押してください（右クリックで中止）".to_string();
+        self.hwnd().SetFocus();
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    /// 空キー定義を作る（機能は後で割り当て）。既にバインド済みなら何もせずその行を選ぶ。
+    fn finish_newdef(&self, chord: KeyChord) {
+        let Some(tok) = chord.to_token() else {
+            *self.inner.status.borrow_mut() = "未対応のキーです".to_string();
+            let _ = self.hwnd().InvalidateRect(None, false);
+            return;
+        };
+        let bound = self
+            .inner
+            .draft
+            .borrow()
+            .get(&tok)
+            .is_some_and(|vs| vs.iter().any(|v| !v.trim().is_empty()));
+        if bound {
+            *self.inner.status.borrow_mut() = format!("{} は既に使われています", tok);
+        } else {
+            let mut pending = self.inner.pending.borrow_mut();
+            if !pending.contains(&tok) {
+                pending.push(tok.clone());
+            }
+            drop(pending);
+            *self.inner.status.borrow_mut() =
+                format!("空のキー定義 {} を追加（機能を割り当ててください）", tok);
+        }
+        self.rebuild_rows();
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
@@ -3721,7 +3868,18 @@ impl KeyEditor {
                     }
                 }
                 KeyView::ByKey => {
-                    if let Some(li) = this.label_hit(row, p.coords.x) {
+                    // 機能ラベル上なら そのラベルを差替へ。空キー定義（－）行なら新規割り当てへ。
+                    let li = this.label_hit(row, p.coords.x).or_else(|| {
+                        let empty = this
+                            .inner
+                            .view
+                            .borrow()
+                            .get(row)
+                            .and_then(|&ri| this.inner.key_rows.borrow().get(ri).map(|r| r.labels.is_empty()))
+                            .unwrap_or(false);
+                        empty.then_some(0)
+                    });
+                    if let Some(li) = li {
                         this.ensure_visible();
                         this.enter_pick(li);
                         return Ok(());
@@ -3795,7 +3953,9 @@ impl KeyEditor {
             let alt = w::GetAsyncKeyState(co::VK::MENU);
             let chord = KeyChord::new(vk, ctrl, shift, alt);
             self.inner.capturing.set(false);
-            if self.inner.capturing_remap.replace(false) {
+            if self.inner.capturing_newdef.replace(false) {
+                self.finish_newdef(chord);
+            } else if self.inner.capturing_remap.replace(false) {
                 self.remap_sub(chord);
             } else if let Some(command) = self.selected_command() {
                 self.assign(command, chord);
@@ -3875,8 +4035,15 @@ impl KeyEditor {
         self.inner.row_h.set(row_h);
         dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
 
+        // ピックモード（機能ピッカー表示）中は背景色を変えて「別モード」を一目で分かるようにする。
+        let picking = self.inner.picking.borrow().is_some();
         let bg = w::HBRUSH::GetSysColorBrush(co::COLOR::WINDOW)?;
-        dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &bg)?;
+        let fill = if picking {
+            w::HBRUSH::GetSysColorBrush(co::COLOR::INFOBK)?
+        } else {
+            w::HBRUSH::GetSysColorBrush(co::COLOR::WINDOW)?
+        };
+        dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &fill)?;
 
         let text_col = w::GetSysColor(co::COLOR::WINDOWTEXT);
         let gray_col = w::GetSysColor(co::COLOR::GRAYTEXT);
@@ -3893,8 +4060,7 @@ impl KeyEditor {
         let body_h = (ch - row_h).max(row_h);
         let vis = (body_h / row_h).max(1) as usize;
         // 可視範囲の各行を現モードで (左, 右, 右を淡色表示するか) に文字列化する。衝突は ⚠ を付す。
-        // 機能順＝(機能, キー群 or "—"), キー順＝(キー, 全機能ラベル)。
-        let picking = self.inner.picking.borrow().is_some();
+        // 機能順＝(機能, キー群 or "—"), キー順＝(キー, 全機能ラベル or －)。
         let lines: Vec<(String, String, bool)> = if picking {
             // ピックモード：機能一覧（pick_rows を view で絞ったもの）を並べる。
             let pr = self.inner.pick_rows.borrow();
@@ -3940,11 +4106,16 @@ impl KeyEditor {
                     .filter_map(|vi| {
                         view.get(top + vi).map(|&ri| {
                             let r = &krows[ri];
-                            let mut right = r.labels.join(", ");
-                            if r.labels.len() > 1 {
-                                right.push_str(" ⚠");
+                            if r.labels.is_empty() {
+                                // 機能未割当の空キー定義は － を淡色で（機能を割り当ててください）。
+                                (r.chord.clone(), "－".to_string(), true)
+                            } else {
+                                let mut right = r.labels.join(", ");
+                                if r.labels.len() > 1 {
+                                    right.push_str(" ⚠");
+                                }
+                                (r.chord.clone(), right, false)
                             }
-                            (r.chord.clone(), right, false)
                         })
                     })
                     .collect()
@@ -4031,8 +4202,9 @@ impl KeyEditor {
         Ok(())
     }
 
-    /// window 生成後の初期化（スクロール調整・再描画）。
+    /// window 生成後の初期化（ボタン整形・スクロール調整・再描画）。
     fn populate(&self) {
+        self.relabel_buttons();
         self.ensure_visible();
         let _ = self.hwnd().InvalidateRect(None, false);
     }

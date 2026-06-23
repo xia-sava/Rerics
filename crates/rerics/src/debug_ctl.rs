@@ -178,6 +178,9 @@ impl MainWindow {
                         Ok(())
                     }));
                 }
+                debug_server::Request::KeysAddKeyDef { category, chord } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| (h.add_keydef)(&chord)));
+                }
             }
         }
     }
