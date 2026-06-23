@@ -36,6 +36,7 @@ rerics.registerCommand("up", () => {
 | `await rerics.listDir(path)` | ディレクトリ走査（裏スレッド・`Promise<RericsDirEntry[]>`） |
 | `rerics.registerCommand(name, handler)` | 名前付きコマンドを登録（handler は同期/async どちらでも） |
 | `rerics.on(event, handler)` | 本体のイベントを購読（`changeDirectory` / `executeCommand`） |
+| `await rerics.copy()` / `await rerics.move()` | 選択を反対ペインへコピー/移動（ワーカー実行・完了を待てる） |
 
 詳細な型は `rerics.d.ts` を参照。
 
@@ -88,8 +89,24 @@ rerics.activePane().apply((d) => {
 rerics.command("Delete");  // 選んだ .tmp を削除（確認は本体設定に従う）
 ```
 
-ワーカーを起動する操作（コピー/移動/削除など）は「開始」まで戻り、**完了は待たない**。
-完了を待ちたい操作向けの `await` 版は今後追加する。
+`rerics.command()` でワーカーを起動する操作（コピー/移動/削除など）は「開始」まで戻り、
+**完了は待たない**。完了を待ちたいときは下記の `await` 版を使う。
+
+### 非同期ファイル操作（完了を待つ）
+
+`await rerics.copy()` / `await rerics.move()` は、アクティブペインの選択（無ければカーソル）項目を
+反対ペインへコピー/移動する。ワーカースレッドで実行し、**完了するまで待てる** `Promise` を返す。
+失敗・中止は例外になる（`try/catch`）。
+
+```ts
+rerics.activePane().apply((d) => {
+  for (const it of d.items) if (it.ext === "txt") it.selected = true;
+});
+await rerics.copy();        // コピー完了まで待つ
+rerics.log("コピー完了");
+```
+
+同名衝突は本体の確認ダイアログで解決する（`await` 中もダイアログは反応する）。
 
 ### イベントの購読
 

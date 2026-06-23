@@ -128,6 +128,15 @@ rerics.on("executeCommand", (name) => {
   rerics.log(`コマンド: ${name}`);
 });
 
+// 非同期操作の例：選択した .txt を反対ペインへコピーし、完了を待ってからログを出す。
+rerics.registerCommand("copyTxt", async () => {
+  rerics.activePane().apply((d) => {
+    for (const it of d.items) if (it.ext === "txt") it.selected = true;
+  });
+  await rerics.copy();
+  rerics.log("コピー完了");
+});
+
 // モーダルの例：確認・入力・一覧選択。
 rerics.registerCommand("askThings", async () => {
   if (!rerics.confirm("続けますか？")) {

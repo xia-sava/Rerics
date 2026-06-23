@@ -163,4 +163,21 @@ declare namespace rerics {
    * ```
    */
   function on(event: RericsEvent, handler: (arg: string) => void | Promise<void>): void;
+
+  /**
+   * アクティブペインの選択（無ければカーソル）項目を反対ペインへコピーする。ワーカーで実行し、
+   * **完了まで待てる** `Promise` を返す（`await` する）。失敗・中止は例外。
+   *
+   * ```ts
+   * rerics.activePane().apply((d) => {
+   *   for (const it of d.items) if (it.ext === "txt") it.selected = true;
+   * });
+   * await rerics.copy();
+   * rerics.log("コピー完了");
+   * ```
+   */
+  function copy(): Promise<void>;
+
+  /** コピーと同じだが移動（成功後に元を削除）。詳細は {@link copy}。 */
+  function move(): Promise<void>;
 }

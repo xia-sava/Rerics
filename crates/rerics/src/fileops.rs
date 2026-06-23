@@ -264,7 +264,8 @@ impl MainWindow {
         }
         let src_dir = self.pane(is_left).borrow().path().to_path_buf();
         let dst_dir = self.pane(!is_left).borrow().path().to_path_buf();
-        self.start_copy(src_dir, dst_dir, names, move_it)
+        self.start_copy(src_dir, dst_dir, names, move_it)?;
+        Ok(())
     }
 
     /// 選択中（無ければカーソル位置）の項目名を集める。`..` は除外する。
@@ -342,13 +343,15 @@ impl MainWindow {
     }
 
     /// コピー/移動をワーカースレッドで起動する。完了は `wm_timer` 経由で取り込む。
+    /// コピー/移動をワーカースレッドで起動し、払い出したタスク `id` を返す。`id` は完了
+    /// （`WorkerEvent::Done`）の突合に使える（スクリプトの async 操作が完了を待つのに利用）。
     pub(crate) fn start_copy(
         &self,
         src_dir: PathBuf,
         dst_dir: PathBuf,
         names: Vec<String>,
         move_it: bool,
-    ) -> w::AnyResult<()> {
+    ) -> w::AnyResult<u64> {
         let control = Arc::new(TaskControl::new());
         let copy_opts = {
             let f = self.config.borrow().file_ops;
@@ -373,7 +376,7 @@ impl MainWindow {
             rerics_core::run_copy(&host, &src_dir, &dst_dir, &names, move_it);
             let _ = host.tx.send(WorkerEvent::Done { id, kind, src_dir, dst_dir });
         });
-        Ok(())
+        Ok(id)
     }
 
     /// カーソル位置の項目を入力ダイアログでリネームする。完了後は新名へカーソルを移す。

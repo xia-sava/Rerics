@@ -2397,3 +2397,38 @@ fn script_events_fire_on_command_and_navigation() {
         "ToParent should also fire executeCommand: {log2}"
     );
 }
+
+/// scripting：`await rerics.copy()` がワーカー完了で resolve し、コピーが実ペインに反映される
+/// （非同期操作ブリッジの実経路＝UI スレッドのワーカー完了がエンジンの await を解く）。
+#[test]
+fn script_async_copy_awaits_worker_completion() {
+    let server = Server::start_with_scripts(&["a.txt", "b.txt"], &[]);
+    // 右ペインを親へ移し、左=sbx／右=親 にする（src≠dst で同名衝突を避ける）。
+    server.req("POST", "/command/FocusRight", "").unwrap();
+    server.req("POST", "/command/ToParent", "").unwrap();
+    let parent = server.req("GET", "/state/panes/right/location", "").unwrap().1;
+    assert!(!parent.contains("sbx"), "right pane should be the parent: {parent}");
+    server.req("POST", "/command/FocusLeft", "").unwrap();
+
+    // 左で a.txt を選択して await copy → 親へコピーされ、完了後にログが出る。
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"(async () => {
+                 rerics.activePane().apply((d) => {
+                   for (const it of d.items) if (it.name === "a.txt") it.selected = true;
+                 });
+                 await rerics.copy();
+                 rerics.log("ASYNC COPY DONE");
+               })();"#,
+        )
+        .expect("eval");
+
+    // await が解けて完了ログが出る（＝ワーカー完了がエンジンへ橋渡しされた）。
+    let log = poll(&server, "/state/log", |b| b.contains("ASYNC COPY DONE"));
+    assert!(log.contains("ASYNC COPY DONE"), "await copy should resolve after the worker: {log}");
+    // 右ペイン（親）に a.txt がコピーされている。
+    let right = poll(&server, "/state/panes/right/items", |b| b.contains("\"name\":\"a.txt\""));
+    assert!(right.contains("\"name\":\"a.txt\""), "copied file should appear in the dest pane: {right}");
+}

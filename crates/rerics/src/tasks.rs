@@ -131,6 +131,7 @@ impl MainWindow {
                 WorkerEvent::Done { id, kind, src_dir, dst_dir } => {
                     self.on_op_done(kind, &src_dir, &dst_dir)?;
                     self.tasks.borrow_mut().retain(|e| e.id != id);
+                    self.notify_script_op_done(id);
                     self.maybe_kill_task_timer();
                 }
                 WorkerEvent::ArchiveDone { id, archive, temp_root, outcome } => {

@@ -34,6 +34,15 @@ pub trait HostApi {
     /// 内蔵コマンドを名前で実行する（同期）。不明な名前・実行失敗はエラー文字列を返す。
     /// ワーカーを起動する操作は「開始」までで戻り、完了は待たない。
     fn command(&self, name: &str, args: &[String]) -> Result<(), String>;
+    /// 非同期ファイル操作（コピー/移動）を起動する。完了時に `done` へ結果を送る
+    /// （Ok＝成功・Err＝失敗/中止のメッセージ）。スクリプトはこの完了を `await` する。
+    fn begin_operation(&self, op: ScriptOp, done: tokio::sync::oneshot::Sender<Result<(), String>>);
+}
+
+/// スクリプトが起動する非同期ファイル操作の種別。
+pub enum ScriptOp {
+    Copy,
+    Move,
 }
 
 /// ペイン 1 つぶんの状態スナップショット（スクリプトへ渡す）。JS では camelCase で見える。
@@ -202,6 +211,22 @@ fn read_dir_entries(path: &str) -> std::io::Result<Vec<DirEntry>> {
     Ok(out)
 }
 
+/// 非同期ファイル操作（コピー/移動）を起動し、ワーカー完了まで `await` する op。ホストへ
+/// 起動を依頼し、完了の `oneshot` を待つ＝ UI スレッドのワーカー完了がここで resolve する。
+#[op2(async(lazy), nofast)]
+async fn op_copy(
+    state: Rc<std::cell::RefCell<OpState>>,
+    move_it: bool,
+) -> Result<(), deno_error::JsErrorBox> {
+    let host = state.borrow().borrow::<Host>().clone();
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+    host.begin_operation(if move_it { ScriptOp::Move } else { ScriptOp::Copy }, tx);
+    match rx.await {
+        Ok(r) => r.map_err(deno_error::JsErrorBox::generic),
+        Err(_) => Err(deno_error::JsErrorBox::generic("operation was dropped")),
+    }
+}
+
 /// 重い走査を裏のブロッキングプールに逃がす非同期 op。GUI には触れない純粋処理なので
 /// ホストを介さずそのまま `spawn_blocking` でき、スクリプトからは `await` するだけ。
 #[op2(async(lazy), nofast)]
@@ -226,6 +251,7 @@ extension!(
         op_set_selected,
         op_apply_selection,
         op_command,
+        op_copy,
         op_list_dir
     ]
 );
@@ -313,6 +339,8 @@ const BOOTSTRAP: &str = r#"
     activePane: () => makePane(ops.op_pane_snapshot(false)),
     oppositePane: () => makePane(ops.op_pane_snapshot(true)),
     command: (name, ...args) => ops.op_command(String(name), args.map(String)),
+    copy: () => ops.op_copy(false),
+    move: () => ops.op_copy(true),
     registerCommand: (name, fn) => {
       if (typeof fn !== "function") throw new TypeError("registerCommand: fn must be a function");
       commands.set(String(name), fn);
@@ -531,6 +559,7 @@ mod tests {
         commands: RefCell<Vec<(String, Vec<String>)>>,
         /// この名前のコマンドは失敗させる（エラー経路の検証用）。
         failing_command: Option<String>,
+        operations: RefCell<Vec<&'static str>>,
     }
 
     impl HostApi for MockHost {
@@ -571,6 +600,18 @@ mod tests {
             }
             self.commands.borrow_mut().push((name.to_string(), args.to_vec()));
             Ok(())
+        }
+        fn begin_operation(
+            &self,
+            op: ScriptOp,
+            done: tokio::sync::oneshot::Sender<Result<(), String>>,
+        ) {
+            self.operations.borrow_mut().push(match op {
+                ScriptOp::Copy => "copy",
+                ScriptOp::Move => "move",
+            });
+            // 完了を即座に通知する（実 GUI ではワーカー完了で送られる）。
+            let _ = done.send(Ok(()));
         }
     }
 
@@ -890,6 +931,24 @@ mod tests {
             vec!["cd1:C:\\d".to_string(), "cmd:CursorDown".to_string()]
         );
         assert_eq!(*host.navigated.borrow(), vec!["C:\\d/x".to_string()]);
+    }
+
+    #[test]
+    fn async_copy_and_move_await_host_completion() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:async-op",
+            r#"(async () => {
+                 await rerics.copy();
+                 await rerics.move();
+                 rerics.log("ops done");
+               })();"#
+                .to_string(),
+        )
+        .unwrap();
+        assert_eq!(*host.operations.borrow(), vec!["copy", "move"]);
+        assert_eq!(*host.logs.borrow(), vec!["ops done".to_string()]);
     }
 
     #[test]

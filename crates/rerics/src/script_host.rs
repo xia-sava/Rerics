@@ -7,16 +7,18 @@
 //! コマンドは投げっぱなし（完了を待たない）。一覧取得だけは `HostApi` を呼ばないので同期で待てる。
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
+use tokio::sync::oneshot;
 use winsafe::prelude::*;
 
 use crate::MainWindow;
 use crate::dialog::{InputMode, MessageResult, MessageStyle, input_box, list_box, message_box};
 use rerics_core::{Command, Invocation};
 
-use crate::script::{self, HostApi, PaneItem, PaneSnapshot};
+use crate::script::{self, HostApi, PaneItem, PaneSnapshot, ScriptOp};
 use crate::ui_marshal::{self, WakeQueue};
 use crate::winutil::msg::SCRIPT_WAKE;
 
@@ -32,6 +34,7 @@ pub enum HostCall {
     SetSelected { is_left: bool, index: usize, selected: bool },
     ApplySelection { is_left: bool, changes: Vec<(usize, bool)> },
     Command { name: String, args: Vec<String> },
+    BeginOperation { op: ScriptOp, done: OpDone },
 }
 
 /// UI スレッド → エンジンスレッドへの応答。
@@ -46,6 +49,11 @@ pub enum HostResp {
 }
 
 type ScriptQueue = WakeQueue<HostCall, HostResp>;
+
+/// 非同期操作の完了通知の送り先（Ok＝成功・Err＝失敗/中止メッセージ）。
+type OpDone = oneshot::Sender<Result<(), String>>;
+/// 進行中のスクリプト発 async 操作：タスク id → 完了通知。
+type PendingOps = Rc<RefCell<HashMap<u64, OpDone>>>;
 
 /// `SystemTime` を Unix epoch ミリ秒へ。取得不可・1970 より前は 0。
 fn system_time_ms(t: Option<std::time::SystemTime>) -> u64 {
@@ -81,6 +89,9 @@ pub struct ScriptBridge {
     /// 各ペイン（[左, 右]）で最後に changeDirectory を撃った現在地。実移動の検出に使う
     /// （在席再読込・F5・操作後 Focus では現在地が変わらないので撃たない）。
     last_dir: Rc<RefCell<[String; 2]>>,
+    /// 進行中のスクリプト発 async 操作。`WorkerEvent::Done` で対応する `oneshot` を発火し、
+    /// スクリプトの `await` を解く。
+    pending_ops: PendingOps,
 }
 
 impl ScriptBridge {
@@ -92,6 +103,7 @@ impl ScriptBridge {
             cmd_rx: Rc::new(RefCell::new(Some(cmd_rx))),
             suppress_events: Rc::new(Cell::new(false)),
             last_dir: Rc::new(RefCell::new([String::new(), String::new()])),
+            pending_ops: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -232,6 +244,16 @@ impl HostApi for GuiHost {
             _ => Err("コマンドの実行に応答がありませんでした".to_string()),
         }
     }
+
+    fn begin_operation(&self, op: ScriptOp, done: OpDone) {
+        // 起動依頼を UI へ送る（ack のみ同期で待つ）。完了は `done`（oneshot）で後から届く。
+        let _ = ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::BeginOperation { op, done },
+        );
+    }
 }
 
 /// スクリプトエンジンを別スレッドに建てる。起動スクリプト（`data_dir()/scripts`）を読み込み、
@@ -332,7 +354,46 @@ impl MainWindow {
                 HostCall::Command { name, args } => {
                     let _ = tx.send(HostResp::CommandResult(self.run_script_command(&name, args)));
                 }
+                HostCall::BeginOperation { op, done } => {
+                    self.begin_script_operation(op, done);
+                    let _ = tx.send(HostResp::Done);
+                }
             }
+        }
+    }
+
+    /// スクリプト発の非同期ファイル操作を起動する。対象＝アクティブペインの選択（無ければ
+    /// カーソル）、行き先＝反対ペイン。ワーカーを起こせたらタスク id に `done` を紐づけ、完了で
+    /// 発火する。起動できなければ（対象なし・書庫・起動失敗）即座に `done` へエラーを返す。
+    fn begin_script_operation(&self, op: ScriptOp, done: OpDone) {
+        let is_left = !self.active_right.get();
+        if self.pane(is_left).borrow().is_archive() || self.pane(!is_left).borrow().is_archive() {
+            let _ = done.send(Err("書庫の操作は未対応です".to_string()));
+            return;
+        }
+        let names = self.selected_or_cursor_names(is_left);
+        if names.is_empty() {
+            let _ = done.send(Err("対象がありません".to_string()));
+            return;
+        }
+        let move_it = matches!(op, ScriptOp::Move);
+        let src_dir = self.pane(is_left).borrow().path().to_path_buf();
+        let dst_dir = self.pane(!is_left).borrow().path().to_path_buf();
+        match self.start_copy(src_dir, dst_dir, names, move_it) {
+            Ok(id) => {
+                self.script.pending_ops.borrow_mut().insert(id, done);
+            }
+            Err(e) => {
+                let _ = done.send(Err(e.to_string()));
+            }
+        }
+    }
+
+    /// ワーカー完了（`WorkerEvent::Done`）を受けたとき、その id を待っているスクリプト操作が
+    /// あれば完了を通知する（`await` を解く）。スクリプト発でない操作の id は無視される。
+    pub(crate) fn notify_script_op_done(&self, id: u64) {
+        if let Some(done) = self.script.pending_ops.borrow_mut().remove(&id) {
+            let _ = done.send(Ok(()));
         }
     }
 
