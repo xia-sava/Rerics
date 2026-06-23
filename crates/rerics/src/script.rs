@@ -24,6 +24,49 @@ pub trait HostApi {
     fn prompt(&self, message: &str, default: &str) -> Option<String>;
     /// 一覧から 1 つ選ばせ、選んだ行の index・キャンセルなら None。
     fn select(&self, title: &str, items: &[String]) -> Option<usize>;
+    /// ペイン（`opposite=false` でアクティブ・`true` で反対側）の現在状態を一括取得する。
+    /// 別スレッド往復を 1 回で済ませるため、項目一覧ごとスナップショットで返す。
+    fn pane_snapshot(&self, opposite: bool) -> PaneSnapshot;
+}
+
+/// ペイン 1 つぶんの状態スナップショット（スクリプトへ渡す）。JS では camelCase で見える。
+/// 項目アクセスのたびにスレッド往復しないよう、一覧を丸ごと 1 回で持って行く。
+#[derive(serde::Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PaneSnapshot {
+    /// 現在地の表示パス（書庫内なら "C:\foo.zip\inner" 形式）。
+    pub dir: String,
+    /// 書庫内にいるか。
+    pub is_archive: bool,
+    /// カーソル行の index（`items` の添字）。
+    pub cursor: usize,
+    /// 表示順の項目一覧（".." を含む）。
+    pub items: Vec<PaneItem>,
+}
+
+/// ペイン内の 1 項目（スクリプトへ渡す）。コア `FileItem` を素直に写したもの。
+#[derive(serde::Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PaneItem {
+    /// `items` 内での添字（将来の書き戻しで行を指す）。
+    pub index: usize,
+    /// 表示名（拡張子込み）。
+    pub name: String,
+    /// 拡張子を除いた名前。
+    pub base_name: String,
+    /// 拡張子（ドット無し・無ければ空）。
+    pub ext: String,
+    pub is_dir: bool,
+    /// 親（".."）エントリか。
+    pub is_parent: bool,
+    /// バイトサイズ（ディレクトリ・取得不可は 0）。
+    pub size: u64,
+    /// 最終更新時刻（Unix epoch ミリ秒・取得不可は 0）。
+    pub mtime: u64,
+    /// 選択（マーク）されているか。
+    pub selected: bool,
+    pub readonly: bool,
+    pub hidden: bool,
 }
 
 type Host = Rc<dyn HostApi>;
@@ -74,6 +117,13 @@ fn op_select(
         .select(title, &items)
         .map(|i| vec![i as u32])
         .unwrap_or_default()
+}
+
+/// ペイン状態のスナップショットを取得する同期 op（`opposite` で反対ペイン）。
+#[op2]
+#[serde]
+fn op_pane_snapshot(state: &mut OpState, opposite: bool) -> PaneSnapshot {
+    state.borrow::<Host>().pane_snapshot(opposite)
 }
 
 /// ディレクトリ一覧の1エントリ（スクリプトへ渡す情報）。JS 側では camelCase で見える。
@@ -131,6 +181,7 @@ extension!(
         op_confirm,
         op_prompt,
         op_select,
+        op_pane_snapshot,
         op_list_dir
     ]
 );
@@ -143,6 +194,17 @@ const BOOTSTRAP: &str = r#"
 (() => {
   const ops = Deno.core.ops;
   const commands = new Map();
+  const makePane = (snap) => {
+    const items = snap.items;
+    return {
+      dir: snap.dir,
+      isArchive: snap.isArchive,
+      cursor: snap.cursor,
+      items,
+      selectedItems: items.filter((it) => it.selected),
+      cursorItem: items[snap.cursor] ?? null,
+    };
+  };
   globalThis.rerics = {
     log: (m) => ops.op_log(String(m)),
     currentDir: () => ops.op_current_dir(),
@@ -157,6 +219,8 @@ const BOOTSTRAP: &str = r#"
       return r.length ? r[0] : null;
     },
     listDir: (p) => ops.op_list_dir(String(p)),
+    activePane: () => makePane(ops.op_pane_snapshot(false)),
+    oppositePane: () => makePane(ops.op_pane_snapshot(true)),
     registerCommand: (name, fn) => {
       if (typeof fn !== "function") throw new TypeError("registerCommand: fn must be a function");
       commands.set(String(name), fn);
@@ -336,6 +400,8 @@ mod tests {
         confirm_reply: bool,
         prompt_reply: Option<String>,
         select_reply: Option<usize>,
+        active_pane: PaneSnapshot,
+        opposite_pane: PaneSnapshot,
     }
 
     impl HostApi for MockHost {
@@ -356,6 +422,30 @@ mod tests {
         }
         fn select(&self, _title: &str, _items: &[String]) -> Option<usize> {
             self.select_reply
+        }
+        fn pane_snapshot(&self, opposite: bool) -> PaneSnapshot {
+            if opposite {
+                self.opposite_pane.clone()
+            } else {
+                self.active_pane.clone()
+            }
+        }
+    }
+
+    /// テスト用に名前・ディレクトリ種別・選択状態だけ与えた項目を作る。
+    fn item(index: usize, name: &str, is_dir: bool, selected: bool) -> PaneItem {
+        PaneItem {
+            index,
+            name: name.to_string(),
+            base_name: name.to_string(),
+            ext: String::new(),
+            is_dir,
+            is_parent: name == "..",
+            size: 0,
+            mtime: 0,
+            selected,
+            readonly: false,
+            hidden: false,
         }
     }
 
@@ -509,6 +599,52 @@ mod tests {
         assert_eq!(
             *host.logs.borrow(),
             vec!["c=true".to_string(), "p=typed".to_string(), "s=2".to_string()]
+        );
+    }
+
+    #[test]
+    fn object_model_exposes_pane_items_and_derived_views() {
+        let host = Rc::new(MockHost {
+            active_pane: PaneSnapshot {
+                dir: "C:\\work".into(),
+                is_archive: false,
+                cursor: 2,
+                items: vec![
+                    item(0, "..", true, false),
+                    item(1, "sub", true, false),
+                    item(2, "a.txt", false, true),
+                    item(3, "b.txt", false, true),
+                ],
+            },
+            opposite_pane: PaneSnapshot {
+                dir: "C:\\other".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:object-model",
+            r#"
+              const p = rerics.activePane();
+              rerics.log("dir=" + p.dir);
+              rerics.log("count=" + p.items.length);
+              rerics.log("sel=" + p.selectedItems.map(i => i.name).join(","));
+              rerics.log("cursor=" + p.cursorItem.name);
+              rerics.log("opp=" + rerics.oppositePane().dir);
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            *host.logs.borrow(),
+            vec![
+                "dir=C:\\work".to_string(),
+                "count=4".to_string(),
+                "sel=a.txt,b.txt".to_string(),
+                "cursor=a.txt".to_string(),
+                "opp=C:\\other".to_string(),
+            ]
         );
     }
 

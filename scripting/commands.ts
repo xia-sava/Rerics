@@ -55,6 +55,26 @@ rerics.registerCommand("recentHere", async () => {
   rerics.log(`24時間以内に更新: ${recent.length} 件`);
 });
 
+// オブジェクトモデルの例：表示中の項目・選択・カーソルを listDir 無しで読む。
+// activePane() は現在ペインのスナップショット（dir / items / selectedItems / cursorItem）。
+rerics.registerCommand("paneInfo", () => {
+  const p = rerics.activePane();
+  rerics.log(`現在地: ${p.dir}`);
+  rerics.log(`項目数: ${p.items.length}（選択 ${p.selectedItems.length}）`);
+  rerics.log(`カーソル: ${p.cursorItem ? p.cursorItem.name : "なし"}`);
+});
+
+// 選択中ファイルの合計サイズを出す（書込み系を介さない読み取りの実用例）。
+rerics.registerCommand("selectedSize", () => {
+  const files = rerics.activePane().selectedItems.filter((it) => !it.isDir);
+  if (files.length === 0) {
+    rerics.log("ファイルが選択されていません");
+    return;
+  }
+  const total = files.reduce((sum, it) => sum + it.size, 0);
+  rerics.log(`選択 ${files.length} ファイル — 合計 ${fmtSize(total)}`);
+});
+
 // モーダルの例：確認・入力・一覧選択。
 rerics.registerCommand("askThings", async () => {
   if (!rerics.confirm("続けますか？")) {

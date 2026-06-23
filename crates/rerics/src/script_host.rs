@@ -14,7 +14,7 @@ use winsafe::prelude::*;
 
 use crate::MainWindow;
 use crate::dialog::{InputMode, MessageResult, MessageStyle, input_box, list_box, message_box};
-use crate::script::{self, HostApi};
+use crate::script::{self, HostApi, PaneItem, PaneSnapshot};
 use crate::ui_marshal::{self, WakeQueue};
 use crate::winutil::msg::SCRIPT_WAKE;
 
@@ -26,6 +26,7 @@ pub enum HostCall {
     Confirm(String),
     Prompt { message: String, default: String },
     Select { title: String, items: Vec<String> },
+    PaneSnapshot { opposite: bool },
 }
 
 /// UI スレッド → エンジンスレッドへの応答。
@@ -35,9 +36,17 @@ pub enum HostResp {
     Bool(bool),
     Text(Option<String>),
     Index(Option<usize>),
+    Snapshot(script::PaneSnapshot),
 }
 
 type ScriptQueue = WakeQueue<HostCall, HostResp>;
+
+/// `SystemTime` を Unix epoch ミリ秒へ。取得不可・1970 より前は 0。
+fn system_time_ms(t: Option<std::time::SystemTime>) -> u64 {
+    t.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// UI スレッド → エンジンスレッドへのコマンド。
 /// scripting 単独ビルドでは送り手（debug-server エンドポイント／将来のキーバインド）が
@@ -157,6 +166,18 @@ impl HostApi for GuiHost {
             _ => None,
         }
     }
+
+    fn pane_snapshot(&self, opposite: bool) -> PaneSnapshot {
+        match ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::PaneSnapshot { opposite },
+        ) {
+            Ok(HostResp::Snapshot(snap)) => snap,
+            _ => PaneSnapshot::default(),
+        }
+    }
 }
 
 /// スクリプトエンジンを別スレッドに建てる。起動スクリプト（`data_dir()/scripts`）を読み込み、
@@ -232,7 +253,47 @@ impl MainWindow {
                     let index = list_box(&self.wnd, &title, "script_select", &items, 0);
                     let _ = tx.send(HostResp::Index(index));
                 }
+                HostCall::PaneSnapshot { opposite } => {
+                    let active_left = !self.active_right.get();
+                    let is_left = if opposite { !active_left } else { active_left };
+                    let _ = tx.send(HostResp::Snapshot(self.build_pane_snapshot(is_left)));
+                }
             }
+        }
+    }
+
+    /// 指定側ペインの現在状態をスナップショットに写す（現在地は `Pane`・項目と選択は
+    /// 表示中の `FileListState` から）。スクリプトの `activePane()`/`oppositePane()` の実体。
+    fn build_pane_snapshot(&self, is_left: bool) -> PaneSnapshot {
+        let (dir, is_archive) = {
+            let pane = self.pane(is_left).borrow();
+            (pane.loc_display(), pane.is_archive())
+        };
+        let state = self.view(is_left).state();
+        let s = state.borrow();
+        let items = s
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, it)| PaneItem {
+                index,
+                name: it.name.clone(),
+                base_name: it.base_name.clone(),
+                ext: it.extension.clone(),
+                is_dir: it.is_dir,
+                is_parent: it.is_parent,
+                size: it.size.unwrap_or(0),
+                mtime: system_time_ms(it.modified),
+                selected: it.selected,
+                readonly: it.readonly,
+                hidden: it.hidden,
+            })
+            .collect();
+        PaneSnapshot {
+            dir,
+            is_archive,
+            cursor: s.cursor,
+            items,
         }
     }
 

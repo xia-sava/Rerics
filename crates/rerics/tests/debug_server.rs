@@ -2240,3 +2240,47 @@ fn script_select_opens_list_and_returns_index() {
     let log = poll(&server, "/state/log", |b| b.contains("idx=1"));
     assert!(log.contains("idx=1"), "select should return chosen index: {log}");
 }
+
+/// scripting：`rerics.activePane()` が実ペインの項目・選択・カーソルを読み取れる
+/// （オブジェクトモデルの実 GUI 経路＝スナップショットが UI スレッドから組み上がる）。
+#[test]
+fn script_active_pane_reads_items_selection_and_cursor() {
+    let server = Server::start_with_scripts(&["a.txt", "b.txt", "c.txt"], &[]);
+    // 左 items は [.., a.txt, b.txt, c.txt]。CursorDown×1 で a.txt → MarkToggle で
+    // a.txt を選択しカーソルは b.txt（index 2）へ。
+    server.req("POST", "/command/CursorDown", "").expect("down");
+    server.req("POST", "/command/MarkToggle", "").expect("mark");
+
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"const p = rerics.activePane();
+               rerics.log("om count=" + p.items.length
+                 + " sel=" + p.selectedItems.map(i => i.name).join(",")
+                 + " cur=" + (p.cursorItem ? p.cursorItem.name : "none")
+                 + " inSbx=" + (p.dir.indexOf("sbx") >= 0));"#,
+        )
+        .expect("eval");
+
+    let log = poll(&server, "/state/log", |b| b.contains("om count="));
+    assert!(
+        log.contains("om count=4 sel=a.txt cur=b.txt inSbx=true"),
+        "activePane should reflect real items/selection/cursor: {log}"
+    );
+
+    // 反対ペインも読める（同じサンドボックスを開いている＝項目数は一致、選択は無し）。
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"const o = rerics.oppositePane();
+               rerics.log("opp count=" + o.items.length + " sel=" + o.selectedItems.length);"#,
+        )
+        .expect("eval opp");
+    let log2 = poll(&server, "/state/log", |b| b.contains("opp count="));
+    assert!(
+        log2.contains("opp count=4 sel=0"),
+        "oppositePane should read the other side: {log2}"
+    );
+}

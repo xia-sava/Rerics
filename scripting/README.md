@@ -30,10 +30,31 @@ rerics.registerCommand("up", () => {
 | `rerics.confirm(message)` | 確認ダイアログ（はい/いいえ）→ `boolean` |
 | `rerics.prompt(message, default?)` | 入力ダイアログ → `string \| null`（キャンセルで null） |
 | `rerics.select(title, items)` | 一覧から選択 → `number \| null`（選んだ index・キャンセルで null） |
+| `rerics.activePane()` | アクティブペインの状態スナップショット → `RericsPane` |
+| `rerics.oppositePane()` | 反対側ペインの状態スナップショット → `RericsPane` |
 | `await rerics.listDir(path)` | ディレクトリ走査（裏スレッド・`Promise<RericsDirEntry[]>`） |
 | `rerics.registerCommand(name, handler)` | 名前付きコマンドを登録（handler は同期/async どちらでも） |
 
 詳細な型は `rerics.d.ts` を参照。
+
+### ペインのオブジェクトモデル
+
+`activePane()` / `oppositePane()` は、現在表示中のペイン状態を **取得時点のスナップショット**
+として返す（項目アクセスごとのスレッド往復を避けるため一括取得）。`listDir` と違い、実際に
+表示・選択されている項目をそのまま読める。
+
+```ts
+const p = rerics.activePane();
+p.dir;             // 現在地（書庫内なら "C:\foo.zip\inner" 形式）
+p.items;           // 表示順の項目一覧（".." を含む）
+p.selectedItems;   // 選択（マーク）中の項目だけ
+p.cursorItem;      // カーソル行の項目（範囲外なら null）
+for (const it of p.items) {
+  it.name; it.baseName; it.ext; it.isDir; it.size; it.mtime; it.selected;
+}
+```
+
+項目の `selected` は現状 **読み取り専用**（選択の書き戻し配線は次の段階で入る）。
 
 ## 共通処理・複数ファイル
 
