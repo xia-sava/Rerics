@@ -1908,6 +1908,12 @@ fn settings_key_editor_inline_function_picker_changes_binding() {
     // その機能（label 0＝SelectMask）のピッカーへ。中止すると不変。
     server.req("POST", "/keys/filer/pick/0", "").unwrap();
     assert!(keys().contains(r#""picking":true"#), "ピックモードに入る: {}", keys());
+    // ピッカーはジャンル順に並ぶ（カーソル移動ジャンルが先頭＝CursorUp が最初）。
+    assert!(
+        keys().contains(r#""rows":[["CursorUp",[]]"#),
+        "機能ピッカーはジャンル順（先頭 CursorUp）: {}",
+        keys()
+    );
     server.req("POST", "/keys/filer/pickcancel", "").unwrap();
     assert!(keys().contains(r#""picking":false"#), "中止でピック解除");
     // 中止後（検索クリア・キー順へ復帰）も割り当ては不変。

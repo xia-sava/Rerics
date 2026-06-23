@@ -2646,6 +2646,45 @@ fn label_display(label: &str) -> String {
         .unwrap_or_else(|| label.to_string())
 }
 
+/// 機能ピッカーの並び・見出し用ジャンル。`(並び順, 見出し)` を返す。並びは機能ピッカーを
+/// ジャンルごとに固まらせるためのもので、設定 UI 専用の括り（コアの文脈分けとは別軸）。
+fn command_genre(cmd: Command) -> (u8, &'static str) {
+    use Command::*;
+    match cmd {
+        CursorUp | CursorDown | CursorTop | CursorEnd | CursorPageUp | CursorPageDown
+        | SetCursorPosition | CursorOpposite => (0, "カーソル移動"),
+        EnterDir | ToParent | ToRoot | HistoryBack | HistoryForward | PathHistoryDialog
+        | ChangeDirectory | ChangeDirectoryDialog | ChangeDrive | ChangeDriveDialog | JumpDialog
+        | RegisterPath | IncrementalSearchDialog | NextDrive | PreviousDrive => (1, "移動・ナビゲーション"),
+        MarkToggle | SelectAll | ClearAll | ReverseAll | SelectAllFile | ReverseAllFile
+        | SelectFile | SelectMask | PathMask => (2, "選択"),
+        Reload | Refresh | View | ViewFile | DirectoryInformation | SortByName | SortByExtension
+        | SortBySize | SortByDate | Sort | SortDialog | SortReverseToggle => (3, "表示・並べ替え"),
+        FocusLeft | FocusRight | PageNext | PagePrevious | NewTab | CloseTab | SwapPath
+        | OppositeToCurrent | CurrentToOpposite => (4, "タブ・ペイン"),
+        MakeDirectory | Copy | Move | Rename | RenameSequenceDialog | Delete | SendToRecycled
+        | CreateShortcut | ClipCopy | ClipCut | ClipPaste | CreateFile | Edit | PropertyDialog
+        | Compress | Extract => (5, "ファイル操作"),
+        MaximizeLeft | MaximizeRight | MaximizeLeftForce | MaximizeRightForce | BorderLeft
+        | BorderRight | BorderReset | MaximizeCurrent | MaximizeWindow | MinimizeWindow => {
+            (6, "ウィンドウ")
+        }
+        OpenTaskManager | OpenSettings | KeyBindsDialog | CopyLog | ClearLog | Nop
+        | ApplicationExit | End | Restart | Quit => (7, "アプリ・その他"),
+        ViewerScrollUp | ViewerScrollDown | ViewerPageUp | ViewerPageDown | ViewerScrollTop
+        | ViewerScrollBottom => (8, "スクロール"),
+        ViewerSearchDialog | ViewerFindNext | ViewerFindPrevious => (9, "検索"),
+        ViewerClose | ViewerSelectAll | ViewerToggleMode | ViewerChangeEncoding | ViewerCopy
+        | ViewerContextMenu => (10, "ビューア操作"),
+        ImageNext | ImagePrevious | ImageZoomIn | ImageZoomOut | ImageFitWindow | ImageActualSize
+        | ImageFitWidth | ImageFitHeight | ImageFitLarge => (11, "表示・ズーム"),
+        ImageRotateRight | ImageRotateLeft | ImageFlipHorizontal | ImageFlipVertical => {
+            (12, "回転・反転")
+        }
+        ImageCopy | MediaTogglePlay => (13, "画像操作"),
+    }
+}
+
 /// キー編集ページの並べ方。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum KeyView {
@@ -3507,8 +3546,10 @@ impl KeyEditor {
             label_display(&binding_label(&old_value))
         };
         let ctx = self.inner.category.context();
-        *self.inner.pick_rows.borrow_mut() =
-            Command::all().filter(|c| c.available_in(ctx)).collect();
+        // ジャンル順に固める（同ジャンル内は元の列挙順）。見出しは描画時に境界で出す。
+        let mut pick: Vec<Command> = Command::all().filter(|c| c.available_in(ctx)).collect();
+        pick.sort_by_key(|c| command_genre(*c).0);
+        *self.inner.pick_rows.borrow_mut() = pick;
         *self.inner.picking.borrow_mut() = Some(PickState {
             chord: chord.clone(),
             old_value,
@@ -4120,19 +4161,47 @@ impl KeyEditor {
         // 最下部 1 行はステータス（操作結果・衝突メッセージ）に充てる。
         let body_h = (ch - row_h).max(row_h);
         let vis = (body_h / row_h).max(1) as usize;
+        // 機能ピッカーは専用描画：左ガターにジャンル見出し（境界の行に淡色）、本体に機能名を並べる。
+        if picking {
+            let pr = self.inner.pick_rows.borrow();
+            let name_x = gui::dpi_x(168);
+            for vi in 0..vis {
+                let di = top + vi;
+                let Some(cmd) = view.get(di).and_then(|&i| pr.get(i)).copied() else {
+                    break;
+                };
+                let y = vi as i32 * row_h;
+                let ty = y + (row_h - fh) / 2;
+                if di == sel {
+                    dc.FillRect(w::RECT { left: 0, top: y, right: cw, bottom: y + row_h }, &hl_bg)?;
+                }
+                // ジャンルの先頭行（または可視範囲の最上行）にだけ見出しを出す。
+                let genre = command_genre(cmd).1;
+                let prev_genre = if vi > 0 {
+                    view.get(di - 1).and_then(|&i| pr.get(i)).map(|c| command_genre(*c).1)
+                } else {
+                    None
+                };
+                if prev_genre != Some(genre) {
+                    dc.SetTextColor(if di == sel { hl_text } else { gray_col })?;
+                    dc.TextOut(key_x, ty, genre)?;
+                }
+                dc.SetTextColor(if di == sel { hl_text } else { text_col })?;
+                dc.TextOut(name_x, ty, cmd.display_name())?;
+            }
+            let sep_y = ch - row_h;
+            let sep_brush = w::HBRUSH::GetSysColorBrush(co::COLOR::BTNSHADOW)?;
+            dc.FillRect(w::RECT { left: 0, top: sep_y, right: cw, bottom: sep_y + 1 }, &sep_brush)?;
+            let status = self.inner.status.borrow();
+            if !status.is_empty() {
+                dc.SetTextColor(text_col)?;
+                dc.TextOut(key_x, sep_y + (row_h - fh) / 2, &status)?;
+            }
+            return Ok(());
+        }
         // 可視範囲の各行を現モードで (左, 右, 右を淡色表示するか) に文字列化する。衝突は ⚠ を付す。
         // 機能順＝(機能, キー群 or "—"), キー順＝(キー, 全機能ラベル or －)。
-        let lines: Vec<(String, String, bool)> = if picking {
-            // ピックモード：機能一覧（pick_rows を view で絞ったもの）を並べる。
-            let pr = self.inner.pick_rows.borrow();
-            (0..vis)
-                .filter_map(|vi| {
-                    view.get(top + vi)
-                        .and_then(|&i| pr.get(i))
-                        .map(|c| (c.display_name().to_string(), String::new(), false))
-                })
-                .collect()
-        } else {
+        let lines: Vec<(String, String, bool)> = {
             match self.inner.view_mode.get() {
             KeyView::ByCommand => {
                 let rows = self.inner.rows.borrow();
