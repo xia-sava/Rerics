@@ -141,6 +141,8 @@ pub mod modal_registry {
         pub rows: Vec<(String, Vec<String>)>,
         /// 選択行 index（絞り込み後の `rows` 上の位置）。
         pub selected: usize,
+        /// 機能順で選択行のキー群のうちサブ選択中の index（個別削除の対象）。
+        pub sub: usize,
         /// キャプチャ待ちか。
         pub capturing: bool,
         /// 直近の操作結果メッセージ。
@@ -169,6 +171,8 @@ pub mod modal_registry {
         pub search: Box<dyn Fn(&str)>,
         /// 並べ方を切り替える（`true`＝キー順／`false`＝機能順）。
         pub set_view: Box<dyn Fn(bool)>,
+        /// 機能順で選択行のキーのサブ選択 index を変える。
+        pub select_chord: Box<dyn Fn(usize)>,
     }
 
     thread_local! {
@@ -263,6 +267,8 @@ pub enum Request {
     KeysSearch { category: String, query: String },
     /// `POST /keys/<category>/view`：並べ方を切り替える。body が `key` ならキー順、それ以外は機能順。
     KeysSetView { category: String, by_key: bool },
+    /// `POST /keys/<category>/sub/<index>`：機能順で選択行のキーのサブ選択を index にする。
+    KeysSelectChord { category: String, index: usize },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -457,6 +463,11 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 let rest = rest.trim_end_matches('/');
                 if let Some((cat, idx)) = rest.rsplit_once("/select/") {
                     idx.parse::<usize>().ok().map(|index| Request::KeysSelect {
+                        category: cat.to_string(),
+                        index,
+                    })
+                } else if let Some((cat, idx)) = rest.rsplit_once("/sub/") {
+                    idx.parse::<usize>().ok().map(|index| Request::KeysSelectChord {
                         category: cat.to_string(),
                         index,
                     })

@@ -2657,6 +2657,11 @@ struct KeyEditorInner {
     /// 検索クエリ（機能名・キーへの部分一致・大小無視）。空なら全件表示。
     query: RefCell<String>,
     sel: Cell<usize>,
+    /// 機能順で選択行のキー群のうち、サブ選択中のキー index（個別削除・個別変更の対象）。
+    sub: Cell<usize>,
+    /// 直近 render で算出した、選択行のキー群の x 範囲＝`(キー index, x0, x1)`。クリックの
+    /// ヒットテスト用（機能順のみ）。
+    chord_rects: RefCell<Vec<(usize, i32, i32)>>,
     /// 表示先頭行（スクロール）。
     top: Cell<usize>,
     row_h: Cell<i32>,
@@ -2773,6 +2778,8 @@ impl KeyEditor {
                 view: RefCell::new(Vec::new()),
                 query: RefCell::new(String::new()),
                 sel: Cell::new(0),
+                sub: Cell::new(0),
+                chord_rects: RefCell::new(Vec::new()),
                 top: Cell::new(0),
                 row_h: Cell::new(gui::dpi_y(22)),
                 capturing: Cell::new(false),
@@ -2859,6 +2866,7 @@ impl KeyEditor {
                 KeyEditorState {
                     rows,
                     selected: this.inner.sel.get(),
+                    sub: this.inner.sub.get(),
                     capturing: this.inner.capturing.get(),
                     status: this.inner.status.borrow().clone(),
                     query: this.inner.query.borrow().clone(),
@@ -2872,6 +2880,7 @@ impl KeyEditor {
             Box::new(move |index: usize| {
                 if index < this.inner.view.borrow().len() {
                     this.inner.sel.set(index);
+                    this.inner.sub.set(0);
                     this.ensure_visible();
                     let _ = this.hwnd().InvalidateRect(None, false);
                 }
@@ -2921,9 +2930,18 @@ impl KeyEditor {
             let this = self.clone();
             Box::new(move |by_key: bool| this.set_view(by_key)) as Box<dyn Fn(bool)>
         };
+        let select_chord = {
+            let this = self.clone();
+            Box::new(move |index: usize| {
+                if index < this.sel_chord_count() {
+                    this.inner.sub.set(index);
+                    let _ = this.hwnd().InvalidateRect(None, false);
+                }
+            }) as Box<dyn Fn(usize)>
+        };
         crate::debug_server::modal_registry::register_key_editor(
             self.inner.category.debug_str(),
-            KeyEditorHooks { read, select, bind, unbind, reset, search, set_view },
+            KeyEditorHooks { read, select, bind, unbind, reset, search, set_view, select_chord },
         );
     }
 
@@ -3083,6 +3101,10 @@ impl KeyEditor {
         } else if self.inner.sel.get() >= n {
             self.inner.sel.set(n - 1);
         }
+        let cc = self.sel_chord_count();
+        if self.inner.sub.get() >= cc {
+            self.inner.sub.set(cc.saturating_sub(1));
+        }
     }
 
     /// 検索クエリを適用して表示を絞り込む（`config` は変更しない）。同じ値なら何もしない。
@@ -3139,6 +3161,38 @@ impl KeyEditor {
         self.inner.key_rows.borrow().get(ri).map(|r| r.chord.clone())
     }
 
+    /// 機能順で選択行のキー数。
+    fn sel_chord_count(&self) -> usize {
+        if self.inner.view_mode.get() != KeyView::ByCommand {
+            return 0;
+        }
+        let Some(&ri) = self.inner.view.borrow().get(self.inner.sel.get()) else {
+            return 0;
+        };
+        self.inner.rows.borrow().get(ri).map(|r| r.chords.len()).unwrap_or(0)
+    }
+
+    /// 機能順でサブ選択中のキー（範囲外・キー順では `None`）。
+    fn sub_chord(&self) -> Option<String> {
+        if self.inner.view_mode.get() != KeyView::ByCommand {
+            return None;
+        }
+        let ri = *self.inner.view.borrow().get(self.inner.sel.get())?;
+        let rows = self.inner.rows.borrow();
+        rows.get(ri)?.chords.get(self.inner.sub.get()).map(|c| c.token.clone())
+    }
+
+    /// 機能順でサブ選択を左右に動かす。
+    fn move_sub(&self, dir: isize) {
+        let n = self.sel_chord_count() as isize;
+        if n <= 1 {
+            return;
+        }
+        let i = (self.inner.sub.get() as isize + dir).clamp(0, n - 1);
+        self.inner.sub.set(i as usize);
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
     /// chord を選択行のコマンドへ割り当てる。**既存の機能は消さず追記する**＝同じ chord に
     /// 別機能があれば衝突になる（マークして OK/適用で解決を促す）。
     fn assign(&self, command: Command, chord: KeyChord) {
@@ -3171,38 +3225,22 @@ impl KeyEditor {
     }
 
     /// 選択行の割り当てを解除する（既定キーは空 Vec で打ち消す＝差分保存で永続）。
-    /// 機能順＝その機能の全キー／キー順＝選択中のその1キー（その定義を丸ごと）。
+    /// 機能順＝サブ選択中の1キーからその機能を外す／キー順＝選択中のその1キー（定義を丸ごと）。
     fn unbind_selected(&self) {
         let status = match self.inner.view_mode.get() {
             KeyView::ByCommand => {
                 let Some(command) = self.selected_command() else {
                     return;
                 };
-                let chords: Vec<String> = {
-                    let view = self.inner.view.borrow();
-                    match view.get(self.inner.sel.get()) {
-                        Some(&ri) => self
-                            .inner
-                            .rows
-                            .borrow()
-                            .get(ri)
-                            .map(|r| r.chords.iter().map(|c| c.token.clone()).collect())
-                            .unwrap_or_default(),
-                        None => return,
-                    }
-                };
-                if chords.is_empty() {
+                let Some(chord) = self.sub_chord() else {
                     *self.inner.status.borrow_mut() = "割り当てがありません".to_string();
                     return;
+                };
+                // サブ選択キーからその機能だけ取り除く（同キーの他機能＝衝突分は残す）。
+                if let Some(vals) = self.inner.draft.borrow_mut().get_mut(&chord) {
+                    vals.retain(|v| Invocation::parse(v).map(|i| i.command) != Some(command));
                 }
-                // その機能の値だけを各 chord から取り除く（他機能との衝突分は残す）。
-                let mut draft = self.inner.draft.borrow_mut();
-                for c in &chords {
-                    if let Some(vals) = draft.get_mut(c) {
-                        vals.retain(|v| Invocation::parse(v).map(|i| i.command) != Some(command));
-                    }
-                }
-                format!("{} の割り当てを解除しました", command.as_token())
+                format!("{} から {} を解除しました", chord, command.as_token())
             }
             KeyView::ByKey => {
                 let Some(chord) = self.selected_chord() else {
@@ -3282,6 +3320,7 @@ impl KeyEditor {
         }
         let i = (self.inner.sel.get() as isize + dir).clamp(0, n - 1);
         self.inner.sel.set(i as usize);
+        self.inner.sub.set(0);
         self.ensure_visible();
         let _ = self.hwnd().InvalidateRect(None, false);
     }
@@ -3326,7 +3365,20 @@ impl KeyEditor {
             let rh = this.inner.row_h.get().max(1);
             let row = this.inner.top.get() + (p.coords.y / rh) as usize;
             if row < this.inner.view.borrow().len() {
+                let same_row = this.inner.sel.get() == row;
                 this.inner.sel.set(row);
+                // 同じ行のキーをクリックしたらサブ選択をそこへ。行が変わった場合は先頭へ。
+                let hit = if same_row {
+                    this.inner
+                        .chord_rects
+                        .borrow()
+                        .iter()
+                        .find(|(_, x0, x1)| p.coords.x >= *x0 && p.coords.x < *x1)
+                        .map(|(ci, _, _)| *ci)
+                } else {
+                    None
+                };
+                this.inner.sub.set(hit.unwrap_or(0));
                 this.ensure_visible();
                 let _ = this.hwnd().InvalidateRect(None, false);
             }
@@ -3366,6 +3418,10 @@ impl KeyEditor {
             self.move_sel(-1);
         } else if vk == k::DOWN {
             self.move_sel(1);
+        } else if vk == k::LEFT {
+            self.move_sub(-1);
+        } else if vk == k::RIGHT {
+            self.move_sub(1);
         }
     }
 
@@ -3470,6 +3526,22 @@ impl KeyEditor {
                     .collect()
             }
         };
+        // 機能順・選択行のキー群（サブ選択のチップ描画・ヒットテスト用）。
+        let sub = self.inner.sub.get();
+        let sel_chords: Vec<(String, bool)> = if self.inner.view_mode.get() == KeyView::ByCommand {
+            view.get(sel)
+                .and_then(|&ri| {
+                    self.inner
+                        .rows
+                        .borrow()
+                        .get(ri)
+                        .map(|r| r.chords.iter().map(|c| (c.token.clone(), c.conflicted)).collect())
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        self.inner.chord_rects.borrow_mut().clear();
         for (vi, (left, right, muted)) in lines.iter().enumerate() {
             let di = top + vi;
             let y = vi as i32 * row_h;
@@ -3483,6 +3555,39 @@ impl KeyEditor {
             dc.TextOut(key_x, ty, left)?;
             if di == sel && capturing {
                 dc.TextOut(chord_x, ty, "← キーを押してください（Escで中止）")?;
+            } else if di == sel && !sel_chords.is_empty() {
+                // 選択行のキーを個別に描く。サブ選択は WINDOW 地のチップで強調する。
+                let mut x = chord_x;
+                let mut rects = self.inner.chord_rects.borrow_mut();
+                for (ci, (tok, conflicted)) in sel_chords.iter().enumerate() {
+                    let mut label = tok.clone();
+                    if *conflicted {
+                        label.push_str(" ⚠");
+                    }
+                    let tw = dc.GetTextExtentPoint32(&label).map(|z| z.cx).unwrap_or(0);
+                    if ci == sub {
+                        dc.FillRect(
+                            w::RECT {
+                                left: x - gui::dpi_x(3),
+                                top: y + gui::dpi_y(1),
+                                right: x + tw + gui::dpi_x(3),
+                                bottom: y + row_h - gui::dpi_y(1),
+                            },
+                            &bg,
+                        )?;
+                        dc.SetTextColor(text_col)?;
+                        dc.TextOut(x, ty, &label)?;
+                        dc.SetTextColor(hl_text)?;
+                    } else {
+                        dc.TextOut(x, ty, &label)?;
+                    }
+                    rects.push((ci, x, x + tw));
+                    x += tw;
+                    if ci + 1 < sel_chords.len() {
+                        dc.TextOut(x, ty, ", ")?;
+                        x += dc.GetTextExtentPoint32(", ").map(|z| z.cx).unwrap_or(0);
+                    }
+                }
             } else {
                 if *muted && di != sel {
                     dc.SetTextColor(gray_col)?;

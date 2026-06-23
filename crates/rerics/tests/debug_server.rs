@@ -1829,6 +1829,40 @@ fn settings_key_editor_conflicts_block_ok_until_resolved() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// 機能順での個別削除：1 機能に複数キーがある時、サブ選択したキーだけを外す。
+#[test]
+fn settings_key_editor_per_chord_delete_in_command_view() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // MakeDirectory に未使用キーを足す＝[Ctrl+Shift+M, K]（衝突なし・トークン昇順）。
+    server.req("POST", "/keys/filer/bind", r#"["MakeDirectory","Ctrl+Shift+M"]"#).unwrap();
+    let s = keys();
+    assert!(
+        s.contains(r#"["MakeDirectory",["Ctrl+Shift+M","K"]]"#),
+        "MakeDirectory が 2 キーを持つ: {s}"
+    );
+
+    // サブ選択を index 1（K）にして削除＝K だけ外れ、Ctrl+Shift+M が残る。
+    server.req("POST", "/keys/filer/sub/1", "").unwrap();
+    assert!(keys().contains(r#""sub":1"#), "サブ選択が K に: {}", keys());
+    server.req("POST", "/keys/filer/unbind", "").unwrap();
+    let s = keys();
+    assert!(
+        s.contains(r#"["MakeDirectory",["Ctrl+Shift+M"]]"#),
+        "K だけ外れ Ctrl+Shift+M が残る: {s}"
+    );
+
+    // 残ったキーも削除＝未割当に。
+    server.req("POST", "/keys/filer/unbind", "").unwrap();
+    assert!(keys().contains(r#"["MakeDirectory",[]]"#), "MakeDirectory が未割当に: {}", keys());
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// キー編集ページの検索（機能名・キーへの部分一致・大小無視）。クエリで一覧が絞り込まれ、
 /// 空クエリで全件へ戻る。`config` は変わらない（割り当ては不変）。
 #[test]
