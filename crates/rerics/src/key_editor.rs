@@ -3,7 +3,7 @@
 //! `config.keybinds` を下書き編集し、設定ダイアログの OK／適用で確定する（`settings_dialog::show` が生成）。
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use rerics_core::{Command, CommandContext, Invocation, KeyChord, KeyMap};
@@ -90,6 +90,35 @@ fn binding_label(value: &str) -> String {
     Invocation::parse(value)
         .map(|i| i.command.as_token().to_string())
         .unwrap_or_else(|| value.trim().to_string())
+}
+
+/// Script/Eval の行を「項目（スクリプト名／コード）順」に並べて `rows` へ足す。各項目はバインド
+/// 済みなら chord 順の行、未割当なら `chord: None` の 1 行。割り当て有無で位置が動かないよう、
+/// バインド済み・未割当を分けずにここで一括に作る。`binds` は当該コマンドの (chord, 生値, 衝突) 群。
+fn push_scripty_rows(
+    rows: &mut Vec<BindRow>,
+    command: Command,
+    items: &BTreeSet<String>,
+    binds: &[(String, String, bool)],
+) {
+    for item in items {
+        let value = Invocation::new(command, vec![item.clone()]).to_token_string();
+        let mut mine: Vec<&(String, String, bool)> =
+            binds.iter().filter(|(_, v, _)| *v == value).collect();
+        mine.sort_by(|a, b| a.0.cmp(&b.0));
+        if mine.is_empty() {
+            rows.push(BindRow { command, value, chord: None, conflicted: false });
+        } else {
+            for (chord, v, conflicted) in mine {
+                rows.push(BindRow {
+                    command,
+                    value: v.clone(),
+                    chord: Some(chord.clone()),
+                    conflicted: *conflicted,
+                });
+            }
+        }
+    }
 }
 
 /// 実呼び出しの表示文字列（機能順の中央カラム）。`Script`/`Eval` はラッパを剥がして中身
@@ -781,8 +810,12 @@ impl KeyEditor {
         let ctx = self.inner.category.context();
         // 表示する機能＝文脈内の全機能 ＋ 文脈外でもバインドのある機能（Script/Eval 等）。
         let mut cmds: Vec<Command> = Command::all().filter(|c| c.available_in(ctx)).collect();
-        let mut extra: Vec<Command> =
-            by_cmd.keys().copied().filter(|c| !c.available_in(ctx)).collect();
+        // Script/Eval は下のスクリプトブロックで一括に並べるので、ここでは扱わない。
+        let mut extra: Vec<Command> = by_cmd
+            .keys()
+            .copied()
+            .filter(|c| !c.available_in(ctx) && !matches!(c, Command::Script | Command::Eval))
+            .collect();
         extra.sort_by_key(|c| c.as_token());
         cmds.extend(extra);
         let mut rows: Vec<BindRow> = Vec::new();
@@ -803,41 +836,26 @@ impl KeyEditor {
                 }),
             }
         }
-        // 登録済みスクリプトを「スクリプト」ジャンルに出す。キーへ結ばれている分は上のループで
-        // 既に行になっているので、未割当のものだけ chord:None の行を足す（そこへ割り当てられる）。
+        // 「スクリプト」ジャンル：登録スクリプトと「コードを割り当て」のコードを、バインド状態に
+        // 依らず名前/コード順で並べる（割り当てても行が動かないようにするためここで一括に作る）。
         {
-            let bound: std::collections::HashSet<String> = self
-                .inner
-                .draft
-                .borrow()
-                .values()
-                .flatten()
-                .filter(|v| !v.trim().is_empty())
-                .cloned()
-                .collect();
-            for name in &self.inner.scripts {
-                let value = Invocation::new(Command::Script, vec![name.clone()]).to_token_string();
-                if !bound.contains(&value) {
-                    rows.push(BindRow {
-                        command: Command::Script,
-                        value,
-                        chord: None,
-                        conflicted: false,
-                    });
+            let script_binds = by_cmd.remove(&Command::Script).unwrap_or_default();
+            let mut names: BTreeSet<String> = self.inner.scripts.iter().cloned().collect();
+            for (_, v, _) in &script_binds {
+                if let Some(name) = Invocation::parse(v).and_then(|i| i.args.into_iter().next()) {
+                    names.insert(name);
                 }
             }
-            // 「コードを割り当て」で書いた未割当コードも、未バインドのものを Eval 行として並べる。
-            for code in self.inner.pending_eval.borrow().iter() {
-                let value = Invocation::new(Command::Eval, vec![code.clone()]).to_token_string();
-                if !bound.contains(&value) {
-                    rows.push(BindRow {
-                        command: Command::Eval,
-                        value,
-                        chord: None,
-                        conflicted: false,
-                    });
+            push_scripty_rows(&mut rows, Command::Script, &names, &script_binds);
+
+            let eval_binds = by_cmd.remove(&Command::Eval).unwrap_or_default();
+            let mut codes: BTreeSet<String> = self.inner.pending_eval.borrow().iter().cloned().collect();
+            for (_, v, _) in &eval_binds {
+                if let Some(code) = Invocation::parse(v).and_then(|i| i.args.into_iter().next()) {
+                    codes.insert(code);
                 }
             }
+            push_scripty_rows(&mut rows, Command::Eval, &codes, &eval_binds);
         }
         key_rows.sort_by(|a, b| a.chord.cmp(&b.chord));
         *self.inner.rows.borrow_mut() = rows;

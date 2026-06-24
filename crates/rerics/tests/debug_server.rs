@@ -1681,6 +1681,40 @@ fn req_bytes(port: u16, method: &str, path: &str) -> Option<(u16, Vec<u8>)> {
 }
 
 /// 設定ダイアログ＝独自モーダルだが modal_registry に登録済み。OpenSettings で開き、
+/// スクリプト/コードの行は、キー割り当ての有無で位置が動かない（名前/コード順に固定）。
+#[test]
+fn settings_key_editor_script_rows_keep_position_when_bound() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[(
+            "00.ts",
+            "rerics.registerCommand(\"aaaScript\", () => {});\nrerics.registerCommand(\"zzzScript\", () => {});",
+        )],
+    );
+    poll(&server, "/script/commands", |b| b.contains("zzzScript"));
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // Script 系に絞ると aaaScript・zzzScript が名前順（aaa が先・zzz が後）に並ぶ。
+    server.req("POST", "/keys/filer/search", "Script").unwrap();
+    let before = keys();
+    assert!(before.contains(r#""rows":[["Script",[]],["Script",[]]]"#), "未割当 2 行: {before}");
+
+    // 2 番目（zzzScript）へキーを割り当てても、行は 2 番目のまま動かない。
+    server.req("POST", "/keys/filer/select/1", "").unwrap();
+    server.req("POST", "/keys/filer/capture", "Ctrl+Alt+Z").unwrap();
+    server.req("POST", "/keys/filer/search", "Script").unwrap();
+    let after = keys();
+    assert!(
+        after.contains(r#""rows":[["Script",[]],["Script",["Ctrl+Alt+Z"]]]"#),
+        "zzz は割り当て後も 2 番目に居座る（aaa が先・zzz が後）: {after}"
+    );
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// 設定ナビを pane 番号で切り替える debug エンドポイント（`/settings/nav/<pane>`）＝
 /// キー編集ページを前面に出して /snapshot/modal で撮れる（headless 観測）。未オープンは 400。
 #[test]
