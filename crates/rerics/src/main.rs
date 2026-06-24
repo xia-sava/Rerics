@@ -812,6 +812,15 @@ impl MainWindow {
             }
             _ => {}
         }
+        // 引数に式（`=...`）があれば、別スレッドで非同期評価してから本体を走らせる。UI は
+        // ブロックしないので、式が `r.prompt()` 等のモーダルを呼んでもデッドロックしない。
+        if inv.args.iter().any(|a| a.starts_with('=')) {
+            // マクロ（非式の引数に混ざる `<I:>` 等）のキャンセルは無音で実行中止。
+            if let Ok(slots) = self.build_arg_slots(is_left, &inv.args) {
+                self.begin_expr_dispatch(is_left, cmd, slots);
+            }
+            return Ok(());
+        }
         // 引数があれば実行直前にマクロを展開する。入力/選択のキャンセルは無音で実行中止。
         let args = if inv.args.is_empty() {
             Vec::new()

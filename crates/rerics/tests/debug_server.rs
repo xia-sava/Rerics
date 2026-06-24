@@ -3151,6 +3151,38 @@ fn script_command_invokes_registered_command() {
     );
 }
 
+/// 第3弾：引数の式（`=...`）が別スレッドで非同期評価され、その値で本体コマンドが走る。
+/// `=r.currentDir() + "/sub"` を評価して実フォルダへ移動できる（マクロ展開ではなく式評価の経路）。
+#[test]
+fn expr_arg_evaluates_async_and_runs_command() {
+    let server = Server::start(&["a.txt"], "");
+    std::fs::create_dir_all(server.base.join("sbx").join("sub")).unwrap();
+    // 引数の式は現在地を読んで "/sub" を足す＝HostApi（currentDir）を式中から呼ぶ非同期評価。
+    server
+        .req("POST", "/command/ChangeDirectory", r#"["=r.currentDir() + \"/sub\""]"#)
+        .expect("cd");
+    let loc = poll(&server, "/state/panes/left/location", |b| b.contains("sub"));
+    assert!(loc.contains("sub"), "式の値でサブフォルダへ移動するはず: {loc}");
+}
+
+/// 第3弾の核心：引数の式が `r.prompt()` 等のモーダルを呼んでも、UI は recv でブロックしない
+/// （結果は別チャネル＋wake で届く）のでデッドロックしない。プロンプトへ入れたパスへ移動できる。
+#[test]
+fn expr_arg_with_modal_does_not_deadlock() {
+    let server = Server::start(&["a.txt"], "");
+    let target = server.base.join("sbx").join("target");
+    std::fs::create_dir_all(&target).unwrap();
+    // 式が prompt を開く。コマンドは即返り、モーダルを debug 駆動してパスを返す。
+    server
+        .req("POST", "/command/ChangeDirectory", r#"["=r.prompt(\"dir?\")"]"#)
+        .expect("cd");
+    wait_modal(&server);
+    server.req("POST", "/modal/text", &target.display().to_string()).expect("text");
+    server.req("POST", "/modal/key/enter", "").expect("enter");
+    let loc = poll(&server, "/state/panes/left/location", |b| b.contains("target"));
+    assert!(loc.contains("target"), "プロンプトのパスへ移動するはず（デッドロックしない）: {loc}");
+}
+
 /// scripting：`registerCommand` の第3引数メタ（label/genre）が `/script/commands` に乗る。
 /// 設定エディタはこの一覧でスクリプト行の表示名／ジャンルを描く（presentation は snapshot で確認）。
 #[test]

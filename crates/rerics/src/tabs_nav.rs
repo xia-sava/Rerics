@@ -823,9 +823,8 @@ impl MainWindow {
         Ok(())
     }
 
-    /// 引数列のマクロを展開する。文字列置換（`<C>`/`<O>`/`<P>`）に加え、ダイアログ系
-    /// （`<I:>`/`<FOLDERDIALOG>`）は GUI ホスト越しにモーダルを開く。キャンセルは [`MacroAbort`]。
-    pub(crate) fn expand_args(&self, is_left: bool, args: &[String]) -> Result<Vec<String>, MacroAbort> {
+    /// マクロ展開・式評価が参照するペイン由来の値（`<C>`/`<O>`/`<P>`/`<M>` の素材）を 1 度に集める。
+    fn macro_values(&self, is_left: bool) -> (String, String, String, Vec<String>) {
         let current = self.pane(is_left).borrow().loc_display();
         let opposite = self.pane(!is_left).borrow().loc_display();
         let cursor_path = {
@@ -845,9 +844,37 @@ impl MainWindow {
                 .map(|it| format!("{}/{}", current, it.name))
                 .collect()
         };
+        (current, opposite, cursor_path, selected)
+    }
+
+    /// 引数列のマクロを展開する。文字列置換（`<C>`/`<O>`/`<P>`）に加え、ダイアログ系
+    /// （`<I:>`/`<FOLDERDIALOG>`）は GUI ホスト越しにモーダルを開く。キャンセルは [`MacroAbort`]。
+    pub(crate) fn expand_args(&self, is_left: bool, args: &[String]) -> Result<Vec<String>, MacroAbort> {
+        let (current, opposite, cursor_path, selected) = self.macro_values(is_left);
         let host = DialogMacroHost { app: self };
         let ctx = MacroCtx { current, opposite, cursor_path, selected, host: &host };
         expand_macros(args, &ctx)
+    }
+
+    /// 引数を解決スロットへ振り分ける。`=` 始まりは式（あとで非同期評価）として `Pending`、
+    /// それ以外はその場でマクロ展開して `Done`。マクロ（`<I:>` 等）のキャンセルは [`MacroAbort`]。
+    pub(crate) fn build_arg_slots(
+        &self,
+        is_left: bool,
+        args: &[String],
+    ) -> Result<Vec<crate::script_host::ArgSlot>, MacroAbort> {
+        use crate::script_host::ArgSlot;
+        let (current, opposite, cursor_path, selected) = self.macro_values(is_left);
+        let host = DialogMacroHost { app: self };
+        let ctx = MacroCtx { current, opposite, cursor_path, selected, host: &host };
+        args.iter()
+            .map(|a| match a.strip_prefix('=') {
+                Some(code) => Ok(ArgSlot::Pending(code.to_string())),
+                None => Ok(ArgSlot::Done(
+                    expand_macros(std::slice::from_ref(a), &ctx)?.into_iter().next().unwrap_or_default(),
+                )),
+            })
+            .collect()
     }
 
     /// 画面座標 `coords` の下にあるペインをホイール回転分だけスクロールする。
