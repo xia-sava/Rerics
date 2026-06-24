@@ -1955,6 +1955,62 @@ fn settings_key_editor_binds_eval_code() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// 「引数」＝バインド済みの組込コマンド行で引数の式を編集すると、そのキーの呼び出しがその場で
+/// 差し替わる。既定 F4 の `=r.prompt(...)` を `=r.currentDir()` へ変え、OK で config.toml に残る。
+#[test]
+fn settings_key_editor_edits_bound_command_arg() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // 既定で F4 = ChangeDirectory("=r.prompt(...)")。r.prompt で F4 の行だけに絞って選ぶ。
+    server.req("POST", "/keys/filer/search", "r.prompt").unwrap();
+    assert!(keys().contains(r#"["ChangeDirectory",["F4"]]"#), "F4 の ChangeDirectory 行: {}", keys());
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+
+    // 引数を式へ差し替える（バインド済み＝そのキーの呼び出しをその場で置換）。
+    server.req("POST", "/keys/filer/arg", "=r.currentDir()").unwrap();
+
+    // OK で確定＝config.toml の F4 が新しい式へ更新される。
+    server.req("POST", "/modal/command/ok", "").expect("ok");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    let cfg = std::fs::read_to_string(server.base.join("data").join("config.toml")).unwrap();
+    assert!(
+        cfg.contains(r#"ChangeDirectory("=r.currentDir()")"#),
+        "F4 の引数が式へ差し替わって保存される: {cfg}"
+    );
+}
+
+/// 「引数」＝未割当の組込コマンド行へ引数の式を付けると、引数つきの未割当（－）行が生え、その行を
+/// キャプチャしてキーへ結べる。OK で `SelectMask("=式")` が当該キーに残る。
+#[test]
+fn settings_key_editor_attaches_arg_to_unbound_command() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // 既定で未バインドの SelectMask（bare 行）を選ぶ。
+    server.req("POST", "/keys/filer/search", "SelectMask").unwrap();
+    assert!(keys().contains(r#"["SelectMask",[]]"#), "未割当の SelectMask 行: {}", keys());
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+
+    // 引数を付ける＝引数つきの未割当行が生え、その行が選択される（apply_arg が選択する）。
+    server.req("POST", "/keys/filer/arg", "=r.cursorName()").unwrap();
+    // 選択中のその行をキャプチャ＝SelectMask("=r.cursorName()") が Ctrl+Alt+J に割り当たる。
+    server.req("POST", "/keys/filer/capture", "Ctrl+Alt+J").unwrap();
+
+    // OK で確定＝config.toml の Ctrl+Alt+J に引数つき呼び出しが残る。
+    server.req("POST", "/modal/command/ok", "").expect("ok");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    let cfg = std::fs::read_to_string(server.base.join("data").join("config.toml")).unwrap();
+    assert!(
+        cfg.contains(r#"SelectMask("=r.cursorName()")"#),
+        "引数つき呼び出しがキーに割り当たって保存される: {cfg}"
+    );
+}
+
 /// キー順で機能名をダブルクリック相当＝インライン機能ピッカーで別機能へ差し替える。
 /// 機能一覧は検索ボックスで絞り込め、確定でそのキーの定義が変わる（中止なら不変）。
 #[test]

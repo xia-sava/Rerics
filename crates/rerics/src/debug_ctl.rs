@@ -162,6 +162,12 @@ impl MainWindow {
                         Ok(())
                     }));
                 }
+                debug_server::Request::KeysSetArg { category, arg } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| {
+                        (h.set_arg)(&arg);
+                        Ok(())
+                    }));
+                }
                 debug_server::Request::KeysPick { category, label } => {
                     let _ = tx.send(self.debug_keys_op(&category, |h| {
                         (h.pick)(label);

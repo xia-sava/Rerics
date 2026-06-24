@@ -254,6 +254,9 @@ struct KeyEditorInner {
     /// 「コードを割り当て」で書かれた、まだキーへ結んでいない `Eval` のコード。スクリプトジャンルに
     /// 未割当（－）行として並べ、通常のキャプチャで割り当てる。
     pending_eval: RefCell<Vec<String>>,
+    /// 「引数」で組込コマンドへ付けた、まだキーへ結んでいない呼び出し（`ChangeDirectory("=式")` 等）。
+    /// 当該コマンドの未割当（－）行として並べ、通常のキャプチャで割り当てる。
+    pending_args: RefCell<Vec<String>>,
     /// 直近の操作結果（観測・状態表示用）。
     status: RefCell<String>,
 }
@@ -343,7 +346,7 @@ impl KeyEditor {
             gui::ButtonOpts {
                 text: "キーを追加(&K)",
                 position: gui::dpi(16, 496),
-                width: gui::dpi_x(150),
+                width: gui::dpi_x(140),
                 height: gui::dpi_y(28),
                 ..Default::default()
             },
@@ -352,8 +355,8 @@ impl KeyEditor {
             parent,
             gui::ButtonOpts {
                 text: "キーを変更(&C)",
-                position: gui::dpi(174, 496),
-                width: gui::dpi_x(150),
+                position: gui::dpi(162, 496),
+                width: gui::dpi_x(140),
                 height: gui::dpi_y(28),
                 ..Default::default()
             },
@@ -362,8 +365,8 @@ impl KeyEditor {
             parent,
             gui::ButtonOpts {
                 text: "キーを削除(&D)",
-                position: gui::dpi(332, 496),
-                width: gui::dpi_x(150),
+                position: gui::dpi(308, 496),
+                width: gui::dpi_x(140),
                 height: gui::dpi_y(28),
                 ..Default::default()
             },
@@ -373,8 +376,19 @@ impl KeyEditor {
             parent,
             gui::ButtonOpts {
                 text: "コード(&E)",
-                position: gui::dpi(490, 496),
-                width: gui::dpi_x(84),
+                position: gui::dpi(454, 496),
+                width: gui::dpi_x(86),
+                height: gui::dpi_y(28),
+                ..Default::default()
+            },
+        );
+        // 選択中の組込コマンド行へ引数（式）を付ける（モーダル→打鍵で割り当て）。機能順で効く。
+        let btn_arg = gui::Button::new(
+            parent,
+            gui::ButtonOpts {
+                text: "引数(&A)",
+                position: gui::dpi(546, 496),
+                width: gui::dpi_x(86),
                 height: gui::dpi_y(28),
                 ..Default::default()
             },
@@ -383,9 +397,9 @@ impl KeyEditor {
         let reset = gui::Button::new(
             parent,
             gui::ButtonOpts {
-                text: "このページを既定に戻す(&R)",
-                position: gui::dpi(580, 496),
-                width: gui::dpi_x(180),
+                text: "既定に戻す(&R)",
+                position: gui::dpi(638, 496),
+                width: gui::dpi_x(120),
                 height: gui::dpi_y(28),
                 ..Default::default()
             },
@@ -418,6 +432,7 @@ impl KeyEditor {
                 capturing_remap: Cell::new(false),
                 capturing_newdef: Cell::new(false),
                 pending_eval: RefCell::new(Vec::new()),
+                pending_args: RefCell::new(Vec::new()),
                 status: RefCell::new(String::new()),
             }),
         };
@@ -479,6 +494,13 @@ impl KeyEditor {
             let this = me.clone();
             btn_code.on().bn_clicked(move || {
                 this.add_code_row();
+                Ok(())
+            });
+        }
+        {
+            let this = me.clone();
+            btn_arg.on().bn_clicked(move || {
+                this.edit_arg_row();
                 Ok(())
             });
         }
@@ -656,6 +678,11 @@ impl KeyEditor {
             let this = self.clone();
             Box::new(move |code: &str| this.add_code(code)) as Box<dyn Fn(&str)>
         };
+        // 選択中の組込コマンド行へ引数を付ける（「引数」モーダル OK と同じ＝モーダル抜き）。
+        let set_arg = {
+            let this = self.clone();
+            Box::new(move |arg: &str| this.apply_arg(arg)) as Box<dyn Fn(&str)>
+        };
         let pick = {
             let this = self.clone();
             Box::new(move |li: usize| this.enter_pick(li)) as Box<dyn Fn(usize)>
@@ -694,6 +721,7 @@ impl KeyEditor {
                 rebind,
                 capture,
                 add_code,
+                set_arg,
                 pick,
                 pick_commit,
                 pick_cancel,
@@ -872,22 +900,43 @@ impl KeyEditor {
             .collect();
         extra.sort_by_key(|c| c.as_token());
         cmds.extend(extra);
+        // 「引数」で付けた未割当の引数つき呼び出しを、コマンド別に分ける（未割当行として並べる）。
+        let mut pending_by_cmd: HashMap<Command, Vec<String>> = HashMap::new();
+        for v in self.inner.pending_args.borrow().iter() {
+            if let Some(inv) = Invocation::parse(v) {
+                pending_by_cmd.entry(inv.command).or_default().push(v.clone());
+            }
+        }
         let mut rows: Vec<BindRow> = Vec::new();
         for command in cmds {
+            let pend = pending_by_cmd.remove(&command).unwrap_or_default();
             match by_cmd.remove(&command) {
                 Some(mut binds) => {
                     binds.sort_by(|a, b| a.0.cmp(&b.0));
+                    let bound: std::collections::HashSet<String> =
+                        binds.iter().map(|(_, v, _)| v.clone()).collect();
                     for (chord, value, conflicted) in binds {
                         rows.push(BindRow { command, value, chord: Some(chord), conflicted });
                     }
+                    // バインド済みと重複しない引数つき呼び出しは未割当行として残す。
+                    for v in pend {
+                        if !bound.contains(&v) {
+                            rows.push(BindRow { command, value: v, chord: None, conflicted: false });
+                        }
+                    }
                 }
-                // 未割当＝bare コマンドの空行（そこへキャプチャして割り当てる）。
-                None => rows.push(BindRow {
-                    command,
-                    value: Invocation::bare(command).to_token_string(),
-                    chord: None,
-                    conflicted: false,
-                }),
+                // 未割当＝bare コマンドの空行（そこへキャプチャして割り当てる）＋引数つき未割当行。
+                None => {
+                    rows.push(BindRow {
+                        command,
+                        value: Invocation::bare(command).to_token_string(),
+                        chord: None,
+                        conflicted: false,
+                    });
+                    for v in pend {
+                        rows.push(BindRow { command, value: v, chord: None, conflicted: false });
+                    }
+                }
             }
         }
         // 「スクリプト」ジャンル：登録スクリプトと「コードを割り当て」のコードを、バインド状態に
@@ -1421,6 +1470,93 @@ impl KeyEditor {
         self.select_value_row(&value);
         *self.inner.status.borrow_mut() =
             "コードを追加しました。「キー定義を追加」で割り当ててください".to_string();
+        let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    /// 「引数」：選択中の組込コマンド行へ式（または文字列）の引数を付ける。現在の引数を prefill した
+    /// モーダルで編集させ、`apply_arg` で行へ反映する。Script/Eval 行・未選択時は何もしない。
+    fn edit_arg_row(&self) {
+        if self.inner.picking.borrow().is_some() || self.inner.capturing.get() {
+            return;
+        }
+        let Some((command, value, _)) = self.selected_bind() else {
+            return;
+        };
+        if matches!(command, Command::Script | Command::Eval) {
+            *self.inner.status.borrow_mut() =
+                "引数は組込コマンドの行で付けてください（スクリプト/コードは「コード」へ）".to_string();
+            let _ = self.hwnd().InvalidateRect(None, false);
+            return;
+        }
+        let cur = Invocation::parse(&value)
+            .and_then(|i| i.args.into_iter().next())
+            .unwrap_or_default();
+        let Some(arg) = crate::dialog::code_box(
+            &self.list,
+            "引数を入力（先頭 = で式・r. でホスト API・空でリテラルなし）",
+            &cur,
+        ) else {
+            return;
+        };
+        // 子コントロールを親にしたモーダルの後始末で無効化が残ることがあるので明示的に戻す。
+        self.hwnd().EnableWindow(true);
+        self.apply_arg(&arg);
+    }
+
+    /// 選択中の組込コマンド行へ引数 `arg` を反映する。バインド済み行はその場で呼び出しを差し替え、
+    /// 未割当行は `pending_args` に積んで未割当（－）行として出し、通常のキャプチャで割り当てる。
+    /// 「引数」モーダル OK と debug の両方から使う。空引数は引数なし（bare）の呼び出しにする。
+    fn apply_arg(&self, arg: &str) {
+        let Some((command, value, chord)) = self.selected_bind() else {
+            return;
+        };
+        if matches!(command, Command::Script | Command::Eval) {
+            return;
+        }
+        let arg = arg.trim();
+        let new_value = if arg.is_empty() {
+            Invocation::bare(command).to_token_string()
+        } else {
+            Invocation::new(command, vec![arg.to_string()]).to_token_string()
+        };
+        if new_value == value {
+            return;
+        }
+        match chord {
+            // バインド済み＝そのキーの呼び出しを新しい引数つき呼び出しへ差し替える。
+            Some(ch) => {
+                let mut draft = self.inner.draft.borrow_mut();
+                if let Some(vals) = draft.get_mut(&ch) {
+                    for v in vals.iter_mut() {
+                        if *v == value {
+                            *v = new_value.clone();
+                        }
+                    }
+                }
+                drop(draft);
+                *self.inner.status.borrow_mut() =
+                    format!("{} の引数を変更しました（{}）", command.display_name(), ch);
+            }
+            // 未割当＝引数つき呼び出しを未割当行として用意し、あとはキャプチャで割り当てる。
+            None => {
+                let mut pa = self.inner.pending_args.borrow_mut();
+                if !pa.contains(&new_value) {
+                    pa.push(new_value.clone());
+                }
+                drop(pa);
+                *self.inner.status.borrow_mut() =
+                    "引数つきの行を追加しました。「キー定義を追加」で割り当ててください".to_string();
+            }
+        }
+        self.inner.view_mode.set(KeyView::ByCommand);
+        self.toggle[0].select(true);
+        self.toggle[1].select(false);
+        *self.inner.query.borrow_mut() = String::new();
+        let _ = self.search.set_text("");
+        self.relabel_buttons();
+        self.update_hint();
+        self.rebuild_rows();
+        self.select_value_row(&new_value);
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 

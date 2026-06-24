@@ -185,6 +185,8 @@ pub mod modal_registry {
         pub capture: ChordFn,
         /// コードを未割当 `Eval` 行として追加する（割り当ては行を選んで capture する）。
         pub add_code: Box<dyn Fn(&str)>,
+        /// 選択中の組込コマンド行へ引数を付ける（割り当ては行を選んで capture する）。
+        pub set_arg: Box<dyn Fn(&str)>,
         /// キー順で選択行の li 番目の機能を差し替えるピックモードへ入る（インライン機能ピッカー）。
         pub pick: Box<dyn Fn(usize)>,
         /// ピックモードで選択中の機能を確定する。
@@ -313,6 +315,8 @@ pub enum Request {
     KeysCapture { category: String, chord: String },
     /// `POST /keys/<category>/code`：body のコードを未割当 `Eval` 行として追加する（割り当ては capture で）。
     KeysAddCode { category: String, code: String },
+    /// `POST /keys/<category>/arg`：選択中の組込コマンド行へ body の引数を付ける（割り当ては capture で）。
+    KeysSetArg { category: String, arg: String },
     /// `POST /keys/<category>/pick/<labelIndex>`：キー順で選択行の機能ピッカーへ入る。
     KeysPick { category: String, label: usize },
     /// `POST /keys/<category>/pickcommit`：ピックで選択中の機能を確定する。
@@ -587,6 +591,10 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                     let mut code = String::new();
                     let _ = std::io::Read::read_to_string(req.as_reader(), &mut code);
                     Some(Request::KeysAddCode { category: cat.to_string(), code })
+                } else if let Some(cat) = rest.strip_suffix("/arg") {
+                    let mut arg = String::new();
+                    let _ = std::io::Read::read_to_string(req.as_reader(), &mut arg);
+                    Some(Request::KeysSetArg { category: cat.to_string(), arg })
                 } else if let Some(cat) = rest.strip_suffix("/view") {
                     let mut body = String::new();
                     let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);
