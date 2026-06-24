@@ -187,6 +187,10 @@ pub mod modal_registry {
         pub add_code: Box<dyn Fn(&str)>,
         /// 選択中の組込コマンド行へ引数を付ける（割り当ては行を選んで capture する）。
         pub set_arg: Box<dyn Fn(&str)>,
+        /// 実際の「引数」モーダル（補完つき）を開く（補完 UI の観測・駆動用・閉じるまでブロックする）。
+        pub open_arg: Box<dyn Fn()>,
+        /// 実際の「コード」モーダル（補完つき）を開く（補完 UI の観測・駆動用・閉じるまでブロックする）。
+        pub open_code: Box<dyn Fn()>,
         /// キー順で選択行の li 番目の機能を差し替えるピックモードへ入る（インライン機能ピッカー）。
         pub pick: Box<dyn Fn(usize)>,
         /// ピックモードで選択中の機能を確定する。
@@ -319,6 +323,16 @@ pub enum Request {
     KeysAddCode { category: String, code: String },
     /// `POST /keys/<category>/arg`：選択中の組込コマンド行へ body の引数を付ける（割り当ては capture で）。
     KeysSetArg { category: String, arg: String },
+    /// `POST /keys/<category>/openarg`：実際の「引数」モーダル（補完つき）を開く（補完 UI の観測用）。
+    KeysOpenArg { category: String },
+    /// `POST /keys/<category>/opencode`：実際の「コード」モーダル（補完つき）を開く（補完 UI の観測用）。
+    KeysOpenCode { category: String },
+    /// `POST /completion/type`：開いている補完つき入力欄へ body を打ち込む（入力模擬・補完更新）。
+    CompletionType { text: String },
+    /// `GET /completion`：開いている補完つき入力欄の候補一覧と本文（JSON）。未オープンは null。
+    CompletionState,
+    /// `POST /completion/accept/<idx>`：開いている補完つき入力欄の idx 番目の候補を確定する。
+    CompletionAccept { idx: u32 },
     /// `POST /keys/<category>/pick/<labelIndex>`：キー順で選択行の機能ピッカーへ入る。
     KeysPick { category: String, label: usize },
     /// `POST /keys/<category>/pickcommit`：ピックで選択中の機能を確定する。
@@ -445,6 +459,8 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::ScriptCommands)
             } else if path == "/script/members" {
                 Some(Request::ScriptMembers)
+            } else if path == "/completion" {
+                Some(Request::CompletionState)
             } else {
                 path.strip_prefix("/keys/").map(|cat| Request::KeysState {
                     category: cat.trim_end_matches('/').to_string(),
@@ -466,6 +482,15 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                         return;
                     }
                 }
+            } else if path == "/completion/type" {
+                let mut text = String::new();
+                let _ = std::io::Read::read_to_string(req.as_reader(), &mut text);
+                Some(Request::CompletionType { text })
+            } else if let Some(n) = path.strip_prefix("/completion/accept/") {
+                n.trim_end_matches('/')
+                    .parse::<u32>()
+                    .ok()
+                    .map(|idx| Request::CompletionAccept { idx })
             } else if let Some(n) = path.strip_prefix("/view/search/history/") {
                 n.trim_end_matches('/')
                     .parse::<usize>()
@@ -599,6 +624,10 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                     let mut arg = String::new();
                     let _ = std::io::Read::read_to_string(req.as_reader(), &mut arg);
                     Some(Request::KeysSetArg { category: cat.to_string(), arg })
+                } else if let Some(cat) = rest.strip_suffix("/openarg") {
+                    Some(Request::KeysOpenArg { category: cat.to_string() })
+                } else if let Some(cat) = rest.strip_suffix("/opencode") {
+                    Some(Request::KeysOpenCode { category: cat.to_string() })
                 } else if let Some(cat) = rest.strip_suffix("/view") {
                     let mut body = String::new();
                     let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);

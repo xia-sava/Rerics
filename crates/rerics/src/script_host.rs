@@ -936,9 +936,7 @@ impl MainWindow {
         rx.recv().unwrap_or_default()
     }
 
-    /// `r.` で呼べるメンバー名（補完候補）をエンジンから同期取得する。
-    // 当面は debug-server からのみ使う（Phase 2 で引数/コード欄の補完が GUI からも使う）。
-    #[cfg(feature = "debug-server")]
+    /// `r.` で呼べるメンバー名（補完候補）をエンジンから同期取得する。引数/コード欄の補完に使う。
     pub(crate) fn script_list_members(&self) -> Vec<String> {
         let (tx, rx) = channel();
         let _ = self.script.cmd_tx.send(EngineCmd::ListMembers(tx));

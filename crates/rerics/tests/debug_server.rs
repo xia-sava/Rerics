@@ -2715,6 +2715,36 @@ fn script_members_list_and_commands_callable_via_r() {
     assert_ne!(after.trim(), before, "r.goUp() で親へ移動する: {after}");
 }
 
+/// 設定エディタ：補完つき「引数」モーダルで `r.<prefix>` を打つと候補（組込メンバー＋登録コマンド）が
+/// 出て、候補の確定でカレット直前のプレフィックスがメンバ名へ置換される（headless 観測）。
+#[test]
+fn completion_popup_lists_members_and_inserts_on_accept() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[("00.ts", r#"rerics.registerCommand("myCmd", () => {});"#)],
+    );
+    poll(&server, "/script/members", |b| b.contains("myCmd"));
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    server.req("POST", "/settings/nav/5", "").expect("nav");
+    // 組込コマンド行（MakeDirectory）を選んで、補完つき「引数」モーダルを開く（応答先返し）。
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/openarg", "").unwrap();
+
+    // `=r.my` と打つ＝登録コマンド myCmd が補完候補に出る（r. の下に登録コマンドも乗る）。
+    server.req("POST", "/completion/type", "=r.my").unwrap();
+    let comp = poll(&server, "/completion", |b| b.contains("myCmd"));
+    assert!(comp.contains("myCmd"), "登録コマンドが補完候補に出る: {comp}");
+
+    // 先頭候補を確定＝プレフィックス `my` がメンバ名 `myCmd` へ置換される。
+    server.req("POST", "/completion/accept/0", "").unwrap();
+    let comp2 = poll(&server, "/completion", |b| b.contains(r#""text":"=r.myCmd"#));
+    assert!(comp2.contains(r#""text":"=r.myCmd"#), "確定でメンバ名が挿入される: {comp2}");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
 /// scripting：`/script/eval` で評価したコードのログがアプリのログ欄へ出る（エンジン→UI 配線）。
 #[test]
 fn script_eval_runs_and_logs_to_app() {

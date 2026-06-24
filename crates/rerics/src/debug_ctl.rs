@@ -173,6 +173,37 @@ impl MainWindow {
                         Ok(())
                     }));
                 }
+                debug_server::Request::KeysOpenArg { category } => {
+                    // モーダルは閉じるまでブロックするので、開く前に応答を返す（/completion/* を捌けるように）。
+                    let _ = tx.send(debug_server::Response::Json(
+                        "{\"modal_opening\":true}".to_string(),
+                    ));
+                    debug_server::modal_registry::with_key_editor(&category, |h| (h.open_arg)());
+                }
+                debug_server::Request::KeysOpenCode { category } => {
+                    let _ = tx.send(debug_server::Response::Json(
+                        "{\"modal_opening\":true}".to_string(),
+                    ));
+                    debug_server::modal_registry::with_key_editor(&category, |h| (h.open_code)());
+                }
+                debug_server::Request::CompletionType { text } => {
+                    let ok = crate::dialog::completion_probe::type_text(&text);
+                    let _ = tx.send(debug_server::Response::Json(format!("{{\"typed\":{ok}}}")));
+                }
+                debug_server::Request::CompletionState => {
+                    let json = match crate::dialog::completion_probe::candidates() {
+                        Some(cands) => {
+                            let text = crate::dialog::completion_probe::text().unwrap_or_default();
+                            serde_json::json!({ "candidates": cands, "text": text }).to_string()
+                        }
+                        None => "null".to_string(),
+                    };
+                    let _ = tx.send(debug_server::Response::Json(json));
+                }
+                debug_server::Request::CompletionAccept { idx } => {
+                    let ok = crate::dialog::completion_probe::accept(idx);
+                    let _ = tx.send(debug_server::Response::Json(format!("{{\"accepted\":{ok}}}")));
+                }
                 debug_server::Request::KeysPick { category, label } => {
                     let _ = tx.send(self.debug_keys_op(&category, |h| {
                         (h.pick)(label);

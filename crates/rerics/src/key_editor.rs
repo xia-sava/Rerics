@@ -222,6 +222,8 @@ struct KeyEditorInner {
     /// 登録済みスクリプトコマンドのメタ（名前→`{label, genre}`）。未割当でも一覧に出して割り当て
     /// 可能にし、表示名カラム／ジャンル見出しに使う。
     script_meta: HashMap<String, ScriptCommand>,
+    /// `r.` で呼べるメンバー名（補完候補）。引数/コード欄の補完に渡す。
+    members: Vec<String>,
     /// 編集中の下書き＝chord → 割り当て値（生の invocation 文字列）のリスト。空 Vec＝明示 unbind。
     /// **重複（1 つの chord に複数機能）を許す**＝これが衝突状態。未知バインド（`Func_*` 等）も
     /// 生値のまま保持し、反映時に消さない。OK/適用の検証を通った時だけ `config.keybinds` へ書き戻す。
@@ -286,6 +288,7 @@ impl KeyEditor {
         shared: &Rc<Shared>,
         category: KeyCategory,
         scripts: Vec<ScriptCommand>,
+        members: Vec<String>,
     ) -> Self {
         // 上部ヒント：モード（機能順／キー順／機能ピッカー）に応じて文面を差し替える。
         // ピッカー中は中止方法をここに大きく出して、背景色と合わせて別モードを明示する。
@@ -419,6 +422,7 @@ impl KeyEditor {
                 shared: shared.clone(),
                 category,
                 script_meta: scripts.into_iter().map(|c| (c.name.clone(), c)).collect(),
+                members,
                 draft: RefCell::new(BTreeMap::new()),
                 rows: RefCell::new(Vec::new()),
                 key_rows: RefCell::new(Vec::new()),
@@ -698,6 +702,15 @@ impl KeyEditor {
             let this = self.clone();
             Box::new(move |arg: &str| this.apply_arg(arg)) as Box<dyn Fn(&str)>
         };
+        // 実際の「引数」「コード」モーダル（補完つき）を開く＝補完 UI を headless で観測・駆動するため。
+        let open_arg = {
+            let this = self.clone();
+            Box::new(move || this.edit_arg_row()) as Box<dyn Fn()>
+        };
+        let open_code = {
+            let this = self.clone();
+            Box::new(move || this.add_code_row()) as Box<dyn Fn()>
+        };
         let pick = {
             let this = self.clone();
             Box::new(move |li: usize| this.enter_pick(li)) as Box<dyn Fn(usize)>
@@ -737,6 +750,8 @@ impl KeyEditor {
                 capture,
                 add_code,
                 set_arg,
+                open_arg,
+                open_code,
                 pick,
                 pick_commit,
                 pick_cancel,
@@ -1461,6 +1476,7 @@ impl KeyEditor {
             &self.list,
             "キーに束ねるコードを入力（r. でホスト API・複文可）",
             "",
+            &self.inner.members,
         );
         // 子コントロールを親にしたモーダルの後始末で list の無効化やフォーカス喪失が残ることが
         // あるので、OK/キャンセルに依らず有効化＋フォーカスを戻す（戻さないとホイールが効かない）。
@@ -1524,6 +1540,7 @@ impl KeyEditor {
             &self.list,
             "引数を入力（先頭 = で式・r. でホスト API・空でリテラルなし）",
             &cur,
+            &self.inner.members,
         );
         // 子コントロールを親にしたモーダルの後始末で list の無効化やフォーカス喪失が残ることが
         // あるので、OK/キャンセルに依らず有効化＋フォーカスを戻す（戻さないとホイールが効かない）。
