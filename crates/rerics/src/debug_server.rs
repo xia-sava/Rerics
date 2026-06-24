@@ -141,9 +141,7 @@ pub mod modal_registry {
         pub rows: Vec<(String, Vec<String>)>,
         /// 選択行 index（絞り込み後の `rows` 上の位置）。
         pub selected: usize,
-        /// 機能順で選択行のキー群のうちサブ選択中の index（個別削除の対象）。
-        pub sub: usize,
-        /// 表示先頭行（スクロール位置）。
+        /// 表示先頭行（スクロール位置・見出し行を含む表示行単位）。
         pub top: usize,
         /// キャプチャ待ちか。
         pub capturing: bool,
@@ -178,9 +176,7 @@ pub mod modal_registry {
         pub search: Box<dyn Fn(&str)>,
         /// 並べ方を切り替える（`true`＝キー順／`false`＝機能順）。
         pub set_view: Box<dyn Fn(bool)>,
-        /// 機能順で選択行のキーのサブ選択 index を変える。
-        pub select_chord: Box<dyn Fn(usize)>,
-        /// サブ選択中のキーを、その機能のまま新しいキー（chord トークン）へ移し替える。未知キーは Err。
+        /// 選択行のキーを、その呼び出しのまま新しいキー（chord トークン）へ移し替える。未知キーは Err。
         pub rebind: ChordFn,
         /// キー順で選択行の li 番目の機能を差し替えるピックモードへ入る（インライン機能ピッカー）。
         pub pick: Box<dyn Fn(usize)>,
@@ -288,9 +284,7 @@ pub enum Request {
     KeysSearch { category: String, query: String },
     /// `POST /keys/<category>/view`：並べ方を切り替える。body が `key` ならキー順、それ以外は機能順。
     KeysSetView { category: String, by_key: bool },
-    /// `POST /keys/<category>/sub/<index>`：機能順で選択行のキーのサブ選択を index にする。
-    KeysSelectChord { category: String, index: usize },
-    /// `POST /keys/<category>/rebind`：サブ選択中のキーを body のキーへ移し替える（変更）。
+    /// `POST /keys/<category>/rebind`：選択行のキーを body のキーへ移し替える（変更）。
     KeysRebind { category: String, chord: String },
     /// `POST /keys/<category>/pick/<labelIndex>`：キー順で選択行の機能ピッカーへ入る。
     KeysPick { category: String, label: usize },
@@ -500,11 +494,6 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 let rest = rest.trim_end_matches('/');
                 if let Some((cat, idx)) = rest.rsplit_once("/select/") {
                     idx.parse::<usize>().ok().map(|index| Request::KeysSelect {
-                        category: cat.to_string(),
-                        index,
-                    })
-                } else if let Some((cat, idx)) = rest.rsplit_once("/sub/") {
-                    idx.parse::<usize>().ok().map(|index| Request::KeysSelectChord {
                         category: cat.to_string(),
                         index,
                     })

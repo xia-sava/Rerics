@@ -1835,7 +1835,7 @@ fn settings_key_editor_conflicts_block_ok_until_resolved() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
-/// 機能順での個別削除：1 機能に複数キーがある時、サブ選択したキーだけを外す。
+/// 機能順での個別削除：1 機能に複数キーがある時は 1 キー=1 行に割れる。削除したい行を選んで外す。
 #[test]
 fn settings_key_editor_per_chord_delete_in_command_view() {
     let server = Server::start(&["a.txt"], "");
@@ -1843,34 +1843,36 @@ fn settings_key_editor_per_chord_delete_in_command_view() {
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // MakeDirectory に未使用キーを足す＝[Ctrl+Shift+M, K]（衝突なし・トークン昇順）。
+    // MakeDirectory に未使用キーを足す＝1 キー=1 行なので 2 行に割れる（既定 K ＋ Ctrl+Shift+M）。
     server.req("POST", "/keys/filer/bind", r#"["MakeDirectory","Ctrl+Shift+M"]"#).unwrap();
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
     let s = keys();
     assert!(
-        s.contains(r#"["MakeDirectory",["Ctrl+Shift+M","K"]]"#),
-        "MakeDirectory が 2 キーを持つ: {s}"
+        s.contains(r#"["MakeDirectory",["Ctrl+Shift+M"]]"#)
+            && s.contains(r#"["MakeDirectory",["K"]]"#),
+        "MakeDirectory が 2 行に割れる: {s}"
     );
 
-    // サブ選択を index 1（K）にして削除＝K だけ外れ、Ctrl+Shift+M が残る。
-    server.req("POST", "/keys/filer/sub/1", "").unwrap();
-    assert!(keys().contains(r#""sub":1"#), "サブ選択が K に: {}", keys());
+    // K の行（chord 昇順で index 1）を選んで削除＝K 行だけ消え、Ctrl+Shift+M 行が残る。
+    server.req("POST", "/keys/filer/select/1", "").unwrap();
     server.req("POST", "/keys/filer/unbind", "").unwrap();
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
     let s = keys();
-    assert!(
-        s.contains(r#"["MakeDirectory",["Ctrl+Shift+M"]]"#),
-        "K だけ外れ Ctrl+Shift+M が残る: {s}"
-    );
+    assert!(s.contains(r#"["MakeDirectory",["Ctrl+Shift+M"]]"#), "Ctrl+Shift+M 行が残る: {s}");
+    assert!(!s.contains(r#"["MakeDirectory",["K"]]"#), "K 行は消える: {s}");
 
-    // 残ったキーも削除＝未割当に。
+    // 残った行も削除＝未割当の空行に戻る。
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/unbind", "").unwrap();
-    assert!(keys().contains(r#"["MakeDirectory",[]]"#), "MakeDirectory が未割当に: {}", keys());
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    assert!(keys().contains(r#"["MakeDirectory",[]]"#), "未割当の空行に戻る: {}", keys());
 
     server.req("POST", "/modal/command/cancel", "").expect("cancel");
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
-/// 機能順でキーを「変更（リマップ）」：サブ選択中のキーを新しいキーへ移し替える（旧キーは外れる・
-/// 機能は同じ）。実機ではキーのダブルクリック→打鍵に対応する経路。
+/// 機能順でキーを「変更（リマップ）」：選択した行のキーを新しいキーへ移し替える（旧キーは外れる・
+/// 呼び出しは同じ）。実機ではキー行のダブルクリック→打鍵に対応する経路。
 #[test]
 fn settings_key_editor_rebinds_selected_chord() {
     let server = Server::start(&["a.txt"], "");
@@ -1878,18 +1880,20 @@ fn settings_key_editor_rebinds_selected_chord() {
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // MakeDirectory に 2 つ目のキーを足して選択を寄せる＝[Ctrl+Shift+M, K]・sel=MakeDirectory。
+    // MakeDirectory に 2 つ目のキーを足す＝2 行に割れる（chord 昇順 [Ctrl+Shift+M, K]）。
     server.req("POST", "/keys/filer/bind", r#"["MakeDirectory","Ctrl+Shift+M"]"#).unwrap();
-    assert!(keys().contains(r#"["MakeDirectory",["Ctrl+Shift+M","K"]]"#), "2 キー: {}", keys());
-
-    // K（index 1）をサブ選択して Ctrl+Alt+K へ変更＝K は外れ Ctrl+Alt+K になる。
-    server.req("POST", "/keys/filer/sub/1", "").unwrap();
-    server.req("POST", "/keys/filer/rebind", "Ctrl+Alt+K").unwrap();
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
     let s = keys();
-    assert!(
-        s.contains(r#"["MakeDirectory",["Ctrl+Alt+K","Ctrl+Shift+M"]]"#),
-        "K が Ctrl+Alt+K に移る: {s}"
-    );
+    assert!(s.contains(r#"["MakeDirectory",["K"]]"#), "K 行がある: {s}");
+
+    // K の行（index 1）を選んで Ctrl+Alt+K へ変更＝K は外れ Ctrl+Alt+K になる（Ctrl+Shift+M は残る）。
+    server.req("POST", "/keys/filer/select/1", "").unwrap();
+    server.req("POST", "/keys/filer/rebind", "Ctrl+Alt+K").unwrap();
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    let s = keys();
+    assert!(s.contains(r#"["MakeDirectory",["Ctrl+Alt+K"]]"#), "K が Ctrl+Alt+K に移る: {s}");
+    assert!(s.contains(r#"["MakeDirectory",["Ctrl+Shift+M"]]"#), "Ctrl+Shift+M は残る: {s}");
+    assert!(!s.contains(r#"["MakeDirectory",["K"]]"#), "K 行は無い: {s}");
 
     server.req("POST", "/modal/command/cancel", "").expect("cancel");
     poll(&server, "/state/modal", |b| b.trim() == "null");
@@ -2094,14 +2098,15 @@ fn settings_key_editor_toggles_command_and_key_views() {
     assert!(keys().contains(r#"["K",["MakeDirectory"]]"#), "キー順で機能名検索が効く");
     server.req("POST", "/keys/filer/search", "").unwrap();
 
-    // 機能順へ戻して、同じ機能に 2 キーを割り当てる（per-chord 削除の検証用）。
+    // 機能順へ戻して、同じ機能に 2 キーを割り当てる（1 キー=1 行なので 2 行に割れる）。
     server.req("POST", "/keys/filer/view", "command").unwrap();
     server.req("POST", "/keys/filer/bind", r#"["SelectMask","Ctrl+Shift+M"]"#).unwrap();
     server.req("POST", "/keys/filer/bind", r#"["SelectMask","Ctrl+Shift+N"]"#).unwrap();
+    let s = keys();
     assert!(
-        keys().contains(r#"["SelectMask",["Ctrl+Shift+M","Ctrl+Shift+N"]]"#),
-        "SelectMask が 2 キーを持つ: {}",
-        keys()
+        s.contains(r#"["SelectMask",["Ctrl+Shift+M"]]"#)
+            && s.contains(r#"["SelectMask",["Ctrl+Shift+N"]]"#),
+        "SelectMask が 2 行に割れる: {s}"
     );
 
     // キー順で Ctrl+Shift+M の行だけを選び、削除＝その 1 キーだけ外れる。

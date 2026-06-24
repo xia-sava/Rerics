@@ -57,15 +57,15 @@ impl KeyCategory {
     }
 }
 
-/// 機能順の 1 行＝1 コマンドと、それに割り当たっている chord 群。
-struct KeyRow {
+/// 機能順の 1 行＝1 つのキー割り当て（chord → 呼び出し）。割り当ての無いコマンドは
+/// `chord: None` の 1 行で出す（そこへキャプチャして割当）。同コマンドの複数キー・引数違いは別行に割れる。
+struct BindRow {
     command: Command,
-    chords: Vec<ChordRef>,
-}
-
-/// 機能順の行に並ぶ 1 つの chord 参照。`conflicted`＝同じ chord を他機能も定義している（衝突）。
-struct ChordRef {
-    token: String,
+    /// 実呼び出しの生 invocation 値（未割当行は bare コマンドのトークン）。
+    value: String,
+    /// 割り当てキー（未割当なら `None`）。
+    chord: Option<String>,
+    /// この chord に複数機能がある（衝突）。
     conflicted: bool,
 }
 
@@ -75,11 +75,33 @@ struct KeyChordRow {
     labels: Vec<String>,
 }
 
+/// 機能順リストの表示行。ジャンル見出しを行間に挟むので、データ行（`view` 上の位置）と
+/// 見出し行が混在する。`top`（スクロール）はこの表示行を単位に進む。
+#[derive(Clone, Copy)]
+enum DisplayLine {
+    /// 全幅のジャンル見出し（選択不可）。
+    Header(&'static str),
+    /// データ行＝`view` 上の位置（`sel` はこの値で指す）。
+    Row(usize),
+}
+
 /// 割り当て値の表示ラベル。既知コマンドは正規トークン名、未知（`Func_*` 等）は生値のまま。
 fn binding_label(value: &str) -> String {
     Invocation::parse(value)
         .map(|i| i.command.as_token().to_string())
         .unwrap_or_else(|| value.trim().to_string())
+}
+
+/// 実呼び出しの表示文字列（機能順の中央カラム）。`Script`/`Eval` はラッパを剥がして中身
+/// （スクリプト名・コード）だけを、組込はトークン＋引数（`ChangeDirectory("D:")`・`Copy`）を見せる。
+fn call_display(value: &str) -> String {
+    match Invocation::parse(value) {
+        Some(inv) => match inv.command {
+            Command::Script | Command::Eval => inv.args.first().cloned().unwrap_or_default(),
+            _ => inv.to_token_string(),
+        },
+        None => value.trim().to_string(),
+    }
 }
 
 /// キー順の機能ラベル（トークン）を画面表示用の日本語名へ変換する。未知トークンはそのまま。
@@ -151,7 +173,7 @@ struct KeyEditorInner {
     /// **重複（1 つの chord に複数機能）を許す**＝これが衝突状態。未知バインド（`Func_*` 等）も
     /// 生値のまま保持し、反映時に消さない。OK/適用の検証を通った時だけ `config.keybinds` へ書き戻す。
     draft: RefCell<BTreeMap<String, Vec<String>>>,
-    rows: RefCell<Vec<KeyRow>>,
+    rows: RefCell<Vec<BindRow>>,
     /// キー順ビューの行（chord でソート）。`draft` から組む。
     key_rows: RefCell<Vec<KeyChordRow>>,
     /// ピックモード中ならその対象。`Some` の間はリストが機能ピッカー（全機能一覧）へ切り替わる。
@@ -167,9 +189,7 @@ struct KeyEditorInner {
     /// 検索クエリ（機能名・キーへの部分一致・大小無視）。空なら全件表示。
     query: RefCell<String>,
     sel: Cell<usize>,
-    /// 機能順で選択行のキー群のうち、サブ選択中のキー index（個別削除・個別変更の対象）。
-    sub: Cell<usize>,
-    /// 表示先頭行（スクロール）。
+    /// 表示先頭行（スクロール）＝表示行（見出し込み）単位の先頭位置。
     top: Cell<usize>,
     row_h: Cell<i32>,
     /// 次の打鍵を選択行のコマンドへ割り当てる待ち状態。
@@ -319,7 +339,6 @@ impl KeyEditor {
                 view: RefCell::new(Vec::new()),
                 query: RefCell::new(String::new()),
                 sel: Cell::new(0),
-                sub: Cell::new(0),
                 top: Cell::new(0),
                 row_h: Cell::new(gui::dpi_y(22)),
                 capturing: Cell::new(false),
@@ -455,17 +474,13 @@ impl KeyEditor {
                     view.iter()
                         .map(|&ri| {
                             let r = &all[ri];
-                            (
-                                r.command.as_token().to_string(),
-                                r.chords.iter().map(|c| c.token.clone()).collect(),
-                            )
+                            (r.command.as_token().to_string(), r.chord.iter().cloned().collect())
                         })
                         .collect()
                 };
                 KeyEditorState {
                     rows,
                     selected: this.inner.sel.get(),
-                    sub: this.inner.sub.get(),
                     top: this.inner.top.get(),
                     capturing: this.inner.capturing.get(),
                     picking,
@@ -482,7 +497,6 @@ impl KeyEditor {
                 if index < this.inner.view.borrow().len() {
                     this.clear_status();
                     this.inner.sel.set(index);
-                    this.inner.sub.set(0);
                     this.ensure_visible();
                     let _ = this.hwnd().InvalidateRect(None, false);
                 }
@@ -509,7 +523,7 @@ impl KeyEditor {
                 if let Some(di) = pos {
                     this.inner.sel.set(di);
                 }
-                this.assign(cmd, ch);
+                this.assign(Invocation::bare(cmd).to_token_string(), ch);
                 Ok(())
             }) as Box<dyn Fn(&str, &str) -> Result<(), String>>
         };
@@ -532,21 +546,12 @@ impl KeyEditor {
             let this = self.clone();
             Box::new(move |by_key: bool| this.set_view(by_key)) as Box<dyn Fn(bool)>
         };
-        let select_chord = {
-            let this = self.clone();
-            Box::new(move |index: usize| {
-                if index < this.sel_chord_count() {
-                    this.inner.sub.set(index);
-                    let _ = this.hwnd().InvalidateRect(None, false);
-                }
-            }) as Box<dyn Fn(usize)>
-        };
         let rebind = {
             let this = self.clone();
             Box::new(move |chord: &str| {
                 let ch = KeyChord::parse(chord)
                     .ok_or_else(|| format!("unknown chord: {chord}"))?;
-                this.remap_sub(ch);
+                this.remap(ch);
                 Ok(())
             }) as Box<dyn Fn(&str) -> Result<(), String>>
         };
@@ -585,7 +590,6 @@ impl KeyEditor {
                 reset,
                 search,
                 set_view,
-                select_chord,
                 rebind,
                 pick,
                 pick_commit,
@@ -685,9 +689,11 @@ impl KeyEditor {
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
-    /// 下書きから機能順 `rows`・キー順 `key_rows` を組み直す（空 Vec＝unbind は除く）。
+    /// 下書きから機能順 `rows`（1 バインド＝1 行）・キー順 `key_rows` を組み直す。
+    /// 未割当コマンドは `chord: None` の 1 行で出す。文脈外でも既にバインドのある機能（Script/Eval 等）は行にする。
     fn rebuild_rows(&self) {
-        let mut by_cmd: HashMap<Command, Vec<ChordRef>> = HashMap::new();
+        // 機能 → そのコマンドのバインド群（(chord, 生値, 衝突)）。
+        let mut by_cmd: HashMap<Command, Vec<(String, String, bool)>> = HashMap::new();
         let mut key_rows: Vec<KeyChordRow> = Vec::new();
         {
             let draft = self.inner.draft.borrow();
@@ -705,7 +711,7 @@ impl KeyEditor {
                         by_cmd
                             .entry(inv.command)
                             .or_default()
-                            .push(ChordRef { token: chord.clone(), conflicted });
+                            .push((chord.clone(), (*v).clone(), conflicted));
                     }
                 }
             }
@@ -721,14 +727,30 @@ impl KeyEditor {
             }
         }
         let ctx = self.inner.category.context();
-        let rows: Vec<KeyRow> = Command::all()
-            .filter(|c| c.available_in(ctx))
-            .map(|command| {
-                let mut chords = by_cmd.remove(&command).unwrap_or_default();
-                chords.sort_by(|a, b| a.token.cmp(&b.token));
-                KeyRow { command, chords }
-            })
-            .collect();
+        // 表示する機能＝文脈内の全機能 ＋ 文脈外でもバインドのある機能（Script/Eval 等）。
+        let mut cmds: Vec<Command> = Command::all().filter(|c| c.available_in(ctx)).collect();
+        let mut extra: Vec<Command> =
+            by_cmd.keys().copied().filter(|c| !c.available_in(ctx)).collect();
+        extra.sort_by_key(|c| c.as_token());
+        cmds.extend(extra);
+        let mut rows: Vec<BindRow> = Vec::new();
+        for command in cmds {
+            match by_cmd.remove(&command) {
+                Some(mut binds) => {
+                    binds.sort_by(|a, b| a.0.cmp(&b.0));
+                    for (chord, value, conflicted) in binds {
+                        rows.push(BindRow { command, value, chord: Some(chord), conflicted });
+                    }
+                }
+                // 未割当＝bare コマンドの空行（そこへキャプチャして割り当てる）。
+                None => rows.push(BindRow {
+                    command,
+                    value: Invocation::bare(command).to_token_string(),
+                    chord: None,
+                    conflicted: false,
+                }),
+            }
+        }
         key_rows.sort_by(|a, b| a.chord.cmp(&b.chord));
         *self.inner.rows.borrow_mut() = rows;
         *self.inner.key_rows.borrow_mut() = key_rows;
@@ -775,7 +797,8 @@ impl KeyEditor {
                     q.is_empty()
                         || r.command.as_token().to_lowercase().contains(&q)
                         || r.command.display_name().to_lowercase().contains(&q)
-                        || r.chords.iter().any(|c| c.token.to_lowercase().contains(&q))
+                        || r.chord.as_ref().is_some_and(|c| c.to_lowercase().contains(&q))
+                        || call_display(&r.value).to_lowercase().contains(&q)
                 })
                 .map(|(i, _)| i)
                 .collect(),
@@ -806,10 +829,6 @@ impl KeyEditor {
             self.inner.top.set(0);
         } else if self.inner.sel.get() >= n {
             self.inner.sel.set(n - 1);
-        }
-        let cc = self.sel_chord_count();
-        if self.inner.sub.get() >= cc {
-            self.inner.sub.set(cc.saturating_sub(1));
         }
         self.update_scrollbar();
     }
@@ -871,75 +890,47 @@ impl KeyEditor {
         self.inner.key_rows.borrow().get(ri).map(|r| r.chord.clone())
     }
 
-    /// 機能順で選択行のキー数。
-    fn sel_chord_count(&self) -> usize {
-        if self.inner.view_mode.get() != KeyView::ByCommand {
-            return 0;
-        }
-        let Some(&ri) = self.inner.view.borrow().get(self.inner.sel.get()) else {
-            return 0;
-        };
-        self.inner.rows.borrow().get(ri).map(|r| r.chords.len()).unwrap_or(0)
-    }
-
-    /// 機能順でサブ選択中のキー（範囲外・キー順では `None`）。
-    fn sub_chord(&self) -> Option<String> {
+    /// 機能順で選択行のバインド（機能・生値・キー）。キー順・範囲外は `None`。
+    fn selected_bind(&self) -> Option<(Command, String, Option<String>)> {
         if self.inner.view_mode.get() != KeyView::ByCommand {
             return None;
         }
         let ri = *self.inner.view.borrow().get(self.inner.sel.get())?;
         let rows = self.inner.rows.borrow();
-        rows.get(ri)?.chords.get(self.inner.sub.get()).map(|c| c.token.clone())
+        let r = rows.get(ri)?;
+        Some((r.command, r.value.clone(), r.chord.clone()))
     }
 
-    /// 機能順でサブ選択を左右に動かす。
-    fn move_sub(&self, dir: isize) {
-        let n = self.sel_chord_count() as isize;
-        if n <= 1 {
-            return;
+    /// 機能順リストの表示行（ジャンル見出しをデータ行の間に挟む）。`top` はこの単位で進む。
+    /// キー順・ピックモードは見出しを挟まず、データ行だけを順に並べる。
+    fn display_lines(&self) -> Vec<DisplayLine> {
+        let view = self.inner.view.borrow();
+        if self.inner.picking.borrow().is_some()
+            || self.inner.view_mode.get() != KeyView::ByCommand
+        {
+            return (0..view.len()).map(DisplayLine::Row).collect();
         }
-        self.clear_status();
-        let i = (self.inner.sub.get() as isize + dir).clamp(0, n - 1);
-        self.inner.sub.set(i as usize);
-        let _ = self.hwnd().InvalidateRect(None, false);
+        let rows = self.inner.rows.borrow();
+        let mut out = Vec::with_capacity(view.len() + 8);
+        let mut prev: Option<&'static str> = None;
+        for (vp, &ri) in view.iter().enumerate() {
+            let g = command_genre(rows[ri].command).1;
+            if prev != Some(g) {
+                out.push(DisplayLine::Header(g));
+                prev = Some(g);
+            }
+            out.push(DisplayLine::Row(vp));
+        }
+        out
     }
 
-    /// クリック x が機能順・指定表示行のどのキーに当たるか（行内のキーを実測して判定）。
-    fn chord_hit(&self, row_di: usize, x: i32) -> Option<usize> {
-        if self.inner.view_mode.get() != KeyView::ByCommand {
-            return None;
-        }
-        let ri = *self.inner.view.borrow().get(row_di)?;
-        let chords: Vec<(String, bool)> = self
-            .inner
-            .rows
-            .borrow()
-            .get(ri)?
-            .chords
+    /// 選択中のデータ行が、表示行（見出し込み）の何番目に来るか。
+    fn sel_display_index(&self) -> usize {
+        let sel = self.inner.sel.get();
+        self.display_lines()
             .iter()
-            .map(|c| (c.token.clone(), c.conflicted))
-            .collect();
-        if chords.is_empty() {
-            return None;
-        }
-        let dc = self.hwnd().GetDC().ok()?;
-        let font = w::HFONT::GetStockObject(co::STOCK_FONT::DEFAULT_GUI).ok()?;
-        let _sel = dc.SelectObject(&font).ok()?;
-        // 機能順のキー列開始 x（render の chord_x と一致させる＝見出し列ぶん右）。
-        let mut cx = gui::dpi_x(388);
-        let sep = dc.GetTextExtentPoint32(", ").map(|z| z.cx).unwrap_or(0);
-        for (ci, (tok, conflicted)) in chords.iter().enumerate() {
-            let mut label = tok.clone();
-            if *conflicted {
-                label.push_str(" ⚠");
-            }
-            let tw = dc.GetTextExtentPoint32(&label).map(|z| z.cx).unwrap_or(0);
-            if x >= cx && x < cx + tw {
-                return Some(ci);
-            }
-            cx += tw + sep;
-        }
-        None
+            .position(|d| matches!(d, DisplayLine::Row(vp) if *vp == sel))
+            .unwrap_or(0)
     }
 
     /// クリック x がキー順・指定表示行のどの機能ラベルに当たるか（右カラムを実測）。
@@ -1071,12 +1062,12 @@ impl KeyEditor {
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
-    /// サブ選択キーの「変更（リマップ）」キャプチャを始める（次の打鍵で旧キー→新キーへ移す）。
+    /// 選択行のキーを別キーへ移し替えるキャプチャを始める（次の打鍵で旧キー→新キー）。未割当行は不可。
     fn begin_remap(&self) {
-        if self.inner.picking.borrow().is_some()
-            || self.selected_command().is_none()
-            || self.sub_chord().is_none()
-        {
+        if self.inner.picking.borrow().is_some() {
+            return;
+        }
+        if !matches!(self.selected_bind(), Some((_, _, Some(_)))) {
             return;
         }
         self.inner.capturing.set(true);
@@ -1086,12 +1077,9 @@ impl KeyEditor {
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
-    /// サブ選択キーをその機能のまま新しいキーへ移し替える（旧キーから当該機能を外す）。
-    fn remap_sub(&self, new: KeyChord) {
-        let Some(command) = self.selected_command() else {
-            return;
-        };
-        let Some(old) = self.sub_chord() else {
+    /// 選択行のキーを、その呼び出しのまま新しいキーへ移し替える（旧キーから当該値を外す）。
+    fn remap(&self, new: KeyChord) {
+        let Some((command, value, Some(old))) = self.selected_bind() else {
             return;
         };
         let Some(new_tok) = new.to_token() else {
@@ -1102,16 +1090,15 @@ impl KeyEditor {
         if new_tok == old {
             return;
         }
-        let value = Invocation::bare(command).to_token_string();
         {
             let mut draft = self.inner.draft.borrow_mut();
             if let Some(vals) = draft.get_mut(&old) {
-                vals.retain(|v| Invocation::parse(v).map(|i| i.command) != Some(command));
+                vals.retain(|v| *v != value);
             }
             let e = draft.entry(new_tok.clone()).or_default();
             e.retain(|v| !v.trim().is_empty());
-            if !e.iter().any(|v| Invocation::parse(v).map(|i| i.command) == Some(command)) {
-                e.push(value);
+            if !e.contains(&value) {
+                e.push(value.clone());
             }
         }
         *self.inner.status.borrow_mut() =
@@ -1120,32 +1107,31 @@ impl KeyEditor {
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
-    /// chord を選択行のコマンドへ割り当てる。**既存の機能は消さず追記する**＝同じ chord に
-    /// 別機能があれば衝突になる（マークして OK/適用で解決を促す）。
-    fn assign(&self, command: Command, chord: KeyChord) {
+    /// `value`（生 invocation）を chord へ割り当てる。**既存の割り当ては消さず追記する**＝同じ
+    /// chord に別の呼び出しがあれば衝突になる（マークして OK/適用で解決を促す）。
+    fn assign(&self, value: String, chord: KeyChord) {
         let Some(tok) = chord.to_token() else {
             *self.inner.status.borrow_mut() = "未対応のキーです".to_string();
             return;
         };
-        let value = Invocation::bare(command).to_token_string();
+        let label = Invocation::parse(&value)
+            .map(|i| i.command.display_name().to_string())
+            .unwrap_or_else(|| value.clone());
         let conflict = {
             let mut draft = self.inner.draft.borrow_mut();
             let e = draft.entry(tok.clone()).or_default();
             // 空 unbind マーカーは取り除く（今バインドし直すので）。
             e.retain(|v| !v.trim().is_empty());
-            // 同じ機能が既にこの chord にあるなら追記しない。
-            let already = e
-                .iter()
-                .any(|v| Invocation::parse(v).map(|i| i.command) == Some(command));
-            if !already {
+            // 同じ呼び出しが既にこの chord にあるなら追記しない。
+            if !e.contains(&value) {
                 e.push(value);
             }
             e.len() > 1
         };
         *self.inner.status.borrow_mut() = if conflict {
-            format!("{} に {} を割り当て（このキーは衝突しています）", command.display_name(), tok)
+            format!("{} に {} を割り当て（このキーは衝突しています）", label, tok)
         } else {
-            format!("{} に {} を割り当てました", command.display_name(), tok)
+            format!("{} に {} を割り当てました", label, tok)
         };
         self.rebuild_rows();
         let _ = self.hwnd().InvalidateRect(None, false);
@@ -1159,16 +1145,16 @@ impl KeyEditor {
         }
         let status = match self.inner.view_mode.get() {
             KeyView::ByCommand => {
-                let Some(command) = self.selected_command() else {
+                let Some((command, value, chord)) = self.selected_bind() else {
                     return;
                 };
-                let Some(chord) = self.sub_chord() else {
+                let Some(chord) = chord else {
                     *self.inner.status.borrow_mut() = "割り当てがありません".to_string();
                     return;
                 };
-                // サブ選択キーからその機能だけ取り除く（同キーの他機能＝衝突分は残す）。
+                // 選択行のキーからその呼び出しだけ取り除く（同キーの他機能＝衝突分は残す）。
                 if let Some(vals) = self.inner.draft.borrow_mut().get_mut(&chord) {
-                    vals.retain(|v| Invocation::parse(v).map(|i| i.command) != Some(command));
+                    vals.retain(|v| *v != value);
                 }
                 format!("{} から {} を解除しました", chord, command.display_name())
             }
@@ -1289,7 +1275,7 @@ impl KeyEditor {
         if self.hwnd().GetClientRect().is_err() {
             return;
         }
-        let n = self.inner.view.borrow().len();
+        let n = self.display_lines().len();
         let vis = self.visible_rows();
         let mut si = w::SCROLLINFO::default();
         si.fMask = co::SIF::RANGE | co::SIF::PAGE | co::SIF::POS;
@@ -1302,7 +1288,7 @@ impl KeyEditor {
 
     /// 表示先頭行を動かす（範囲内へクランプ・スクロールバーと再描画も更新）。選択は動かさない。
     fn scroll_to(&self, new_top: isize) {
-        let n = self.inner.view.borrow().len();
+        let n = self.display_lines().len();
         let vis = self.visible_rows();
         let max_top = n.saturating_sub(vis) as isize;
         let top = new_top.clamp(0, max_top) as usize;
@@ -1313,15 +1299,15 @@ impl KeyEditor {
         }
     }
 
-    /// 選択が見える位置までスクロールを調整する。
+    /// 選択が見える位置までスクロールを調整する（表示行＝見出し込みで計算する）。
     fn ensure_visible(&self) {
-        let sel = self.inner.sel.get();
+        let di = self.sel_display_index();
         let vis = self.visible_rows();
         let mut top = self.inner.top.get();
-        if sel < top {
-            top = sel;
-        } else if sel >= top + vis {
-            top = sel + 1 - vis;
+        if di < top {
+            top = di;
+        } else if di >= top + vis {
+            top = di + 1 - vis;
         }
         self.inner.top.set(top);
         self.update_scrollbar();
@@ -1346,7 +1332,6 @@ impl KeyEditor {
         self.clear_status();
         let i = (self.inner.sel.get() as isize + dir).clamp(0, n - 1);
         self.inner.sel.set(i as usize);
-        self.inner.sub.set(0);
         self.ensure_visible();
         let _ = self.hwnd().InvalidateRect(None, false);
     }
@@ -1390,71 +1375,58 @@ impl KeyEditor {
                 return Ok(());
             }
             let rh = this.inner.row_h.get().max(1);
-            let row = this.inner.top.get() + (p.coords.y / rh) as usize;
-            if row < this.inner.view.borrow().len() {
+            let di = this.inner.top.get() + (p.coords.y / rh) as usize;
+            // 見出し行のクリックは無視（データ行だけ選べる）。
+            if let Some(DisplayLine::Row(vp)) = this.display_lines().get(di).copied() {
                 this.clear_status();
-                this.inner.sel.set(row);
-                // ピック中は行選択のみ。通常はクリックしたキーをサブ選択（行内 hit-test）。
-                let sub = if this.inner.picking.borrow().is_some() {
-                    0
-                } else {
-                    this.chord_hit(row, p.coords.x).unwrap_or(0)
-                };
-                this.inner.sub.set(sub);
+                this.inner.sel.set(vp);
                 this.ensure_visible();
                 let _ = this.hwnd().InvalidateRect(None, false);
             }
             Ok(())
         });
 
-        // ダブルクリック：機能順=キーを「変更」キャプチャへ／キー順=機能を機能ピッカーへ／
-        // ピック中=その機能で確定。
+        // ダブルクリック：機能順=キー有りは「変更」キャプチャ・キー無しは新規キャプチャ／
+        // キー順=機能を機能ピッカーへ／ピック中=その機能で確定。
         let this = self.clone();
         self.list.on().wm_l_button_dbl_clk(move |p| {
             if this.inner.capturing.get() {
                 return Ok(());
             }
             let rh = this.inner.row_h.get().max(1);
-            let row = this.inner.top.get() + (p.coords.y / rh) as usize;
-            if row >= this.inner.view.borrow().len() {
+            let di = this.inner.top.get() + (p.coords.y / rh) as usize;
+            let Some(DisplayLine::Row(vp)) = this.display_lines().get(di).copied() else {
                 return Ok(());
-            }
-            this.inner.sel.set(row);
+            };
+            this.inner.sel.set(vp);
             if this.inner.picking.borrow().is_some() {
                 this.commit_pick();
                 return Ok(());
             }
             match this.inner.view_mode.get() {
-                KeyView::ByCommand => {
-                    if let Some(ci) = this.chord_hit(row, p.coords.x) {
-                        this.inner.sub.set(ci);
+                KeyView::ByCommand => match this.selected_bind() {
+                    // キー有り＝そのキーを「変更」キャプチャへ。キー無し＝新規キャプチャへ
+                    //（キー順で空キー定義「－」をダブルクリックするのと対称）。
+                    Some((_, _, Some(_))) => {
                         this.ensure_visible();
                         this.begin_remap();
                         return Ok(());
                     }
-                    // キー未割当（— 表示）の機能をダブルクリック＝新しいキーのキャプチャを始める
-                    //（キー順で空キー定義「－」をダブルクリックするのと対称）。
-                    let no_keys = this
-                        .inner
-                        .view
-                        .borrow()
-                        .get(row)
-                        .and_then(|&ri| this.inner.rows.borrow().get(ri).map(|r| r.chords.is_empty()))
-                        .unwrap_or(false);
-                    if no_keys {
+                    Some((_, _, None)) => {
                         this.ensure_visible();
                         this.begin_capture();
                         return Ok(());
                     }
-                }
+                    None => {}
+                },
                 KeyView::ByKey => {
                     // 機能ラベル上なら そのラベルを差替へ。空キー定義（－）行なら新規割り当てへ。
-                    let li = this.label_hit(row, p.coords.x).or_else(|| {
+                    let li = this.label_hit(vp, p.coords.x).or_else(|| {
                         let empty = this
                             .inner
                             .view
                             .borrow()
-                            .get(row)
+                            .get(vp)
                             .and_then(|&ri| this.inner.key_rows.borrow().get(ri).map(|r| r.labels.is_empty()))
                             .unwrap_or(false);
                         empty.then_some(0)
@@ -1466,7 +1438,6 @@ impl KeyEditor {
                     }
                 }
             }
-            this.inner.sub.set(0);
             this.ensure_visible();
             let _ = this.hwnd().InvalidateRect(None, false);
             Ok(())
@@ -1488,7 +1459,7 @@ impl KeyEditor {
         self.list.on().wm_v_scroll(move |p| {
             let cur = this.inner.top.get() as isize;
             let vis = this.visible_rows() as isize;
-            let n = this.inner.view.borrow().len() as isize;
+            let n = this.display_lines().len() as isize;
             let new = match p.request {
                 co::SB_REQ::LINEUP => cur - 1,
                 co::SB_REQ::LINEDOWN => cur + 1,
@@ -1536,9 +1507,9 @@ impl KeyEditor {
             if self.inner.capturing_newdef.replace(false) {
                 self.finish_newdef(chord);
             } else if self.inner.capturing_remap.replace(false) {
-                self.remap_sub(chord);
-            } else if let Some(command) = self.selected_command() {
-                self.assign(command, chord);
+                self.remap(chord);
+            } else if let Some((_, value, _)) = self.selected_bind() {
+                self.assign(value, chord);
             }
             return;
         }
@@ -1570,10 +1541,6 @@ impl KeyEditor {
             self.move_sel(isize::MIN / 2);
         } else if vk == k::END {
             self.move_sel(isize::MAX / 2);
-        } else if vk == k::LEFT {
-            self.move_sub(-1);
-        } else if vk == k::RIGHT {
-            self.move_sub(1);
         }
     }
 
@@ -1617,7 +1584,6 @@ impl KeyEditor {
 
         // ピックモード（機能ピッカー表示）中は背景色を変えて「別モード」を一目で分かるようにする。
         let picking = self.inner.picking.borrow().is_some();
-        let bg = w::HBRUSH::GetSysColorBrush(co::COLOR::WINDOW)?;
         let fill = if picking {
             w::HBRUSH::GetSysColorBrush(co::COLOR::INFOBK)?
         } else {
@@ -1637,10 +1603,6 @@ impl KeyEditor {
         let sel = self.inner.sel.get();
         let capturing = self.inner.capturing.get();
         let key_x = gui::dpi_x(8);
-        // 機能順は左にジャンル見出し列を設けるので、機能名は右へずらしキー列も広げる。
-        let by_command = !picking && self.inner.view_mode.get() == KeyView::ByCommand;
-        let left_x = if by_command { gui::dpi_x(150) } else { key_x };
-        let chord_x = if by_command { gui::dpi_x(388) } else { gui::dpi_x(260) };
         // 最下部 1 行はステータス（操作結果・衝突メッセージ）に充てる。
         let body_h = (ch - row_h).max(row_h);
         let vis = (body_h / row_h).max(1) as usize;
@@ -1682,159 +1644,111 @@ impl KeyEditor {
             }
             return Ok(());
         }
-        // 可視範囲の各行を現モードで (左, 右, 右を淡色表示するか) に文字列化する。衝突は ⚠ を付す。
-        // 機能順＝(機能, キー群 or "—"), キー順＝(キー, 全機能ラベル or －)。
-        let lines: Vec<(String, String, bool)> = {
-            match self.inner.view_mode.get() {
+        // 機能順は「見出し行＋3カラム（機能名｜実呼び出し｜キー）」、キー順は「キー｜機能群」を描く。
+        // どちらも表示行（見出し込み）を `top` から `vis` 行ぶん辿る。キー列は狭いので、入力待ちの
+        // 詳しい案内（右クリックで中止）は下部ステータス行に任せ、行内は短い目印だけ出す。
+        let prompt = "← キー入力待ち";
+        let display = self.display_lines();
+        match self.inner.view_mode.get() {
             KeyView::ByCommand => {
+                let name_x = gui::dpi_x(24);
+                let call_x = gui::dpi_x(240);
+                let keycol_x = gui::dpi_x(560);
+                let band = w::HBRUSH::GetSysColorBrush(co::COLOR::BTNFACE)?;
                 let rows = self.inner.rows.borrow();
-                (0..vis)
-                    .filter_map(|vi| {
-                        view.get(top + vi).map(|&ri| {
+                for vi in 0..vis {
+                    let Some(line) = display.get(top + vi).copied() else {
+                        break;
+                    };
+                    let y = vi as i32 * row_h;
+                    let ty = y + (row_h - fh) / 2;
+                    match line {
+                        DisplayLine::Header(g) => {
+                            dc.FillRect(
+                                w::RECT { left: 0, top: y, right: cw, bottom: y + row_h },
+                                &band,
+                            )?;
+                            dc.SetTextColor(text_col)?;
+                            dc.TextOut(key_x, ty, g)?;
+                        }
+                        DisplayLine::Row(vp) => {
+                            let Some(&ri) = view.get(vp) else { continue };
                             let r = &rows[ri];
-                            if r.chords.is_empty() {
-                                (r.command.display_name().to_string(), "—".to_string(), true)
+                            let selected = vp == sel;
+                            if selected && capturing {
+                                dc.FillRect(
+                                    w::RECT { left: 0, top: y, right: cw, bottom: y + row_h },
+                                    &ivory,
+                                )?;
+                                dc.SetTextColor(text_col)?;
+                            } else if selected {
+                                dc.FillRect(
+                                    w::RECT { left: 0, top: y, right: cw, bottom: y + row_h },
+                                    &hl_bg,
+                                )?;
+                                dc.SetTextColor(hl_text)?;
                             } else {
-                                let joined = r
-                                    .chords
-                                    .iter()
-                                    .map(|c| {
-                                        if c.conflicted {
-                                            format!("{} ⚠", c.token)
-                                        } else {
-                                            c.token.clone()
-                                        }
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join(", ");
-                                (r.command.display_name().to_string(), joined, false)
+                                dc.SetTextColor(text_col)?;
                             }
-                        })
-                    })
-                    .collect()
+                            dc.TextOut(name_x, ty, r.command.display_name())?;
+                            dc.TextOut(call_x, ty, &call_display(&r.value))?;
+                            if selected && capturing {
+                                dc.TextOut(keycol_x, ty, prompt)?;
+                            } else if let Some(c) = &r.chord {
+                                let mut k = c.clone();
+                                if r.conflicted {
+                                    k.push_str(" ⚠");
+                                }
+                                dc.TextOut(keycol_x, ty, &k)?;
+                            } else {
+                                if !selected {
+                                    dc.SetTextColor(gray_col)?;
+                                }
+                                dc.TextOut(keycol_x, ty, "—")?;
+                            }
+                        }
+                    }
+                }
             }
             KeyView::ByKey => {
+                let chord_x = gui::dpi_x(8);
+                let label_x = gui::dpi_x(260);
                 let krows = self.inner.key_rows.borrow();
-                (0..vis)
-                    .filter_map(|vi| {
-                        view.get(top + vi).map(|&ri| {
-                            let r = &krows[ri];
-                            if r.labels.is_empty() {
-                                // 機能未割当の空キー定義は － を淡色で（機能を割り当ててください）。
-                                (r.chord.clone(), "－".to_string(), true)
-                            } else {
-                                let mut right = r
-                                    .labels
-                                    .iter()
-                                    .map(|l| label_display(l))
-                                    .collect::<Vec<_>>()
-                                    .join(", ");
-                                if r.labels.len() > 1 {
-                                    right.push_str(" ⚠");
-                                }
-                                (r.chord.clone(), right, false)
-                            }
-                        })
-                    })
-                    .collect()
-            }
-            }
-        };
-        // 機能順・選択行のキー群（サブ選択のチップ描画・ヒットテスト用）。
-        let sub = self.inner.sub.get();
-        let sel_chords: Vec<(String, bool)> = if !picking
-            && self.inner.view_mode.get() == KeyView::ByCommand
-        {
-            view.get(sel)
-                .and_then(|&ri| {
-                    self.inner
-                        .rows
-                        .borrow()
-                        .get(ri)
-                        .map(|r| r.chords.iter().map(|c| (c.token.clone(), c.conflicted)).collect())
-                })
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        // 機能順は左の見出し列に、各ジャンルの先頭行（と可視範囲の最上行）でジャンル名を出す。
-        let genre_labels: Vec<Option<&'static str>> = if by_command {
-            let rows = self.inner.rows.borrow();
-            let genre_of = |di: usize| -> Option<&'static str> {
-                view.get(di).and_then(|&ri| rows.get(ri)).map(|r| command_genre(r.command).1)
-            };
-            (0..lines.len())
-                .map(|vi| {
-                    let di = top + vi;
-                    let g = genre_of(di)?;
-                    let prev = if vi == 0 { None } else { genre_of(di - 1) };
-                    (prev != Some(g)).then_some(g)
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        for (vi, (left, right, muted)) in lines.iter().enumerate() {
-            let di = top + vi;
-            let y = vi as i32 * row_h;
-            let ty = y + (row_h - fh) / 2;
-            if di == sel && capturing {
-                // キャプチャ中の当該行はアイボリーで「今ここに割り当てている」を示す（青反転にしない）。
-                dc.FillRect(w::RECT { left: 0, top: y, right: cw, bottom: y + row_h }, &ivory)?;
-                dc.SetTextColor(text_col)?;
-            } else if di == sel {
-                dc.FillRect(w::RECT { left: 0, top: y, right: cw, bottom: y + row_h }, &hl_bg)?;
-                dc.SetTextColor(hl_text)?;
-            } else {
-                dc.SetTextColor(text_col)?;
-            }
-            // 機能順：左の見出し列にジャンル名（境界行のみ・淡色）。
-            if let Some(g) = genre_labels.get(vi).copied().flatten() {
-                let gc = if di == sel && !capturing { hl_text } else { gray_col };
-                dc.SetTextColor(gc)?;
-                dc.TextOut(key_x, ty, g)?;
-                let restore = if di == sel && !capturing { hl_text } else { text_col };
-                dc.SetTextColor(restore)?;
-            }
-            dc.TextOut(left_x, ty, left)?;
-            if di == sel && capturing {
-                dc.TextOut(chord_x, ty, "← キーを押してください（右クリックで中止）")?;
-            } else if di == sel && !sel_chords.is_empty() {
-                // 選択行のキーを個別に描く。サブ選択は WINDOW 地のチップで強調する。
-                let mut x = chord_x;
-                for (ci, (tok, conflicted)) in sel_chords.iter().enumerate() {
-                    let mut label = tok.clone();
-                    if *conflicted {
-                        label.push_str(" ⚠");
-                    }
-                    let tw = dc.GetTextExtentPoint32(&label).map(|z| z.cx).unwrap_or(0);
-                    if ci == sub {
-                        dc.FillRect(
-                            w::RECT {
-                                left: x - gui::dpi_x(3),
-                                top: y + gui::dpi_y(1),
-                                right: x + tw + gui::dpi_x(3),
-                                bottom: y + row_h - gui::dpi_y(1),
-                            },
-                            &bg,
-                        )?;
+                for vi in 0..vis {
+                    let Some(DisplayLine::Row(vp)) = display.get(top + vi).copied() else {
+                        break;
+                    };
+                    let Some(&ri) = view.get(vp) else { continue };
+                    let r = &krows[ri];
+                    let y = vi as i32 * row_h;
+                    let ty = y + (row_h - fh) / 2;
+                    let selected = vp == sel;
+                    if selected && capturing {
+                        dc.FillRect(w::RECT { left: 0, top: y, right: cw, bottom: y + row_h }, &ivory)?;
                         dc.SetTextColor(text_col)?;
-                        dc.TextOut(x, ty, &label)?;
+                    } else if selected {
+                        dc.FillRect(w::RECT { left: 0, top: y, right: cw, bottom: y + row_h }, &hl_bg)?;
                         dc.SetTextColor(hl_text)?;
                     } else {
-                        dc.TextOut(x, ty, &label)?;
+                        dc.SetTextColor(text_col)?;
                     }
-                    x += tw;
-                    if ci + 1 < sel_chords.len() {
-                        dc.TextOut(x, ty, ", ")?;
-                        x += dc.GetTextExtentPoint32(", ").map(|z| z.cx).unwrap_or(0);
+                    dc.TextOut(chord_x, ty, &r.chord)?;
+                    if selected && capturing {
+                        dc.TextOut(label_x, ty, prompt)?;
+                    } else if r.labels.is_empty() {
+                        if !selected {
+                            dc.SetTextColor(gray_col)?;
+                        }
+                        dc.TextOut(label_x, ty, "－")?;
+                    } else {
+                        let mut right =
+                            r.labels.iter().map(|l| label_display(l)).collect::<Vec<_>>().join(", ");
+                        if r.labels.len() > 1 {
+                            right.push_str(" ⚠");
+                        }
+                        dc.TextOut(label_x, ty, &right)?;
                     }
                 }
-            } else {
-                if *muted && di != sel {
-                    dc.SetTextColor(gray_col)?;
-                }
-                dc.TextOut(chord_x, ty, right)?;
             }
         }
         // 最下部のステータス行（薄い区切り線＋直近メッセージ）。メッセージがある時だけ

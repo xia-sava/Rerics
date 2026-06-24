@@ -150,12 +150,6 @@ impl MainWindow {
                         Ok(())
                     }));
                 }
-                debug_server::Request::KeysSelectChord { category, index } => {
-                    let _ = tx.send(self.debug_keys_op(&category, |h| {
-                        (h.select_chord)(index);
-                        Ok(())
-                    }));
-                }
                 debug_server::Request::KeysRebind { category, chord } => {
                     let _ = tx.send(self.debug_keys_op(&category, |h| (h.rebind)(&chord)));
                 }
