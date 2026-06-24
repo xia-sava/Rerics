@@ -20,7 +20,7 @@ mod sort;
 mod rename;
 mod list;
 pub use message::message_box;
-pub use input::{input_box, input_box_select, input_box_full};
+pub use input::{code_box, input_box, input_box_full, input_box_select};
 pub use conflict::conflict_box;
 pub use archive_add::archive_add_box;
 pub use compress::compress_box;

@@ -183,6 +183,8 @@ pub mod modal_registry {
         pub rebind: ChordFn,
         /// 選択行へ打鍵を割り当てる（行の生 value を束ねる）。引数つき組込・Script・Eval 行用。未知キーは Err。
         pub capture: ChordFn,
+        /// コード（第1引数）をキー（第2引数）へ `Eval(code)` として結ぶ。未知キーは Err。
+        pub eval: BindFn,
         /// キー順で選択行の li 番目の機能を差し替えるピックモードへ入る（インライン機能ピッカー）。
         pub pick: Box<dyn Fn(usize)>,
         /// ピックモードで選択中の機能を確定する。
@@ -309,6 +311,8 @@ pub enum Request {
     KeysRebind { category: String, chord: String },
     /// `POST /keys/<category>/capture`：選択行へ body のキーを割り当てる（行の呼び出しを束ねる）。
     KeysCapture { category: String, chord: String },
+    /// `POST /keys/<category>/eval`：body の JSON 配列 `["code","chord"]` を `Eval(code)` としてキーへ結ぶ。
+    KeysEval { category: String, code: String, chord: String },
     /// `POST /keys/<category>/pick/<labelIndex>`：キー順で選択行の機能ピッカーへ入る。
     KeysPick { category: String, label: usize },
     /// `POST /keys/<category>/pickcommit`：ピックで選択中の機能を確定する。
@@ -579,6 +583,23 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                     let mut chord = String::new();
                     let _ = std::io::Read::read_to_string(req.as_reader(), &mut chord);
                     Some(Request::KeysCapture { category: cat.to_string(), chord: chord.trim().to_string() })
+                } else if let Some(cat) = rest.strip_suffix("/eval") {
+                    let mut body = String::new();
+                    let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);
+                    match parse_command_args(&body) {
+                        Ok(args) if args.len() == 2 => Some(Request::KeysEval {
+                            category: cat.to_string(),
+                            code: args[0].clone(),
+                            chord: args[1].clone(),
+                        }),
+                        _ => {
+                            let _ = req.respond(
+                                tiny_http::Response::from_string("eval needs [\"code\",\"chord\"]")
+                                    .with_status_code(400),
+                            );
+                            return;
+                        }
+                    }
                 } else if let Some(cat) = rest.strip_suffix("/view") {
                     let mut body = String::new();
                     let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);

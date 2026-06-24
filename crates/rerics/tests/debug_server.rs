@@ -1954,6 +1954,29 @@ fn settings_key_editor_binds_registered_script() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// 任意コードをキーへ結ぶ＝「コードを割り当て」モーダル→打鍵の経路（debug の eval フック）。
+/// `Eval(code)` 行が生え、実呼び出しカラムにはラッパを剥がしたコードが出る。
+#[test]
+fn settings_key_editor_binds_eval_code() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // コードをキーへ結ぶ＝Eval("r.log(42)") が Ctrl+Alt+G に割り当たる。
+    server.req("POST", "/keys/filer/eval", r#"["r.log(42)","Ctrl+Alt+G"]"#).unwrap();
+    // 実呼び出し＝コードで絞れる（call_display は Eval ラッパを剥がして中身を出す）。
+    server.req("POST", "/keys/filer/search", "r.log").unwrap();
+    assert!(
+        keys().contains(r#"["Eval",["Ctrl+Alt+G"]]"#),
+        "Eval が Ctrl+Alt+G に割り当たる: {}",
+        keys()
+    );
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// キー順で機能名をダブルクリック相当＝インライン機能ピッカーで別機能へ差し替える。
 /// 機能一覧は検索ボックスで絞り込め、確定でそのキーの定義が変わる（中止なら不変）。
 #[test]
