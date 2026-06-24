@@ -388,13 +388,14 @@ impl KeyEditor {
                 ..Default::default()
             },
         );
-        // 段2＝選択に依らない操作。左に「コードを新規追加」（新しい Eval 行を作る）、右端に全体リセット。
+        // 段2＝選択に依らない操作。左に「コード定義コマンドを追加」（新しい Eval 行を作る）、
+        // 右端にキーマップ全体のリセット（破壊力が強いのでラベルを明示的にしておく）。
         let btn_code = gui::Button::new(
             parent,
             gui::ButtonOpts {
-                text: "コードを新規追加(&E)",
+                text: "コード定義コマンドを追加(&E)",
                 position: gui::dpi(16, 490),
-                width: gui::dpi_x(170),
+                width: gui::dpi_x(210),
                 height: gui::dpi_y(28),
                 ..Default::default()
             },
@@ -402,9 +403,9 @@ impl KeyEditor {
         let reset = gui::Button::new(
             parent,
             gui::ButtonOpts {
-                text: "既定に戻す(&R)",
-                position: gui::dpi(620, 490),
-                width: gui::dpi_x(140),
+                text: "キーマップ全てを既定に戻す(&R)",
+                position: gui::dpi(530, 490),
+                width: gui::dpi_x(230),
                 height: gui::dpi_y(28),
                 ..Default::default()
             },
