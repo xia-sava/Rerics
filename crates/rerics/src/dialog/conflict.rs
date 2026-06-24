@@ -164,7 +164,13 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
                 let rename_k = rename_k.clone();
                 let radios_k = radios_k.clone();
                 let refresh_k = refresh_c.clone();
-                keyhook::push(hwnd, move |vk, down| {
+                keyhook::push(hwnd, move |msg, wparam| {
+                    // 押下/解放だけ扱う（WM_CHAR は無視）。いずれも消費しない（false 返し）。
+                    if msg != keyhook::WM_KEYDOWN && msg != keyhook::WM_KEYUP {
+                        return false;
+                    }
+                    let down = msg == keyhook::WM_KEYDOWN;
+                    let vk = wparam as u16;
                     let in_rename =
                         w::HWND::GetFocus().map(|f| f.ptr()) == Some(rename_k.hwnd().ptr());
                     // 改名 Edit 内の上下キー：ラジオ選択へ戻す（↑=強制上書き idx2・↓=スキップ
@@ -175,15 +181,16 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
                         unsafe {
                             radios_k[target].hwnd().SendMessage(w::msg::bm::Click {});
                         }
-                        return;
+                        return false;
                     }
                     // 原作 frmCopyOption：Shift 押下中だけ「すべてに適用」を自動チェック。
                     // 改名 Edit 入力中は Shift を無視する。
                     if vk != 0x10 || in_rename {
-                        return;
+                        return false;
                     }
                     all_k.set_check(down);
                     refresh_k();
+                    false
                 });
                 Ok(())
             },

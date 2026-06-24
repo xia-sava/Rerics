@@ -292,13 +292,6 @@ pub fn code_box(
         vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
     );
     {
-        let e = edit.clone();
-        arm.on_create(move |_| {
-            e.hwnd().SetFocus();
-            Ok(())
-        });
-    }
-    {
         let result = result.clone();
         let edit = edit.clone();
         let wnd2 = wnd.clone();
@@ -338,17 +331,20 @@ pub fn code_box(
 
     // カレットまでの文字列 `before` を見て、`r.<prefix>` なら候補を入れて表示・なければ隠す補完更新。
     // 実入力（EN_CHANGE）と headless 観測（type_text）の両方から、各自の `before` を渡して呼ぶ。
-    let update: Rc<dyn Fn(&str)> = {
+    // `force` は Ctrl+Space の明示トリガ用＝「唯一かつ入力済みと同一」でも表示する。
+    // (before, force) を受け取って候補リストを出し入れする。
+    type Update = Rc<dyn Fn(&str, bool)>;
+    let update: Update = {
         let cand = cand.clone();
         let members = members_rc.clone();
         let range = range.clone();
-        Rc::new(move |before: &str| {
+        Rc::new(move |before: &str, force: bool| {
             let caret = before.encode_utf16().count() as u32;
-            // 候補があり、かつ「唯一かつ入力済みと同一」でなければ出す（確定直後の再表示を防ぐ）。
+            // 候補があり、かつ（強制でなければ）「唯一かつ入力済みと同一」でなければ出す。
             let shown = completion_prefix(before).and_then(|(plen, prefix)| {
                 let list = completion_candidates(&members, &prefix);
                 let only_exact = list.len() == 1 && list[0].eq_ignore_ascii_case(&prefix);
-                (!(list.is_empty() || only_exact)).then_some((plen as u32, list))
+                (!(list.is_empty() || (!force && only_exact))).then_some((plen as u32, list))
             });
             match shown {
                 Some((plen, list)) => {
@@ -370,7 +366,7 @@ pub fn code_box(
         let update = update.clone();
         edit.on().en_change(move || {
             // 実入力：本文の末尾にカレットがある前提で補完する（補完は通常末尾で打つため）。
-            update(&edit2.text().unwrap_or_default());
+            update(&edit2.text().unwrap_or_default(), false);
             Ok(())
         });
     }
@@ -387,23 +383,103 @@ pub fn code_box(
         });
     }
 
+    // 生成時：入力欄へフォーカスし、子コントロールのキーを横取りして補完候補を操作する。
+    // ↑↓＝候補移動（クランプ）・Enter＝確定・Ctrl+Space＝補完を開く。いずれも Edit へは渡さない。
+    {
+        let edit_focus = edit.clone();
+        let edit_h = edit.clone();
+        let cand_h = cand.clone();
+        let range = range.clone();
+        let update = update.clone();
+        let do_insert = do_insert.clone();
+        let ctrl = Rc::new(Cell::new(false));
+        let suppress_space = Rc::new(Cell::new(false));
+        arm.on_create(move |hwnd| {
+            edit_focus.hwnd().SetFocus();
+            let edit_h = edit_h.clone();
+            let cand_h = cand_h.clone();
+            let range = range.clone();
+            let update = update.clone();
+            let do_insert = do_insert.clone();
+            let ctrl = ctrl.clone();
+            let suppress_space = suppress_space.clone();
+            keyhook::push(hwnd, move |msg, wparam| {
+                let vk = wparam as u16;
+                // Ctrl 状態の追跡（VK_CONTROL=0x11）。消費しない。
+                if vk == 0x11 {
+                    if msg == keyhook::WM_KEYDOWN {
+                        ctrl.set(true);
+                    } else if msg == keyhook::WM_KEYUP {
+                        ctrl.set(false);
+                    }
+                    return false;
+                }
+                // 入力欄にフォーカスがある時だけ補完操作を扱う。
+                if winsafe::HWND::GetFocus().map(|f| f.ptr()) != Some(edit_h.hwnd().ptr()) {
+                    return false;
+                }
+                // Ctrl+Space（VK_SPACE=0x20）：補完を開く（消費）。直後の空白 WM_CHAR も抑制する。
+                if msg == keyhook::WM_KEYDOWN && vk == 0x20 && ctrl.get() {
+                    update(&edit_h.text().unwrap_or_default(), true);
+                    suppress_space.set(true);
+                    return true;
+                }
+                if msg == keyhook::WM_CHAR && wparam == 0x20 && suppress_space.get() {
+                    suppress_space.set(false);
+                    return true;
+                }
+                // 以降は候補リスト表示中だけ。
+                if range.get().is_none() {
+                    return false;
+                }
+                // ↑（0x26）↓（0x28）：候補を上下に移動（端でクランプ・消費）。
+                if msg == keyhook::WM_KEYDOWN && (vk == 0x26 || vk == 0x28) {
+                    let count = cand_h.items().count().unwrap_or(0);
+                    if count == 0 {
+                        return false;
+                    }
+                    let cur = unsafe { cand_h.hwnd().SendMessage(lb::GetCurSel {}) }.unwrap_or(0);
+                    let next =
+                        if vk == 0x26 { cur.saturating_sub(1) } else { (cur + 1).min(count - 1) };
+                    let _ = unsafe { cand_h.hwnd().SendMessage(lb::SetCurSel { index: Some(next) }) };
+                    return true;
+                }
+                // Enter（WM_CHAR 0x0D）：選択中の候補を確定（消費して改行を防ぐ）。
+                if msg == keyhook::WM_CHAR && wparam == 0x0D {
+                    if let Some(idx) = unsafe { cand_h.hwnd().SendMessage(lb::GetCurSel {}) } {
+                        do_insert(idx);
+                    }
+                    return true;
+                }
+                false
+            });
+            Ok(())
+        });
+    }
+
     // headless 観測：開いている補完つき入力欄の入力模擬・候補読み取り・確定・本文取得を公開する。
     #[cfg(feature = "debug-server")]
     {
         let cand_p = cand.clone();
+        let cand_v = cand.clone();
         let edit_p = edit.clone();
         let edit_t = edit.clone();
+        let range_v = range.clone();
         let do_insert = do_insert.clone();
         let update = update.clone();
         completion_probe::set(completion_probe::Probe {
             type_text: Box::new(move |s| {
                 // 入力模擬：本文を s にし、カレットは末尾＝before は全文として補完を更新する。
                 let _ = edit_t.set_text(s);
-                update(s);
+                update(s, false);
             }),
             candidates: Box::new(move || {
                 let n = cand_p.items().count().unwrap_or(0);
                 (0..n).filter_map(|i| cand_p.items().text(i).ok()).collect()
+            }),
+            visible: Box::new(move || range_v.get().is_some()),
+            selected: Box::new(move || {
+                unsafe { cand_v.hwnd().SendMessage(lb::GetCurSel {}) }.map_or(-1, |i| i as i32)
             }),
             accept: Box::new(move |idx| do_insert(idx)),
             text: Box::new(move || edit_p.text().unwrap_or_default()),
@@ -411,6 +487,7 @@ pub fn code_box(
     }
 
     let _ = wnd.show_modal(parent);
+    keyhook::pop();
     #[cfg(feature = "debug-server")]
     completion_probe::clear();
     let _ = (cancel, cand, &do_insert, &update);
@@ -428,6 +505,10 @@ pub mod completion_probe {
         pub type_text: Box<dyn Fn(&str)>,
         /// 現在の候補リスト（上から順）。
         pub candidates: Box<dyn Fn() -> Vec<String>>,
+        /// 候補リストが表示中か。
+        pub visible: Box<dyn Fn() -> bool>,
+        /// 選択中の候補 index（無選択は -1）。
+        pub selected: Box<dyn Fn() -> i32>,
         /// idx 番目の候補を確定（カレット直前のプレフィックスを置換）。
         pub accept: Box<dyn Fn(u32)>,
         /// 入力欄の現在の本文。
@@ -451,6 +532,14 @@ pub mod completion_probe {
     /// 候補一覧（入力欄が開いていなければ None）。
     pub fn candidates() -> Option<Vec<String>> {
         PROBE.with(|s| s.borrow().as_ref().map(|p| (p.candidates)()))
+    }
+    /// 候補リストが表示中か（入力欄が開いていなければ None）。
+    pub fn visible() -> Option<bool> {
+        PROBE.with(|s| s.borrow().as_ref().map(|p| (p.visible)()))
+    }
+    /// 選択中の候補 index（無選択は -1・入力欄が開いていなければ None）。
+    pub fn selected() -> Option<i32> {
+        PROBE.with(|s| s.borrow().as_ref().map(|p| (p.selected)()))
     }
     /// idx 番目の候補を確定する。開いていれば `true`。
     pub fn accept(idx: u32) -> bool {

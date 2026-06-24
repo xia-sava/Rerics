@@ -331,6 +331,8 @@ pub enum Request {
     CompletionType { text: String },
     /// `POST /completion/keystrokes`：body の各文字を WM_CHAR で 1 文字ずつ実入力する（EN_CHANGE 経路）。
     CompletionKeystrokes { text: String },
+    /// `POST /completion/key/<name>`：補完つき入力欄へ特殊キーを送る（down/up/enter/ctrlspace）。
+    CompletionKey { name: String },
     /// `GET /completion`：開いている補完つき入力欄の候補一覧と本文（JSON）。未オープンは null。
     CompletionState,
     /// `POST /completion/accept/<idx>`：開いている補完つき入力欄の idx 番目の候補を確定する。
@@ -484,6 +486,8 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                         return;
                     }
                 }
+            } else if let Some(name) = path.strip_prefix("/completion/key/") {
+                Some(Request::CompletionKey { name: name.trim_end_matches('/').to_string() })
             } else if path == "/completion/type" {
                 let mut text = String::new();
                 let _ = std::io::Read::read_to_string(req.as_reader(), &mut text);

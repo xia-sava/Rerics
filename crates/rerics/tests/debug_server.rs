@@ -2745,6 +2745,47 @@ fn completion_popup_lists_members_and_inserts_on_accept() {
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
 
+/// 補完つき入力欄のキーボード操作：↑↓で候補移動（クランプ）・Enter で確定・Ctrl+Space で強制表示。
+/// 実キー経路（WM_KEYDOWN/WM_CHAR を keyhook サブクラスが横取り）を headless で検証する。
+#[test]
+fn completion_keyboard_navigation_and_ctrl_space() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    server.req("POST", "/settings/nav/5", "").unwrap();
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/openarg", "").unwrap();
+    let comp = || server.req("GET", "/completion", "").unwrap().1;
+
+    // `=r.o` で候補（on/open/openDialog/oppositePane）が出て、先頭が選択されている。
+    server.req("POST", "/completion/keystrokes", "=r.o").unwrap();
+    let c = poll(&server, "/completion", |b| b.contains(r#""visible":true"#));
+    assert!(c.contains("oppositePane"), "候補が出る: {c}");
+    assert!(c.contains(r#""selected":0"#), "先頭が選択される: {c}");
+
+    // ↓↓↑ で選択が index 1（open）に動く。
+    server.req("POST", "/completion/key/down", "").unwrap();
+    server.req("POST", "/completion/key/down", "").unwrap();
+    server.req("POST", "/completion/key/up", "").unwrap();
+    let c2 = poll(&server, "/completion", |b| b.contains(r#""selected":1"#));
+    assert!(c2.contains(r#""selected":1"#), "↓↓↑ で index 1: {c2}");
+
+    // Enter で選択中（open）を確定＝プレフィックス o が open に置換される。
+    server.req("POST", "/completion/key/enter", "").unwrap();
+    let c3 = poll(&server, "/completion", |b| b.contains(r#""text":"=r.open"#));
+    assert!(c3.contains(r#""text":"=r.open"#), "Enter で open 確定: {c3}");
+
+    // 唯一一致 `=r.currentDir` は自動では隠れる。Ctrl+Space で強制表示できる。
+    server.req("POST", "/completion/keystrokes", "=r.currentDir").unwrap();
+    assert!(comp().contains(r#""visible":false"#), "唯一一致は自動で隠れる: {}", comp());
+    server.req("POST", "/completion/key/ctrlspace", "").unwrap();
+    let c5 = poll(&server, "/completion", |b| b.contains(r#""visible":true"#));
+    assert!(c5.contains("currentDir"), "Ctrl+Space で強制表示: {c5}");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
 /// scripting：`/script/eval` で評価したコードのログがアプリのログ欄へ出る（エンジン→UI 配線）。
 #[test]
 fn script_eval_runs_and_logs_to_app() {
