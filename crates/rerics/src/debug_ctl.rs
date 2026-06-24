@@ -109,6 +109,11 @@ impl MainWindow {
                     self.script_send(crate::script_host::EngineCmd::Eval(code));
                     let _ = tx.send(debug_server::Response::Json("\"ok\"".to_string()));
                 }
+                debug_server::Request::ScriptEvalValue { code } => {
+                    let value = self.script_eval_value(code);
+                    let json = serde_json::to_string(&value).unwrap_or_else(|_| "\"\"".to_string());
+                    let _ = tx.send(debug_server::Response::Json(json));
+                }
                 debug_server::Request::KeysState { category } => {
                     let _ = tx.send(self.debug_keys_state(&category));
                 }

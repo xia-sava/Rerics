@@ -2953,3 +2953,78 @@ fn quit_closes_tab_when_multiple_keeps_app_alive() {
     assert_eq!(count().trim(), "1", "Quit で 1 タブに減る");
     assert!(server.req("GET", "/state", "").is_some(), "アプリは終了していない");
 }
+
+/// キーバインド経路：`Eval("code")` コマンドが `exec` からエンジンへ流れ、コードが評価される。
+/// `/command/Eval` は実際のキー押下と同じ `exec` を通るので、これでキー→コード評価の配線を検証する。
+#[test]
+fn eval_command_dispatches_code_to_engine() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    server
+        .req("POST", "/command/Eval", r#"["rerics.log(\"cmd-eval-marker-7\");"]"#)
+        .expect("Eval");
+    let log = poll(&server, "/state/log", |b| b.contains("cmd-eval-marker-7"));
+    assert!(log.contains("cmd-eval-marker-7"), "Eval コマンドがコードを評価して記録するはず: {log}");
+}
+
+/// 値返し Eval：最後の式の値が文字列で返る。undefined/null は空、Promise は解決を待つ。
+/// （HostApi を呼ぶ式は同期評価ではデッドロックするので 第1弾 では純粋な式のみ＝後段で非同期化）。
+#[test]
+fn eval_value_returns_last_expression() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    let body = |code: &str| server.req("POST", "/script/eval-value", code).expect("eval-value").1;
+    assert_eq!(body("1 + 2").trim(), "\"3\"", "数式の結果を文字列で返す");
+    assert_eq!(body(r#""ab" + "cd""#).trim(), "\"abcd\"", "文字列連結");
+    assert_eq!(body("undefined").trim(), "\"\"", "undefined は空文字");
+    assert_eq!(body("null").trim(), "\"\"", "null は空文字");
+    assert_eq!(body(r#"Promise.resolve("async-7")"#).trim(), "\"async-7\"", "Promise は解決を待つ");
+}
+
+/// `r` 別名：`r` は `rerics` と同一オブジェクトで、ホスト API メソッドが見える。
+#[test]
+fn r_alias_points_to_rerics() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    let body = |code: &str| server.req("POST", "/script/eval-value", code).expect("eval-value").1;
+    assert_eq!(body("r === rerics").trim(), "\"true\"", "r は rerics と同一参照");
+    assert_eq!(body("typeof r.currentDir").trim(), "\"function\"", "r 経由でホスト API が見える");
+}
+
+/// プロセス op：`await rerics.run` が外部プロセスの終了を待ち、終了コードと stdout を返す。
+#[test]
+fn run_executes_process_and_returns_result() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"(async () => {
+                 const r = await rerics.run("cmd", "/c", "echo", "rerics-run-9");
+                 rerics.log("RUN code=" + r.code + " out=[" + r.stdout.trim() + "]");
+               })();"#,
+        )
+        .expect("eval");
+    let log = poll(&server, "/state/log", |b| b.contains("RUN code="));
+    assert!(log.contains("RUN code=0"), "run は終了コード0を返すはず: {log}");
+    assert!(log.contains("rerics-run-9"), "run は stdout を返すはず: {log}");
+}
+
+/// キーバインド経路：`Script("name")` コマンドが `exec` からエンジンへ流れ、登録コマンドを実行する。
+/// 登録コマンドがアクティブペインを移動させ、UI に反映されることで配線を検証する。
+#[test]
+fn script_command_invokes_registered_command() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[(
+            "00-cmds.ts",
+            r#"rerics.registerCommand("goUp", () => { rerics.navigate(rerics.currentDir() + "/.."); });"#,
+        )],
+    );
+    let loc0 = server.req("GET", "/state/panes/left/location", "").unwrap().1;
+    assert!(loc0.contains("sbx"), "サンドボックスから開始するはず: {loc0}");
+
+    server.req("POST", "/command/Script", r#"["goUp"]"#).expect("Script");
+    let loc1 = poll(&server, "/state/panes/left/location", |b| !b.contains("sbx"));
+    assert!(
+        !loc1.contains("sbx"),
+        "Script コマンドが登録コマンドを実行してペインが移動するはず: {loc1}"
+    );
+}

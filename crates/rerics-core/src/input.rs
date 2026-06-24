@@ -180,6 +180,10 @@ pub enum Command {
     End,
     Restart,
     Quit,
+    /// 登録済みスクリプトコマンドを名前で実行する（引数＝コマンド名）。
+    Script,
+    /// 任意のスクリプトコードを評価する（引数＝ソース）。
+    Eval,
     // テキストビューア
     ViewerClose,
     ViewerScrollUp,
@@ -315,6 +319,8 @@ impl Command {
             (End, "End", "アプリケーションの終了"),
             (Restart, "Restart", "再起動"),
             (Quit, "Quit", "閉じる（最後ならアプリ終了）"),
+            (Script, "Script", "スクリプト実行"),
+            (Eval, "Eval", "コード評価"),
             (ViewerClose, "ViewerClose", "ビューアを閉じる"),
             (ViewerScrollUp, "ViewerScrollUp", "1行上へ"),
             (ViewerScrollDown, "ViewerScrollDown", "1行下へ"),
@@ -394,6 +400,9 @@ impl Command {
             | ImageRotateRight | ImageRotateLeft | ImageFlipHorizontal
             | ImageFlipVertical | ImageCopy | MediaTogglePlay => &[ImageViewer],
             Edit | OpenSettings => &[Filer, TextViewer],
+            // スクリプト系は引数（コマンド名／コード）込みでしか意味をなさず、現状のキー編集 UI
+            // からは直接選べない。設定トークンとしては有効なので列挙だけ避ける。
+            Script | Eval => &[],
             _ => &[Filer],
         }
     }
@@ -1152,6 +1161,8 @@ mod tests {
             r#"ChangeDirectoryDialog("D:")"#,
             r#"NewTab("a", "b")"#,
             r#"Reload("say \"hi\"\\")"#,
+            r#"Script("myCommand")"#,
+            r#"Eval("rerics.log(\"hi\")")"#,
         ] {
             let inv = Invocation::parse(s).unwrap();
             assert_eq!(inv.to_token_string(), s);

@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
+use winsafe::co;
 use winsafe::prelude::*;
 
 use crate::MainWindow;
@@ -40,6 +41,7 @@ pub enum HostCall {
         events: OpDone,
     },
     CancelOperation { token: u64 },
+    ShellOpen(String),
 }
 
 /// UI スレッド → エンジンスレッドへの応答。
@@ -92,14 +94,17 @@ fn system_time_ms(t: Option<std::time::SystemTime>) -> u64 {
 }
 
 /// UI スレッド → エンジンスレッドへのコマンド。
-/// scripting 単独ビルドでは送り手（debug-server エンドポイント／将来のキーバインド）が
-/// まだ無いため未使用＝その構成でのみ dead_code を許容する。
+/// `Invoke`/`Eval` はキーバインド（`Command::Script`/`Eval`）から、`FireEvent` は本体イベントから
+/// 送られる。`ListCommands` の送り手は debug-server エンドポイントだけなので、その構成以外では
+/// 当該バリアントが未使用＝dead_code を許容する。
 #[cfg_attr(not(feature = "debug-server"), allow(dead_code))]
 pub enum EngineCmd {
     /// 登録済みコマンドを名前で実行する（投げっぱなし）。
     Invoke(String),
     /// TS/JS ソースを評価する（投げっぱなし）。
     Eval(String),
+    /// TS/JS コードを評価し、最後の式の値を文字列で返す（同期取得）。`undefined`/`null` は空文字。
+    EvalValue { code: String, tx: Sender<String> },
     /// 現在登録されているコマンド名を返す（同期・`HostApi` を呼ばないのでデッドロックしない）。
     ListCommands(Sender<Vec<String>>),
     /// ファイラー本体の出来事を `rerics.on` ハンドラへ配る（投げっぱなし）。
@@ -306,6 +311,15 @@ impl HostApi for GuiHost {
             HostCall::CancelOperation { token },
         );
     }
+
+    fn open(&self, path: &str) {
+        let _ = ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::ShellOpen(path.to_string()),
+        );
+    }
 }
 
 /// スクリプトエンジンを別スレッドに建てる。起動スクリプト（`data_dir()/scripts`）を読み込み、
@@ -334,6 +348,20 @@ pub fn spawn_engine(queue: ScriptQueue, hwnd_ptr: isize, cmd_rx: Receiver<Engine
                     ) {
                         host.log(&format!("eval エラー: {e}"));
                     }
+                }
+                EngineCmd::EvalValue { code, tx } => {
+                    let value = engine
+                        .eval_to_string(
+                            "rerics:eval",
+                            "file:///eval.ts",
+                            deno_ast::MediaType::TypeScript,
+                            code,
+                        )
+                        .unwrap_or_else(|e| {
+                            host.log(&format!("eval エラー: {e}"));
+                            String::new()
+                        });
+                    let _ = tx.send(value);
                 }
                 EngineCmd::ListCommands(tx) => {
                     let _ = tx.send(engine.registered_commands());
@@ -417,6 +445,18 @@ impl MainWindow {
                 }
                 HostCall::CancelOperation { token } => {
                     self.cancel_script_operation(token);
+                    let _ = tx.send(HostResp::Done);
+                }
+                HostCall::ShellOpen(path) => {
+                    if let Err(e) = self.wnd.hwnd().ShellExecute(
+                        "open",
+                        &path,
+                        None,
+                        None,
+                        co::SW::SHOWNORMAL,
+                    ) {
+                        self.log.error(&format!("開けません: {path}: {e}"));
+                    }
                     let _ = tx.send(HostResp::Done);
                 }
             }
@@ -671,7 +711,6 @@ impl MainWindow {
     }
 
     /// エンジンスレッドへコマンドを投げる（投げっぱなし）。
-    #[cfg(feature = "debug-server")]
     pub(crate) fn script_send(&self, cmd: EngineCmd) {
         let _ = self.script.cmd_tx.send(cmd);
     }
@@ -681,6 +720,14 @@ impl MainWindow {
     pub(crate) fn script_list_commands(&self) -> Vec<String> {
         let (tx, rx) = channel();
         let _ = self.script.cmd_tx.send(EngineCmd::ListCommands(tx));
+        rx.recv().unwrap_or_default()
+    }
+
+    /// コードを評価して最後の式の値を同期取得する（値返し Eval の検証口）。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn script_eval_value(&self, code: String) -> String {
+        let (tx, rx) = channel();
+        let _ = self.script.cmd_tx.send(EngineCmd::EvalValue { code, tx });
         rx.recv().unwrap_or_default()
     }
 }
