@@ -144,6 +144,8 @@ pub enum EngineCmd {
     EvalArg { id: u64, code: String },
     /// 現在登録されているコマンドのメタ情報を返す（同期・`HostApi` を呼ばないのでデッドロックしない）。
     ListCommands(Sender<Vec<ScriptCommand>>),
+    /// `r.` で呼べるメンバー名を返す（補完候補・同期・`HostApi` を呼ばない）。
+    ListMembers(Sender<Vec<String>>),
     /// ファイラー本体の出来事を `rerics.on` ハンドラへ配る（投げっぱなし）。
     FireEvent { event: String, arg: String },
 }
@@ -468,6 +470,9 @@ pub fn spawn_engine(
                 }
                 EngineCmd::ListCommands(tx) => {
                     let _ = tx.send(engine.registered_command_metas());
+                }
+                EngineCmd::ListMembers(tx) => {
+                    let _ = tx.send(engine.registered_member_names());
                 }
                 EngineCmd::FireEvent { event, arg } => {
                     if let Err(e) = engine.fire_event(&event, &arg) {
@@ -928,6 +933,15 @@ impl MainWindow {
     pub(crate) fn script_list_commands(&self) -> Vec<ScriptCommand> {
         let (tx, rx) = channel();
         let _ = self.script.cmd_tx.send(EngineCmd::ListCommands(tx));
+        rx.recv().unwrap_or_default()
+    }
+
+    /// `r.` で呼べるメンバー名（補完候補）をエンジンから同期取得する。
+    // 当面は debug-server からのみ使う（Phase 2 で引数/コード欄の補完が GUI からも使う）。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn script_list_members(&self) -> Vec<String> {
+        let (tx, rx) = channel();
+        let _ = self.script.cmd_tx.send(EngineCmd::ListMembers(tx));
         rx.recv().unwrap_or_default()
     }
 

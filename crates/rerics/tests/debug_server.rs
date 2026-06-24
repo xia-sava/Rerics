@@ -2689,6 +2689,32 @@ fn script_commands_register_on_startup() {
     );
 }
 
+/// scripting：`/script/members` に補完候補（組込メンバー＋登録コマンド名）が並び、登録コマンドは
+/// `r.<name>()` でも呼べる（式/コードから対象操作を書ける）。
+#[test]
+fn script_members_list_and_commands_callable_via_r() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[(
+            "00-cmds.ts",
+            r#"rerics.registerCommand("goUp", () => { rerics.navigate(rerics.currentDir() + "/.."); });"#,
+        )],
+    );
+    // 組込メンバーと登録コマンド名が補完候補として並ぶ。
+    let members = poll(&server, "/script/members", |b| b.contains("goUp"));
+    assert!(
+        members.contains("currentDir") && members.contains("prompt"),
+        "組込メンバーが並ぶ: {members}"
+    );
+    assert!(members.contains("goUp"), "登録コマンド名が並ぶ: {members}");
+
+    // 登録コマンドは r.<name>() でも呼べる＝r.goUp() で親フォルダへ移動する。
+    let before = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+    server.req("POST", "/script/eval", "r.goUp()").unwrap();
+    let after = poll(&server, "/state/panes/left/location", |b| b.trim() != before);
+    assert_ne!(after.trim(), before, "r.goUp() で親へ移動する: {after}");
+}
+
 /// scripting：`/script/eval` で評価したコードのログがアプリのログ欄へ出る（エンジン→UI 配線）。
 #[test]
 fn script_eval_runs_and_logs_to_app() {

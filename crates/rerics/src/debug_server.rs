@@ -286,6 +286,8 @@ pub enum Request {
     ModalResize { width: i32, height: i32 },
     /// `GET /script/commands`：登録済みスクリプトコマンド名の一覧（JSON 文字列配列）。
     ScriptCommands,
+    /// `GET /script/members`：`r.` で呼べるメンバー名の一覧（補完候補・JSON 文字列配列・昇順）。
+    ScriptMembers,
     /// `POST /script/invoke/<name>`：登録済みスクリプトコマンドを名前で実行する（投げっぱなし）。
     ScriptInvoke { name: String },
     /// `POST /script/eval`：body の TS/JS ソースをスクリプトエンジンで評価する（投げっぱなし）。
@@ -441,6 +443,8 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::Snapshot { spec: spec.to_string() })
             } else if path == "/script/commands" {
                 Some(Request::ScriptCommands)
+            } else if path == "/script/members" {
+                Some(Request::ScriptMembers)
             } else {
                 path.strip_prefix("/keys/").map(|cat| Request::KeysState {
                     category: cat.trim_end_matches('/').to_string(),

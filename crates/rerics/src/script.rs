@@ -593,11 +593,15 @@ const BOOTSTRAP: &str = r#"
     registerCommand: (name, fn, opts) => {
       if (typeof fn !== "function") throw new TypeError("registerCommand: fn must be a function");
       const o = opts || {};
-      commands.set(String(name), {
+      const key = String(name);
+      commands.set(key, {
         fn,
         label: o.label == null ? null : String(o.label),
         genre: o.genre == null ? null : String(o.genre),
       });
+      // 登録コマンドを r.<name>() でも呼べるようにする（式/コードから対象操作を書ける）。
+      // 組込メンバーと衝突する名前は組込を優先し、r へは生やさない（マップには残る）。
+      if (!builtinMembers.has(key)) rerics[key] = (...args) => fn(...args);
     },
     on: (event, fn) => {
       if (typeof fn !== "function") throw new TypeError("on: fn must be a function");
@@ -610,6 +614,8 @@ const BOOTSTRAP: &str = r#"
   // 短縮別名。コマンド設定欄で `rerics.` が長いので `r.` で同じものを指せる。グローバルに
   // 1 度だけ置くことで、繰り返し eval しても再宣言エラーにならず、登録コマンド内でも使える。
   globalThis.r = globalThis.rerics;
+  // 組込メンバー名の集合（この時点の rerics のキー）。登録コマンドの公開時に衝突判定へ使う。
+  const builtinMembers = new Set(Object.keys(rerics));
   // ファイラー本体の出来事を登録ハンドラへ配る。1 つが投げても残りは続行する。
   globalThis.__fireEvent = (event, arg) => {
     const list = eventHandlers.get(String(event));
@@ -626,6 +632,8 @@ const BOOTSTRAP: &str = r#"
     }
   };
   globalThis.__commandNames = () => [...commands.keys()];
+  // 補完候補＝`r.` で呼べるもの（組込メンバー＋公開済み登録コマンド）の名前を昇順で返す。
+  globalThis.__memberNames = () => Object.keys(globalThis.rerics).sort();
   globalThis.__commandMetas = () =>
     [...commands.entries()].map(([name, e]) => ({ name, label: e.label, genre: e.genre }));
   globalThis.__invokeCommand = (name) => {
@@ -763,6 +771,18 @@ impl Engine {
         deno_core::scope!(scope, &mut self.runtime);
         let local = deno_core::v8::Local::new(scope, global);
         deno_core::serde_v8::from_v8::<Vec<ScriptCommand>>(scope, local).unwrap_or_default()
+    }
+
+    /// `r.` で呼べるメンバー名を昇順で返す（組込ホスト API＋公開済み登録コマンド）。設定 UI の
+    /// 引数/コード欄の補完候補に使う。
+    pub fn registered_member_names(&mut self) -> Vec<String> {
+        let global = self
+            .runtime
+            .execute_script("rerics:list-members", "globalThis.__memberNames()")
+            .expect("__memberNames must not fail");
+        deno_core::scope!(scope, &mut self.runtime);
+        let local = deno_core::v8::Local::new(scope, global);
+        deno_core::serde_v8::from_v8::<Vec<String>>(scope, local).unwrap_or_default()
     }
 
     /// 登録済みイベントハンドラを発火する（`rerics.on` で登録したもの）。`arg` は単一の
@@ -1178,6 +1198,50 @@ mod tests {
         );
         // 名前一覧は従来どおり（メタ化で壊れない）。
         assert_eq!(eng.registered_commands(), vec!["organize", "onlyLabel", "plain"]);
+    }
+
+    #[test]
+    fn registered_command_is_callable_via_r_namespace() {
+        let host = Rc::new(MockHost {
+            dir: "C:\\base".into(),
+            ..Default::default()
+        });
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:register",
+            r#"rerics.registerCommand("up", () => rerics.navigate(rerics.currentDir() + "/.."));"#
+                .to_string(),
+        )
+        .unwrap();
+        // 登録コマンドは r.<name>() でも呼べる（式/コードから対象操作を書ける）。
+        eng.run_to_completion("test:call", "r.up();".to_string()).unwrap();
+        assert_eq!(*host.navigated.borrow(), vec!["C:\\base/..".to_string()]);
+    }
+
+    #[test]
+    fn member_names_merge_builtins_and_commands_builtin_wins_on_clash() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:register",
+            r#"
+              rerics.registerCommand("organize", () => {});
+              rerics.registerCommand("prompt", () => 999);
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        let members = eng.registered_member_names();
+        // 組込メンバーと公開済み登録コマンドが混ざって昇順で並ぶ。
+        assert!(members.contains(&"currentDir".to_string()), "組込: {members:?}");
+        assert!(members.contains(&"organize".to_string()), "登録コマンド: {members:?}");
+        let mut sorted = members.clone();
+        sorted.sort();
+        assert_eq!(members, sorted, "昇順: {members:?}");
+        // 衝突した "prompt" は組込が優先＝r.prompt は HostApi のまま（コマンドの 999 では上書きされない）。
+        eng.run_to_completion("test:clash", r#"rerics.log(String(r.prompt("m")));"#.to_string())
+            .unwrap();
+        assert_eq!(*host.logs.borrow(), vec!["null".to_string()], "組込 prompt が勝つ");
     }
 
     #[test]
