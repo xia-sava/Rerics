@@ -795,6 +795,22 @@ impl MainWindow {
             return Ok(());
         }
         self.fire_script_event("executeCommand", cmd.as_token());
+        // スクリプト系は引数を生のままエンジンへ渡す（登録名・コードをマクロ展開で改変しない）。
+        match cmd {
+            Command::Script => {
+                if let Some(name) = inv.args.first() {
+                    self.script_send(script_host::EngineCmd::Invoke(name.clone()));
+                }
+                return Ok(());
+            }
+            Command::Eval => {
+                if let Some(code) = inv.args.first() {
+                    self.script_send(script_host::EngineCmd::Eval(code.clone()));
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
         // 引数があれば実行直前にマクロを展開する。入力/選択のキャンセルは無音で実行中止。
         let args = if inv.args.is_empty() {
             Vec::new()

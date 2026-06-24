@@ -2953,3 +2953,37 @@ fn quit_closes_tab_when_multiple_keeps_app_alive() {
     assert_eq!(count().trim(), "1", "Quit で 1 タブに減る");
     assert!(server.req("GET", "/state", "").is_some(), "アプリは終了していない");
 }
+
+/// キーバインド経路：`Eval("code")` コマンドが `exec` からエンジンへ流れ、コードが評価される。
+/// `/command/Eval` は実際のキー押下と同じ `exec` を通るので、これでキー→コード評価の配線を検証する。
+#[test]
+fn eval_command_dispatches_code_to_engine() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    server
+        .req("POST", "/command/Eval", r#"["rerics.log(\"cmd-eval-marker-7\");"]"#)
+        .expect("Eval");
+    let log = poll(&server, "/state/log", |b| b.contains("cmd-eval-marker-7"));
+    assert!(log.contains("cmd-eval-marker-7"), "Eval コマンドがコードを評価して記録するはず: {log}");
+}
+
+/// キーバインド経路：`Script("name")` コマンドが `exec` からエンジンへ流れ、登録コマンドを実行する。
+/// 登録コマンドがアクティブペインを移動させ、UI に反映されることで配線を検証する。
+#[test]
+fn script_command_invokes_registered_command() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[(
+            "00-cmds.ts",
+            r#"rerics.registerCommand("goUp", () => { rerics.navigate(rerics.currentDir() + "/.."); });"#,
+        )],
+    );
+    let loc0 = server.req("GET", "/state/panes/left/location", "").unwrap().1;
+    assert!(loc0.contains("sbx"), "サンドボックスから開始するはず: {loc0}");
+
+    server.req("POST", "/command/Script", r#"["goUp"]"#).expect("Script");
+    let loc1 = poll(&server, "/state/panes/left/location", |b| !b.contains("sbx"));
+    assert!(
+        !loc1.contains("sbx"),
+        "Script コマンドが登録コマンドを実行してペインが移動するはず: {loc1}"
+    );
+}

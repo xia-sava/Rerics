@@ -92,8 +92,9 @@ fn system_time_ms(t: Option<std::time::SystemTime>) -> u64 {
 }
 
 /// UI スレッド → エンジンスレッドへのコマンド。
-/// scripting 単独ビルドでは送り手（debug-server エンドポイント／将来のキーバインド）が
-/// まだ無いため未使用＝その構成でのみ dead_code を許容する。
+/// `Invoke`/`Eval` はキーバインド（`Command::Script`/`Eval`）から、`FireEvent` は本体イベントから
+/// 送られる。`ListCommands` の送り手は debug-server エンドポイントだけなので、その構成以外では
+/// 当該バリアントが未使用＝dead_code を許容する。
 #[cfg_attr(not(feature = "debug-server"), allow(dead_code))]
 pub enum EngineCmd {
     /// 登録済みコマンドを名前で実行する（投げっぱなし）。
@@ -671,7 +672,6 @@ impl MainWindow {
     }
 
     /// エンジンスレッドへコマンドを投げる（投げっぱなし）。
-    #[cfg(feature = "debug-server")]
     pub(crate) fn script_send(&self, cmd: EngineCmd) {
         let _ = self.script.cmd_tx.send(cmd);
     }
