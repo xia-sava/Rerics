@@ -161,6 +161,7 @@ pub enum Command {
     OpenTaskManager,
     OpenSettings,
     KeyBindsDialog,
+    CommandDirect,
     CopyLog,
     ClearLog,
     MaximizeLeft,
@@ -300,6 +301,7 @@ impl Command {
             (OpenTaskManager, "OpenTaskManager", "タスクマネージャ"),
             (OpenSettings, "OpenSettings", "設定を開く"),
             (KeyBindsDialog, "KeyBindsDialog", "キーバインドリスト"),
+            (CommandDirect, "CommandDirect", "任意のコマンドを実行"),
             (CopyLog, "CopyLog", "ログをコピー"),
             (ClearLog, "ClearLog", "ログクリア"),
             (MaximizeLeft, "MaximizeLeft", "左リストを最大化"),
@@ -712,6 +714,7 @@ impl Default for KeyMap {
             Invocation::new(ChangeDirectory, vec!["=r.folderDialog(\"ディレクトリの選択\")".into()]),
         );
         m.bind(KeyChord::key(vk::J), JumpDialog);
+        m.bind(KeyChord::key(vk::Z), CommandDirect);
         // 選択。
         m.bind(KeyChord::key(vk::SPACE), MarkToggle);
         // Shift+Space＝反転＋カーソル上移動。
@@ -924,6 +927,16 @@ mod tests {
         assert_eq!(m.resolve(&KeyChord::key(vk::RETURN)), Some(Command::EnterDir));
         assert_eq!(m.resolve(&KeyChord::key(vk::SPACE)), Some(Command::MarkToggle));
         assert_eq!(m.resolve(&KeyChord::key(0x00FF)), None);
+    }
+
+    #[test]
+    fn default_binds_command_direct_to_z() {
+        // 原作准拠で Z＝任意コマンド実行。トークン round-trip も確認する。
+        let m = KeyMap::default();
+        assert_eq!(m.resolve(&KeyChord::key(vk::Z)), Some(Command::CommandDirect));
+        assert_eq!(Command::from_token("CommandDirect"), Some(Command::CommandDirect));
+        assert_eq!(Command::CommandDirect.as_token(), "CommandDirect");
+        assert_eq!(Command::CommandDirect.display_name(), "任意のコマンドを実行");
     }
 
     #[test]
