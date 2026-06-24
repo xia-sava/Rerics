@@ -12,6 +12,7 @@ mod file_list;
 mod icons;
 mod log_view;
 mod menu;
+mod key_editor;
 mod pane_view;
 mod path_bar;
 mod settings_dialog;
