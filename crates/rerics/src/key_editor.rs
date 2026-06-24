@@ -334,7 +334,7 @@ impl KeyEditor {
             parent,
             gui::WindowControlOpts {
                 position: gui::dpi(16, 72),
-                size: gui::dpi(744, 414),
+                size: gui::dpi(744, 372),
                 class_bg_brush: gui::Brush::Color(co::COLOR::WINDOW),
                 style: co::WS::CHILD
                     | co::WS::VISIBLE
@@ -345,12 +345,13 @@ impl KeyEditor {
                 ..Default::default()
             },
         );
-        // 左グループ＝選択対象に効く 3 ボタン（初期は機能順ラベル）。
+        // 段1＝選択した行に効く操作。左から「キー定義の追加/変更/削除」、間隔をあけて「引数を編集」。
+        // 3 ボタンのラベルはモードで切り替わる（`relabel_buttons`）。
         let btn_a = gui::Button::new(
             parent,
             gui::ButtonOpts {
                 text: "キーを追加(&K)",
-                position: gui::dpi(16, 496),
+                position: gui::dpi(16, 454),
                 width: gui::dpi_x(140),
                 height: gui::dpi_y(28),
                 ..Default::default()
@@ -360,7 +361,7 @@ impl KeyEditor {
             parent,
             gui::ButtonOpts {
                 text: "キーを変更(&C)",
-                position: gui::dpi(162, 496),
+                position: gui::dpi(162, 454),
                 width: gui::dpi_x(140),
                 height: gui::dpi_y(28),
                 ..Default::default()
@@ -370,41 +371,40 @@ impl KeyEditor {
             parent,
             gui::ButtonOpts {
                 text: "キーを削除(&D)",
-                position: gui::dpi(308, 496),
+                position: gui::dpi(308, 454),
                 width: gui::dpi_x(140),
                 height: gui::dpi_y(28),
                 ..Default::default()
             },
         );
-        // 任意コードをキーへ結ぶ（複文モーダル→打鍵で Eval を割り当て）。両モードで効く。
-        let btn_code = gui::Button::new(
-            parent,
-            gui::ButtonOpts {
-                text: "コード(&E)",
-                position: gui::dpi(454, 496),
-                width: gui::dpi_x(86),
-                height: gui::dpi_y(28),
-                ..Default::default()
-            },
-        );
-        // 選択中の組込コマンド行へ引数（式）を付ける（モーダル→打鍵で割り当て）。機能順で効く。
+        // 選択中の組込コマンド行へ引数（式）を付ける（モーダル→打鍵で割り当て）。選択行の属性編集。
         let btn_arg = gui::Button::new(
             parent,
             gui::ButtonOpts {
-                text: "引数(&A)",
-                position: gui::dpi(546, 496),
-                width: gui::dpi_x(86),
+                text: "引数を編集(&A)",
+                position: gui::dpi(470, 454),
+                width: gui::dpi_x(130),
                 height: gui::dpi_y(28),
                 ..Default::default()
             },
         );
-        // 右に分離＝ページ全域に効く操作。
+        // 段2＝選択に依らない操作。左に「コードを新規追加」（新しい Eval 行を作る）、右端に全体リセット。
+        let btn_code = gui::Button::new(
+            parent,
+            gui::ButtonOpts {
+                text: "コードを新規追加(&E)",
+                position: gui::dpi(16, 490),
+                width: gui::dpi_x(170),
+                height: gui::dpi_y(28),
+                ..Default::default()
+            },
+        );
         let reset = gui::Button::new(
             parent,
             gui::ButtonOpts {
                 text: "既定に戻す(&R)",
-                position: gui::dpi(638, 496),
-                width: gui::dpi_x(120),
+                position: gui::dpi(620, 490),
+                width: gui::dpi_x(140),
                 height: gui::dpi_y(28),
                 ..Default::default()
             },
