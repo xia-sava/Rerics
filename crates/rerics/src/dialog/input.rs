@@ -1,6 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use winsafe::msg::{em, lb};
+use winsafe::msg::lb;
 use winsafe::{co, gui, prelude::*};
 use super::*;
 
@@ -369,18 +369,8 @@ pub fn code_box(
         let edit2 = edit.clone();
         let update = update.clone();
         edit.on().en_change(move || {
-            // 実入力：本文とカレット（EM_GETSEL）からカレット直前の文字列を作る。
-            let text = edit2.text().unwrap_or_default();
-            let (mut start, mut end) = (0u32, 0u32);
-            unsafe {
-                edit2.hwnd().SendMessage(em::GetSel {
-                    first_index: Some(&mut start),
-                    past_last_index: Some(&mut end),
-                });
-            }
-            let utf16: Vec<u16> = text.encode_utf16().collect();
-            let caret = (end as usize).min(utf16.len());
-            update(&String::from_utf16_lossy(&utf16[..caret]));
+            // 実入力：本文の末尾にカレットがある前提で補完する（補完は通常末尾で打つため）。
+            update(&edit2.text().unwrap_or_default());
             Ok(())
         });
     }

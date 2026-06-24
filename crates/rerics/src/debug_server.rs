@@ -329,6 +329,8 @@ pub enum Request {
     KeysOpenCode { category: String },
     /// `POST /completion/type`：開いている補完つき入力欄へ body を打ち込む（入力模擬・補完更新）。
     CompletionType { text: String },
+    /// `POST /completion/keystrokes`：body の各文字を WM_CHAR で 1 文字ずつ実入力する（EN_CHANGE 経路）。
+    CompletionKeystrokes { text: String },
     /// `GET /completion`：開いている補完つき入力欄の候補一覧と本文（JSON）。未オープンは null。
     CompletionState,
     /// `POST /completion/accept/<idx>`：開いている補完つき入力欄の idx 番目の候補を確定する。
@@ -486,6 +488,10 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 let mut text = String::new();
                 let _ = std::io::Read::read_to_string(req.as_reader(), &mut text);
                 Some(Request::CompletionType { text })
+            } else if path == "/completion/keystrokes" {
+                let mut text = String::new();
+                let _ = std::io::Read::read_to_string(req.as_reader(), &mut text);
+                Some(Request::CompletionKeystrokes { text })
             } else if let Some(n) = path.strip_prefix("/completion/accept/") {
                 n.trim_end_matches('/')
                     .parse::<u32>()

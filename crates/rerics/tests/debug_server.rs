@@ -2732,8 +2732,8 @@ fn completion_popup_lists_members_and_inserts_on_accept() {
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/openarg", "").unwrap();
 
-    // `=r.my` と打つ＝登録コマンド myCmd が補完候補に出る（r. の下に登録コマンドも乗る）。
-    server.req("POST", "/completion/type", "=r.my").unwrap();
+    // `=r.my` と実キー入力（WM_CHAR＝EN_CHANGE 経路）すると、登録コマンド myCmd が候補に出る。
+    server.req("POST", "/completion/keystrokes", "=r.my").unwrap();
     let comp = poll(&server, "/completion", |b| b.contains("myCmd"));
     assert!(comp.contains("myCmd"), "登録コマンドが補完候補に出る: {comp}");
 

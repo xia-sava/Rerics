@@ -190,6 +190,29 @@ impl MainWindow {
                     let ok = crate::dialog::completion_probe::type_text(&text);
                     let _ = tx.send(debug_server::Response::Json(format!("{{\"typed\":{ok}}}")));
                 }
+                debug_server::Request::CompletionKeystrokes { text } => {
+                    // 実キー入力の模擬：WM_CHAR を 1 文字ずつ送る＝EN_CHANGE 経路を実際に通す。
+                    let resp = match self.debug_modal_hwnd().as_ref().and_then(Self::debug_modal_edit) {
+                        Some(edit) => {
+                            for ch in text.chars() {
+                                unsafe {
+                                    edit.SendMessage(w::msg::wm::Char {
+                                        char_code: ch as u16,
+                                        repeat_count: 1,
+                                        scan_code: 0,
+                                        is_extended_key: false,
+                                        has_alt_key: false,
+                                        key_was_previously_down: false,
+                                        key_is_being_released: false,
+                                    });
+                                }
+                            }
+                            debug_server::Response::Json("{\"typed\":true}".to_string())
+                        }
+                        None => debug_server::Response::BadRequest("no modal input open".into()),
+                    };
+                    let _ = tx.send(resp);
+                }
                 debug_server::Request::CompletionState => {
                     let json = match crate::dialog::completion_probe::candidates() {
                         Some(cands) => {
