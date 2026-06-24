@@ -150,14 +150,17 @@ impl MainWindow {
                         Ok(())
                     }));
                 }
-                debug_server::Request::KeysSelectChord { category, index } => {
-                    let _ = tx.send(self.debug_keys_op(&category, |h| {
-                        (h.select_chord)(index);
-                        Ok(())
-                    }));
-                }
                 debug_server::Request::KeysRebind { category, chord } => {
                     let _ = tx.send(self.debug_keys_op(&category, |h| (h.rebind)(&chord)));
+                }
+                debug_server::Request::KeysCapture { category, chord } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| (h.capture)(&chord)));
+                }
+                debug_server::Request::KeysAddCode { category, code } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| {
+                        (h.add_code)(&code);
+                        Ok(())
+                    }));
                 }
                 debug_server::Request::KeysPick { category, label } => {
                     let _ = tx.send(self.debug_keys_op(&category, |h| {
@@ -185,6 +188,14 @@ impl MainWindow {
                 }
                 debug_server::Request::KeysAddKeyDef { category, chord } => {
                     let _ = tx.send(self.debug_keys_op(&category, |h| (h.add_keydef)(&chord)));
+                }
+                debug_server::Request::SettingsNav { pane } => {
+                    let ok = debug_server::modal_registry::with_settings_nav(|f| f(pane)).is_some();
+                    let _ = tx.send(if ok {
+                        debug_server::Response::Json("\"ok\"".to_string())
+                    } else {
+                        debug_server::Response::BadRequest("settings dialog not open".to_string())
+                    });
                 }
             }
         }

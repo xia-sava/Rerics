@@ -415,8 +415,8 @@ impl Command {
 
 /// 「コマンド＋引数」一回分の呼び出し。キーバインド・メニュー・スクリプトの共通入口。
 ///
-/// 引数なしコマンドは `args` が空。引数文字列はマクロ展開前の生の値（`<I:…>` 等を含み得る）で、
-/// 実行直前に展開する。
+/// 引数なしコマンドは `args` が空。引数文字列は生の値で、先頭が `=` なら TS 式（実行直前に
+/// エンジンで評価）、それ以外はリテラルとして使う。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Invocation {
     pub command: Command,
@@ -705,11 +705,11 @@ impl Default for KeyMap {
         m.bind(KeyChord::key(vk::RIGHT), FocusRight);
         m.bind_inv(
             KeyChord::key(vk::F4),
-            Invocation::new(ChangeDirectory, vec!["<I:ディレクトリの入力>".into()]),
+            Invocation::new(ChangeDirectory, vec!["=r.prompt(\"ディレクトリの入力\")".into()]),
         );
         m.bind_inv(
             KeyChord::new(vk::F4, false, true, false),
-            Invocation::new(ChangeDirectory, vec!["<FOLDERDIALOG:ディレクトリの選択>".into()]),
+            Invocation::new(ChangeDirectory, vec!["=r.folderDialog(\"ディレクトリの選択\")".into()]),
         );
         m.bind(KeyChord::key(vk::J), JumpDialog);
         // 選択。
@@ -957,11 +957,14 @@ mod tests {
             m.resolve(&KeyChord::new(vk::RIGHT, false, false, true)),
             Some(Command::HistoryForward)
         );
-        // F4＝入力マクロつき ChangeDirectory・Shift+F4＝フォルダ選択マクロつき。
+        // F4＝入力式つき ChangeDirectory・Shift+F4＝フォルダ選択式つき。
         assert_eq!(m.resolve(&KeyChord::key(vk::F4)), Some(Command::ChangeDirectory));
         assert_eq!(
             m.resolve_inv(&KeyChord::key(vk::F4)),
-            Some(&Invocation::new(Command::ChangeDirectory, vec!["<I:ディレクトリの入力>".into()]))
+            Some(&Invocation::new(
+                Command::ChangeDirectory,
+                vec!["=r.prompt(\"ディレクトリの入力\")".into()]
+            ))
         );
         assert_eq!(
             m.resolve(&KeyChord::new(vk::F4, false, true, false)),

@@ -12,6 +12,7 @@ mod file_list;
 mod icons;
 mod log_view;
 mod menu;
+mod key_editor;
 mod pane_view;
 mod path_bar;
 mod settings_dialog;
@@ -55,8 +56,8 @@ use tab_bar::TabBar;
 use task::{TaskEntry, WorkerEvent};
 use viewer::ViewerView;
 use rerics_core::{
-    Command, Config, FileListState, Invocation, KeyChord, KeyMap, Location, MacroAbort, MacroHost,
-    Pane, SortType, WindowState,
+    Command, Config, FileListState, Invocation, KeyChord, KeyMap, Location, Pane, SortType,
+    WindowState,
 };
 use winsafe::{self as w, co, gui, prelude::*};
 
@@ -271,33 +272,6 @@ struct TabSnapshot {
     left_state: FileListState,
     right_state: FileListState,
     active_right: bool,
-}
-
-/// マクロのダイアログ系（`<I:>`/`<FOLDERDIALOG>`）を GUI で供給するホスト。
-struct DialogMacroHost<'a> {
-    app: &'a MainWindow,
-}
-
-impl MacroHost for DialogMacroHost<'_> {
-    fn prompt(&self, title: &str) -> Option<String> {
-        let message = if title.is_empty() { "値を入力して下さい。" } else { title };
-        dialog::input_box(&self.app.wnd, "入力", message, "", dialog::InputMode::Plain)
-    }
-
-    fn choose_folder(&self, title: &str) -> Option<String> {
-        shell::choose_folder(self.app.wnd.hwnd().ptr(), title)
-            .map(|p| p.to_string_lossy().into_owned())
-    }
-
-    fn choose_open_file(&self, title: &str) -> Option<String> {
-        shell::choose_file(self.app.wnd.hwnd().ptr(), title, false)
-            .map(|p| p.to_string_lossy().into_owned())
-    }
-
-    fn choose_save_file(&self, title: &str) -> Option<String> {
-        shell::choose_file(self.app.wnd.hwnd().ptr(), title, true)
-            .map(|p| p.to_string_lossy().into_owned())
-    }
 }
 
 /// ペイン再読込時にカーソルをどこへ置くか。
@@ -811,15 +785,22 @@ impl MainWindow {
             }
             _ => {}
         }
-        // 引数があれば実行直前にマクロを展開する。入力/選択のキャンセルは無音で実行中止。
-        let args = if inv.args.is_empty() {
-            Vec::new()
-        } else {
-            match self.expand_args(is_left, &inv.args) {
-                Ok(a) => a,
-                Err(MacroAbort) => return Ok(()),
-            }
-        };
+        // 引数に式（`=...`）があれば、別スレッドで非同期評価してから本体を走らせる。UI は
+        // ブロックしないので、式が `r.prompt()` 等のモーダルを呼んでもデッドロックしない。
+        if inv.args.iter().any(|a| a.starts_with('=')) {
+            let slots = script_host::arg_slots(&inv.args);
+            self.begin_expr_dispatch(is_left, cmd, slots);
+            return Ok(());
+        }
+        // 式でない引数はリテラルとして使う。
+        self.exec_resolved(is_left, cmd, inv.args.clone())
+    }
+
+    /// 解決済み引数でコマンド本体を実行する（引数解決のあとの同期処理＝コマンドアーム群を集約）。
+    /// 引数解決は `exec` 側で済ませる（現状はマクロ展開・将来は式評価）。文脈外のビューア専用
+    /// コマンドは何もしない。
+    fn exec_resolved(&self, is_left: bool, cmd: Command, args: Vec<String>) -> w::AnyResult<()> {
+        let view = self.view(is_left);
         let state = view.state();
         let pr = view.page_rows();
         match cmd {

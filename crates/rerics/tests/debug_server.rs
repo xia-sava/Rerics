@@ -1059,67 +1059,6 @@ fn input_history_changedir_persists() {
     assert!(hist.contains("sbx"), "entered path should be recorded: {hist}");
 }
 
-/// 引数マクロ版 `ChangeDirectory("<I:…>")`：`<I:>` が入力モーダルを開き、打った値で移動する
-/// ことを確認する（引数基盤の段階2＝マクロ展開の実証）。
-#[test]
-fn nav_change_directory_macro_input() {
-    let server = Server::start(&["a.txt"], "");
-    let sbx_json = server
-        .req("GET", "/state/panes/left/location", "")
-        .unwrap()
-        .1
-        .trim()
-        .to_string();
-    let sbx_raw = sbx_json.trim_matches('"').replace("\\\\", "\\");
-
-    server.req("POST", "/command/ToParent", "").unwrap();
-    let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx_json);
-    assert_ne!(parent.trim(), sbx_json, "ToParent should leave the sandbox");
-
-    // body の引数に入力マクロを渡す＝実行直前に入力モーダルが開く。
-    server
-        .req("POST", "/command/ChangeDirectory", r#"["<I:移動先>"]"#)
-        .unwrap();
-    let modal = wait_modal(&server);
-    assert!(
-        modal.contains("\"has_input\":true"),
-        "<I:> macro should open a text-input modal: {modal}"
-    );
-
-    server.req("POST", "/modal/text", &sbx_raw).unwrap();
-    server.req("POST", "/modal/key/enter", "").unwrap();
-    let back = poll(&server, "/state/panes/left/location", |b| b.trim() == sbx_json);
-    assert_eq!(back.trim(), sbx_json, "input from <I:> macro should navigate there");
-}
-
-/// 引数マクロ版 `ChangeDirectory` で入力をキャンセルすると、原作準拠で無音中止（移動しない）。
-#[test]
-fn nav_change_directory_macro_cancel_is_silent() {
-    let server = Server::start(&["a.txt"], "");
-    let sbx_json = server
-        .req("GET", "/state/panes/left/location", "")
-        .unwrap()
-        .1
-        .trim()
-        .to_string();
-
-    server.req("POST", "/command/ToParent", "").unwrap();
-    let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx_json);
-
-    server
-        .req("POST", "/command/ChangeDirectory", r#"["<I:移動先>"]"#)
-        .unwrap();
-    wait_modal(&server);
-    // Esc でキャンセル＝モーダルが閉じて、場所は変わらない。
-    server.req("POST", "/modal/key/esc", "").unwrap();
-    poll(&server, "/state/modal", |b| b.trim() == "null");
-    let after = server
-        .req("GET", "/state/panes/left/location", "")
-        .unwrap()
-        .1;
-    assert_eq!(after.trim(), parent.trim(), "cancel should not navigate (silent abort)");
-}
-
 /// リテラル引数版 `Sort("size")` がソート種別を切り替える（段階3＝リテラル引数コマンド）。
 #[test]
 fn sort_command_changes_sort_type() {
@@ -1681,6 +1620,63 @@ fn req_bytes(port: u16, method: &str, path: &str) -> Option<(u16, Vec<u8>)> {
 }
 
 /// 設定ダイアログ＝独自モーダルだが modal_registry に登録済み。OpenSettings で開き、
+/// スクリプト/コードの行は、キー割り当ての有無で位置が動かない（名前/コード順に固定）。
+#[test]
+fn settings_key_editor_script_rows_keep_position_when_bound() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[(
+            "00.ts",
+            "rerics.registerCommand(\"aaaScript\", () => {});\nrerics.registerCommand(\"zzzScript\", () => {});",
+        )],
+    );
+    poll(&server, "/script/commands", |b| b.contains("zzzScript"));
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // Script 系に絞ると aaaScript・zzzScript が名前順（aaa が先・zzz が後）に並ぶ。
+    server.req("POST", "/keys/filer/search", "Script").unwrap();
+    let before = keys();
+    assert!(before.contains(r#""rows":[["Script",[]],["Script",[]]]"#), "未割当 2 行: {before}");
+
+    // 2 番目（zzzScript）へキーを割り当てても、行は 2 番目のまま動かない。
+    server.req("POST", "/keys/filer/select/1", "").unwrap();
+    server.req("POST", "/keys/filer/capture", "Ctrl+Alt+Z").unwrap();
+    server.req("POST", "/keys/filer/search", "Script").unwrap();
+    let after = keys();
+    assert!(
+        after.contains(r#""rows":[["Script",[]],["Script",["Ctrl+Alt+Z"]]]"#),
+        "zzz は割り当て後も 2 番目に居座る（aaa が先・zzz が後）: {after}"
+    );
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
+/// 設定ナビを pane 番号で切り替える debug エンドポイント（`/settings/nav/<pane>`）＝
+/// キー編集ページを前面に出して /snapshot/modal で撮れる（headless 観測）。未オープンは 400。
+#[test]
+fn settings_nav_switches_page_for_observation() {
+    let server = Server::start(&["a.txt"], "");
+    // 設定が開く前は切り替え先が無いので 400。
+    assert_eq!(
+        server.req("POST", "/settings/nav/5", "").expect("nav").0,
+        400,
+        "未オープンは 400"
+    );
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    // キー（ファイラー）ページ＝pane 5 へ切替。
+    assert_eq!(server.req("POST", "/settings/nav/5", "").expect("nav").0, 200, "切替 ok");
+    // 前面に出たキーリストごと /snapshot/modal が PNG として撮れる。
+    let (st, png) = req_bytes(server.port, "GET", "/snapshot/modal").expect("snap");
+    assert_eq!(st, 200, "snapshot 200");
+    assert!(png.starts_with(&[0x89, b'P', b'N', b'G']), "PNG 署名で始まる");
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// 自前描画（プレビュー/スウォッチ）を含む窓を /snapshot/modal が PrintWindow で撮れ、
 /// ナビをキーで動かしても /modal/command/cancel で閉じられる（デッドロックしない）。
 #[test]
@@ -1835,7 +1831,7 @@ fn settings_key_editor_conflicts_block_ok_until_resolved() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
-/// 機能順での個別削除：1 機能に複数キーがある時、サブ選択したキーだけを外す。
+/// 機能順での個別削除：1 機能に複数キーがある時は 1 キー=1 行に割れる。削除したい行を選んで外す。
 #[test]
 fn settings_key_editor_per_chord_delete_in_command_view() {
     let server = Server::start(&["a.txt"], "");
@@ -1843,34 +1839,36 @@ fn settings_key_editor_per_chord_delete_in_command_view() {
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // MakeDirectory に未使用キーを足す＝[Ctrl+Shift+M, K]（衝突なし・トークン昇順）。
+    // MakeDirectory に未使用キーを足す＝1 キー=1 行なので 2 行に割れる（既定 K ＋ Ctrl+Shift+M）。
     server.req("POST", "/keys/filer/bind", r#"["MakeDirectory","Ctrl+Shift+M"]"#).unwrap();
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
     let s = keys();
     assert!(
-        s.contains(r#"["MakeDirectory",["Ctrl+Shift+M","K"]]"#),
-        "MakeDirectory が 2 キーを持つ: {s}"
+        s.contains(r#"["MakeDirectory",["Ctrl+Shift+M"]]"#)
+            && s.contains(r#"["MakeDirectory",["K"]]"#),
+        "MakeDirectory が 2 行に割れる: {s}"
     );
 
-    // サブ選択を index 1（K）にして削除＝K だけ外れ、Ctrl+Shift+M が残る。
-    server.req("POST", "/keys/filer/sub/1", "").unwrap();
-    assert!(keys().contains(r#""sub":1"#), "サブ選択が K に: {}", keys());
+    // K の行（chord 昇順で index 1）を選んで削除＝K 行だけ消え、Ctrl+Shift+M 行が残る。
+    server.req("POST", "/keys/filer/select/1", "").unwrap();
     server.req("POST", "/keys/filer/unbind", "").unwrap();
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
     let s = keys();
-    assert!(
-        s.contains(r#"["MakeDirectory",["Ctrl+Shift+M"]]"#),
-        "K だけ外れ Ctrl+Shift+M が残る: {s}"
-    );
+    assert!(s.contains(r#"["MakeDirectory",["Ctrl+Shift+M"]]"#), "Ctrl+Shift+M 行が残る: {s}");
+    assert!(!s.contains(r#"["MakeDirectory",["K"]]"#), "K 行は消える: {s}");
 
-    // 残ったキーも削除＝未割当に。
+    // 残った行も削除＝未割当の空行に戻る。
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/unbind", "").unwrap();
-    assert!(keys().contains(r#"["MakeDirectory",[]]"#), "MakeDirectory が未割当に: {}", keys());
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    assert!(keys().contains(r#"["MakeDirectory",[]]"#), "未割当の空行に戻る: {}", keys());
 
     server.req("POST", "/modal/command/cancel", "").expect("cancel");
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
-/// 機能順でキーを「変更（リマップ）」：サブ選択中のキーを新しいキーへ移し替える（旧キーは外れる・
-/// 機能は同じ）。実機ではキーのダブルクリック→打鍵に対応する経路。
+/// 機能順でキーを「変更（リマップ）」：選択した行のキーを新しいキーへ移し替える（旧キーは外れる・
+/// 呼び出しは同じ）。実機ではキー行のダブルクリック→打鍵に対応する経路。
 #[test]
 fn settings_key_editor_rebinds_selected_chord() {
     let server = Server::start(&["a.txt"], "");
@@ -1878,17 +1876,79 @@ fn settings_key_editor_rebinds_selected_chord() {
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // MakeDirectory に 2 つ目のキーを足して選択を寄せる＝[Ctrl+Shift+M, K]・sel=MakeDirectory。
+    // MakeDirectory に 2 つ目のキーを足す＝2 行に割れる（chord 昇順 [Ctrl+Shift+M, K]）。
     server.req("POST", "/keys/filer/bind", r#"["MakeDirectory","Ctrl+Shift+M"]"#).unwrap();
-    assert!(keys().contains(r#"["MakeDirectory",["Ctrl+Shift+M","K"]]"#), "2 キー: {}", keys());
-
-    // K（index 1）をサブ選択して Ctrl+Alt+K へ変更＝K は外れ Ctrl+Alt+K になる。
-    server.req("POST", "/keys/filer/sub/1", "").unwrap();
-    server.req("POST", "/keys/filer/rebind", "Ctrl+Alt+K").unwrap();
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
     let s = keys();
+    assert!(s.contains(r#"["MakeDirectory",["K"]]"#), "K 行がある: {s}");
+
+    // K の行（index 1）を選んで Ctrl+Alt+K へ変更＝K は外れ Ctrl+Alt+K になる（Ctrl+Shift+M は残る）。
+    server.req("POST", "/keys/filer/select/1", "").unwrap();
+    server.req("POST", "/keys/filer/rebind", "Ctrl+Alt+K").unwrap();
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    let s = keys();
+    assert!(s.contains(r#"["MakeDirectory",["Ctrl+Alt+K"]]"#), "K が Ctrl+Alt+K に移る: {s}");
+    assert!(s.contains(r#"["MakeDirectory",["Ctrl+Shift+M"]]"#), "Ctrl+Shift+M は残る: {s}");
+    assert!(!s.contains(r#"["MakeDirectory",["K"]]"#), "K 行は無い: {s}");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
+/// 登録済みスクリプトが機能順の「スクリプト」ジャンルに未割当行で出て、選んでキャプチャすると
+/// `Script("name")` がキーへ割り当たる（debug の capture＝begin_capture→打鍵の経路）。
+#[test]
+fn settings_key_editor_binds_registered_script() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[("00-cmds.ts", r#"rerics.registerCommand("myScript", () => {});"#)],
+    );
+    // エンジンが登録を終えてから設定を開く（open_settings がその一覧を編集器へ渡す）。
+    poll(&server, "/script/commands", |b| b.contains("myScript"));
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // 登録スクリプトが未割当行（Script・キー無し）として出る。実呼び出し=名前で絞れる。
+    server.req("POST", "/keys/filer/search", "myScript").unwrap();
+    assert!(keys().contains(r#"["Script",[]]"#), "未割当の Script 行が出る: {}", keys());
+
+    // 行を選んでキャプチャ＝Script("myScript") が Ctrl+Alt+S に割り当たる。
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/capture", "Ctrl+Alt+S").unwrap();
+    server.req("POST", "/keys/filer/search", "myScript").unwrap();
     assert!(
-        s.contains(r#"["MakeDirectory",["Ctrl+Alt+K","Ctrl+Shift+M"]]"#),
-        "K が Ctrl+Alt+K に移る: {s}"
+        keys().contains(r#"["Script",["Ctrl+Alt+S"]]"#),
+        "Script が Ctrl+Alt+S に割り当たる: {}",
+        keys()
+    );
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
+/// 「コードを割り当て」＝コードを追加すると未割当（－）の `Eval` 行がスクリプトジャンルに生え、
+/// 通常どおりその行を選んでキャプチャするとキーへ結ばれる。実呼び出しカラムはラッパを剥がしたコード。
+#[test]
+fn settings_key_editor_binds_eval_code() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // コードを追加＝未割当の Eval 行が生える（前後スペースは trim される）。
+    server.req("POST", "/keys/filer/code", "  r.log(42)  ").unwrap();
+    server.req("POST", "/keys/filer/search", "r.log").unwrap();
+    assert!(keys().contains(r#"["Eval",[]]"#), "未割当の Eval 行が生える: {}", keys());
+
+    // その行を選んでキャプチャ＝Eval("r.log(42)") が Ctrl+Alt+G に割り当たる。
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/capture", "Ctrl+Alt+G").unwrap();
+    server.req("POST", "/keys/filer/search", "r.log").unwrap();
+    assert!(
+        keys().contains(r#"["Eval",["Ctrl+Alt+G"]]"#),
+        "Eval が Ctrl+Alt+G に割り当たる: {}",
+        keys()
     );
 
     server.req("POST", "/modal/command/cancel", "").expect("cancel");
@@ -2094,14 +2154,15 @@ fn settings_key_editor_toggles_command_and_key_views() {
     assert!(keys().contains(r#"["K",["MakeDirectory"]]"#), "キー順で機能名検索が効く");
     server.req("POST", "/keys/filer/search", "").unwrap();
 
-    // 機能順へ戻して、同じ機能に 2 キーを割り当てる（per-chord 削除の検証用）。
+    // 機能順へ戻して、同じ機能に 2 キーを割り当てる（1 キー=1 行なので 2 行に割れる）。
     server.req("POST", "/keys/filer/view", "command").unwrap();
     server.req("POST", "/keys/filer/bind", r#"["SelectMask","Ctrl+Shift+M"]"#).unwrap();
     server.req("POST", "/keys/filer/bind", r#"["SelectMask","Ctrl+Shift+N"]"#).unwrap();
+    let s = keys();
     assert!(
-        keys().contains(r#"["SelectMask",["Ctrl+Shift+M","Ctrl+Shift+N"]]"#),
-        "SelectMask が 2 キーを持つ: {}",
-        keys()
+        s.contains(r#"["SelectMask",["Ctrl+Shift+M"]]"#)
+            && s.contains(r#"["SelectMask",["Ctrl+Shift+N"]]"#),
+        "SelectMask が 2 行に割れる: {s}"
     );
 
     // キー順で Ctrl+Shift+M の行だけを選び、削除＝その 1 キーだけ外れる。
@@ -3026,5 +3087,85 @@ fn script_command_invokes_registered_command() {
     assert!(
         !loc1.contains("sbx"),
         "Script コマンドが登録コマンドを実行してペインが移動するはず: {loc1}"
+    );
+}
+
+/// 第3弾：引数の式（`=...`）が別スレッドで非同期評価され、その値で本体コマンドが走る。
+/// `=r.currentDir() + "/sub"` を評価して実フォルダへ移動できる（マクロ展開ではなく式評価の経路）。
+#[test]
+fn expr_arg_evaluates_async_and_runs_command() {
+    let server = Server::start(&["a.txt"], "");
+    std::fs::create_dir_all(server.base.join("sbx").join("sub")).unwrap();
+    // 引数の式は現在地を読んで "/sub" を足す＝HostApi（currentDir）を式中から呼ぶ非同期評価。
+    server
+        .req("POST", "/command/ChangeDirectory", r#"["=r.currentDir() + \"/sub\""]"#)
+        .expect("cd");
+    let loc = poll(&server, "/state/panes/left/location", |b| b.contains("sub"));
+    assert!(loc.contains("sub"), "式の値でサブフォルダへ移動するはず: {loc}");
+}
+
+/// 第3弾の核心：引数の式が `r.prompt()` 等のモーダルを呼んでも、UI は recv でブロックしない
+/// （結果は別チャネル＋wake で届く）のでデッドロックしない。プロンプトへ入れたパスへ移動できる。
+#[test]
+fn expr_arg_with_modal_does_not_deadlock() {
+    let server = Server::start(&["a.txt"], "");
+    let target = server.base.join("sbx").join("target");
+    std::fs::create_dir_all(&target).unwrap();
+    // 式が prompt を開く。コマンドは即返り、モーダルを debug 駆動してパスを返す。
+    server
+        .req("POST", "/command/ChangeDirectory", r#"["=r.prompt(\"dir?\")"]"#)
+        .expect("cd");
+    wait_modal(&server);
+    server.req("POST", "/modal/text", &target.display().to_string()).expect("text");
+    server.req("POST", "/modal/key/enter", "").expect("enter");
+    let loc = poll(&server, "/state/panes/left/location", |b| b.contains("target"));
+    assert!(loc.contains("target"), "プロンプトのパスへ移動するはず（デッドロックしない）: {loc}");
+}
+
+/// 第3弾：引数の式が開いたモーダルをキャンセルすると、式は空（null）になり実行中止＝移動しない
+/// （マクロのキャンセルと同じ無音中止）。
+#[test]
+fn expr_arg_modal_cancel_aborts_silently() {
+    let server = Server::start(&["a.txt"], "");
+    // 基準点を sbx から動かしておく（移動しないことを確かめるため）。
+    let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+    server.req("POST", "/command/ToParent", "").unwrap();
+    let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx);
+    // 式が prompt を開く→Esc でキャンセル→式は空→中止＝場所は変わらない。
+    server
+        .req("POST", "/command/ChangeDirectory", r#"["=r.prompt(\"dir?\")"]"#)
+        .unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/key/esc", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    let after = server.req("GET", "/state/panes/left/location", "").unwrap().1;
+    assert_eq!(after.trim(), parent.trim(), "式のキャンセルは移動しない（空＝無音中止）");
+}
+
+/// scripting：`registerCommand` の第3引数メタ（label/genre）が `/script/commands` に乗る。
+/// 設定エディタはこの一覧でスクリプト行の表示名／ジャンルを描く（presentation は snapshot で確認）。
+#[test]
+fn script_command_metadata_surfaces_in_listing() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[(
+            "00.ts",
+            r#"
+            rerics.registerCommand("tidyUp", () => {}, { label: "デスクトップ整理", genre: "ファイル操作" });
+            rerics.registerCommand("plainOne", () => {});
+            "#,
+        )],
+    );
+    let list = poll(&server, "/script/commands", |b| b.contains("plainOne"));
+    // ラベル・ジャンル付きは値が乗り、無指定は null。
+    assert!(
+        list.contains(r#""name":"tidyUp""#)
+            && list.contains(r#""label":"デスクトップ整理""#)
+            && list.contains(r#""genre":"ファイル操作""#),
+        "メタ付きコマンドは label/genre が乗る: {list}"
+    );
+    assert!(
+        list.contains(r#""name":"plainOne","label":null,"genre":null"#),
+        "メタ無しは label/genre が null: {list}"
     );
 }

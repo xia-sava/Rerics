@@ -172,6 +172,106 @@ pub fn input_box_full(
 
     let _ = wnd.show_modal(parent);
     let _ = cancel;
-    
+
+    result.borrow().clone()
+}
+
+/// 複数行のコード入力モーダル。OK ならコード文字列、キャンセル/Esc なら None。
+/// キー編集の「コードを割り当て」（`Eval` 割り当て）で、束ねる JS/TS コードを書くのに使う。
+pub fn code_box(parent: &impl GuiParent, message: &str, value: &str) -> Option<String> {
+    let (wnd, arm) = modal_window("コードを割り当て", 480, 320);
+
+    let _label = gui::Label::new(
+        &wnd,
+        gui::LabelOpts {
+            text: message,
+            position: gui::dpi(16, 14),
+            size: gui::dpi(448, 18),
+            ..Default::default()
+        },
+    );
+
+    let edit = gui::Edit::new(
+        &wnd,
+        gui::EditOpts {
+            text: value,
+            control_style: co::ES::MULTILINE
+                | co::ES::WANTRETURN
+                | co::ES::AUTOVSCROLL
+                | co::ES::NOHIDESEL,
+            window_style: co::WS::CHILD
+                | co::WS::GROUP
+                | co::WS::TABSTOP
+                | co::WS::VISIBLE
+                | co::WS::BORDER
+                | co::WS::VSCROLL,
+            position: gui::dpi(16, 38),
+            width: gui::dpi_x(448),
+            height: gui::dpi_y(208),
+            ..Default::default()
+        },
+    );
+
+    let ok = gui::Button::new(
+        &wnd,
+        gui::ButtonOpts {
+            text: "OK",
+            control_style: co::BS::DEFPUSHBUTTON,
+            ctrl_id: 1,
+            position: gui::dpi(290, 262),
+            width: gui::dpi_x(80),
+            height: gui::dpi_y(26),
+            ..Default::default()
+        },
+    );
+    let cancel = gui::Button::new(
+        &wnd,
+        gui::ButtonOpts {
+            text: "キャンセル",
+            ctrl_id: 2,
+            position: gui::dpi(378, 262),
+            width: gui::dpi_x(86),
+            height: gui::dpi_y(26),
+            ..Default::default()
+        },
+    );
+
+    let result: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
+    #[cfg(feature = "debug-server")]
+    arm.plain(
+        "input",
+        "コードを割り当て",
+        message,
+        true,
+        vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
+    );
+    {
+        let e = edit.clone();
+        arm.on_create(move |_| {
+            e.hwnd().SetFocus();
+            Ok(())
+        });
+    }
+    {
+        let result = result.clone();
+        let edit = edit.clone();
+        let wnd2 = wnd.clone();
+        ok.on().bn_clicked(move || {
+            *result.borrow_mut() = Some(edit.text().unwrap_or_default());
+            wnd2.close();
+            Ok(())
+        });
+    }
+    {
+        let wnd2 = wnd.clone();
+        cancel.on().bn_clicked(move || {
+            wnd2.close();
+            Ok(())
+        });
+    }
+
+    let _ = wnd.show_modal(parent);
+    let _ = cancel;
     result.borrow().clone()
 }

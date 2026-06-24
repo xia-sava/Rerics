@@ -141,9 +141,7 @@ pub mod modal_registry {
         pub rows: Vec<(String, Vec<String>)>,
         /// 選択行 index（絞り込み後の `rows` 上の位置）。
         pub selected: usize,
-        /// 機能順で選択行のキー群のうちサブ選択中の index（個別削除の対象）。
-        pub sub: usize,
-        /// 表示先頭行（スクロール位置）。
+        /// 表示先頭行（スクロール位置・見出し行を含む表示行単位）。
         pub top: usize,
         /// キャプチャ待ちか。
         pub capturing: bool,
@@ -165,6 +163,9 @@ pub mod modal_registry {
     /// 1 引数（chord トークン）を取り Err を返し得るフック。未知キー等は Err。
     pub type ChordFn = Box<dyn Fn(&str) -> Result<(), String>>;
 
+    /// usize 1 つを取るフック（設定ナビのページ切替など）。
+    pub type IndexFn = Box<dyn Fn(usize)>;
+
     /// キー編集ページを UI スレッドで読み書きするフック（gui をクロージャに閉じ込める）。
     pub struct KeyEditorHooks {
         pub read: Box<dyn Fn() -> KeyEditorState>,
@@ -178,10 +179,12 @@ pub mod modal_registry {
         pub search: Box<dyn Fn(&str)>,
         /// 並べ方を切り替える（`true`＝キー順／`false`＝機能順）。
         pub set_view: Box<dyn Fn(bool)>,
-        /// 機能順で選択行のキーのサブ選択 index を変える。
-        pub select_chord: Box<dyn Fn(usize)>,
-        /// サブ選択中のキーを、その機能のまま新しいキー（chord トークン）へ移し替える。未知キーは Err。
+        /// 選択行のキーを、その呼び出しのまま新しいキー（chord トークン）へ移し替える。未知キーは Err。
         pub rebind: ChordFn,
+        /// 選択行へ打鍵を割り当てる（行の生 value を束ねる）。引数つき組込・Script・Eval 行用。未知キーは Err。
+        pub capture: ChordFn,
+        /// コードを未割当 `Eval` 行として追加する（割り当ては行を選んで capture する）。
+        pub add_code: Box<dyn Fn(&str)>,
         /// キー順で選択行の li 番目の機能を差し替えるピックモードへ入る（インライン機能ピッカー）。
         pub pick: Box<dyn Fn(usize)>,
         /// ピックモードで選択中の機能を確定する。
@@ -206,9 +209,25 @@ pub mod modal_registry {
         KEY_EDITORS.with(|e| e.borrow_mut().push((category, hooks)));
     }
 
-    /// 登録済みのキー編集ページを全消去する（設定ダイアログを開く直前に呼ぶ）。
+    /// 登録済みのキー編集ページ・設定ナビを全消去する（設定ダイアログを開く直前に呼ぶ）。
     pub fn clear_key_editors() {
         KEY_EDITORS.with(|e| e.borrow_mut().clear());
+        SETTINGS_NAV.with(|n| *n.borrow_mut() = None);
+    }
+
+    thread_local! {
+        /// 開いている設定ダイアログの左ナビ＝pane 番号を渡すとそのページへ切り替えるフック。
+        static SETTINGS_NAV: RefCell<Option<IndexFn>> = const { RefCell::new(None) };
+    }
+
+    /// 設定ナビのページ切替フックを登録する（設定ダイアログ生成時に呼ぶ）。
+    pub fn register_settings_nav(cb: IndexFn) {
+        SETTINGS_NAV.with(|n| *n.borrow_mut() = Some(cb));
+    }
+
+    /// 設定ナビを pane 番号で切り替える（設定ダイアログが開いていなければ `None`）。
+    pub fn with_settings_nav<R>(f: impl FnOnce(&dyn Fn(usize)) -> R) -> Option<R> {
+        SETTINGS_NAV.with(|n| n.borrow().as_ref().map(|cb| f(cb.as_ref())))
     }
 
     /// 指定カテゴリのキー編集ページに対して処理する（無ければ `None`）。
@@ -288,10 +307,12 @@ pub enum Request {
     KeysSearch { category: String, query: String },
     /// `POST /keys/<category>/view`：並べ方を切り替える。body が `key` ならキー順、それ以外は機能順。
     KeysSetView { category: String, by_key: bool },
-    /// `POST /keys/<category>/sub/<index>`：機能順で選択行のキーのサブ選択を index にする。
-    KeysSelectChord { category: String, index: usize },
-    /// `POST /keys/<category>/rebind`：サブ選択中のキーを body のキーへ移し替える（変更）。
+    /// `POST /keys/<category>/rebind`：選択行のキーを body のキーへ移し替える（変更）。
     KeysRebind { category: String, chord: String },
+    /// `POST /keys/<category>/capture`：選択行へ body のキーを割り当てる（行の呼び出しを束ねる）。
+    KeysCapture { category: String, chord: String },
+    /// `POST /keys/<category>/code`：body のコードを未割当 `Eval` 行として追加する（割り当ては capture で）。
+    KeysAddCode { category: String, code: String },
     /// `POST /keys/<category>/pick/<labelIndex>`：キー順で選択行の機能ピッカーへ入る。
     KeysPick { category: String, label: usize },
     /// `POST /keys/<category>/pickcommit`：ピックで選択中の機能を確定する。
@@ -302,6 +323,8 @@ pub enum Request {
     KeysScroll { category: String, top: i32 },
     /// `POST /keys/<category>/addkeydef`：キー順で body のキーの空キー定義（機能未割当）を作る。
     KeysAddKeyDef { category: String, chord: String },
+    /// `POST /settings/nav/<pane>`：設定ダイアログの左ナビを pane 番号のページへ切り替える。
+    SettingsNav { pane: usize },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -503,11 +526,6 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                         category: cat.to_string(),
                         index,
                     })
-                } else if let Some((cat, idx)) = rest.rsplit_once("/sub/") {
-                    idx.parse::<usize>().ok().map(|index| Request::KeysSelectChord {
-                        category: cat.to_string(),
-                        index,
-                    })
                 } else if let Some(cat) = rest.strip_suffix("/pickcommit") {
                     Some(Request::KeysPickCommit { category: cat.to_string() })
                 } else if let Some(cat) = rest.strip_suffix("/pickcancel") {
@@ -561,6 +579,14 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                     let mut chord = String::new();
                     let _ = std::io::Read::read_to_string(req.as_reader(), &mut chord);
                     Some(Request::KeysRebind { category: cat.to_string(), chord: chord.trim().to_string() })
+                } else if let Some(cat) = rest.strip_suffix("/capture") {
+                    let mut chord = String::new();
+                    let _ = std::io::Read::read_to_string(req.as_reader(), &mut chord);
+                    Some(Request::KeysCapture { category: cat.to_string(), chord: chord.trim().to_string() })
+                } else if let Some(cat) = rest.strip_suffix("/code") {
+                    let mut code = String::new();
+                    let _ = std::io::Read::read_to_string(req.as_reader(), &mut code);
+                    Some(Request::KeysAddCode { category: cat.to_string(), code })
                 } else if let Some(cat) = rest.strip_suffix("/view") {
                     let mut body = String::new();
                     let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);
@@ -572,6 +598,11 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                     rest.strip_suffix("/reset")
                         .map(|cat| Request::KeysReset { category: cat.to_string() })
                 }
+            } else if let Some(p) = path.strip_prefix("/settings/nav/") {
+                p.trim_end_matches('/')
+                    .parse::<usize>()
+                    .ok()
+                    .map(|pane| Request::SettingsNav { pane })
             } else {
                 None
             }

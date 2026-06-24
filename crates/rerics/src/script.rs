@@ -89,6 +89,12 @@ pub trait HostApi {
     fn cancel_operation(&self, token: u64);
     /// パスを関連付けで開く（フォルダなら潜る／ファイルなら既定アプリ）。開きっぱなしで待たない。
     fn open(&self, path: &str);
+    /// フォルダ選択ダイアログを開く（`title` 空なら既定見出し）。キャンセルは `None`。
+    fn folder_dialog(&self, title: &str) -> Option<String>;
+    /// ファイルを開くダイアログを開く（`title` 空なら既定見出し）。キャンセルは `None`。
+    fn open_dialog(&self, title: &str) -> Option<String>;
+    /// ファイル保存ダイアログを開く（`title` 空なら既定見出し）。キャンセルは `None`。
+    fn save_dialog(&self, title: &str) -> Option<String>;
 }
 
 /// 外部プロセスを終了まで待った結果（`rerics.run` の戻り）。JS では camelCase で見える。
@@ -101,6 +107,20 @@ pub struct ProcessResult {
     pub stdout: String,
     /// 標準エラー出力（UTF-8 として lossy 変換）。
     pub stderr: String,
+}
+
+/// 登録済みスクリプトコマンドのメタ情報（`registerCommand` の第3引数）。`label` は設定 UI の
+/// 機能名カラムに出す日本語名、`genre` は機能順での見出しグループ。どちらも省略可（`None`）。
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct ScriptCommand {
+    /// 登録名（`invoke`／`Script("name")` で指す識別子）。
+    pub name: String,
+    /// 設定 UI に出す表示名（無ければ既定の「スクリプト実行」を使う）。
+    #[serde(default)]
+    pub label: Option<String>,
+    /// 機能順での所属ジャンル（既知ジャンル名なら組込群に混ぜ、未知なら「スクリプト」群へ）。
+    #[serde(default)]
+    pub genre: Option<String>,
 }
 
 /// スクリプトが起動する非同期ファイル操作の種別。
@@ -355,6 +375,27 @@ fn op_open(state: &mut OpState, #[string] path: &str) {
     state.borrow::<Host>().open(path);
 }
 
+/// フォルダ選択結果を `Vec` で包んで返す（`[]`＝キャンセル・`[s]`＝選んだパス）。理由は [`op_prompt`] と同じ。
+#[op2]
+#[serde]
+fn op_folder_dialog(state: &mut OpState, #[string] title: &str) -> Vec<String> {
+    state.borrow::<Host>().folder_dialog(title).into_iter().collect()
+}
+
+/// ファイルを開くダイアログの結果を `Vec` で包んで返す（`[]`＝キャンセル・`[s]`＝選んだパス）。
+#[op2]
+#[serde]
+fn op_open_dialog(state: &mut OpState, #[string] title: &str) -> Vec<String> {
+    state.borrow::<Host>().open_dialog(title).into_iter().collect()
+}
+
+/// ファイル保存ダイアログの結果を `Vec` で包んで返す（`[]`＝キャンセル・`[s]`＝選んだパス）。
+#[op2]
+#[serde]
+fn op_save_dialog(state: &mut OpState, #[string] title: &str) -> Vec<String> {
+    state.borrow::<Host>().save_dialog(title).into_iter().collect()
+}
+
 /// 指定プログラムを起動して即リターンする（投げっぱなし）。起動失敗は例外。GUI に触れないので
 /// ホストを介さずエンジンスレッドから直接起動する。
 #[op2]
@@ -408,6 +449,9 @@ extension!(
         op_op_cancel,
         op_list_dir,
         op_open,
+        op_folder_dialog,
+        op_open_dialog,
+        op_save_dialog,
         op_spawn,
         op_run
     ]
@@ -532,11 +576,28 @@ const BOOTSTRAP: &str = r#"
     delete: (a, b) =>
       Array.isArray(a) ? startOp(2, a, "", b) : startOp(2, null, "", a),
     open: (p) => ops.op_open(String(p)),
+    folderDialog: (t) => {
+      const r = ops.op_folder_dialog(t == null ? "" : String(t));
+      return r.length ? r[0] : null;
+    },
+    openDialog: (t) => {
+      const r = ops.op_open_dialog(t == null ? "" : String(t));
+      return r.length ? r[0] : null;
+    },
+    saveDialog: (t) => {
+      const r = ops.op_save_dialog(t == null ? "" : String(t));
+      return r.length ? r[0] : null;
+    },
     spawn: (cmd, ...args) => ops.op_spawn(String(cmd), args.map(String)),
     run: (cmd, ...args) => ops.op_run(String(cmd), args.map(String)),
-    registerCommand: (name, fn) => {
+    registerCommand: (name, fn, opts) => {
       if (typeof fn !== "function") throw new TypeError("registerCommand: fn must be a function");
-      commands.set(String(name), fn);
+      const o = opts || {};
+      commands.set(String(name), {
+        fn,
+        label: o.label == null ? null : String(o.label),
+        genre: o.genre == null ? null : String(o.genre),
+      });
     },
     on: (event, fn) => {
       if (typeof fn !== "function") throw new TypeError("on: fn must be a function");
@@ -565,9 +626,12 @@ const BOOTSTRAP: &str = r#"
     }
   };
   globalThis.__commandNames = () => [...commands.keys()];
+  globalThis.__commandMetas = () =>
+    [...commands.entries()].map(([name, e]) => ({ name, label: e.label, genre: e.genre }));
   globalThis.__invokeCommand = (name) => {
-    const fn = commands.get(String(name));
-    if (!fn) throw new Error("unknown command: " + name);
+    const entry = commands.get(String(name));
+    if (!entry) throw new Error("unknown command: " + name);
+    const fn = entry.fn;
     const report = (e) => rerics.log("command error [" + name + "]: " + ((e && e.stack) || e));
     try {
       const r = fn();
@@ -677,6 +741,8 @@ impl Engine {
     }
 
     /// 現在登録されているコマンド名（JS 側 Map のキー＝登録順・同名は後勝ちで一意）。
+    /// 本体は名前＋メタの [`Engine::registered_command_metas`] を使うので、これは検証用。
+    #[cfg(test)]
     pub fn registered_commands(&mut self) -> Vec<String> {
         let global = self
             .runtime
@@ -685,6 +751,18 @@ impl Engine {
         deno_core::scope!(scope, &mut self.runtime);
         let local = deno_core::v8::Local::new(scope, global);
         deno_core::serde_v8::from_v8::<Vec<String>>(scope, local).unwrap_or_default()
+    }
+
+    /// 登録済みコマンドのメタ情報（名前・表示名・ジャンル）を登録順で返す。設定 UI が
+    /// スクリプト行のラベル／ジャンルを描くのに使う。`label`/`genre` 未指定は `None`。
+    pub fn registered_command_metas(&mut self) -> Vec<ScriptCommand> {
+        let global = self
+            .runtime
+            .execute_script("rerics:list-metas", "globalThis.__commandMetas()")
+            .expect("__commandMetas must not fail");
+        deno_core::scope!(scope, &mut self.runtime);
+        let local = deno_core::v8::Local::new(scope, global);
+        deno_core::serde_v8::from_v8::<Vec<ScriptCommand>>(scope, local).unwrap_or_default()
     }
 
     /// 登録済みイベントハンドラを発火する（`rerics.on` で登録したもの）。`arg` は単一の
@@ -794,6 +872,10 @@ mod tests {
         op_error: Option<String>,
         /// `open` で開こうとしたパス（関連付け起動の検証用）。
         opened: RefCell<Vec<String>>,
+        /// フォルダ/開く/保存ダイアログの戻り（None でキャンセル）。
+        folder_reply: Option<String>,
+        open_reply: Option<String>,
+        save_reply: Option<String>,
     }
 
     impl HostApi for MockHost {
@@ -859,6 +941,15 @@ mod tests {
         }
         fn open(&self, path: &str) {
             self.opened.borrow_mut().push(path.to_string());
+        }
+        fn folder_dialog(&self, _title: &str) -> Option<String> {
+            self.folder_reply.clone()
+        }
+        fn open_dialog(&self, _title: &str) -> Option<String> {
+            self.open_reply.clone()
+        }
+        fn save_dialog(&self, _title: &str) -> Option<String> {
+            self.save_reply.clone()
         }
     }
 
@@ -985,6 +1076,31 @@ mod tests {
     }
 
     #[test]
+    fn file_dialogs_round_trip_through_host() {
+        let host = Rc::new(MockHost {
+            folder_reply: Some("E:\\picked".into()),
+            open_reply: Some("C:\\in.txt".into()),
+            save_reply: None,
+            ..Default::default()
+        });
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:file-dialogs",
+            r#"
+              rerics.log("f=" + rerics.folderDialog("フォルダ"));
+              rerics.log("o=" + rerics.openDialog());
+              rerics.log("s=" + rerics.saveDialog("保存先"));
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            *host.logs.borrow(),
+            vec!["f=E:\\picked".to_string(), "o=C:\\in.txt".to_string(), "s=null".to_string()]
+        );
+    }
+
+    #[test]
     fn typescript_types_are_erased_and_runs() {
         let host = Rc::new(MockHost {
             dir: "C:\\t".into(),
@@ -1027,6 +1143,41 @@ mod tests {
         assert_eq!(*host.navigated.borrow(), vec!["C:\\base/..".to_string()]);
 
         assert!(eng.invoke_command("missing").is_err());
+    }
+
+    #[test]
+    fn register_command_metadata_is_exposed() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:meta",
+            r#"
+              rerics.registerCommand("organize", () => {}, { label: "整理する", genre: "片付け" });
+              rerics.registerCommand("onlyLabel", () => {}, { label: "ラベルだけ" });
+              rerics.registerCommand("plain", () => {});
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        let metas = eng.registered_command_metas();
+        assert_eq!(
+            metas,
+            vec![
+                ScriptCommand {
+                    name: "organize".into(),
+                    label: Some("整理する".into()),
+                    genre: Some("片付け".into()),
+                },
+                ScriptCommand {
+                    name: "onlyLabel".into(),
+                    label: Some("ラベルだけ".into()),
+                    genre: None,
+                },
+                ScriptCommand { name: "plain".into(), label: None, genre: None },
+            ]
+        );
+        // 名前一覧は従来どおり（メタ化で壊れない）。
+        assert_eq!(eng.registered_commands(), vec!["organize", "onlyLabel", "plain"]);
     }
 
     #[test]

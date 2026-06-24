@@ -16,9 +16,10 @@ use winsafe::prelude::*;
 
 use crate::MainWindow;
 use crate::dialog::{InputMode, MessageResult, MessageStyle, input_box, list_box, message_box};
+use crate::shell;
 use rerics_core::{Command, Invocation};
 
-use crate::script::{self, HostApi, PaneItem, PaneSnapshot, ScriptOp};
+use crate::script::{self, HostApi, PaneItem, PaneSnapshot, ScriptCommand, ScriptOp};
 use crate::ui_marshal::{self, WakeQueue};
 use crate::winutil::msg::SCRIPT_WAKE;
 
@@ -42,6 +43,9 @@ pub enum HostCall {
     },
     CancelOperation { token: u64 },
     ShellOpen(String),
+    FolderDialog(String),
+    OpenDialog(String),
+    SaveDialog(String),
 }
 
 /// UI スレッド → エンジンスレッドへの応答。
@@ -93,10 +97,40 @@ fn system_time_ms(t: Option<std::time::SystemTime>) -> u64 {
         .unwrap_or(0)
 }
 
+/// 式引数の評価結果（リクエスト id → 値 or エラー文字列）。エンジン→UI へ非同期配送する。
+type EvalResult = (u64, Result<String, String>);
+
+/// 式引数の解決スロット。`Done`＝確定値（リテラル・式評価済み）、`Pending`＝まだ評価していない
+/// 式コード（`=` を外した中身）。
+pub(crate) enum ArgSlot {
+    Done(String),
+    Pending(String),
+}
+
+/// 引数を解決スロットへ振り分ける。`=` 始まりは式（あとで非同期評価）として `Pending`、
+/// それ以外はリテラルとして `Done`。
+pub(crate) fn arg_slots(args: &[String]) -> Vec<ArgSlot> {
+    args.iter()
+        .map(|a| match a.strip_prefix('=') {
+            Some(code) => ArgSlot::Pending(code.to_string()),
+            None => ArgSlot::Done(a.clone()),
+        })
+        .collect()
+}
+
+/// 評価中のディスパッチ。式引数を 1 つずつ非同期評価し、全部 `Done` になったら本体（`exec_resolved`）
+/// を走らせる。同時に走るのは 1 件だけ（式評価中の新規式ディスパッチは捨てる）。
+struct PendingDispatch {
+    id: u64,
+    is_left: bool,
+    cmd: Command,
+    slots: Vec<ArgSlot>,
+}
+
 /// UI スレッド → エンジンスレッドへのコマンド。
-/// `Invoke`/`Eval` はキーバインド（`Command::Script`/`Eval`）から、`FireEvent` は本体イベントから
-/// 送られる。`ListCommands` の送り手は debug-server エンドポイントだけなので、その構成以外では
-/// 当該バリアントが未使用＝dead_code を許容する。
+/// `Invoke`/`Eval` はキーバインド（`Command::Script`/`Eval`）から、`FireEvent` は本体イベントから、
+/// `EvalArg` は式引数のディスパッチから送られる。`ListCommands`/`EvalValue` の送り手は debug-server
+/// エンドポイントだけなので、その構成以外では当該バリアントが未使用＝dead_code を許容する。
 #[cfg_attr(not(feature = "debug-server"), allow(dead_code))]
 pub enum EngineCmd {
     /// 登録済みコマンドを名前で実行する（投げっぱなし）。
@@ -105,8 +139,11 @@ pub enum EngineCmd {
     Eval(String),
     /// TS/JS コードを評価し、最後の式の値を文字列で返す（同期取得）。`undefined`/`null` は空文字。
     EvalValue { code: String, tx: Sender<String> },
-    /// 現在登録されているコマンド名を返す（同期・`HostApi` を呼ばないのでデッドロックしない）。
-    ListCommands(Sender<Vec<String>>),
+    /// 式引数を評価し、結果を**非同期**に返す（UI はブロックしない＝結果は eval チャネル＋wake で届く）。
+    /// HostApi（モーダル等）を呼ぶ式でもデッドロックしないための核心。
+    EvalArg { id: u64, code: String },
+    /// 現在登録されているコマンドのメタ情報を返す（同期・`HostApi` を呼ばないのでデッドロックしない）。
+    ListCommands(Sender<Vec<ScriptCommand>>),
     /// ファイラー本体の出来事を `rerics.on` ハンドラへ配る（投げっぱなし）。
     FireEvent { event: String, arg: String },
 }
@@ -126,11 +163,19 @@ pub struct ScriptBridge {
     /// 進行中のスクリプト発 async 操作。`WorkerEvent::Done` で束ねたタスクの完了を数え、全部
     /// 揃ったら `oneshot` を発火してスクリプトの `await` を解く。
     jobs: Jobs,
+    /// 式引数の評価結果をエンジンから受ける（UI スレッドで drain して継続を進める）。
+    eval_tx: Sender<EvalResult>,
+    eval_rx: Rc<Receiver<EvalResult>>,
+    /// 式引数評価のリクエスト id 採番。
+    next_eval_id: Rc<Cell<u64>>,
+    /// 評価中のディスパッチ（同時 1 件）。`None` なら待ちなし。
+    pending: Rc<RefCell<Option<PendingDispatch>>>,
 }
 
 impl ScriptBridge {
     pub fn new() -> Self {
         let (cmd_tx, cmd_rx) = channel();
+        let (eval_tx, eval_rx) = channel();
         Self {
             queue: ui_marshal::new_queue(),
             cmd_tx,
@@ -138,6 +183,10 @@ impl ScriptBridge {
             suppress_events: Rc::new(Cell::new(false)),
             last_dir: Rc::new(RefCell::new([String::new(), String::new()])),
             jobs: Rc::new(RefCell::new(JobRegistry::default())),
+            eval_tx,
+            eval_rx: Rc::new(eval_rx),
+            next_eval_id: Rc::new(Cell::new(0)),
+            pending: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -320,11 +369,52 @@ impl HostApi for GuiHost {
             HostCall::ShellOpen(path.to_string()),
         );
     }
+
+    fn folder_dialog(&self, title: &str) -> Option<String> {
+        match ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::FolderDialog(title.to_string()),
+        ) {
+            Ok(HostResp::Text(text)) => text,
+            _ => None,
+        }
+    }
+
+    fn open_dialog(&self, title: &str) -> Option<String> {
+        match ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::OpenDialog(title.to_string()),
+        ) {
+            Ok(HostResp::Text(text)) => text,
+            _ => None,
+        }
+    }
+
+    fn save_dialog(&self, title: &str) -> Option<String> {
+        match ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::SaveDialog(title.to_string()),
+        ) {
+            Ok(HostResp::Text(text)) => text,
+            _ => None,
+        }
+    }
 }
 
 /// スクリプトエンジンを別スレッドに建てる。起動スクリプト（`data_dir()/scripts`）を読み込み、
 /// 以後 [`EngineCmd`] を受けて捌くループに入る。`hwnd_ptr` は UI スレッドを起こす先。
-pub fn spawn_engine(queue: ScriptQueue, hwnd_ptr: isize, cmd_rx: Receiver<EngineCmd>) {
+pub fn spawn_engine(
+    queue: ScriptQueue,
+    hwnd_ptr: isize,
+    cmd_rx: Receiver<EngineCmd>,
+    eval_tx: Sender<EvalResult>,
+) {
     std::thread::spawn(move || {
         let host: Rc<dyn HostApi> = Rc::new(GuiHost { queue, hwnd_ptr });
         let mut engine = script::Engine::new(host.clone());
@@ -363,8 +453,21 @@ pub fn spawn_engine(queue: ScriptQueue, hwnd_ptr: isize, cmd_rx: Receiver<Engine
                         });
                     let _ = tx.send(value);
                 }
+                EngineCmd::EvalArg { id, code } => {
+                    // 式を評価して結果を UI へ非同期に返す。評価中に HostApi（モーダル等）を
+                    // 呼んでも、UI は recv でブロックしていない（結果は eval チャネル＋wake で届く）
+                    // ので、デッドロックしない。
+                    let result = engine.eval_to_string(
+                        "rerics:arg",
+                        "file:///arg.ts",
+                        deno_ast::MediaType::TypeScript,
+                        code,
+                    );
+                    let _ = eval_tx.send((id, result));
+                    ui_marshal::post_wake(hwnd_ptr, SCRIPT_WAKE.raw());
+                }
                 EngineCmd::ListCommands(tx) => {
-                    let _ = tx.send(engine.registered_commands());
+                    let _ = tx.send(engine.registered_command_metas());
                 }
                 EngineCmd::FireEvent { event, arg } => {
                     if let Err(e) = engine.fire_event(&event, &arg) {
@@ -459,7 +562,113 @@ impl MainWindow {
                     }
                     let _ = tx.send(HostResp::Done);
                 }
+                HostCall::FolderDialog(title) => {
+                    let picked = shell::choose_folder(self.wnd.hwnd().ptr(), &title)
+                        .map(|p| p.to_string_lossy().into_owned());
+                    let _ = tx.send(HostResp::Text(picked));
+                }
+                HostCall::OpenDialog(title) => {
+                    let picked = shell::choose_file(self.wnd.hwnd().ptr(), &title, false)
+                        .map(|p| p.to_string_lossy().into_owned());
+                    let _ = tx.send(HostResp::Text(picked));
+                }
+                HostCall::SaveDialog(title) => {
+                    let picked = shell::choose_file(self.wnd.hwnd().ptr(), &title, true)
+                        .map(|p| p.to_string_lossy().into_owned());
+                    let _ = tx.send(HostResp::Text(picked));
+                }
             }
+        }
+        // 式引数の評価結果を取り込み、待ち中のディスパッチを進める（SCRIPT_WAKE と同じ起床で届く）。
+        while let Ok((id, result)) = self.script.eval_rx.try_recv() {
+            self.on_eval_result(id, result);
+        }
+    }
+
+    /// 式引数の評価が必要なディスパッチを開始する。先頭の式を評価へ投げ、結果が届くたびに
+    /// `on_eval_result` が次の式（or 本体実行）へ進める。式評価中は 1 件だけ（再入は捨てる）。
+    pub(crate) fn begin_expr_dispatch(&self, is_left: bool, cmd: Command, slots: Vec<ArgSlot>) {
+        if self.script.pending.borrow().is_some() {
+            self.log.info("式の評価中です");
+            return;
+        }
+        let first = slots.iter().find_map(|s| match s {
+            ArgSlot::Pending(code) => Some(code.clone()),
+            ArgSlot::Done(_) => None,
+        });
+        let Some(code) = first else {
+            // 式が無ければ即実行（呼び出し側が式有りを保証するので通常ここには来ない）。
+            let args = slots
+                .into_iter()
+                .map(|s| match s {
+                    ArgSlot::Done(v) => v,
+                    ArgSlot::Pending(_) => String::new(),
+                })
+                .collect();
+            let _ = self.exec_resolved(is_left, cmd, args);
+            return;
+        };
+        let id = self.script.next_eval_id.get().wrapping_add(1);
+        self.script.next_eval_id.set(id);
+        *self.script.pending.borrow_mut() = Some(PendingDispatch { id, is_left, cmd, slots });
+        self.script_send(EngineCmd::EvalArg { id, code });
+    }
+
+    /// 式引数の評価結果を受けて、待ち中のディスパッチを 1 歩進める。次の式があれば評価へ、
+    /// 全部揃ったら本体（`exec_resolved`）を走らせる。評価失敗は無音で中止（理由をログへ）。
+    fn on_eval_result(&self, id: u64, result: Result<String, String>) {
+        enum Next {
+            Eval(u64, String),
+            Run(bool, Command, Vec<String>),
+            Nothing,
+        }
+        let next = {
+            let mut slot = self.script.pending.borrow_mut();
+            let Some(pd) = slot.as_mut() else { return };
+            if pd.id != id {
+                return;
+            }
+            match result {
+                Err(e) => {
+                    self.log.error(&format!("式の評価に失敗: {e}"));
+                    *slot = None;
+                    Next::Nothing
+                }
+                // 式が空（`null`/`undefined`/キャンセル）＝マクロのキャンセルと同じく無音で実行中止。
+                Ok(value) if value.is_empty() => {
+                    *slot = None;
+                    Next::Nothing
+                }
+                Ok(value) => {
+                    if let Some(p) =
+                        pd.slots.iter_mut().find(|s| matches!(s, ArgSlot::Pending(_)))
+                    {
+                        *p = ArgSlot::Done(value);
+                    }
+                    match pd.slots.iter().find_map(|s| match s {
+                        ArgSlot::Pending(code) => Some(code.clone()),
+                        ArgSlot::Done(_) => None,
+                    }) {
+                        Some(code) => Next::Eval(pd.id, code),
+                        None => {
+                            let (is_left, cmd) = (pd.is_left, pd.cmd);
+                            let args = pd.slots.iter().map(|s| match s {
+                                ArgSlot::Done(v) => v.clone(),
+                                ArgSlot::Pending(_) => String::new(),
+                            }).collect();
+                            *slot = None;
+                            Next::Run(is_left, cmd, args)
+                        }
+                    }
+                }
+            }
+        };
+        match next {
+            Next::Eval(id, code) => self.script_send(EngineCmd::EvalArg { id, code }),
+            Next::Run(is_left, cmd, args) => {
+                let _ = self.exec_resolved(is_left, cmd, args);
+            }
+            Next::Nothing => {}
         }
     }
 
@@ -706,7 +915,7 @@ impl MainWindow {
     pub(crate) fn start_script_engine(&self) {
         if let Some(cmd_rx) = self.script.take_rx() {
             let hwnd_ptr = self.wnd.hwnd().ptr() as isize;
-            spawn_engine(self.script.queue.clone(), hwnd_ptr, cmd_rx);
+            spawn_engine(self.script.queue.clone(), hwnd_ptr, cmd_rx, self.script.eval_tx.clone());
         }
     }
 
@@ -715,9 +924,8 @@ impl MainWindow {
         let _ = self.script.cmd_tx.send(cmd);
     }
 
-    /// 登録済みコマンド名をエンジンから同期取得する。
-    #[cfg(feature = "debug-server")]
-    pub(crate) fn script_list_commands(&self) -> Vec<String> {
+    /// 登録済みコマンドのメタ情報をエンジンから同期取得する。
+    pub(crate) fn script_list_commands(&self) -> Vec<ScriptCommand> {
         let (tx, rx) = channel();
         let _ = self.script.cmd_tx.send(EngineCmd::ListCommands(tx));
         rx.recv().unwrap_or_default()

@@ -134,7 +134,7 @@ Enter = "EnterDir"
 Esc = "OpenTaskManager"
 F = "IncrementalSearchDialog"
 F2 = "Rename"
-F4 = 'ChangeDirectory("<I:ディレクトリの入力>")'
+F4 = 'ChangeDirectory("=r.prompt(\"ディレクトリの入力\")")'
 F5 = "Reload"
 Home = "ClearAll"
 I = "DirectoryInformation"
@@ -153,7 +153,7 @@ S = "SortDialog"
 "Shift+A" = "ReverseAll"
 "Shift+Down" = 'CursorDown("select")'
 "Shift+F1" = "OpenSettings"
-"Shift+F4" = 'ChangeDirectory("<FOLDERDIALOG:ディレクトリの選択>")'
+"Shift+F4" = 'ChangeDirectory("=r.folderDialog(\"ディレクトリの選択\")")'
 "Shift+Home" = "Reload"
 "Shift+Left" = "PreviousDrive"
 "Shift+O" = "CurrentToOpposite"
