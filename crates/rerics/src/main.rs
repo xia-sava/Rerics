@@ -821,6 +821,14 @@ impl MainWindow {
                 Err(MacroAbort) => return Ok(()),
             }
         };
+        self.exec_resolved(is_left, cmd, args)
+    }
+
+    /// 解決済み引数でコマンド本体を実行する（引数解決のあとの同期処理＝コマンドアーム群を集約）。
+    /// 引数解決は `exec` 側で済ませる（現状はマクロ展開・将来は式評価）。文脈外のビューア専用
+    /// コマンドは何もしない。
+    fn exec_resolved(&self, is_left: bool, cmd: Command, args: Vec<String>) -> w::AnyResult<()> {
+        let view = self.view(is_left);
         let state = view.state();
         let pr = view.page_rows();
         match cmd {
