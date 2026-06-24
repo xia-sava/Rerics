@@ -205,12 +205,30 @@ impl MainWindow {
                     let resp = match self.debug_modal_hwnd().as_ref().and_then(Self::debug_modal_edit) {
                         Some(edit) => {
                             unsafe {
+                                let key_up = |vk: u16| w::msg::wm::KeyUp {
+                                    vkey_code: co::VK::from_raw(vk),
+                                    repeat_count: 1,
+                                    scan_code: 0,
+                                    is_extended_key: false,
+                                    has_alt_key: false,
+                                    key_was_previously_down: true,
+                                    key_is_being_released: true,
+                                };
                                 match name.as_str() {
                                     "down" => {
                                         edit.SendMessage(key_down(0x28));
                                     }
                                     "up" => {
                                         edit.SendMessage(key_down(0x26));
+                                    }
+                                    // カレット移動は押下で動かし、解放で補完を再評価させる。
+                                    "left" => {
+                                        edit.SendMessage(key_down(0x25));
+                                        edit.SendMessage(key_up(0x25));
+                                    }
+                                    "right" => {
+                                        edit.SendMessage(key_down(0x27));
+                                        edit.SendMessage(key_up(0x27));
                                     }
                                     "enter" => {
                                         edit.SendMessage(w::msg::wm::Char {

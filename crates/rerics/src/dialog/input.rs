@@ -206,6 +206,22 @@ fn completion_candidates(members: &[String], prefix: &str) -> Vec<String> {
     members.iter().filter(|m| m.to_lowercase().starts_with(&p)).cloned().collect()
 }
 
+/// Edit のカレット位置（UTF-16 オフセット）を返す。winsafe の `em::GetSel` はポインタ出力の
+/// マーシャリングが効かない（常に 0）ので、EM_GETSEL の戻り値（上位 16bit＝選択終端＝カレット）を読む。
+fn caret_offset(edit: &gui::Edit) -> u32 {
+    struct GetSelRaw;
+    impl winsafe::prelude::MsgSend for GetSelRaw {
+        type RetType = u32;
+        unsafe fn isize_to_ret(&self, v: isize) -> u32 {
+            (v as u32) >> 16
+        }
+        fn as_generic_wm(&mut self) -> winsafe::msg::WndMsg {
+            winsafe::msg::WndMsg { msg_id: co::EM::GETSEL.into(), wparam: 0, lparam: 0 }
+        }
+    }
+    unsafe { edit.hwnd().SendMessage(GetSelRaw) }
+}
+
 pub fn code_box(
     parent: &impl GuiParent,
     message: &str,
@@ -331,17 +347,20 @@ pub fn code_box(
 
     // カレットまでの文字列 `before` を見て、`r.<prefix>` なら候補を入れて表示・なければ隠す補完更新。
     // 実入力（EN_CHANGE）と headless 観測（type_text）の両方から、各自の `before` を渡して呼ぶ。
-    // `force` は Ctrl+Space の明示トリガ用＝「唯一かつ入力済みと同一」でも表示する。
-    // (before, force) を受け取って候補リストを出し入れする。
-    type Update = Rc<dyn Fn(&str, bool)>;
+    // 本文とカレット位置から「カレット直前の文字列」を見て候補を出し入れする。`force` は Ctrl+Space
+    // の明示トリガ用＝「唯一かつ入力済みと同一」でも表示する。文字入力・カレット移動の両方から呼ぶ。
+    type Update = Rc<dyn Fn(bool)>;
     let update: Update = {
+        let edit = edit.clone();
         let cand = cand.clone();
         let members = members_rc.clone();
         let range = range.clone();
-        Rc::new(move |before: &str, force: bool| {
-            let caret = before.encode_utf16().count() as u32;
+        Rc::new(move |force: bool| {
+            let utf16: Vec<u16> = edit.text().unwrap_or_default().encode_utf16().collect();
+            let caret = (caret_offset(&edit) as usize).min(utf16.len()) as u32;
+            let before = String::from_utf16_lossy(&utf16[..caret as usize]);
             // 候補があり、かつ（強制でなければ）「唯一かつ入力済みと同一」でなければ出す。
-            let shown = completion_prefix(before).and_then(|(plen, prefix)| {
+            let shown = completion_prefix(&before).and_then(|(plen, prefix)| {
                 let list = completion_candidates(&members, &prefix);
                 let only_exact = list.len() == 1 && list[0].eq_ignore_ascii_case(&prefix);
                 (!(list.is_empty() || (!force && only_exact))).then_some((plen as u32, list))
@@ -362,11 +381,9 @@ pub fn code_box(
         })
     };
     {
-        let edit2 = edit.clone();
         let update = update.clone();
         edit.on().en_change(move || {
-            // 実入力：本文の末尾にカレットがある前提で補完する（補完は通常末尾で打つため）。
-            update(&edit2.text().unwrap_or_default(), false);
+            update(false);
             Ok(())
         });
     }
@@ -420,7 +437,7 @@ pub fn code_box(
                 }
                 // Ctrl+Space（VK_SPACE=0x20）：補完を開く（消費）。直後の空白 WM_CHAR も抑制する。
                 if msg == keyhook::WM_KEYDOWN && vk == 0x20 && ctrl.get() {
-                    update(&edit_h.text().unwrap_or_default(), true);
+                    update(true);
                     suppress_space.set(true);
                     return true;
                 }
@@ -428,7 +445,17 @@ pub fn code_box(
                     suppress_space.set(false);
                     return true;
                 }
-                // 以降は候補リスト表示中だけ。
+                // カレット移動キーの KEYUP：カレットが動いたので補完を作り直す（カレット直前で判定するため）。
+                // ←→ Home End は常に、↑↓ は候補リスト非表示時のみ（表示中の↑↓は候補移動なので除外）。
+                if msg == keyhook::WM_KEYUP {
+                    let horiz = matches!(vk, 0x25 | 0x27 | 0x24 | 0x23);
+                    let vert = matches!(vk, 0x26 | 0x28);
+                    if horiz || (vert && range.get().is_none()) {
+                        update(false);
+                    }
+                    return false;
+                }
+                // 以降は候補リスト表示中だけ（KEYDOWN／WM_CHAR）。
                 if range.get().is_none() {
                     return false;
                 }
@@ -469,9 +496,11 @@ pub fn code_box(
         let update = update.clone();
         completion_probe::set(completion_probe::Probe {
             type_text: Box::new(move |s| {
-                // 入力模擬：本文を s にし、カレットは末尾＝before は全文として補完を更新する。
+                // 入力模擬：本文を s にしてカレットを末尾へ置き、補完を更新する。
                 let _ = edit_t.set_text(s);
-                update(s, false);
+                let n = s.encode_utf16().count() as i32;
+                edit_t.set_selection(n, n);
+                update(false);
             }),
             candidates: Box::new(move || {
                 let n = cand_p.items().count().unwrap_or(0);

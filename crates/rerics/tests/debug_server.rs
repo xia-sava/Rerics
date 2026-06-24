@@ -2786,6 +2786,32 @@ fn completion_keyboard_navigation_and_ctrl_space() {
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
 
+/// 補完はカレット直前の文字列で判定する：`=r.co` で c と o の間へカレットを戻すと、`co` ではなく
+/// `c` の候補（currentDir 等）に変わる。確定は末尾の o を残すので利用者が自分で消す前提。
+#[test]
+fn completion_uses_text_up_to_caret() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    server.req("POST", "/settings/nav/5", "").unwrap();
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/openarg", "").unwrap();
+
+    // `=r.co` の末尾＝候補は co 前方一致（command/confirm/copy）。currentDir は含まれない。
+    server.req("POST", "/completion/keystrokes", "=r.co").unwrap();
+    let c = poll(&server, "/completion", |b| b.contains("confirm"));
+    assert!(c.contains("confirm"), "co の候補: {c}");
+    assert!(!c.contains("currentDir"), "co では currentDir は出ない: {c}");
+
+    // ← でカレットを c と o の間へ＝候補が c 前方一致へ変わり currentDir が入る。
+    server.req("POST", "/completion/key/left", "").unwrap();
+    let c2 = poll(&server, "/completion", |b| b.contains("currentDir"));
+    assert!(c2.contains("currentDir"), "カレットを戻すと c の候補（currentDir）に変わる: {c2}");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
 /// scripting：`/script/eval` で評価したコードのログがアプリのログ欄へ出る（エンジン→UI 配線）。
 #[test]
 fn script_eval_runs_and_logs_to_app() {
