@@ -2,8 +2,8 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use winsafe::{self as w, co, gui, prelude::*};
-use rerics_core::{Location, MacroAbort, MacroCtx, Spinner, expand_macros, format_size};
-use crate::{ActiveView, DialogMacroHost, MainWindow, TabSnapshot, dialog, join_inner_path};
+use rerics_core::{Location, Spinner, format_size};
+use crate::{ActiveView, MainWindow, TabSnapshot, dialog, join_inner_path};
 
 impl MainWindow {
     /// 指定 index のタブへ切替える（範囲外・現在と同じなら何もしない）。
@@ -226,9 +226,8 @@ impl MainWindow {
         Ok(())
     }
 
-    /// パスを入力してそこへ移動する。移動できなければエラーログ。
     /// 指定パスへ移動する（引数版 `ChangeDirectory("path")`）。空や移動失敗はログのみ。
-    /// パスはマクロ展開済み（`<I:>`/`<FOLDERDIALOG>` 等は呼び出し側で解決される）。
+    /// `target` は解決済みのパス（式 `=r.folderDialog()` 等は呼び出し側で評価される）。
     pub(crate) fn change_directory(&self, is_left: bool, target: Option<&str>) -> w::AnyResult<()> {
         let Some(input) = target.map(str::trim).filter(|s| !s.is_empty()) else {
             return Ok(());
@@ -823,59 +822,6 @@ impl MainWindow {
         Ok(())
     }
 
-    /// マクロ展開・式評価が参照するペイン由来の値（`<C>`/`<O>`/`<P>`/`<M>` の素材）を 1 度に集める。
-    fn macro_values(&self, is_left: bool) -> (String, String, String, Vec<String>) {
-        let current = self.pane(is_left).borrow().loc_display();
-        let opposite = self.pane(!is_left).borrow().loc_display();
-        let cursor_path = {
-            let st = self.view(is_left).state();
-            let s = st.borrow();
-            match s.items.get(s.cursor) {
-                Some(it) if !it.is_parent => format!("{}/{}", current, it.name),
-                _ => String::new(),
-            }
-        };
-        let selected: Vec<String> = {
-            let st = self.view(is_left).state();
-            let s = st.borrow();
-            s.items
-                .iter()
-                .filter(|it| it.selected && !it.is_parent)
-                .map(|it| format!("{}/{}", current, it.name))
-                .collect()
-        };
-        (current, opposite, cursor_path, selected)
-    }
-
-    /// 引数列のマクロを展開する。文字列置換（`<C>`/`<O>`/`<P>`）に加え、ダイアログ系
-    /// （`<I:>`/`<FOLDERDIALOG>`）は GUI ホスト越しにモーダルを開く。キャンセルは [`MacroAbort`]。
-    pub(crate) fn expand_args(&self, is_left: bool, args: &[String]) -> Result<Vec<String>, MacroAbort> {
-        let (current, opposite, cursor_path, selected) = self.macro_values(is_left);
-        let host = DialogMacroHost { app: self };
-        let ctx = MacroCtx { current, opposite, cursor_path, selected, host: &host };
-        expand_macros(args, &ctx)
-    }
-
-    /// 引数を解決スロットへ振り分ける。`=` 始まりは式（あとで非同期評価）として `Pending`、
-    /// それ以外はその場でマクロ展開して `Done`。マクロ（`<I:>` 等）のキャンセルは [`MacroAbort`]。
-    pub(crate) fn build_arg_slots(
-        &self,
-        is_left: bool,
-        args: &[String],
-    ) -> Result<Vec<crate::script_host::ArgSlot>, MacroAbort> {
-        use crate::script_host::ArgSlot;
-        let (current, opposite, cursor_path, selected) = self.macro_values(is_left);
-        let host = DialogMacroHost { app: self };
-        let ctx = MacroCtx { current, opposite, cursor_path, selected, host: &host };
-        args.iter()
-            .map(|a| match a.strip_prefix('=') {
-                Some(code) => Ok(ArgSlot::Pending(code.to_string())),
-                None => Ok(ArgSlot::Done(
-                    expand_macros(std::slice::from_ref(a), &ctx)?.into_iter().next().unwrap_or_default(),
-                )),
-            })
-            .collect()
-    }
 
     /// 画面座標 `coords` の下にあるペインをホイール回転分だけスクロールする。
     pub(crate) fn scroll_under_cursor(&self, distance: i16, coords: w::POINT) -> w::AnyResult<()> {

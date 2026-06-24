@@ -1059,67 +1059,6 @@ fn input_history_changedir_persists() {
     assert!(hist.contains("sbx"), "entered path should be recorded: {hist}");
 }
 
-/// 引数マクロ版 `ChangeDirectory("<I:…>")`：`<I:>` が入力モーダルを開き、打った値で移動する
-/// ことを確認する（引数基盤の段階2＝マクロ展開の実証）。
-#[test]
-fn nav_change_directory_macro_input() {
-    let server = Server::start(&["a.txt"], "");
-    let sbx_json = server
-        .req("GET", "/state/panes/left/location", "")
-        .unwrap()
-        .1
-        .trim()
-        .to_string();
-    let sbx_raw = sbx_json.trim_matches('"').replace("\\\\", "\\");
-
-    server.req("POST", "/command/ToParent", "").unwrap();
-    let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx_json);
-    assert_ne!(parent.trim(), sbx_json, "ToParent should leave the sandbox");
-
-    // body の引数に入力マクロを渡す＝実行直前に入力モーダルが開く。
-    server
-        .req("POST", "/command/ChangeDirectory", r#"["<I:移動先>"]"#)
-        .unwrap();
-    let modal = wait_modal(&server);
-    assert!(
-        modal.contains("\"has_input\":true"),
-        "<I:> macro should open a text-input modal: {modal}"
-    );
-
-    server.req("POST", "/modal/text", &sbx_raw).unwrap();
-    server.req("POST", "/modal/key/enter", "").unwrap();
-    let back = poll(&server, "/state/panes/left/location", |b| b.trim() == sbx_json);
-    assert_eq!(back.trim(), sbx_json, "input from <I:> macro should navigate there");
-}
-
-/// 引数マクロ版 `ChangeDirectory` で入力をキャンセルすると、原作準拠で無音中止（移動しない）。
-#[test]
-fn nav_change_directory_macro_cancel_is_silent() {
-    let server = Server::start(&["a.txt"], "");
-    let sbx_json = server
-        .req("GET", "/state/panes/left/location", "")
-        .unwrap()
-        .1
-        .trim()
-        .to_string();
-
-    server.req("POST", "/command/ToParent", "").unwrap();
-    let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx_json);
-
-    server
-        .req("POST", "/command/ChangeDirectory", r#"["<I:移動先>"]"#)
-        .unwrap();
-    wait_modal(&server);
-    // Esc でキャンセル＝モーダルが閉じて、場所は変わらない。
-    server.req("POST", "/modal/key/esc", "").unwrap();
-    poll(&server, "/state/modal", |b| b.trim() == "null");
-    let after = server
-        .req("GET", "/state/panes/left/location", "")
-        .unwrap()
-        .1;
-    assert_eq!(after.trim(), parent.trim(), "cancel should not navigate (silent abort)");
-}
-
 /// リテラル引数版 `Sort("size")` がソート種別を切り替える（段階3＝リテラル引数コマンド）。
 #[test]
 fn sort_command_changes_sort_type() {

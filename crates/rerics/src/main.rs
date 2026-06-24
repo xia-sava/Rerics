@@ -56,8 +56,8 @@ use tab_bar::TabBar;
 use task::{TaskEntry, WorkerEvent};
 use viewer::ViewerView;
 use rerics_core::{
-    Command, Config, FileListState, Invocation, KeyChord, KeyMap, Location, MacroAbort, MacroHost,
-    Pane, SortType, WindowState,
+    Command, Config, FileListState, Invocation, KeyChord, KeyMap, Location, Pane, SortType,
+    WindowState,
 };
 use winsafe::{self as w, co, gui, prelude::*};
 
@@ -272,33 +272,6 @@ struct TabSnapshot {
     left_state: FileListState,
     right_state: FileListState,
     active_right: bool,
-}
-
-/// マクロのダイアログ系（`<I:>`/`<FOLDERDIALOG>`）を GUI で供給するホスト。
-struct DialogMacroHost<'a> {
-    app: &'a MainWindow,
-}
-
-impl MacroHost for DialogMacroHost<'_> {
-    fn prompt(&self, title: &str) -> Option<String> {
-        let message = if title.is_empty() { "値を入力して下さい。" } else { title };
-        dialog::input_box(&self.app.wnd, "入力", message, "", dialog::InputMode::Plain)
-    }
-
-    fn choose_folder(&self, title: &str) -> Option<String> {
-        shell::choose_folder(self.app.wnd.hwnd().ptr(), title)
-            .map(|p| p.to_string_lossy().into_owned())
-    }
-
-    fn choose_open_file(&self, title: &str) -> Option<String> {
-        shell::choose_file(self.app.wnd.hwnd().ptr(), title, false)
-            .map(|p| p.to_string_lossy().into_owned())
-    }
-
-    fn choose_save_file(&self, title: &str) -> Option<String> {
-        shell::choose_file(self.app.wnd.hwnd().ptr(), title, true)
-            .map(|p| p.to_string_lossy().into_owned())
-    }
 }
 
 /// ペイン再読込時にカーソルをどこへ置くか。
@@ -815,22 +788,12 @@ impl MainWindow {
         // 引数に式（`=...`）があれば、別スレッドで非同期評価してから本体を走らせる。UI は
         // ブロックしないので、式が `r.prompt()` 等のモーダルを呼んでもデッドロックしない。
         if inv.args.iter().any(|a| a.starts_with('=')) {
-            // マクロ（非式の引数に混ざる `<I:>` 等）のキャンセルは無音で実行中止。
-            if let Ok(slots) = self.build_arg_slots(is_left, &inv.args) {
-                self.begin_expr_dispatch(is_left, cmd, slots);
-            }
+            let slots = script_host::arg_slots(&inv.args);
+            self.begin_expr_dispatch(is_left, cmd, slots);
             return Ok(());
         }
-        // 引数があれば実行直前にマクロを展開する。入力/選択のキャンセルは無音で実行中止。
-        let args = if inv.args.is_empty() {
-            Vec::new()
-        } else {
-            match self.expand_args(is_left, &inv.args) {
-                Ok(a) => a,
-                Err(MacroAbort) => return Ok(()),
-            }
-        };
-        self.exec_resolved(is_left, cmd, args)
+        // 式でない引数はリテラルとして使う。
+        self.exec_resolved(is_left, cmd, inv.args.clone())
     }
 
     /// 解決済み引数でコマンド本体を実行する（引数解決のあとの同期処理＝コマンドアーム群を集約）。

@@ -9,7 +9,6 @@ mod file_list;
 mod highlight;
 mod input;
 mod log;
-mod macros;
 mod media;
 pub mod messages;
 mod operation;
@@ -40,7 +39,6 @@ pub use file_list::{
 };
 pub use input::{Command, CommandContext, Invocation, KeyChord, KeyMap, vk};
 pub use log::{LogLevel, LogLine, LogState};
-pub use macros::{MacroAbort, MacroCtx, MacroHost, expand_macros};
 pub use media::{
     AnimatedImage, Frame, FrameSource, MediaKind, Placement, StillImage, clamp_pan,
     composite_over_checker, decode_thumbnail, fit_scale, fit_scale_height, fit_scale_look_large,

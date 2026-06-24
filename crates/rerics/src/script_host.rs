@@ -100,11 +100,22 @@ fn system_time_ms(t: Option<std::time::SystemTime>) -> u64 {
 /// 式引数の評価結果（リクエスト id → 値 or エラー文字列）。エンジン→UI へ非同期配送する。
 type EvalResult = (u64, Result<String, String>);
 
-/// 式引数の解決スロット。`Done`＝確定値（リテラル・マクロ展開後・式評価済み）、
-/// `Pending`＝まだ評価していない式コード（`=` を外した中身）。
+/// 式引数の解決スロット。`Done`＝確定値（リテラル・式評価済み）、`Pending`＝まだ評価していない
+/// 式コード（`=` を外した中身）。
 pub(crate) enum ArgSlot {
     Done(String),
     Pending(String),
+}
+
+/// 引数を解決スロットへ振り分ける。`=` 始まりは式（あとで非同期評価）として `Pending`、
+/// それ以外はリテラルとして `Done`。
+pub(crate) fn arg_slots(args: &[String]) -> Vec<ArgSlot> {
+    args.iter()
+        .map(|a| match a.strip_prefix('=') {
+            Some(code) => ArgSlot::Pending(code.to_string()),
+            None => ArgSlot::Done(a.clone()),
+        })
+        .collect()
 }
 
 /// 評価中のディスパッチ。式引数を 1 つずつ非同期評価し、全部 `Done` になったら本体（`exec_resolved`）
