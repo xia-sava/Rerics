@@ -2572,7 +2572,7 @@ impl RegisteredPane {
 pub fn show(
     parent: &impl GuiParent,
     current: &Config,
-    scripts: Vec<String>,
+    scripts: Vec<crate::script::ScriptCommand>,
     on_apply: impl Fn(&Config) + 'static,
 ) {
     // 前回開いた設定ダイアログのキー編集フックを捨てる（このダイアログ生成で登録し直す）。

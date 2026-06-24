@@ -9,6 +9,7 @@ use std::rc::Rc;
 use rerics_core::{Command, CommandContext, Invocation, KeyChord, KeyMap};
 use winsafe::{self as w, co, gui, prelude::*};
 
+use crate::script::ScriptCommand;
 use crate::settings_dialog::{Shared, WM_PRINTCLIENT, label};
 /// 「キー」ページが編集する対象のキーマップ。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -69,18 +70,21 @@ struct BindRow {
     conflicted: bool,
 }
 
-/// キー順の 1 行＝1 chord と、それを定義している全機能のラベル（2 つ以上＝衝突）。
+/// キー順の 1 行＝1 chord と、それを定義している全機能（2 つ以上＝衝突）。`labels` は機能トークン
+/// （命令の同一判定・debug 観測用）、`values` は生 invocation（機能名／実呼び出しカラムの描画用）。
+/// 両者は同じ並びで対応する。
 struct KeyChordRow {
     chord: String,
     labels: Vec<String>,
+    values: Vec<String>,
 }
 
 /// 機能順リストの表示行。ジャンル見出しを行間に挟むので、データ行（`view` 上の位置）と
 /// 見出し行が混在する。`top`（スクロール）はこの表示行を単位に進む。
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum DisplayLine {
-    /// 全幅のジャンル見出し（選択不可）。
-    Header(&'static str),
+    /// 全幅のジャンル見出し（選択不可）。独自ジャンル名も載るので所有 String。
+    Header(String),
     /// データ行＝`view` 上の位置（`sel` はこの値で指す）。
     Row(usize),
 }
@@ -131,6 +135,23 @@ fn call_display(value: &str) -> String {
         },
         None => value.trim().to_string(),
     }
+}
+
+/// 生 invocation が `Script("name")` ならその登録名を返す（メタ参照のキー）。それ以外は `None`。
+fn script_name_of(value: &str) -> Option<String> {
+    Invocation::parse(value).and_then(|inv| {
+        (inv.command == Command::Script).then(|| inv.args.into_iter().next()).flatten()
+    })
+}
+
+/// ジャンル名 → 並び順。組込ジャンル名に一致すればその順、未知（独自）なら「スクリプト」と同じ
+/// 末尾（14）。スクリプトが `genre: "ファイル操作"` などで組込群に混ざれるようにするための引き当て。
+fn genre_order(name: &str) -> u8 {
+    Command::all()
+        .map(command_genre)
+        .find(|(_, g)| *g == name)
+        .map(|(o, _)| o)
+        .unwrap_or(14)
 }
 
 /// キー順の機能ラベル（トークン）を画面表示用の日本語名へ変換する。未知トークンはそのまま。
@@ -198,8 +219,9 @@ struct PickState {
 struct KeyEditorInner {
     shared: Rc<Shared>,
     category: KeyCategory,
-    /// 登録済みスクリプトコマンド名（`registerCommand` 済み）。未割当でも一覧に出して割り当て可能にする。
-    scripts: Vec<String>,
+    /// 登録済みスクリプトコマンドのメタ（名前→`{label, genre}`）。未割当でも一覧に出して割り当て
+    /// 可能にし、表示名カラム／ジャンル見出しに使う。
+    script_meta: HashMap<String, ScriptCommand>,
     /// 編集中の下書き＝chord → 割り当て値（生の invocation 文字列）のリスト。空 Vec＝明示 unbind。
     /// **重複（1 つの chord に複数機能）を許す**＝これが衝突状態。未知バインド（`Func_*` 等）も
     /// 生値のまま保持し、反映時に消さない。OK/適用の検証を通った時だけ `config.keybinds` へ書き戻す。
@@ -258,7 +280,7 @@ impl KeyEditor {
         parent: &gui::WindowControl,
         shared: &Rc<Shared>,
         category: KeyCategory,
-        scripts: Vec<String>,
+        scripts: Vec<ScriptCommand>,
     ) -> Self {
         // 上部ヒント：モード（機能順／キー順／機能ピッカー）に応じて文面を差し替える。
         // ピッカー中は中止方法をここに大きく出して、背景色と合わせて別モードを明示する。
@@ -379,7 +401,7 @@ impl KeyEditor {
             inner: Rc::new(KeyEditorInner {
                 shared: shared.clone(),
                 category,
-                scripts,
+                script_meta: scripts.into_iter().map(|c| (c.name.clone(), c)).collect(),
                 draft: RefCell::new(BTreeMap::new()),
                 rows: RefCell::new(Vec::new()),
                 key_rows: RefCell::new(Vec::new()),
@@ -770,6 +792,33 @@ impl KeyEditor {
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
+    /// 生 invocation の機能名（機能順の左カラム・キー順の機能カラム）。`Script("name")` は登録
+    /// メタの `label` があればそれ、無ければコマンド既定の表示名（「スクリプト実行」等）。未知値は生値。
+    fn value_label(&self, value: &str) -> String {
+        if let Some(name) = script_name_of(value)
+            && let Some(label) = self.inner.script_meta.get(&name).and_then(|m| m.label.as_ref())
+        {
+            return label.clone();
+        }
+        match Invocation::parse(value) {
+            Some(inv) => inv.command.display_name().to_string(),
+            None => value.trim().to_string(),
+        }
+    }
+
+    /// 機能順の行が属するジャンル（並び順キー・見出し名）。`Script` 行で登録メタに `genre` が
+    /// あればそれを使い（独自グループに分けられる）、無ければコマンド由来のジャンル。
+    fn row_genre(&self, row: &BindRow) -> (u8, String) {
+        if row.command == Command::Script
+            && let Some(name) = script_name_of(&row.value)
+            && let Some(genre) = self.inner.script_meta.get(&name).and_then(|m| m.genre.as_ref())
+        {
+            return (genre_order(genre), genre.clone());
+        }
+        let (o, g) = command_genre(row.command);
+        (o, g.to_string())
+    }
+
     /// 下書きから機能順 `rows`（1 バインド＝1 行）・キー順 `key_rows` を組み直す。
     /// 未割当コマンドは `chord: None` の 1 行で出す。文脈外でも既にバインドのある機能（Script/Eval 等）は行にする。
     fn rebuild_rows(&self) {
@@ -786,7 +835,8 @@ impl KeyEditor {
                 }
                 let conflicted = nonempty.len() > 1;
                 let labels: Vec<String> = nonempty.iter().map(|v| binding_label(v)).collect();
-                key_rows.push(KeyChordRow { chord: chord.clone(), labels });
+                let values: Vec<String> = nonempty.iter().map(|v| (*v).clone()).collect();
+                key_rows.push(KeyChordRow { chord: chord.clone(), labels, values });
                 for v in &nonempty {
                     if let Some(inv) = Invocation::parse(v) {
                         by_cmd
@@ -803,7 +853,11 @@ impl KeyEditor {
                 key_rows.iter().map(|r| r.chord.clone()).collect();
             for chord in self.inner.pending.borrow().iter() {
                 if !bound.contains(chord) {
-                    key_rows.push(KeyChordRow { chord: chord.clone(), labels: Vec::new() });
+                    key_rows.push(KeyChordRow {
+                        chord: chord.clone(),
+                        labels: Vec::new(),
+                        values: Vec::new(),
+                    });
                 }
             }
         }
@@ -840,7 +894,7 @@ impl KeyEditor {
         // 依らず名前/コード順で並べる（割り当てても行が動かないようにするためここで一括に作る）。
         {
             let script_binds = by_cmd.remove(&Command::Script).unwrap_or_default();
-            let mut names: BTreeSet<String> = self.inner.scripts.iter().cloned().collect();
+            let mut names: BTreeSet<String> = self.inner.script_meta.keys().cloned().collect();
             for (_, v, _) in &script_binds {
                 if let Some(name) = Invocation::parse(v).and_then(|i| i.args.into_iter().next()) {
                     names.insert(name);
@@ -903,6 +957,7 @@ impl KeyEditor {
                     q.is_empty()
                         || r.command.as_token().to_lowercase().contains(&q)
                         || r.command.display_name().to_lowercase().contains(&q)
+                        || self.value_label(&r.value).to_lowercase().contains(&q)
                         || r.chord.as_ref().is_some_and(|c| c.to_lowercase().contains(&q))
                         || call_display(&r.value).to_lowercase().contains(&q)
                 })
@@ -918,15 +973,17 @@ impl KeyEditor {
                     q.is_empty()
                         || r.chord.to_lowercase().contains(&q)
                         || r.labels.iter().any(|l| l.to_lowercase().contains(&q))
-                        || r.labels.iter().any(|l| label_display(l).to_lowercase().contains(&q))
+                        || r.values.iter().any(|v| self.value_label(v).to_lowercase().contains(&q))
+                        || r.values.iter().any(|v| call_display(v).to_lowercase().contains(&q))
                 })
                 .map(|(i, _)| i)
                 .collect(),
         };
-        // 機能順はジャンルごとに固める（同ジャンル内は元の並び＝enum 順）。見出しは描画時に境界で出す。
+        // 機能順はジャンルごとに固める（同順内は元の並び＝enum/名前順）。独自ジャンルは名前で
+        // さらに揃え、同ジャンルが散らばらないようにする。見出しは描画時に境界で出す。
         if self.inner.view_mode.get() == KeyView::ByCommand {
             let rows = self.inner.rows.borrow();
-            view.sort_by_key(|&i| command_genre(rows[i].command).0);
+            view.sort_by_key(|&i| self.row_genre(&rows[i]));
         }
         let n = view.len();
         *self.inner.view.borrow_mut() = view;
@@ -1018,11 +1075,11 @@ impl KeyEditor {
         }
         let rows = self.inner.rows.borrow();
         let mut out = Vec::with_capacity(view.len() + 8);
-        let mut prev: Option<&'static str> = None;
+        let mut prev: Option<String> = None;
         for (vp, &ri) in view.iter().enumerate() {
-            let g = command_genre(rows[ri].command).1;
-            if prev != Some(g) {
-                out.push(DisplayLine::Header(g));
+            let g = self.row_genre(&rows[ri]).1;
+            if prev.as_deref() != Some(g.as_str()) {
+                out.push(DisplayLine::Header(g.clone()));
                 prev = Some(g);
             }
             out.push(DisplayLine::Row(vp));
@@ -1039,23 +1096,25 @@ impl KeyEditor {
             .unwrap_or(0)
     }
 
-    /// クリック x がキー順・指定表示行のどの機能ラベルに当たるか（右カラムを実測）。
+    /// クリック x がキー順・指定表示行のどの機能に当たるか（機能名カラムを実測）。描画と同じ
+    /// 表示名（Script ラベル反映）で測る。
     fn label_hit(&self, row_di: usize, x: i32) -> Option<usize> {
         if self.inner.view_mode.get() != KeyView::ByKey {
             return None;
         }
         let ri = *self.inner.view.borrow().get(row_di)?;
-        let labels: Vec<String> = self.inner.key_rows.borrow().get(ri)?.labels.clone();
-        if labels.is_empty() {
+        let values: Vec<String> = self.inner.key_rows.borrow().get(ri)?.values.clone();
+        if values.is_empty() {
             return None;
         }
         let dc = self.hwnd().GetDC().ok()?;
         let font = w::HFONT::GetStockObject(co::STOCK_FONT::DEFAULT_GUI).ok()?;
         let _sel = dc.SelectObject(&font).ok()?;
-        let mut cx = gui::dpi_x(260);
+        let mut cx = gui::dpi_x(200);
         let sep = dc.GetTextExtentPoint32(", ").map(|z| z.cx).unwrap_or(0);
-        for (li, lab) in labels.iter().enumerate() {
-            let tw = dc.GetTextExtentPoint32(lab).map(|z| z.cx).unwrap_or(0);
+        for (li, v) in values.iter().enumerate() {
+            let name = self.value_label(v);
+            let tw = dc.GetTextExtentPoint32(&name).map(|z| z.cx).unwrap_or(0);
             if x >= cx && x < cx + tw {
                 return Some(li);
             }
@@ -1544,7 +1603,7 @@ impl KeyEditor {
             let rh = this.inner.row_h.get().max(1);
             let di = this.inner.top.get() + (p.coords.y / rh) as usize;
             // 見出し行のクリックは無視（データ行だけ選べる）。
-            if let Some(DisplayLine::Row(vp)) = this.display_lines().get(di).copied() {
+            if let Some(DisplayLine::Row(vp)) = this.display_lines().get(di).cloned() {
                 this.clear_status();
                 this.inner.sel.set(vp);
                 this.ensure_visible();
@@ -1562,7 +1621,7 @@ impl KeyEditor {
             }
             let rh = this.inner.row_h.get().max(1);
             let di = this.inner.top.get() + (p.coords.y / rh) as usize;
-            let Some(DisplayLine::Row(vp)) = this.display_lines().get(di).copied() else {
+            let Some(DisplayLine::Row(vp)) = this.display_lines().get(di).cloned() else {
                 return Ok(());
             };
             this.inner.sel.set(vp);
@@ -1824,7 +1883,7 @@ impl KeyEditor {
                 let band = w::HBRUSH::GetSysColorBrush(co::COLOR::BTNFACE)?;
                 let rows = self.inner.rows.borrow();
                 for vi in 0..vis {
-                    let Some(line) = display.get(top + vi).copied() else {
+                    let Some(line) = display.get(top + vi).cloned() else {
                         break;
                     };
                     let y = vi as i32 * row_h;
@@ -1836,7 +1895,7 @@ impl KeyEditor {
                                 &band,
                             )?;
                             dc.SetTextColor(text_col)?;
-                            dc.TextOut(key_x, ty, g)?;
+                            dc.TextOut(key_x, ty, &g)?;
                         }
                         DisplayLine::Row(vp) => {
                             let Some(&ri) = view.get(vp) else { continue };
@@ -1857,7 +1916,7 @@ impl KeyEditor {
                             } else {
                                 dc.SetTextColor(text_col)?;
                             }
-                            dc.TextOut(name_x, ty, r.command.display_name())?;
+                            dc.TextOut(name_x, ty, &self.value_label(&r.value))?;
                             dc.TextOut(call_x, ty, &call_display(&r.value))?;
                             if selected && capturing {
                                 dc.TextOut(keycol_x, ty, prompt)?;
@@ -1878,11 +1937,14 @@ impl KeyEditor {
                 }
             }
             KeyView::ByKey => {
+                // 機能順と対称に「キー｜機能名｜実呼び出し」の 3 カラム。機能名は Script ラベルを
+                // 反映し、実呼び出しはラッパを剥がした中身（スクリプト名・コード・引数つきトークン）。
                 let chord_x = gui::dpi_x(8);
-                let label_x = gui::dpi_x(260);
+                let name_x = gui::dpi_x(200);
+                let call_x = gui::dpi_x(420);
                 let krows = self.inner.key_rows.borrow();
                 for vi in 0..vis {
-                    let Some(DisplayLine::Row(vp)) = display.get(top + vi).copied() else {
+                    let Some(DisplayLine::Row(vp)) = display.get(top + vi).cloned() else {
                         break;
                     };
                     let Some(&ri) = view.get(vp) else { continue };
@@ -1901,19 +1963,22 @@ impl KeyEditor {
                     }
                     dc.TextOut(chord_x, ty, &r.chord)?;
                     if selected && capturing {
-                        dc.TextOut(label_x, ty, prompt)?;
-                    } else if r.labels.is_empty() {
+                        dc.TextOut(name_x, ty, prompt)?;
+                    } else if r.values.is_empty() {
                         if !selected {
                             dc.SetTextColor(gray_col)?;
                         }
-                        dc.TextOut(label_x, ty, "－")?;
+                        dc.TextOut(name_x, ty, "－")?;
                     } else {
-                        let mut right =
-                            r.labels.iter().map(|l| label_display(l)).collect::<Vec<_>>().join(", ");
-                        if r.labels.len() > 1 {
-                            right.push_str(" ⚠");
+                        let mut names =
+                            r.values.iter().map(|v| self.value_label(v)).collect::<Vec<_>>().join(", ");
+                        if r.values.len() > 1 {
+                            names.push_str(" ⚠");
                         }
-                        dc.TextOut(label_x, ty, &right)?;
+                        let calls =
+                            r.values.iter().map(|v| call_display(v)).collect::<Vec<_>>().join(", ");
+                        dc.TextOut(name_x, ty, &names)?;
+                        dc.TextOut(call_x, ty, &calls)?;
                     }
                 }
             }

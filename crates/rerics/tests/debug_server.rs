@@ -3150,3 +3150,31 @@ fn script_command_invokes_registered_command() {
         "Script コマンドが登録コマンドを実行してペインが移動するはず: {loc1}"
     );
 }
+
+/// scripting：`registerCommand` の第3引数メタ（label/genre）が `/script/commands` に乗る。
+/// 設定エディタはこの一覧でスクリプト行の表示名／ジャンルを描く（presentation は snapshot で確認）。
+#[test]
+fn script_command_metadata_surfaces_in_listing() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[(
+            "00.ts",
+            r#"
+            rerics.registerCommand("tidyUp", () => {}, { label: "デスクトップ整理", genre: "ファイル操作" });
+            rerics.registerCommand("plainOne", () => {});
+            "#,
+        )],
+    );
+    let list = poll(&server, "/script/commands", |b| b.contains("plainOne"));
+    // ラベル・ジャンル付きは値が乗り、無指定は null。
+    assert!(
+        list.contains(r#""name":"tidyUp""#)
+            && list.contains(r#""label":"デスクトップ整理""#)
+            && list.contains(r#""genre":"ファイル操作""#),
+        "メタ付きコマンドは label/genre が乗る: {list}"
+    );
+    assert!(
+        list.contains(r#""name":"plainOne","label":null,"genre":null"#),
+        "メタ無しは label/genre が null: {list}"
+    );
+}

@@ -18,7 +18,7 @@ use crate::MainWindow;
 use crate::dialog::{InputMode, MessageResult, MessageStyle, input_box, list_box, message_box};
 use rerics_core::{Command, Invocation};
 
-use crate::script::{self, HostApi, PaneItem, PaneSnapshot, ScriptOp};
+use crate::script::{self, HostApi, PaneItem, PaneSnapshot, ScriptCommand, ScriptOp};
 use crate::ui_marshal::{self, WakeQueue};
 use crate::winutil::msg::SCRIPT_WAKE;
 
@@ -105,8 +105,8 @@ pub enum EngineCmd {
     Eval(String),
     /// TS/JS コードを評価し、最後の式の値を文字列で返す（同期取得）。`undefined`/`null` は空文字。
     EvalValue { code: String, tx: Sender<String> },
-    /// 現在登録されているコマンド名を返す（同期・`HostApi` を呼ばないのでデッドロックしない）。
-    ListCommands(Sender<Vec<String>>),
+    /// 現在登録されているコマンドのメタ情報を返す（同期・`HostApi` を呼ばないのでデッドロックしない）。
+    ListCommands(Sender<Vec<ScriptCommand>>),
     /// ファイラー本体の出来事を `rerics.on` ハンドラへ配る（投げっぱなし）。
     FireEvent { event: String, arg: String },
 }
@@ -364,7 +364,7 @@ pub fn spawn_engine(queue: ScriptQueue, hwnd_ptr: isize, cmd_rx: Receiver<Engine
                     let _ = tx.send(value);
                 }
                 EngineCmd::ListCommands(tx) => {
-                    let _ = tx.send(engine.registered_commands());
+                    let _ = tx.send(engine.registered_command_metas());
                 }
                 EngineCmd::FireEvent { event, arg } => {
                     if let Err(e) = engine.fire_event(&event, &arg) {
@@ -715,8 +715,8 @@ impl MainWindow {
         let _ = self.script.cmd_tx.send(cmd);
     }
 
-    /// 登録済みコマンド名をエンジンから同期取得する。
-    pub(crate) fn script_list_commands(&self) -> Vec<String> {
+    /// 登録済みコマンドのメタ情報をエンジンから同期取得する。
+    pub(crate) fn script_list_commands(&self) -> Vec<ScriptCommand> {
         let (tx, rx) = channel();
         let _ = self.script.cmd_tx.send(EngineCmd::ListCommands(tx));
         rx.recv().unwrap_or_default()
