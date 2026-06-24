@@ -2011,6 +2011,29 @@ fn settings_key_editor_attaches_arg_to_unbound_command() {
     );
 }
 
+/// 「引数」で作った未割当の引数つき行は、「キー定義を削除」でその定義ごと消せる（bare 行は残る）。
+#[test]
+fn settings_key_editor_deletes_unbound_arg_definition() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+    let count = || keys().matches(r#"["SelectMask",[]]"#).count();
+
+    // 未バインドの SelectMask（bare 行）を選んで引数を付ける＝引数つきの未割当行が増える。
+    server.req("POST", "/keys/filer/search", "SelectMask").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/arg", "=r.cursorName()").unwrap();
+    server.req("POST", "/keys/filer/search", "SelectMask").unwrap();
+    assert_eq!(count(), 2, "bare と引数つきで SelectMask 行が2つ: {}", keys());
+
+    // 引数つき行（bare の次＝index 1）を選んで「キー定義を削除」＝その定義が消えて bare だけ残る。
+    server.req("POST", "/keys/filer/select/1", "").unwrap();
+    server.req("POST", "/keys/filer/unbind", "").unwrap();
+    server.req("POST", "/keys/filer/search", "SelectMask").unwrap();
+    assert_eq!(count(), 1, "引数つきの定義が消えて bare だけ残る: {}", keys());
+}
+
 /// キー順で機能名をダブルクリック相当＝インライン機能ピッカーで別機能へ差し替える。
 /// 機能一覧は検索ボックスで絞り込め、確定でそのキーの定義が変わる（中止なら不変）。
 #[test]

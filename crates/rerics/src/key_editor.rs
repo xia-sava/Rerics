@@ -273,6 +273,8 @@ pub(crate) struct KeyEditor {
     btn_a: gui::Button,
     btn_b: gui::Button,
     btn_c: gui::Button,
+    /// 「引数」ボタン。選択行が組込コマンドのときだけ有効（Script/Eval・キー順では無効）。
+    btn_arg: gui::Button,
     /// 上部ヒント（モードで文面を差し替える）。
     hint: gui::Label,
     inner: Rc<KeyEditorInner>,
@@ -411,6 +413,7 @@ impl KeyEditor {
             btn_a: btn_a.clone(),
             btn_b: btn_b.clone(),
             btn_c: btn_c.clone(),
+            btn_arg: btn_arg.clone(),
             hint,
             inner: Rc::new(KeyEditorInner {
                 shared: shared.clone(),
@@ -524,6 +527,18 @@ impl KeyEditor {
         let _ = self.btn_a.hwnd().SetWindowText(a);
         let _ = self.btn_b.hwnd().SetWindowText(b);
         let _ = self.btn_c.hwnd().SetWindowText(c);
+    }
+
+    /// 「引数」ボタンの有効/無効を選択状態に合わせる。引数を付けられるのは機能順で組込コマンド行を
+    /// 選んでいるときだけ＝Script/Eval 行・キー順・ピック中・見出し/未選択では無効（グレーアウト）。
+    fn update_arg_button(&self) {
+        // 窓未作成（構築途中）の間は触らない＝既定の有効のまま。先頭行は組込なので初期表示も妥当。
+        if self.btn_arg.hwnd().ptr().is_null() {
+            return;
+        }
+        let enabled = self.inner.picking.borrow().is_none()
+            && matches!(self.selected_bind(), Some((c, _, _)) if !matches!(c, Command::Script | Command::Eval));
+        self.btn_arg.hwnd().EnableWindow(enabled);
     }
 
     /// 上部ヒントの文面を現モードに合わせて更新する。ピッカー中は中止方法をここに明示する。
@@ -993,6 +1008,7 @@ impl KeyEditor {
                 self.inner.sel.set(n - 1);
             }
             self.update_scrollbar();
+            self.update_arg_button();
             return;
         }
         let mut view: Vec<usize> = match self.inner.view_mode.get() {
@@ -1043,6 +1059,7 @@ impl KeyEditor {
             self.inner.sel.set(n - 1);
         }
         self.update_scrollbar();
+        self.update_arg_button();
     }
 
     /// 検索クエリを適用して表示を絞り込む（`config` は変更しない）。同じ値なら何もしない。
@@ -1362,15 +1379,24 @@ impl KeyEditor {
                 let Some((command, value, chord)) = self.selected_bind() else {
                     return;
                 };
-                let Some(chord) = chord else {
-                    *self.inner.status.borrow_mut() = "割り当てがありません".to_string();
-                    return;
-                };
-                // 選択行のキーからその呼び出しだけ取り除く（同キーの他機能＝衝突分は残す）。
-                if let Some(vals) = self.inner.draft.borrow_mut().get_mut(&chord) {
-                    vals.retain(|v| *v != value);
+                match chord {
+                    // 選択行のキーからその呼び出しだけ取り除く（同キーの他機能＝衝突分は残す）。
+                    Some(chord) => {
+                        if let Some(vals) = self.inner.draft.borrow_mut().get_mut(&chord) {
+                            vals.retain(|v| *v != value);
+                        }
+                        format!("{} から {} を解除しました", chord, command.display_name())
+                    }
+                    // 未割当行：「引数」「コード」で作った定義なら消す。素の bare 行は消せない。
+                    None => {
+                        if self.remove_pending(&value) {
+                            format!("{} の未割当の定義を削除しました", command.display_name())
+                        } else {
+                            *self.inner.status.borrow_mut() = "割り当てがありません".to_string();
+                            return;
+                        }
+                    }
                 }
-                format!("{} から {} を解除しました", chord, command.display_name())
             }
             KeyView::ByKey => {
                 let Some(chord) = self.selected_chord() else {
@@ -1431,15 +1457,18 @@ impl KeyEditor {
         if self.inner.picking.borrow().is_some() || self.inner.capturing.get() {
             return;
         }
-        let Some(code) = crate::dialog::code_box(
+        let result = crate::dialog::code_box(
             &self.list,
             "キーに束ねるコードを入力（r. でホスト API・複文可）",
             "",
-        ) else {
+        );
+        // 子コントロールを親にしたモーダルの後始末で list の無効化やフォーカス喪失が残ることが
+        // あるので、OK/キャンセルに依らず有効化＋フォーカスを戻す（戻さないとホイールが効かない）。
+        self.hwnd().EnableWindow(true);
+        self.hwnd().SetFocus();
+        let Some(code) = result else {
             return;
         };
-        // 子コントロールを親にしたモーダルの後始末で無効化が残ることがあるので明示的に戻す。
-        self.hwnd().EnableWindow(true);
         self.add_code(&code);
     }
 
@@ -1491,15 +1520,18 @@ impl KeyEditor {
         let cur = Invocation::parse(&value)
             .and_then(|i| i.args.into_iter().next())
             .unwrap_or_default();
-        let Some(arg) = crate::dialog::code_box(
+        let result = crate::dialog::code_box(
             &self.list,
             "引数を入力（先頭 = で式・r. でホスト API・空でリテラルなし）",
             &cur,
-        ) else {
+        );
+        // 子コントロールを親にしたモーダルの後始末で list の無効化やフォーカス喪失が残ることが
+        // あるので、OK/キャンセルに依らず有効化＋フォーカスを戻す（戻さないとホイールが効かない）。
+        self.hwnd().EnableWindow(true);
+        self.hwnd().SetFocus();
+        let Some(arg) = result else {
             return;
         };
-        // 子コントロールを親にしたモーダルの後始末で無効化が残ることがあるので明示的に戻す。
-        self.hwnd().EnableWindow(true);
         self.apply_arg(&arg);
     }
 
@@ -1558,6 +1590,31 @@ impl KeyEditor {
         self.rebuild_rows();
         self.select_value_row(&new_value);
         let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    /// 未割当行の生 invocation を pending リストから取り除く。「引数」で作った引数つき呼び出し
+    /// （`pending_args`）か「コード」のコード（`pending_eval`）由来なら `true`。素の bare コマンド行は
+    /// pending に無いので `false`（消す対象ではない＝コマンド自体は常に一覧へ出す）。
+    fn remove_pending(&self, value: &str) -> bool {
+        {
+            let mut pa = self.inner.pending_args.borrow_mut();
+            let n = pa.len();
+            pa.retain(|v| v != value);
+            if pa.len() != n {
+                return true;
+            }
+        }
+        // `pending_eval` はコード文字列を持つので、`Eval("code")` の中身で照合する。
+        if let Some(code) = Invocation::parse(value)
+            .filter(|i| i.command == Command::Eval)
+            .and_then(|i| i.args.into_iter().next())
+        {
+            let mut pe = self.inner.pending_eval.borrow_mut();
+            let n = pe.len();
+            pe.retain(|c| *c != code);
+            return pe.len() != n;
+        }
+        false
     }
 
     /// 機能順で `value`（生 invocation）の行を選択し、見える位置までスクロールする。
@@ -1673,6 +1730,7 @@ impl KeyEditor {
         }
         self.inner.top.set(top);
         self.update_scrollbar();
+        self.update_arg_button();
     }
 
     /// 直近の操作結果メッセージ（「中止しました」等）を消す。次の操作で残骸を残さないため、
