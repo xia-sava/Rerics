@@ -121,6 +121,8 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         KeyBindsDialog => DebugCmdClass::MaybeModal,
         // インクリメンタルサーチは入力モーダル（打鍵追従でカーソル移動・読取のみ）。
         IncrementalSearchDialog => DebugCmdClass::MaybeModal,
+        // 任意コマンド実行は補完つき入力モーダルを開く（打った内容を再ディスパッチする）。
+        CommandDirect => DebugCmdClass::MaybeModal,
         // ビューアの検索はインライン検索バー（モーダルを開かない＝即時に応答が返る）。
         // ソート設定はモーダルを開く（並べ替えのみ＝書込みではない）。modal_registry に登録
         // 済みなので開いて OK/Cancel で閉じられる（ラジオ値そのものの選択は未対応＝種別変更の
@@ -796,6 +798,38 @@ impl MainWindow {
         self.exec_resolved(is_left, cmd, inv.args.clone())
     }
 
+    /// 任意コマンド実行（原作 `CommandDirect`）。コマンド名補完つきの入力ボックスを開き、打った
+    /// 文字列を [`Invocation`] として解釈し、キー押下と同じ `exec` 経路へ流す。空入力は無視、
+    /// 解釈できない文字列はログに出す。補完候補はファイラ文脈の組込コマンド（和名＋内部名）。
+    fn command_direct(&self, is_left: bool) -> w::AnyResult<()> {
+        let mut commands: Vec<(String, String)> = Command::all()
+            .filter(|c| c.available_in(rerics_core::CommandContext::Filer))
+            .map(|c| (format!("{} ({})", c.display_name(), c.as_token()), c.as_token().to_string()))
+            .collect();
+        // 登録済みスクリプトコマンドも候補に出す（挿入は `Script("name")` トークン）。
+        for sc in self.script_list_commands() {
+            let label = sc.label.unwrap_or_else(|| sc.name.clone());
+            let token = Invocation::new(Command::Script, vec![sc.name]).to_token_string();
+            commands.push((format!("{label}（スクリプト）"), token));
+        }
+        let Some(text) =
+            crate::dialog::command_box(&self.wnd, "実行するコマンド（和名・内部名で補完）", &commands)
+        else {
+            return Ok(());
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            return Ok(());
+        }
+        match Invocation::parse(text) {
+            Some(inv) => self.exec(is_left, &inv),
+            None => {
+                self.log.warn(&format!("コマンドとして解釈できません: {text}"));
+                Ok(())
+            }
+        }
+    }
+
     /// 解決済み引数でコマンド本体を実行する（引数解決のあとの同期処理＝コマンドアーム群を集約）。
     /// 引数解決は `exec` 側で済ませる（現状はマクロ展開・将来は式評価）。文脈外のビューア専用
     /// コマンドは何もしない。
@@ -895,6 +929,10 @@ impl MainWindow {
             }
             Command::IncrementalSearchDialog => {
                 self.incremental_search(is_left)?;
+                return Ok(());
+            }
+            Command::CommandDirect => {
+                self.command_direct(is_left)?;
                 return Ok(());
             }
             Command::DirectoryInformation => {

@@ -222,122 +222,37 @@ fn caret_offset(edit: &gui::Edit) -> u32 {
     unsafe { edit.hwnd().SendMessage(GetSelRaw) }
 }
 
-pub fn code_box(
-    parent: &impl GuiParent,
-    message: &str,
-    value: &str,
-    members: &[String],
-) -> Option<String> {
-    let (wnd, arm) = modal_window("コードを割り当て", 480, 400);
+/// 補完候補1件＝リストに見せる表示文字列と、確定時に入力欄へ挿入する文字列。多くは同一だが、
+/// コマンドパレットのように「和名 (Token) を見せて Token を挿入」する用途で別々にできる。
+struct CompletionItem {
+    display: String,
+    insert: String,
+}
 
-    let _label = gui::Label::new(
-        &wnd,
-        gui::LabelOpts {
-            text: message,
-            position: gui::dpi(16, 14),
-            size: gui::dpi(448, 18),
-            ..Default::default()
-        },
-    );
+/// 補完モデル。カレットまでの文字列 `before`・カレットの UTF-16 位置・`force`（Ctrl+Space の
+/// 明示トリガ）から、置換開始位置（UTF-16・終端はカレット）と候補列を返す。None なら出さない。
+type CompleteFn = Rc<dyn Fn(&str, u32, bool) -> Option<(u32, Vec<CompletionItem>)>>;
 
-    let edit = gui::Edit::new(
-        &wnd,
-        gui::EditOpts {
-            text: value,
-            control_style: co::ES::MULTILINE
-                | co::ES::WANTRETURN
-                | co::ES::AUTOVSCROLL
-                | co::ES::NOHIDESEL,
-            window_style: co::WS::CHILD
-                | co::WS::GROUP
-                | co::WS::TABSTOP
-                | co::WS::VISIBLE
-                | co::WS::BORDER
-                | co::WS::VSCROLL,
-            position: gui::dpi(16, 38),
-            width: gui::dpi_x(448),
-            height: gui::dpi_y(150),
-            ..Default::default()
-        },
-    );
-
-    // `r.` 補完の候補リスト。既定は隠しておき、`r.<prefix>` を打つと候補を入れて表示する。
-    // 項目のシングルクリックで、カレット直前のプレフィックスをその候補名に置換する。
-    let cand = gui::ListBox::new(
-        &wnd,
-        gui::ListBoxOpts {
-            position: gui::dpi(16, 194),
-            size: gui::dpi(448, 150),
-            window_style: co::WS::CHILD | co::WS::BORDER | co::WS::VSCROLL,
-            ..Default::default()
-        },
-    );
-
-    let ok = gui::Button::new(
-        &wnd,
-        gui::ButtonOpts {
-            text: "OK",
-            control_style: co::BS::DEFPUSHBUTTON,
-            ctrl_id: 1,
-            position: gui::dpi(290, 356),
-            width: gui::dpi_x(80),
-            height: gui::dpi_y(26),
-            ..Default::default()
-        },
-    );
-    let cancel = gui::Button::new(
-        &wnd,
-        gui::ButtonOpts {
-            text: "キャンセル",
-            ctrl_id: 2,
-            position: gui::dpi(378, 356),
-            width: gui::dpi_x(86),
-            height: gui::dpi_y(26),
-            ..Default::default()
-        },
-    );
-
-    let result: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
-
-    #[cfg(feature = "debug-server")]
-    arm.plain(
-        "input",
-        "コードを割り当て",
-        message,
-        true,
-        vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
-    );
-    {
-        let result = result.clone();
-        let edit = edit.clone();
-        let wnd2 = wnd.clone();
-        ok.on().bn_clicked(move || {
-            *result.borrow_mut() = Some(edit.text().unwrap_or_default());
-            wnd2.close();
-            Ok(())
-        });
-    }
-    {
-        let wnd2 = wnd.clone();
-        cancel.on().bn_clicked(move || {
-            wnd2.close();
-            Ok(())
-        });
-    }
-
-    let members_rc: Rc<Vec<String>> = Rc::new(members.to_vec());
-    // 置換範囲（カレット直前の `r.<prefix>` の prefix 部分・UTF-16 オフセット）。候補表示中だけ Some。
+/// 補完つき入力欄の配線（`code_box`／`command_box` 共通）。`edit` の下に隠した `cand` を、
+/// `complete` モデルの返す候補で出し入れする。候補は表示文字列で見せ、確定時は挿入文字列を
+/// カレット直前の置換範囲へ入れる。キー操作（↑↓移動クランプ・Enter 確定・Ctrl+Space 表示）と
+/// headless 観測（`completion_probe`）もここでまとめて仕込む。`show_modal` は呼び出し側で。
+fn install_completion(arm: &ModalArm, edit: &gui::Edit, cand: &gui::ListBox, complete: CompleteFn) {
+    // 置換範囲（カレット直前のプレフィックス・UTF-16）と、候補と並ぶ挿入文字列。候補表示中だけ有効。
     let range: Rc<Cell<Option<(u32, u32)>>> = Rc::new(Cell::new(None));
+    let inserts: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
 
-    // 候補 idx を確定＝カレット直前のプレフィックスをその名前へ置換し、リストを隠して入力へ戻す。
+    // 候補 idx を確定＝カレット直前のプレフィックスをその挿入文字列へ置換し、リストを隠して入力へ戻す。
     let do_insert: Rc<dyn Fn(u32)> = {
         let edit = edit.clone();
         let cand = cand.clone();
         let range = range.clone();
+        let inserts = inserts.clone();
         Rc::new(move |idx: u32| {
-            if let (Some((start, end)), Ok(name)) = (range.get(), cand.items().text(idx)) {
+            let ins = inserts.borrow().get(idx as usize).cloned();
+            if let (Some((start, end)), Some(text)) = (range.get(), ins) {
                 edit.set_selection(start as i32, end as i32);
-                edit.replace_selection(&name);
+                edit.replace_selection(&text);
                 let _ = cand.hwnd().ShowWindow(co::SW::HIDE);
                 range.set(None);
                 edit.hwnd().SetFocus();
@@ -345,37 +260,32 @@ pub fn code_box(
         })
     };
 
-    // カレットまでの文字列 `before` を見て、`r.<prefix>` なら候補を入れて表示・なければ隠す補完更新。
-    // 実入力（EN_CHANGE）と headless 観測（type_text）の両方から、各自の `before` を渡して呼ぶ。
-    // 本文とカレット位置から「カレット直前の文字列」を見て候補を出し入れする。`force` は Ctrl+Space
-    // の明示トリガ用＝「唯一かつ入力済みと同一」でも表示する。文字入力・カレット移動の両方から呼ぶ。
+    // 本文とカレット位置から `complete` を引いて候補を出し入れする。文字入力・カレット移動の両方から呼ぶ。
     type Update = Rc<dyn Fn(bool)>;
     let update: Update = {
         let edit = edit.clone();
         let cand = cand.clone();
-        let members = members_rc.clone();
         let range = range.clone();
+        let inserts = inserts.clone();
+        let complete = complete.clone();
         Rc::new(move |force: bool| {
             let utf16: Vec<u16> = edit.text().unwrap_or_default().encode_utf16().collect();
             let caret = (caret_offset(&edit) as usize).min(utf16.len()) as u32;
             let before = String::from_utf16_lossy(&utf16[..caret as usize]);
-            // 候補があり、かつ（強制でなければ）「唯一かつ入力済みと同一」でなければ出す。
-            let shown = completion_prefix(&before).and_then(|(plen, prefix)| {
-                let list = completion_candidates(&members, &prefix);
-                let only_exact = list.len() == 1 && list[0].eq_ignore_ascii_case(&prefix);
-                (!(list.is_empty() || (!force && only_exact))).then_some((plen as u32, list))
-            });
-            match shown {
-                Some((plen, list)) => {
+            match complete(&before, caret, force) {
+                Some((start, items)) if !items.is_empty() => {
                     cand.items().delete_all();
-                    let _ = cand.items().add(&list);
+                    let displays: Vec<String> = items.iter().map(|i| i.display.clone()).collect();
+                    let _ = cand.items().add(&displays);
+                    *inserts.borrow_mut() = items.into_iter().map(|i| i.insert).collect();
                     let _ = unsafe { cand.hwnd().SendMessage(lb::SetCurSel { index: Some(0) }) };
                     let _ = cand.hwnd().ShowWindow(co::SW::SHOW);
-                    range.set(Some((caret - plen, caret)));
+                    range.set(Some((start, caret)));
                 }
-                None => {
+                _ => {
                     let _ = cand.hwnd().ShowWindow(co::SW::HIDE);
                     range.set(None);
+                    inserts.borrow_mut().clear();
                 }
             }
         })
@@ -514,12 +424,268 @@ pub fn code_box(
             text: Box::new(move || edit_p.text().unwrap_or_default()),
         });
     }
+    // 配線済みの Rc は登録ハンドラ／プローブが保持するのでここで保持し続ける必要はない。
+    let _ = do_insert;
+}
+
+pub fn code_box(
+    parent: &impl GuiParent,
+    message: &str,
+    value: &str,
+    members: &[String],
+) -> Option<String> {
+    let (wnd, arm) = modal_window("コードを割り当て", 480, 400);
+
+    let _label = gui::Label::new(
+        &wnd,
+        gui::LabelOpts {
+            text: message,
+            position: gui::dpi(16, 14),
+            size: gui::dpi(448, 18),
+            ..Default::default()
+        },
+    );
+
+    let edit = gui::Edit::new(
+        &wnd,
+        gui::EditOpts {
+            text: value,
+            control_style: co::ES::MULTILINE
+                | co::ES::WANTRETURN
+                | co::ES::AUTOVSCROLL
+                | co::ES::NOHIDESEL,
+            window_style: co::WS::CHILD
+                | co::WS::GROUP
+                | co::WS::TABSTOP
+                | co::WS::VISIBLE
+                | co::WS::BORDER
+                | co::WS::VSCROLL,
+            position: gui::dpi(16, 38),
+            width: gui::dpi_x(448),
+            height: gui::dpi_y(150),
+            ..Default::default()
+        },
+    );
+
+    // `r.` 補完の候補リスト。既定は隠しておき、`r.<prefix>` を打つと候補を入れて表示する。
+    // 項目のシングルクリックで、カレット直前のプレフィックスをその候補名に置換する。
+    let cand = gui::ListBox::new(
+        &wnd,
+        gui::ListBoxOpts {
+            position: gui::dpi(16, 194),
+            size: gui::dpi(448, 150),
+            window_style: co::WS::CHILD | co::WS::BORDER | co::WS::VSCROLL,
+            ..Default::default()
+        },
+    );
+
+    let ok = gui::Button::new(
+        &wnd,
+        gui::ButtonOpts {
+            text: "OK",
+            control_style: co::BS::DEFPUSHBUTTON,
+            ctrl_id: 1,
+            position: gui::dpi(290, 356),
+            width: gui::dpi_x(80),
+            height: gui::dpi_y(26),
+            ..Default::default()
+        },
+    );
+    let cancel = gui::Button::new(
+        &wnd,
+        gui::ButtonOpts {
+            text: "キャンセル",
+            ctrl_id: 2,
+            position: gui::dpi(378, 356),
+            width: gui::dpi_x(86),
+            height: gui::dpi_y(26),
+            ..Default::default()
+        },
+    );
+
+    let result: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
+    #[cfg(feature = "debug-server")]
+    arm.plain(
+        "input",
+        "コードを割り当て",
+        message,
+        true,
+        vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
+    );
+    {
+        let result = result.clone();
+        let edit = edit.clone();
+        let wnd2 = wnd.clone();
+        ok.on().bn_clicked(move || {
+            *result.borrow_mut() = Some(edit.text().unwrap_or_default());
+            wnd2.close();
+            Ok(())
+        });
+    }
+    {
+        let wnd2 = wnd.clone();
+        cancel.on().bn_clicked(move || {
+            wnd2.close();
+            Ok(())
+        });
+    }
+
+    // 補完モデル＝カレット直前が `r.`／`rerics.` のときだけ、その後の識別子に前方一致するメンバを出す。
+    // 表示＝挿入（メンバ名そのもの）。`force` は Ctrl+Space＝「唯一かつ入力済みと同一」でも出す。
+    let members_for = members.to_vec();
+    let complete: CompleteFn = Rc::new(move |before, caret, force| {
+        let (plen, prefix) = completion_prefix(before)?;
+        let list = completion_candidates(&members_for, &prefix);
+        let only_exact = list.len() == 1 && list[0].eq_ignore_ascii_case(&prefix);
+        if list.is_empty() || (!force && only_exact) {
+            return None;
+        }
+        let start = caret - plen as u32;
+        let items = list
+            .into_iter()
+            .map(|m| CompletionItem { display: m.clone(), insert: m })
+            .collect();
+        Some((start, items))
+    });
+    install_completion(&arm, &edit, &cand, complete);
 
     let _ = wnd.show_modal(parent);
     keyhook::pop();
     #[cfg(feature = "debug-server")]
     completion_probe::clear();
-    let _ = (cancel, cand, &do_insert, &update);
+    let _ = (cancel, cand);
+    result.borrow().clone()
+}
+
+/// コマンドパレット（原作 `CommandDirect`）。1 行入力にコマンド名補完を付け、OK／Enter で打った
+/// 文字列を返す（キャンセル/Esc は None）。`commands`＝(表示, 挿入トークン) の候補。補完は和名・
+/// 内部トークンどちらの部分一致でも引け、確定で挿入トークンを入力欄へ入れる（実行は呼び出し側）。
+pub fn command_box(
+    parent: &impl GuiParent,
+    message: &str,
+    commands: &[(String, String)],
+) -> Option<String> {
+    let (wnd, arm) = modal_window("コマンドを実行", 460, 320);
+
+    let _label = gui::Label::new(
+        &wnd,
+        gui::LabelOpts {
+            text: message,
+            position: gui::dpi(16, 14),
+            size: gui::dpi(428, 18),
+            ..Default::default()
+        },
+    );
+
+    let edit = gui::Edit::new(
+        &wnd,
+        gui::EditOpts {
+            control_style: co::ES::AUTOHSCROLL | co::ES::NOHIDESEL,
+            window_style: co::WS::CHILD
+                | co::WS::GROUP
+                | co::WS::TABSTOP
+                | co::WS::VISIBLE
+                | co::WS::BORDER,
+            position: gui::dpi(16, 38),
+            width: gui::dpi_x(428),
+            height: gui::dpi_y(24),
+            ..Default::default()
+        },
+    );
+
+    // コマンド名補完の候補リスト（既定は隠す）。`和名 (Token)` を見せて Token を挿入する。
+    let cand = gui::ListBox::new(
+        &wnd,
+        gui::ListBoxOpts {
+            position: gui::dpi(16, 70),
+            size: gui::dpi(428, 180),
+            window_style: co::WS::CHILD | co::WS::BORDER | co::WS::VSCROLL,
+            ..Default::default()
+        },
+    );
+
+    let ok = gui::Button::new(
+        &wnd,
+        gui::ButtonOpts {
+            text: "OK",
+            control_style: co::BS::DEFPUSHBUTTON,
+            ctrl_id: 1,
+            position: gui::dpi(270, 262),
+            width: gui::dpi_x(80),
+            height: gui::dpi_y(26),
+            ..Default::default()
+        },
+    );
+    let cancel = gui::Button::new(
+        &wnd,
+        gui::ButtonOpts {
+            text: "キャンセル",
+            ctrl_id: 2,
+            position: gui::dpi(358, 262),
+            width: gui::dpi_x(86),
+            height: gui::dpi_y(26),
+            ..Default::default()
+        },
+    );
+
+    let result: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
+    #[cfg(feature = "debug-server")]
+    arm.plain(
+        "input",
+        "コマンドを実行",
+        message,
+        true,
+        vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
+    );
+    {
+        let result = result.clone();
+        let edit = edit.clone();
+        let wnd2 = wnd.clone();
+        ok.on().bn_clicked(move || {
+            *result.borrow_mut() = Some(edit.text().unwrap_or_default());
+            wnd2.close();
+            Ok(())
+        });
+    }
+    {
+        let wnd2 = wnd.clone();
+        cancel.on().bn_clicked(move || {
+            wnd2.close();
+            Ok(())
+        });
+    }
+
+    // 補完モデル＝入力全体（カレットまで）をクエリにし、和名 or トークンの部分一致で候補を出す。
+    // 入力がちょうど 1 件のトークンと一致したら（非 force）出さない＝その状態の Enter は実行に回す。
+    let commands_for = commands.to_vec();
+    let complete: CompleteFn = Rc::new(move |before, _caret, force| {
+        let q = before.trim_start();
+        if q.is_empty() && !force {
+            return None;
+        }
+        let ql = q.to_lowercase();
+        let items: Vec<CompletionItem> = commands_for
+            .iter()
+            .filter(|(disp, tok)| {
+                q.is_empty() || tok.to_lowercase().contains(&ql) || disp.contains(q)
+            })
+            .map(|(disp, tok)| CompletionItem { display: disp.clone(), insert: tok.clone() })
+            .collect();
+        let only_exact = items.len() == 1 && items[0].insert.eq_ignore_ascii_case(q);
+        if items.is_empty() || (!force && only_exact) {
+            return None;
+        }
+        Some((0, items))
+    });
+    install_completion(&arm, &edit, &cand, complete);
+
+    let _ = wnd.show_modal(parent);
+    keyhook::pop();
+    #[cfg(feature = "debug-server")]
+    completion_probe::clear();
+    let _ = (cancel, cand);
     result.borrow().clone()
 }
 

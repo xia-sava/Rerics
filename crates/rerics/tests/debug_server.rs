@@ -3371,3 +3371,80 @@ fn script_command_metadata_surfaces_in_listing() {
         "メタ無しは label/genre が null: {list}"
     );
 }
+
+/// コマンドパレットは登録済みスクリプトコマンドも候補に出し、確定で `Script("name")` トークンを
+/// 挿入する（表示はラベル＋「（スクリプト）」）。
+#[test]
+fn command_direct_lists_registered_script_commands() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[(
+            "00.ts",
+            r#"rerics.registerCommand("organize", () => {}, { label: "整理する" });"#,
+        )],
+    );
+    poll(&server, "/script/members", |b| b.contains("organize"));
+    server.req("POST", "/command/CommandDirect", "").expect("CommandDirect");
+    wait_modal(&server);
+
+    // ラベル「整理する」で引け、候補に「整理する（スクリプト）」が出る。
+    server.req("POST", "/completion/keystrokes", "整理").unwrap();
+    let c = poll(&server, "/completion", |b| b.contains("整理する（スクリプト）"));
+    assert!(c.contains("整理する（スクリプト）"), "スクリプトコマンドが候補に出る: {c}");
+
+    // 先頭候補を確定＝入力欄に Script("organize") トークンが入る。
+    server.req("POST", "/completion/accept/0", "").unwrap();
+    let c2 = poll(&server, "/completion", |b| b.contains(r#"Script(\"organize\")"#));
+    assert!(c2.contains(r#"Script(\"organize\")"#), "確定で Script トークンが挿入される: {c2}");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
+/// コマンドパレット（CommandDirect）：補完は和名でも内部名でも引け、確定した文字列を
+/// `Invocation` として解釈し、キー押下と同じ経路で実行する。解釈できない文字列はログに出す。
+#[test]
+fn command_direct_runs_typed_command() {
+    let server = Server::start(&["a.txt", "b.txt", "c.txt"], "");
+    assert_eq!(
+        server.req("GET", "/state/panes/left/cursor", "").unwrap().1.trim(),
+        "0",
+        "初期カーソルは 0"
+    );
+
+    // パレットを開く（MaybeModal＝応答先返しで開く）。和名「下へ」で候補が引ける。
+    server.req("POST", "/command/CommandDirect", "").expect("CommandDirect");
+    wait_modal(&server);
+    server.req("POST", "/completion/keystrokes", "下へ").unwrap();
+    let c = poll(&server, "/completion", |b| b.contains("CursorDown"));
+    assert!(
+        c.contains("カーソルを下へ (CursorDown)"),
+        "和名でコマンド名補完が引ける: {c}"
+    );
+
+    // 本文を内部名 CursorDown にして OK＝実行され、カーソルが 1 へ動く。
+    server.req("POST", "/completion/type", "CursorDown").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    assert_eq!(
+        server.req("GET", "/state/panes/left/cursor", "").unwrap().1.trim(),
+        "1",
+        "パレットで CursorDown を実行するとカーソルが 1 へ動く"
+    );
+
+    // 解釈できない文字列は実行されずログに警告が出る（カーソルは動かない）。
+    server.req("POST", "/command/CommandDirect", "").expect("CommandDirect2");
+    wait_modal(&server);
+    server.req("POST", "/completion/type", "ぜんぜん違う文字列").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    let log = server.req("GET", "/state/log/lines", "").unwrap().1;
+    assert!(
+        log.contains("コマンドとして解釈できません"),
+        "不正コマンドは警告ログに出る: {log}"
+    );
+    assert_eq!(
+        server.req("GET", "/state/panes/left/cursor", "").unwrap().1.trim(),
+        "1",
+        "不正コマンドではカーソルは動かない"
+    );
+}

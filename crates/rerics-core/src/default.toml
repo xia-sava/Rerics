@@ -171,6 +171,7 @@ U = "Extract"
 Up = "CursorUp"
 V = "ViewFile"
 Y = "PathMask"
+Z = "CommandDirect"
 '\' = "ToRoot"
 
 [keybinds_textviewer]
@@ -225,11 +226,6 @@ V = "ImageFlipHorizontal"
 X = "ImageZoomOut"
 Z = "ImageZoomIn"
 
-[window]
-fixed_size = false
-width = 960
-height = 640
-
 [cursor]
 history = false
 history_count = 100
@@ -251,3 +247,8 @@ ask_before_delete = true
 extract_create_directory = false
 copy_attribute = true
 copy_date = true
+
+[window]
+fixed_size = false
+width = 960
+height = 640
