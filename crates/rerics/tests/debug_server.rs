@@ -1954,8 +1954,8 @@ fn settings_key_editor_binds_registered_script() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
-/// 任意コードをキーへ結ぶ＝「コードを割り当て」モーダル→打鍵の経路（debug の eval フック）。
-/// `Eval(code)` 行が生え、実呼び出しカラムにはラッパを剥がしたコードが出る。
+/// 「コードを割り当て」＝コードを追加すると未割当（－）の `Eval` 行がスクリプトジャンルに生え、
+/// 通常どおりその行を選んでキャプチャするとキーへ結ばれる。実呼び出しカラムはラッパを剥がしたコード。
 #[test]
 fn settings_key_editor_binds_eval_code() {
     let server = Server::start(&["a.txt"], "");
@@ -1963,9 +1963,14 @@ fn settings_key_editor_binds_eval_code() {
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // コードをキーへ結ぶ＝Eval("r.log(42)") が Ctrl+Alt+G に割り当たる。
-    server.req("POST", "/keys/filer/eval", r#"["r.log(42)","Ctrl+Alt+G"]"#).unwrap();
-    // 実呼び出し＝コードで絞れる（call_display は Eval ラッパを剥がして中身を出す）。
+    // コードを追加＝未割当の Eval 行が生える（前後スペースは trim される）。
+    server.req("POST", "/keys/filer/code", "  r.log(42)  ").unwrap();
+    server.req("POST", "/keys/filer/search", "r.log").unwrap();
+    assert!(keys().contains(r#"["Eval",[]]"#), "未割当の Eval 行が生える: {}", keys());
+
+    // その行を選んでキャプチャ＝Eval("r.log(42)") が Ctrl+Alt+G に割り当たる。
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/capture", "Ctrl+Alt+G").unwrap();
     server.req("POST", "/keys/filer/search", "r.log").unwrap();
     assert!(
         keys().contains(r#"["Eval",["Ctrl+Alt+G"]]"#),

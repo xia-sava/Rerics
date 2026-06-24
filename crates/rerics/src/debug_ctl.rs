@@ -156,8 +156,11 @@ impl MainWindow {
                 debug_server::Request::KeysCapture { category, chord } => {
                     let _ = tx.send(self.debug_keys_op(&category, |h| (h.capture)(&chord)));
                 }
-                debug_server::Request::KeysEval { category, code, chord } => {
-                    let _ = tx.send(self.debug_keys_op(&category, |h| (h.eval)(&code, &chord)));
+                debug_server::Request::KeysAddCode { category, code } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| {
+                        (h.add_code)(&code);
+                        Ok(())
+                    }));
                 }
                 debug_server::Request::KeysPick { category, label } => {
                     let _ = tx.send(self.debug_keys_op(&category, |h| {

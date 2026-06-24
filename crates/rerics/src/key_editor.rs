@@ -200,8 +200,9 @@ struct KeyEditorInner {
     capturing_remap: Cell<bool>,
     /// キャプチャがキー順の「空キー定義の新規作成」か（`true`）。打鍵を pending へ入れる。
     capturing_newdef: Cell<bool>,
-    /// キャプチャが「コードを割り当て」なら、束ねる `Eval` のコード。打鍵で `Eval(code)` を結ぶ。
-    capturing_eval: RefCell<Option<String>>,
+    /// 「コードを割り当て」で書かれた、まだキーへ結んでいない `Eval` のコード。スクリプトジャンルに
+    /// 未割当（－）行として並べ、通常のキャプチャで割り当てる。
+    pending_eval: RefCell<Vec<String>>,
     /// 直近の操作結果（観測・状態表示用）。
     status: RefCell<String>,
 }
@@ -365,7 +366,7 @@ impl KeyEditor {
                 capturing: Cell::new(false),
                 capturing_remap: Cell::new(false),
                 capturing_newdef: Cell::new(false),
-                capturing_eval: RefCell::new(None),
+                pending_eval: RefCell::new(Vec::new()),
                 status: RefCell::new(String::new()),
             }),
         };
@@ -426,7 +427,7 @@ impl KeyEditor {
         {
             let this = me.clone();
             btn_code.on().bn_clicked(move || {
-                this.begin_code_assign();
+                this.add_code_row();
                 Ok(())
             });
         }
@@ -598,17 +599,11 @@ impl KeyEditor {
                 Ok(())
             }) as crate::debug_server::modal_registry::ChordFn
         };
-        // コードをキーへ結ぶ（「コードを割り当て」モーダル→打鍵と同じ＝Eval(code) を束ねる）。
-        let eval = {
+        // コードを未割当 Eval 行として追加する（「コードを割り当て」モーダル OK と同じ＝モーダル抜き）。
+        // 割り当ては通常どおり行を選んで capture する。
+        let add_code = {
             let this = self.clone();
-            Box::new(move |code: &str, chord: &str| {
-                let ch = KeyChord::parse(chord)
-                    .ok_or_else(|| format!("unknown chord: {chord}"))?;
-                let value =
-                    Invocation::new(Command::Eval, vec![code.to_string()]).to_token_string();
-                this.assign(value, ch);
-                Ok(())
-            }) as crate::debug_server::modal_registry::BindFn
+            Box::new(move |code: &str| this.add_code(code)) as Box<dyn Fn(&str)>
         };
         let pick = {
             let this = self.clone();
@@ -647,7 +642,7 @@ impl KeyEditor {
                 set_view,
                 rebind,
                 capture,
-                eval,
+                add_code,
                 pick,
                 pick_commit,
                 pick_cancel,
@@ -825,6 +820,18 @@ impl KeyEditor {
                 if !bound.contains(&value) {
                     rows.push(BindRow {
                         command: Command::Script,
+                        value,
+                        chord: None,
+                        conflicted: false,
+                    });
+                }
+            }
+            // 「コードを割り当て」で書いた未割当コードも、未バインドのものを Eval 行として並べる。
+            for code in self.inner.pending_eval.borrow().iter() {
+                let value = Invocation::new(Command::Eval, vec![code.clone()]).to_token_string();
+                if !bound.contains(&value) {
+                    rows.push(BindRow {
+                        command: Command::Eval,
                         value,
                         chord: None,
                         conflicted: false,
@@ -1292,36 +1299,71 @@ impl KeyEditor {
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
-    /// 「コードを割り当て」：複文モーダルでコードを書かせ、次の打鍵で `Eval(code)` をそのキーへ結ぶ。
-    fn begin_code_assign(&self) {
+    /// 「コードを割り当て」：複文モーダルでコードを書かせ、スクリプトジャンルへ未割当（－）の
+    /// `Eval(code)` 行を作る。機能順・検索解除でその行へ選択＋スクロールし、あとは通常のキー登録へ。
+    fn add_code_row(&self) {
         if self.inner.picking.borrow().is_some() || self.inner.capturing.get() {
             return;
         }
-        let prior = self.inner.capturing_eval.borrow().clone().unwrap_or_default();
         let Some(code) = crate::dialog::code_box(
             &self.list,
             "キーに束ねるコードを入力（r. でホスト API・複文可）",
-            &prior,
+            "",
         ) else {
             return;
         };
+        // 子コントロールを親にしたモーダルの後始末で無効化が残ることがあるので明示的に戻す。
+        self.hwnd().EnableWindow(true);
+        self.add_code(&code);
+    }
+
+    /// コードを未割当 `Eval` 行として追加し、機能順・検索解除でその行へ選択＋スクロールする。
+    /// 空コードは何もしない。「コードを割り当て」モーダルと debug の両方から使う。
+    fn add_code(&self, code: &str) {
         let code = code.trim().to_string();
         if code.is_empty() {
             return;
         }
-        *self.inner.capturing_eval.borrow_mut() = Some(code);
-        self.inner.capturing.set(true);
+        {
+            let mut pe = self.inner.pending_eval.borrow_mut();
+            if !pe.contains(&code) {
+                pe.push(code.clone());
+            }
+        }
+        // 機能順・検索解除で新しい行が必ず見えるようにしてから作り直す。
+        self.inner.view_mode.set(KeyView::ByCommand);
+        self.toggle[0].select(true);
+        self.toggle[1].select(false);
+        *self.inner.query.borrow_mut() = String::new();
+        let _ = self.search.set_text("");
+        self.relabel_buttons();
+        self.update_hint();
+        self.rebuild_rows();
+        // 追加した Eval 行を選択＋スクロールして、そのままキー登録できる状態にする。
+        let value = Invocation::new(Command::Eval, vec![code]).to_token_string();
+        self.select_value_row(&value);
         *self.inner.status.borrow_mut() =
-            "コードを束ねるキーを押してください（右クリックで中止）".to_string();
-        self.hwnd().SetFocus();
+            "コードを追加しました。「キー定義を追加」で割り当ててください".to_string();
         let _ = self.hwnd().InvalidateRect(None, false);
+    }
+
+    /// 機能順で `value`（生 invocation）の行を選択し、見える位置までスクロールする。
+    fn select_value_row(&self, value: &str) {
+        let pos = {
+            let view = self.inner.view.borrow();
+            let rows = self.inner.rows.borrow();
+            view.iter().position(|&ri| rows.get(ri).is_some_and(|r| r.value == value))
+        };
+        if let Some(p) = pos {
+            self.inner.sel.set(p);
+            self.ensure_visible();
+        }
     }
 
     fn cancel_capture(&self) {
         self.inner.capturing.set(false);
         self.inner.capturing_remap.set(false);
         self.inner.capturing_newdef.set(false);
-        *self.inner.capturing_eval.borrow_mut() = None;
         *self.inner.status.borrow_mut() = "中止しました".to_string();
         let _ = self.hwnd().InvalidateRect(None, false);
     }
@@ -1611,10 +1653,7 @@ impl KeyEditor {
             let alt = w::GetAsyncKeyState(co::VK::MENU);
             let chord = KeyChord::new(vk, ctrl, shift, alt);
             self.inner.capturing.set(false);
-            if let Some(code) = self.inner.capturing_eval.borrow_mut().take() {
-                let value = Invocation::new(Command::Eval, vec![code]).to_token_string();
-                self.assign(value, chord);
-            } else if self.inner.capturing_newdef.replace(false) {
+            if self.inner.capturing_newdef.replace(false) {
                 self.finish_newdef(chord);
             } else if self.inner.capturing_remap.replace(false) {
                 self.remap(chord);
