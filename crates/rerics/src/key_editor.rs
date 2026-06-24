@@ -169,6 +169,8 @@ struct PickState {
 struct KeyEditorInner {
     shared: Rc<Shared>,
     category: KeyCategory,
+    /// 登録済みスクリプトコマンド名（`registerCommand` 済み）。未割当でも一覧に出して割り当て可能にする。
+    scripts: Vec<String>,
     /// 編集中の下書き＝chord → 割り当て値（生の invocation 文字列）のリスト。空 Vec＝明示 unbind。
     /// **重複（1 つの chord に複数機能）を許す**＝これが衝突状態。未知バインド（`Func_*` 等）も
     /// 生値のまま保持し、反映時に消さない。OK/適用の検証を通った時だけ `config.keybinds` へ書き戻す。
@@ -220,7 +222,12 @@ pub(crate) struct KeyEditor {
 }
 
 impl KeyEditor {
-    pub(crate) fn new(parent: &gui::WindowControl, shared: &Rc<Shared>, category: KeyCategory) -> Self {
+    pub(crate) fn new(
+        parent: &gui::WindowControl,
+        shared: &Rc<Shared>,
+        category: KeyCategory,
+        scripts: Vec<String>,
+    ) -> Self {
         // 上部ヒント：モード（機能順／キー順／機能ピッカー）に応じて文面を差し替える。
         // ピッカー中は中止方法をここに大きく出して、背景色と合わせて別モードを明示する。
         let hint = gui::Label::new(
@@ -329,6 +336,7 @@ impl KeyEditor {
             inner: Rc::new(KeyEditorInner {
                 shared: shared.clone(),
                 category,
+                scripts,
                 draft: RefCell::new(BTreeMap::new()),
                 rows: RefCell::new(Vec::new()),
                 key_rows: RefCell::new(Vec::new()),
@@ -555,6 +563,20 @@ impl KeyEditor {
                 Ok(())
             }) as Box<dyn Fn(&str) -> Result<(), String>>
         };
+        // 選択行へ打鍵を割り当てる（begin_capture→キー押下と同じ＝行の生 value を束ねる）。
+        // 引数つき組込・Script・Eval 行を割り当てるのに使う（`bind` は bare 機能のみ）。
+        let capture = {
+            let this = self.clone();
+            Box::new(move |chord: &str| {
+                let ch = KeyChord::parse(chord)
+                    .ok_or_else(|| format!("unknown chord: {chord}"))?;
+                let Some((_, value, _)) = this.selected_bind() else {
+                    return Err("no row selected".to_string());
+                };
+                this.assign(value, ch);
+                Ok(())
+            }) as crate::debug_server::modal_registry::ChordFn
+        };
         let pick = {
             let this = self.clone();
             Box::new(move |li: usize| this.enter_pick(li)) as Box<dyn Fn(usize)>
@@ -591,6 +613,7 @@ impl KeyEditor {
                 search,
                 set_view,
                 rebind,
+                capture,
                 pick,
                 pick_commit,
                 pick_cancel,
@@ -749,6 +772,30 @@ impl KeyEditor {
                     chord: None,
                     conflicted: false,
                 }),
+            }
+        }
+        // 登録済みスクリプトを「スクリプト」ジャンルに出す。キーへ結ばれている分は上のループで
+        // 既に行になっているので、未割当のものだけ chord:None の行を足す（そこへ割り当てられる）。
+        {
+            let bound: std::collections::HashSet<String> = self
+                .inner
+                .draft
+                .borrow()
+                .values()
+                .flatten()
+                .filter(|v| !v.trim().is_empty())
+                .cloned()
+                .collect();
+            for name in &self.inner.scripts {
+                let value = Invocation::new(Command::Script, vec![name.clone()]).to_token_string();
+                if !bound.contains(&value) {
+                    rows.push(BindRow {
+                        command: Command::Script,
+                        value,
+                        chord: None,
+                        conflicted: false,
+                    });
+                }
             }
         }
         key_rows.sort_by(|a, b| a.chord.cmp(&b.chord));

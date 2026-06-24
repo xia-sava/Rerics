@@ -716,7 +716,6 @@ impl MainWindow {
     }
 
     /// 登録済みコマンド名をエンジンから同期取得する。
-    #[cfg(feature = "debug-server")]
     pub(crate) fn script_list_commands(&self) -> Vec<String> {
         let (tx, rx) = channel();
         let _ = self.script.cmd_tx.send(EngineCmd::ListCommands(tx));

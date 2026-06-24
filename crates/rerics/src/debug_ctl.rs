@@ -153,6 +153,9 @@ impl MainWindow {
                 debug_server::Request::KeysRebind { category, chord } => {
                     let _ = tx.send(self.debug_keys_op(&category, |h| (h.rebind)(&chord)));
                 }
+                debug_server::Request::KeysCapture { category, chord } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| (h.capture)(&chord)));
+                }
                 debug_server::Request::KeysPick { category, label } => {
                     let _ = tx.send(self.debug_keys_op(&category, |h| {
                         (h.pick)(label);

@@ -2569,7 +2569,12 @@ impl RegisteredPane {
 
 /// 設定ダイアログを表示する。`OK`／`適用` で確定した [`Config`] を `on_apply` へ渡す
 /// （`適用` は閉じずに継続、`OK` は閉じる。`キャンセル` は破棄して閉じる）。
-pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config) + 'static) {
+pub fn show(
+    parent: &impl GuiParent,
+    current: &Config,
+    scripts: Vec<String>,
+    on_apply: impl Fn(&Config) + 'static,
+) {
     // 前回開いた設定ダイアログのキー編集フックを捨てる（このダイアログ生成で登録し直す）。
     #[cfg(feature = "debug-server")]
     crate::debug_server::modal_registry::clear_key_editors();
@@ -2644,9 +2649,9 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
     build_list(&pane_list, &shared);
     let columns_editor = ColumnsEditor::new(&pane_list, &shared);
     let registered = RegisteredPane::new(&pane_registered, &shared);
-    let keys = KeyEditor::new(&pane_keys, &shared, KeyCategory::Filer);
-    let keys_text = KeyEditor::new(&pane_keys_text, &shared, KeyCategory::TextViewer);
-    let keys_image = KeyEditor::new(&pane_keys_image, &shared, KeyCategory::ImageViewer);
+    let keys = KeyEditor::new(&pane_keys, &shared, KeyCategory::Filer, scripts);
+    let keys_text = KeyEditor::new(&pane_keys_text, &shared, KeyCategory::TextViewer, Vec::new());
+    let keys_image = KeyEditor::new(&pane_keys_image, &shared, KeyCategory::ImageViewer, Vec::new());
 
     // 配色 pane（ファイル一覧・ログ）とテキストビューア pane（ビューア専用色）。
     // 色変更後はそれぞれ対応するプレビューだけを再描画する。

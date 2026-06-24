@@ -181,6 +181,8 @@ pub mod modal_registry {
         pub set_view: Box<dyn Fn(bool)>,
         /// 選択行のキーを、その呼び出しのまま新しいキー（chord トークン）へ移し替える。未知キーは Err。
         pub rebind: ChordFn,
+        /// 選択行へ打鍵を割り当てる（行の生 value を束ねる）。引数つき組込・Script・Eval 行用。未知キーは Err。
+        pub capture: ChordFn,
         /// キー順で選択行の li 番目の機能を差し替えるピックモードへ入る（インライン機能ピッカー）。
         pub pick: Box<dyn Fn(usize)>,
         /// ピックモードで選択中の機能を確定する。
@@ -305,6 +307,8 @@ pub enum Request {
     KeysSetView { category: String, by_key: bool },
     /// `POST /keys/<category>/rebind`：選択行のキーを body のキーへ移し替える（変更）。
     KeysRebind { category: String, chord: String },
+    /// `POST /keys/<category>/capture`：選択行へ body のキーを割り当てる（行の呼び出しを束ねる）。
+    KeysCapture { category: String, chord: String },
     /// `POST /keys/<category>/pick/<labelIndex>`：キー順で選択行の機能ピッカーへ入る。
     KeysPick { category: String, label: usize },
     /// `POST /keys/<category>/pickcommit`：ピックで選択中の機能を確定する。
@@ -571,6 +575,10 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                     let mut chord = String::new();
                     let _ = std::io::Read::read_to_string(req.as_reader(), &mut chord);
                     Some(Request::KeysRebind { category: cat.to_string(), chord: chord.trim().to_string() })
+                } else if let Some(cat) = rest.strip_suffix("/capture") {
+                    let mut chord = String::new();
+                    let _ = std::io::Read::read_to_string(req.as_reader(), &mut chord);
+                    Some(Request::KeysCapture { category: cat.to_string(), chord: chord.trim().to_string() })
                 } else if let Some(cat) = rest.strip_suffix("/view") {
                     let mut body = String::new();
                     let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);

@@ -1922,6 +1922,38 @@ fn settings_key_editor_rebinds_selected_chord() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// 登録済みスクリプトが機能順の「スクリプト」ジャンルに未割当行で出て、選んでキャプチャすると
+/// `Script("name")` がキーへ割り当たる（debug の capture＝begin_capture→打鍵の経路）。
+#[test]
+fn settings_key_editor_binds_registered_script() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[("00-cmds.ts", r#"rerics.registerCommand("myScript", () => {});"#)],
+    );
+    // エンジンが登録を終えてから設定を開く（open_settings がその一覧を編集器へ渡す）。
+    poll(&server, "/script/commands", |b| b.contains("myScript"));
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // 登録スクリプトが未割当行（Script・キー無し）として出る。実呼び出し=名前で絞れる。
+    server.req("POST", "/keys/filer/search", "myScript").unwrap();
+    assert!(keys().contains(r#"["Script",[]]"#), "未割当の Script 行が出る: {}", keys());
+
+    // 行を選んでキャプチャ＝Script("myScript") が Ctrl+Alt+S に割り当たる。
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/capture", "Ctrl+Alt+S").unwrap();
+    server.req("POST", "/keys/filer/search", "myScript").unwrap();
+    assert!(
+        keys().contains(r#"["Script",["Ctrl+Alt+S"]]"#),
+        "Script が Ctrl+Alt+S に割り当たる: {}",
+        keys()
+    );
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// キー順で機能名をダブルクリック相当＝インライン機能ピッカーで別機能へ差し替える。
 /// 機能一覧は検索ボックスで絞り込め、確定でそのキーの定義が変わる（中止なら不変）。
 #[test]
