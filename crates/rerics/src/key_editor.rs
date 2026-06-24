@@ -1652,8 +1652,8 @@ impl KeyEditor {
         match self.inner.view_mode.get() {
             KeyView::ByCommand => {
                 let name_x = gui::dpi_x(24);
-                let call_x = gui::dpi_x(240);
-                let keycol_x = gui::dpi_x(560);
+                let call_x = gui::dpi_x(200);
+                let keycol_x = gui::dpi_x(600);
                 let band = w::HBRUSH::GetSysColorBrush(co::COLOR::BTNFACE)?;
                 let rows = self.inner.rows.borrow();
                 for vi in 0..vis {

@@ -1681,6 +1681,29 @@ fn req_bytes(port: u16, method: &str, path: &str) -> Option<(u16, Vec<u8>)> {
 }
 
 /// 設定ダイアログ＝独自モーダルだが modal_registry に登録済み。OpenSettings で開き、
+/// 設定ナビを pane 番号で切り替える debug エンドポイント（`/settings/nav/<pane>`）＝
+/// キー編集ページを前面に出して /snapshot/modal で撮れる（headless 観測）。未オープンは 400。
+#[test]
+fn settings_nav_switches_page_for_observation() {
+    let server = Server::start(&["a.txt"], "");
+    // 設定が開く前は切り替え先が無いので 400。
+    assert_eq!(
+        server.req("POST", "/settings/nav/5", "").expect("nav").0,
+        400,
+        "未オープンは 400"
+    );
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    // キー（ファイラー）ページ＝pane 5 へ切替。
+    assert_eq!(server.req("POST", "/settings/nav/5", "").expect("nav").0, 200, "切替 ok");
+    // 前面に出たキーリストごと /snapshot/modal が PNG として撮れる。
+    let (st, png) = req_bytes(server.port, "GET", "/snapshot/modal").expect("snap");
+    assert_eq!(st, 200, "snapshot 200");
+    assert!(png.starts_with(&[0x89, b'P', b'N', b'G']), "PNG 署名で始まる");
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// 自前描画（プレビュー/スウォッチ）を含む窓を /snapshot/modal が PrintWindow で撮れ、
 /// ナビをキーで動かしても /modal/command/cancel で閉じられる（デッドロックしない）。
 #[test]

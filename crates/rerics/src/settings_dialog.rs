@@ -2763,6 +2763,19 @@ pub fn show(parent: &impl GuiParent, current: &Config, on_apply: impl Fn(&Config
             preview.hwnd().ShowWindow(if list_pv { co::SW::SHOW } else { co::SW::HIDE });
             viewer_preview.hwnd().ShowWindow(if viewer_pv { co::SW::SHOW } else { co::SW::HIDE });
         });
+        // debug-server から pane 番号でページを切り替えられるようにする（スナップショット観測用）。
+        #[cfg(feature = "debug-server")]
+        {
+            let nav = nav.clone();
+            crate::debug_server::modal_registry::register_settings_nav(Box::new(move |pane| {
+                if let Some(i) = NAV_ROWS
+                    .iter()
+                    .position(|r| matches!(r, NavRow::Page { pane: p, .. } if *p == pane))
+                {
+                    nav.select(i);
+                }
+            }));
+        }
     }
 
     // キー編集の検証＋反映：3 ページのどれかにキー重複（衝突）があれば反映せず false を返し

@@ -163,6 +163,9 @@ pub mod modal_registry {
     /// 1 引数（chord トークン）を取り Err を返し得るフック。未知キー等は Err。
     pub type ChordFn = Box<dyn Fn(&str) -> Result<(), String>>;
 
+    /// usize 1 つを取るフック（設定ナビのページ切替など）。
+    pub type IndexFn = Box<dyn Fn(usize)>;
+
     /// キー編集ページを UI スレッドで読み書きするフック（gui をクロージャに閉じ込める）。
     pub struct KeyEditorHooks {
         pub read: Box<dyn Fn() -> KeyEditorState>,
@@ -202,9 +205,25 @@ pub mod modal_registry {
         KEY_EDITORS.with(|e| e.borrow_mut().push((category, hooks)));
     }
 
-    /// 登録済みのキー編集ページを全消去する（設定ダイアログを開く直前に呼ぶ）。
+    /// 登録済みのキー編集ページ・設定ナビを全消去する（設定ダイアログを開く直前に呼ぶ）。
     pub fn clear_key_editors() {
         KEY_EDITORS.with(|e| e.borrow_mut().clear());
+        SETTINGS_NAV.with(|n| *n.borrow_mut() = None);
+    }
+
+    thread_local! {
+        /// 開いている設定ダイアログの左ナビ＝pane 番号を渡すとそのページへ切り替えるフック。
+        static SETTINGS_NAV: RefCell<Option<IndexFn>> = const { RefCell::new(None) };
+    }
+
+    /// 設定ナビのページ切替フックを登録する（設定ダイアログ生成時に呼ぶ）。
+    pub fn register_settings_nav(cb: IndexFn) {
+        SETTINGS_NAV.with(|n| *n.borrow_mut() = Some(cb));
+    }
+
+    /// 設定ナビを pane 番号で切り替える（設定ダイアログが開いていなければ `None`）。
+    pub fn with_settings_nav<R>(f: impl FnOnce(&dyn Fn(usize)) -> R) -> Option<R> {
+        SETTINGS_NAV.with(|n| n.borrow().as_ref().map(|cb| f(cb.as_ref())))
     }
 
     /// 指定カテゴリのキー編集ページに対して処理する（無ければ `None`）。
@@ -296,6 +315,8 @@ pub enum Request {
     KeysScroll { category: String, top: i32 },
     /// `POST /keys/<category>/addkeydef`：キー順で body のキーの空キー定義（機能未割当）を作る。
     KeysAddKeyDef { category: String, chord: String },
+    /// `POST /settings/nav/<pane>`：設定ダイアログの左ナビを pane 番号のページへ切り替える。
+    SettingsNav { pane: usize },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -561,6 +582,11 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                     rest.strip_suffix("/reset")
                         .map(|cat| Request::KeysReset { category: cat.to_string() })
                 }
+            } else if let Some(p) = path.strip_prefix("/settings/nav/") {
+                p.trim_end_matches('/')
+                    .parse::<usize>()
+                    .ok()
+                    .map(|pane| Request::SettingsNav { pane })
             } else {
                 None
             }

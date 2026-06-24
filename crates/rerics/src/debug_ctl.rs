@@ -180,6 +180,14 @@ impl MainWindow {
                 debug_server::Request::KeysAddKeyDef { category, chord } => {
                     let _ = tx.send(self.debug_keys_op(&category, |h| (h.add_keydef)(&chord)));
                 }
+                debug_server::Request::SettingsNav { pane } => {
+                    let ok = debug_server::modal_registry::with_settings_nav(|f| f(pane)).is_some();
+                    let _ = tx.send(if ok {
+                        debug_server::Response::Json("\"ok\"".to_string())
+                    } else {
+                        debug_server::Response::BadRequest("settings dialog not open".to_string())
+                    });
+                }
             }
         }
     }
