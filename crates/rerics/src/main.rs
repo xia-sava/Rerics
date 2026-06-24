@@ -802,10 +802,16 @@ impl MainWindow {
     /// 文字列を [`Invocation`] として解釈し、キー押下と同じ `exec` 経路へ流す。空入力は無視、
     /// 解釈できない文字列はログに出す。補完候補はファイラ文脈の組込コマンド（和名＋内部名）。
     fn command_direct(&self, is_left: bool) -> w::AnyResult<()> {
-        let commands: Vec<(String, String)> = Command::all()
+        let mut commands: Vec<(String, String)> = Command::all()
             .filter(|c| c.available_in(rerics_core::CommandContext::Filer))
             .map(|c| (format!("{} ({})", c.display_name(), c.as_token()), c.as_token().to_string()))
             .collect();
+        // 登録済みスクリプトコマンドも候補に出す（挿入は `Script("name")` トークン）。
+        for sc in self.script_list_commands() {
+            let label = sc.label.unwrap_or_else(|| sc.name.clone());
+            let token = Invocation::new(Command::Script, vec![sc.name]).to_token_string();
+            commands.push((format!("{label}（スクリプト）"), token));
+        }
         let Some(text) =
             crate::dialog::command_box(&self.wnd, "実行するコマンド（和名・内部名で補完）", &commands)
         else {

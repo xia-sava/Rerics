@@ -3372,6 +3372,34 @@ fn script_command_metadata_surfaces_in_listing() {
     );
 }
 
+/// コマンドパレットは登録済みスクリプトコマンドも候補に出し、確定で `Script("name")` トークンを
+/// 挿入する（表示はラベル＋「（スクリプト）」）。
+#[test]
+fn command_direct_lists_registered_script_commands() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[(
+            "00.ts",
+            r#"rerics.registerCommand("organize", () => {}, { label: "整理する" });"#,
+        )],
+    );
+    poll(&server, "/script/members", |b| b.contains("organize"));
+    server.req("POST", "/command/CommandDirect", "").expect("CommandDirect");
+    wait_modal(&server);
+
+    // ラベル「整理する」で引け、候補に「整理する（スクリプト）」が出る。
+    server.req("POST", "/completion/keystrokes", "整理").unwrap();
+    let c = poll(&server, "/completion", |b| b.contains("整理する（スクリプト）"));
+    assert!(c.contains("整理する（スクリプト）"), "スクリプトコマンドが候補に出る: {c}");
+
+    // 先頭候補を確定＝入力欄に Script("organize") トークンが入る。
+    server.req("POST", "/completion/accept/0", "").unwrap();
+    let c2 = poll(&server, "/completion", |b| b.contains(r#"Script(\"organize\")"#));
+    assert!(c2.contains(r#"Script(\"organize\")"#), "確定で Script トークンが挿入される: {c2}");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
 /// コマンドパレット（CommandDirect）：補完は和名でも内部名でも引け、確定した文字列を
 /// `Invocation` として解釈し、キー押下と同じ経路で実行する。解釈できない文字列はログに出す。
 #[test]
