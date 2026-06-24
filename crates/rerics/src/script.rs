@@ -89,6 +89,12 @@ pub trait HostApi {
     fn cancel_operation(&self, token: u64);
     /// パスを関連付けで開く（フォルダなら潜る／ファイルなら既定アプリ）。開きっぱなしで待たない。
     fn open(&self, path: &str);
+    /// フォルダ選択ダイアログを開く（`title` 空なら既定見出し）。キャンセルは `None`。
+    fn folder_dialog(&self, title: &str) -> Option<String>;
+    /// ファイルを開くダイアログを開く（`title` 空なら既定見出し）。キャンセルは `None`。
+    fn open_dialog(&self, title: &str) -> Option<String>;
+    /// ファイル保存ダイアログを開く（`title` 空なら既定見出し）。キャンセルは `None`。
+    fn save_dialog(&self, title: &str) -> Option<String>;
 }
 
 /// 外部プロセスを終了まで待った結果（`rerics.run` の戻り）。JS では camelCase で見える。
@@ -369,6 +375,27 @@ fn op_open(state: &mut OpState, #[string] path: &str) {
     state.borrow::<Host>().open(path);
 }
 
+/// フォルダ選択結果を `Vec` で包んで返す（`[]`＝キャンセル・`[s]`＝選んだパス）。理由は [`op_prompt`] と同じ。
+#[op2]
+#[serde]
+fn op_folder_dialog(state: &mut OpState, #[string] title: &str) -> Vec<String> {
+    state.borrow::<Host>().folder_dialog(title).into_iter().collect()
+}
+
+/// ファイルを開くダイアログの結果を `Vec` で包んで返す（`[]`＝キャンセル・`[s]`＝選んだパス）。
+#[op2]
+#[serde]
+fn op_open_dialog(state: &mut OpState, #[string] title: &str) -> Vec<String> {
+    state.borrow::<Host>().open_dialog(title).into_iter().collect()
+}
+
+/// ファイル保存ダイアログの結果を `Vec` で包んで返す（`[]`＝キャンセル・`[s]`＝選んだパス）。
+#[op2]
+#[serde]
+fn op_save_dialog(state: &mut OpState, #[string] title: &str) -> Vec<String> {
+    state.borrow::<Host>().save_dialog(title).into_iter().collect()
+}
+
 /// 指定プログラムを起動して即リターンする（投げっぱなし）。起動失敗は例外。GUI に触れないので
 /// ホストを介さずエンジンスレッドから直接起動する。
 #[op2]
@@ -422,6 +449,9 @@ extension!(
         op_op_cancel,
         op_list_dir,
         op_open,
+        op_folder_dialog,
+        op_open_dialog,
+        op_save_dialog,
         op_spawn,
         op_run
     ]
@@ -546,6 +576,18 @@ const BOOTSTRAP: &str = r#"
     delete: (a, b) =>
       Array.isArray(a) ? startOp(2, a, "", b) : startOp(2, null, "", a),
     open: (p) => ops.op_open(String(p)),
+    folderDialog: (t) => {
+      const r = ops.op_folder_dialog(t == null ? "" : String(t));
+      return r.length ? r[0] : null;
+    },
+    openDialog: (t) => {
+      const r = ops.op_open_dialog(t == null ? "" : String(t));
+      return r.length ? r[0] : null;
+    },
+    saveDialog: (t) => {
+      const r = ops.op_save_dialog(t == null ? "" : String(t));
+      return r.length ? r[0] : null;
+    },
     spawn: (cmd, ...args) => ops.op_spawn(String(cmd), args.map(String)),
     run: (cmd, ...args) => ops.op_run(String(cmd), args.map(String)),
     registerCommand: (name, fn, opts) => {
@@ -830,6 +872,10 @@ mod tests {
         op_error: Option<String>,
         /// `open` で開こうとしたパス（関連付け起動の検証用）。
         opened: RefCell<Vec<String>>,
+        /// フォルダ/開く/保存ダイアログの戻り（None でキャンセル）。
+        folder_reply: Option<String>,
+        open_reply: Option<String>,
+        save_reply: Option<String>,
     }
 
     impl HostApi for MockHost {
@@ -895,6 +941,15 @@ mod tests {
         }
         fn open(&self, path: &str) {
             self.opened.borrow_mut().push(path.to_string());
+        }
+        fn folder_dialog(&self, _title: &str) -> Option<String> {
+            self.folder_reply.clone()
+        }
+        fn open_dialog(&self, _title: &str) -> Option<String> {
+            self.open_reply.clone()
+        }
+        fn save_dialog(&self, _title: &str) -> Option<String> {
+            self.save_reply.clone()
         }
     }
 
@@ -1017,6 +1072,31 @@ mod tests {
         assert_eq!(
             *host.logs.borrow(),
             vec!["code=0".to_string(), "out=hi-from-run".to_string()]
+        );
+    }
+
+    #[test]
+    fn file_dialogs_round_trip_through_host() {
+        let host = Rc::new(MockHost {
+            folder_reply: Some("E:\\picked".into()),
+            open_reply: Some("C:\\in.txt".into()),
+            save_reply: None,
+            ..Default::default()
+        });
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:file-dialogs",
+            r#"
+              rerics.log("f=" + rerics.folderDialog("フォルダ"));
+              rerics.log("o=" + rerics.openDialog());
+              rerics.log("s=" + rerics.saveDialog("保存先"));
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            *host.logs.borrow(),
+            vec!["f=E:\\picked".to_string(), "o=C:\\in.txt".to_string(), "s=null".to_string()]
         );
     }
 

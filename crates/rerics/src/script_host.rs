@@ -16,6 +16,7 @@ use winsafe::prelude::*;
 
 use crate::MainWindow;
 use crate::dialog::{InputMode, MessageResult, MessageStyle, input_box, list_box, message_box};
+use crate::shell;
 use rerics_core::{Command, Invocation};
 
 use crate::script::{self, HostApi, PaneItem, PaneSnapshot, ScriptCommand, ScriptOp};
@@ -42,6 +43,9 @@ pub enum HostCall {
     },
     CancelOperation { token: u64 },
     ShellOpen(String),
+    FolderDialog(String),
+    OpenDialog(String),
+    SaveDialog(String),
 }
 
 /// UI スレッド → エンジンスレッドへの応答。
@@ -320,6 +324,42 @@ impl HostApi for GuiHost {
             HostCall::ShellOpen(path.to_string()),
         );
     }
+
+    fn folder_dialog(&self, title: &str) -> Option<String> {
+        match ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::FolderDialog(title.to_string()),
+        ) {
+            Ok(HostResp::Text(text)) => text,
+            _ => None,
+        }
+    }
+
+    fn open_dialog(&self, title: &str) -> Option<String> {
+        match ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::OpenDialog(title.to_string()),
+        ) {
+            Ok(HostResp::Text(text)) => text,
+            _ => None,
+        }
+    }
+
+    fn save_dialog(&self, title: &str) -> Option<String> {
+        match ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::SaveDialog(title.to_string()),
+        ) {
+            Ok(HostResp::Text(text)) => text,
+            _ => None,
+        }
+    }
 }
 
 /// スクリプトエンジンを別スレッドに建てる。起動スクリプト（`data_dir()/scripts`）を読み込み、
@@ -458,6 +498,21 @@ impl MainWindow {
                         self.log.error(&format!("開けません: {path}: {e}"));
                     }
                     let _ = tx.send(HostResp::Done);
+                }
+                HostCall::FolderDialog(title) => {
+                    let picked = shell::choose_folder(self.wnd.hwnd().ptr(), &title)
+                        .map(|p| p.to_string_lossy().into_owned());
+                    let _ = tx.send(HostResp::Text(picked));
+                }
+                HostCall::OpenDialog(title) => {
+                    let picked = shell::choose_file(self.wnd.hwnd().ptr(), &title, false)
+                        .map(|p| p.to_string_lossy().into_owned());
+                    let _ = tx.send(HostResp::Text(picked));
+                }
+                HostCall::SaveDialog(title) => {
+                    let picked = shell::choose_file(self.wnd.hwnd().ptr(), &title, true)
+                        .map(|p| p.to_string_lossy().into_owned());
+                    let _ = tx.send(HostResp::Text(picked));
                 }
             }
         }
