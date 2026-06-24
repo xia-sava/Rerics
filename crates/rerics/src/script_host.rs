@@ -623,6 +623,11 @@ impl MainWindow {
                     *slot = None;
                     Next::Nothing
                 }
+                // 式が空（`null`/`undefined`/キャンセル）＝マクロのキャンセルと同じく無音で実行中止。
+                Ok(value) if value.is_empty() => {
+                    *slot = None;
+                    Next::Nothing
+                }
                 Ok(value) => {
                     if let Some(p) =
                         pd.slots.iter_mut().find(|s| matches!(s, ArgSlot::Pending(_)))

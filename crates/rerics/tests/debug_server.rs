@@ -3183,6 +3183,26 @@ fn expr_arg_with_modal_does_not_deadlock() {
     assert!(loc.contains("target"), "プロンプトのパスへ移動するはず（デッドロックしない）: {loc}");
 }
 
+/// 第3弾：引数の式が開いたモーダルをキャンセルすると、式は空（null）になり実行中止＝移動しない
+/// （マクロのキャンセルと同じ無音中止）。
+#[test]
+fn expr_arg_modal_cancel_aborts_silently() {
+    let server = Server::start(&["a.txt"], "");
+    // 基準点を sbx から動かしておく（移動しないことを確かめるため）。
+    let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+    server.req("POST", "/command/ToParent", "").unwrap();
+    let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx);
+    // 式が prompt を開く→Esc でキャンセル→式は空→中止＝場所は変わらない。
+    server
+        .req("POST", "/command/ChangeDirectory", r#"["=r.prompt(\"dir?\")"]"#)
+        .unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/key/esc", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    let after = server.req("GET", "/state/panes/left/location", "").unwrap().1;
+    assert_eq!(after.trim(), parent.trim(), "式のキャンセルは移動しない（空＝無音中止）");
+}
+
 /// scripting：`registerCommand` の第3引数メタ（label/genre）が `/script/commands` に乗る。
 /// 設定エディタはこの一覧でスクリプト行の表示名／ジャンルを描く（presentation は snapshot で確認）。
 #[test]
