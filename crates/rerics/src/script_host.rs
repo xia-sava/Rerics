@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
+use winsafe::co;
 use winsafe::prelude::*;
 
 use crate::MainWindow;
@@ -40,6 +41,7 @@ pub enum HostCall {
         events: OpDone,
     },
     CancelOperation { token: u64 },
+    ShellOpen(String),
 }
 
 /// UI スレッド → エンジンスレッドへの応答。
@@ -309,6 +311,15 @@ impl HostApi for GuiHost {
             HostCall::CancelOperation { token },
         );
     }
+
+    fn open(&self, path: &str) {
+        let _ = ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::ShellOpen(path.to_string()),
+        );
+    }
 }
 
 /// スクリプトエンジンを別スレッドに建てる。起動スクリプト（`data_dir()/scripts`）を読み込み、
@@ -434,6 +445,18 @@ impl MainWindow {
                 }
                 HostCall::CancelOperation { token } => {
                     self.cancel_script_operation(token);
+                    let _ = tx.send(HostResp::Done);
+                }
+                HostCall::ShellOpen(path) => {
+                    if let Err(e) = self.wnd.hwnd().ShellExecute(
+                        "open",
+                        &path,
+                        None,
+                        None,
+                        co::SW::SHOWNORMAL,
+                    ) {
+                        self.log.error(&format!("開けません: {path}: {e}"));
+                    }
                     let _ = tx.send(HostResp::Done);
                 }
             }

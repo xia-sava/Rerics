@@ -2988,6 +2988,25 @@ fn r_alias_points_to_rerics() {
     assert_eq!(body("typeof r.currentDir").trim(), "\"function\"", "r 経由でホスト API が見える");
 }
 
+/// プロセス op：`await rerics.run` が外部プロセスの終了を待ち、終了コードと stdout を返す。
+#[test]
+fn run_executes_process_and_returns_result() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"(async () => {
+                 const r = await rerics.run("cmd", "/c", "echo", "rerics-run-9");
+                 rerics.log("RUN code=" + r.code + " out=[" + r.stdout.trim() + "]");
+               })();"#,
+        )
+        .expect("eval");
+    let log = poll(&server, "/state/log", |b| b.contains("RUN code="));
+    assert!(log.contains("RUN code=0"), "run は終了コード0を返すはず: {log}");
+    assert!(log.contains("rerics-run-9"), "run は stdout を返すはず: {log}");
+}
+
 /// キーバインド経路：`Script("name")` コマンドが `exec` からエンジンへ流れ、登録コマンドを実行する。
 /// 登録コマンドがアクティブペインを移動させ、UI に反映されることで配線を検証する。
 #[test]

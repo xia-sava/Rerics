@@ -87,6 +87,20 @@ pub trait HostApi {
     ) -> Result<u64, String>;
     /// トークンで進行中の操作を中止する（未知のトークンは無視）。
     fn cancel_operation(&self, token: u64);
+    /// パスを関連付けで開く（フォルダなら潜る／ファイルなら既定アプリ）。開きっぱなしで待たない。
+    fn open(&self, path: &str);
+}
+
+/// 外部プロセスを終了まで待った結果（`rerics.run` の戻り）。JS では camelCase で見える。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessResult {
+    /// 終了コード。シグナル等でコード無しに終わった場合は `null`。
+    pub code: Option<i32>,
+    /// 標準出力（UTF-8 として lossy 変換）。
+    pub stdout: String,
+    /// 標準エラー出力（UTF-8 として lossy 変換）。
+    pub stderr: String,
 }
 
 /// スクリプトが起動する非同期ファイル操作の種別。
@@ -335,6 +349,47 @@ async fn op_list_dir(#[string] path: String) -> Result<Vec<DirEntry>, deno_error
         .map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))
 }
 
+/// パスを関連付けで開く（GUI 経由・開きっぱなし）。
+#[op2(fast)]
+fn op_open(state: &mut OpState, #[string] path: &str) {
+    state.borrow::<Host>().open(path);
+}
+
+/// 指定プログラムを起動して即リターンする（投げっぱなし）。起動失敗は例外。GUI に触れないので
+/// ホストを介さずエンジンスレッドから直接起動する。
+#[op2]
+fn op_spawn(#[string] cmd: String, #[serde] args: Vec<String>) -> Result<(), deno_error::JsErrorBox> {
+    std::process::Command::new(&cmd)
+        .args(&args)
+        .spawn()
+        .map(|_child| ())
+        .map_err(|e| deno_error::JsErrorBox::generic(format!("起動に失敗しました [{cmd}]: {e}")))
+}
+
+/// 指定プログラムを起動して終了まで待ち、結果（終了コード・標準出力・標準エラー）を返す
+/// 非同期 op。重い待ちはブロッキングプールへ逃がす（`op_list_dir` と同じ形）。
+#[op2(async(lazy))]
+#[serde]
+async fn op_run(
+    #[string] cmd: String,
+    #[serde] args: Vec<String>,
+) -> Result<ProcessResult, deno_error::JsErrorBox> {
+    tokio::task::spawn_blocking(move || {
+        std::process::Command::new(&cmd)
+            .args(&args)
+            .output()
+            .map(|o| ProcessResult {
+                code: o.status.code(),
+                stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+            })
+            .map_err(|e| format!("実行に失敗しました [{cmd}]: {e}"))
+    })
+    .await
+    .map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?
+    .map_err(deno_error::JsErrorBox::generic)
+}
+
 extension!(
     rerics_ext,
     ops = [
@@ -351,7 +406,10 @@ extension!(
         op_op_start,
         op_op_next,
         op_op_cancel,
-        op_list_dir
+        op_list_dir,
+        op_open,
+        op_spawn,
+        op_run
     ]
 );
 
@@ -473,6 +531,9 @@ const BOOTSTRAP: &str = r#"
     move: (a, b, c) => copyLike(1, a, b, c),
     delete: (a, b) =>
       Array.isArray(a) ? startOp(2, a, "", b) : startOp(2, null, "", a),
+    open: (p) => ops.op_open(String(p)),
+    spawn: (cmd, ...args) => ops.op_spawn(String(cmd), args.map(String)),
+    run: (cmd, ...args) => ops.op_run(String(cmd), args.map(String)),
     registerCommand: (name, fn) => {
       if (typeof fn !== "function") throw new TypeError("registerCommand: fn must be a function");
       commands.set(String(name), fn);
@@ -731,6 +792,8 @@ mod tests {
         op_progress: Vec<String>,
         /// Some なら操作を失敗（中止）として完了させる（reject 検証用）。
         op_error: Option<String>,
+        /// `open` で開こうとしたパス（関連付け起動の検証用）。
+        opened: RefCell<Vec<String>>,
     }
 
     impl HostApi for MockHost {
@@ -793,6 +856,9 @@ mod tests {
         }
         fn cancel_operation(&self, token: u64) {
             self.cancelled.borrow_mut().push(token);
+        }
+        fn open(&self, path: &str) {
+            self.opened.borrow_mut().push(path.to_string());
         }
     }
 
@@ -863,6 +929,59 @@ mod tests {
             vec!["count=3".to_string(), "dirs=1".to_string(), "dated=3".to_string()]
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_passes_path_to_host() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion("test:open", r#"rerics.open("C:\\tmp\\file.txt");"#.to_string())
+            .unwrap();
+        assert_eq!(*host.opened.borrow(), vec!["C:\\tmp\\file.txt".to_string()]);
+    }
+
+    #[test]
+    fn spawn_launches_process_fire_and_forget() {
+        let dir = std::env::temp_dir().join(format!("rerics-spawn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("spawned.txt");
+
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        // copy /y nul <path> で空ファイルを作る。投げっぱなしなので後でファイル出現を待つ。
+        let code = format!(
+            r#"rerics.spawn("cmd", "/c", "copy", "/y", "nul", {:?});"#,
+            marker.display().to_string()
+        );
+        eng.run_to_completion("test:spawn", code).unwrap();
+
+        let appeared = (0..50).any(|_| {
+            if marker.exists() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            false
+        });
+        assert!(appeared, "spawn したプロセスが空ファイルを作るはず: {}", marker.display());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_waits_for_process_and_returns_output() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        let code = r#"(async () => {
+            const r = await rerics.run("cmd", "/c", "echo", "hi-from-run");
+            rerics.log("code=" + r.code);
+            rerics.log("out=" + r.stdout.trim());
+        })();"#
+            .to_string();
+        eng.run_to_completion("test:run", code).unwrap();
+        assert_eq!(
+            *host.logs.borrow(),
+            vec!["code=0".to_string(), "out=hi-from-run".to_string()]
+        );
     }
 
     #[test]
