@@ -269,6 +269,8 @@ pub enum Request {
     ScriptInvoke { name: String },
     /// `POST /script/eval`：body の TS/JS ソースをスクリプトエンジンで評価する（投げっぱなし）。
     ScriptEval { code: String },
+    /// `POST /script/eval-value`：body の TS/JS コードを評価し、最後の式の値を文字列で返す（同期）。
+    ScriptEvalValue { code: String },
     /// `GET /keys/<category>`：設定ダイアログのキー編集ページ状態（行・選択・キャプチャ・状態）。
     /// `category` は `filer`/`text`/`image`。設定ダイアログが開いていなければ 404。
     KeysState { category: String },
@@ -490,6 +492,10 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 let mut code = String::new();
                 let _ = std::io::Read::read_to_string(req.as_reader(), &mut code);
                 Some(Request::ScriptEval { code })
+            } else if path == "/script/eval-value" {
+                let mut code = String::new();
+                let _ = std::io::Read::read_to_string(req.as_reader(), &mut code);
+                Some(Request::ScriptEvalValue { code })
             } else if let Some(rest) = path.strip_prefix("/keys/") {
                 let rest = rest.trim_end_matches('/');
                 if let Some((cat, idx)) = rest.rsplit_once("/select/") {

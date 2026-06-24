@@ -2966,6 +2966,28 @@ fn eval_command_dispatches_code_to_engine() {
     assert!(log.contains("cmd-eval-marker-7"), "Eval コマンドがコードを評価して記録するはず: {log}");
 }
 
+/// 値返し Eval：最後の式の値が文字列で返る。undefined/null は空、Promise は解決を待つ。
+/// （HostApi を呼ぶ式は同期評価ではデッドロックするので 第1弾 では純粋な式のみ＝後段で非同期化）。
+#[test]
+fn eval_value_returns_last_expression() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    let body = |code: &str| server.req("POST", "/script/eval-value", code).expect("eval-value").1;
+    assert_eq!(body("1 + 2").trim(), "\"3\"", "数式の結果を文字列で返す");
+    assert_eq!(body(r#""ab" + "cd""#).trim(), "\"abcd\"", "文字列連結");
+    assert_eq!(body("undefined").trim(), "\"\"", "undefined は空文字");
+    assert_eq!(body("null").trim(), "\"\"", "null は空文字");
+    assert_eq!(body(r#"Promise.resolve("async-7")"#).trim(), "\"async-7\"", "Promise は解決を待つ");
+}
+
+/// `r` 別名：`r` は `rerics` と同一オブジェクトで、ホスト API メソッドが見える。
+#[test]
+fn r_alias_points_to_rerics() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    let body = |code: &str| server.req("POST", "/script/eval-value", code).expect("eval-value").1;
+    assert_eq!(body("r === rerics").trim(), "\"true\"", "r は rerics と同一参照");
+    assert_eq!(body("typeof r.currentDir").trim(), "\"function\"", "r 経由でホスト API が見える");
+}
+
 /// キーバインド経路：`Script("name")` コマンドが `exec` からエンジンへ流れ、登録コマンドを実行する。
 /// 登録コマンドがアクティブペインを移動させ、UI に反映されることで配線を検証する。
 #[test]

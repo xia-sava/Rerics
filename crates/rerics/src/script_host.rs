@@ -101,6 +101,8 @@ pub enum EngineCmd {
     Invoke(String),
     /// TS/JS ソースを評価する（投げっぱなし）。
     Eval(String),
+    /// TS/JS コードを評価し、最後の式の値を文字列で返す（同期取得）。`undefined`/`null` は空文字。
+    EvalValue { code: String, tx: Sender<String> },
     /// 現在登録されているコマンド名を返す（同期・`HostApi` を呼ばないのでデッドロックしない）。
     ListCommands(Sender<Vec<String>>),
     /// ファイラー本体の出来事を `rerics.on` ハンドラへ配る（投げっぱなし）。
@@ -335,6 +337,20 @@ pub fn spawn_engine(queue: ScriptQueue, hwnd_ptr: isize, cmd_rx: Receiver<Engine
                     ) {
                         host.log(&format!("eval エラー: {e}"));
                     }
+                }
+                EngineCmd::EvalValue { code, tx } => {
+                    let value = engine
+                        .eval_to_string(
+                            "rerics:eval",
+                            "file:///eval.ts",
+                            deno_ast::MediaType::TypeScript,
+                            code,
+                        )
+                        .unwrap_or_else(|e| {
+                            host.log(&format!("eval エラー: {e}"));
+                            String::new()
+                        });
+                    let _ = tx.send(value);
                 }
                 EngineCmd::ListCommands(tx) => {
                     let _ = tx.send(engine.registered_commands());
@@ -681,6 +697,14 @@ impl MainWindow {
     pub(crate) fn script_list_commands(&self) -> Vec<String> {
         let (tx, rx) = channel();
         let _ = self.script.cmd_tx.send(EngineCmd::ListCommands(tx));
+        rx.recv().unwrap_or_default()
+    }
+
+    /// コードを評価して最後の式の値を同期取得する（値返し Eval の検証口）。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn script_eval_value(&self, code: String) -> String {
+        let (tx, rx) = channel();
+        let _ = self.script.cmd_tx.send(EngineCmd::EvalValue { code, tx });
         rx.recv().unwrap_or_default()
     }
 }

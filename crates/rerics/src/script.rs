@@ -485,6 +485,9 @@ const BOOTSTRAP: &str = r#"
       else eventHandlers.set(key, [fn]);
     },
   };
+  // 短縮別名。コマンド設定欄で `rerics.` が長いので `r.` で同じものを指せる。グローバルに
+  // 1 度だけ置くことで、繰り返し eval しても再宣言エラーにならず、登録コマンド内でも使える。
+  globalThis.r = globalThis.rerics;
   // ファイラー本体の出来事を登録ハンドラへ配る。1 つが投げても残りは続行する。
   globalThis.__fireEvent = (event, arg) => {
     const list = eventHandlers.get(String(event));
@@ -669,6 +672,34 @@ impl Engine {
     ) -> Result<(), String> {
         let js = transpile(specifier, media_type, source)?;
         self.run_to_completion(name, js).map_err(|e| e.to_string())
+    }
+
+    /// TS/JS コードを評価し、最後の式の値を文字列で返す。値が Promise なら解決を待つ。
+    /// `undefined`/`null` は空文字にする。第3弾の「式をコマンド引数にする」評価の土台。
+    pub fn eval_to_string(
+        &mut self,
+        name: &'static str,
+        specifier: &str,
+        media_type: deno_ast::MediaType,
+        source: String,
+    ) -> Result<String, String> {
+        let js = transpile(specifier, media_type, source)?;
+        let Self { runtime, tokio_rt } = self;
+        tokio_rt.block_on(async {
+            let value = runtime.execute_script(name, js).map_err(|e| e.to_string())?;
+            let resolved = runtime.resolve(value);
+            let value = runtime
+                .with_event_loop_promise(resolved, deno_core::PollEventLoopOptions::default())
+                .await
+                .map_err(|e| e.to_string())?;
+            deno_core::scope!(scope, runtime);
+            let local = deno_core::v8::Local::new(scope, value);
+            if local.is_null_or_undefined() {
+                Ok(String::new())
+            } else {
+                Ok(local.to_rust_string_lossy(scope))
+            }
+        })
     }
 }
 
