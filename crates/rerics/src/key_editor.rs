@@ -534,13 +534,20 @@ impl KeyEditor {
         let _ = self.btn_c.hwnd().SetWindowText(c);
     }
 
-    /// 「引数」ボタンの有効/無効を選択状態に合わせる。引数を付けられるのは機能順で組込コマンド行を
-    /// 選んでいるときだけ＝Script/Eval 行・キー順・ピック中・見出し/未選択では無効（グレーアウト）。
+    /// 「引数を編集」ボタンの表示と有効/無効を状態に合わせる。引数は機能順専用（キー順の 1 行は
+    /// 複数機能を持ちうるので「どの機能の引数か」が一意に定まらない）。そのためキー順ではボタン自体を
+    /// 隠し、機能順では組込コマンド行を選んでいるときだけ有効にする（Script/Eval 行・ピック中・
+    /// 見出し/未選択ではグレーアウト）。
     fn update_arg_button(&self) {
         // 窓未作成（構築途中）の間は触らない＝既定の有効のまま。先頭行は組込なので初期表示も妥当。
         if self.btn_arg.hwnd().ptr().is_null() {
             return;
         }
+        if self.inner.view_mode.get() == KeyView::ByKey {
+            self.btn_arg.hwnd().ShowWindow(co::SW::HIDE);
+            return;
+        }
+        self.btn_arg.hwnd().ShowWindow(co::SW::SHOW);
         let enabled = self.inner.picking.borrow().is_none()
             && matches!(self.selected_bind(), Some((c, _, _)) if !matches!(c, Command::Script | Command::Eval));
         self.btn_arg.hwnd().EnableWindow(enabled);
