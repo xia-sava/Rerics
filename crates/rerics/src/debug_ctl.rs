@@ -101,6 +101,11 @@ impl MainWindow {
                     let json = serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_string());
                     let _ = tx.send(debug_server::Response::Json(json));
                 }
+                debug_server::Request::ScriptMembers => {
+                    let names = self.script_list_members();
+                    let json = serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_string());
+                    let _ = tx.send(debug_server::Response::Json(json));
+                }
                 debug_server::Request::ScriptInvoke { name } => {
                     self.script_send(crate::script_host::EngineCmd::Invoke(name));
                     let _ = tx.send(debug_server::Response::Json("\"ok\"".to_string()));
@@ -161,6 +166,147 @@ impl MainWindow {
                         (h.add_code)(&code);
                         Ok(())
                     }));
+                }
+                debug_server::Request::KeysSetArg { category, arg } => {
+                    let _ = tx.send(self.debug_keys_op(&category, |h| {
+                        (h.set_arg)(&arg);
+                        Ok(())
+                    }));
+                }
+                debug_server::Request::KeysOpenArg { category } => {
+                    // モーダルは閉じるまでブロックするので、開く前に応答を返す（/completion/* を捌けるように）。
+                    let _ = tx.send(debug_server::Response::Json(
+                        "{\"modal_opening\":true}".to_string(),
+                    ));
+                    debug_server::modal_registry::with_key_editor(&category, |h| (h.open_arg)());
+                }
+                debug_server::Request::KeysOpenCode { category } => {
+                    let _ = tx.send(debug_server::Response::Json(
+                        "{\"modal_opening\":true}".to_string(),
+                    ));
+                    debug_server::modal_registry::with_key_editor(&category, |h| (h.open_code)());
+                }
+                debug_server::Request::CompletionType { text } => {
+                    let ok = crate::dialog::completion_probe::type_text(&text);
+                    let _ = tx.send(debug_server::Response::Json(format!("{{\"typed\":{ok}}}")));
+                }
+                debug_server::Request::CompletionKey { name } => {
+                    // 補完キー操作の実経路を模擬：↑↓は WM_KEYDOWN、Enter は WM_CHAR、Ctrl+Space は
+                    // Ctrl 押下→Space 押下→Ctrl 解放を送る。keyhook サブクラスがこれを横取りする。
+                    let key_down = |vk: u16| w::msg::wm::KeyDown {
+                        vkey_code: unsafe { co::VK::from_raw(vk) },
+                        repeat_count: 1,
+                        scan_code: 0,
+                        is_extended_key: false,
+                        has_alt_key: false,
+                        key_was_previously_down: false,
+                        key_is_being_released: false,
+                    };
+                    let resp = match self.debug_modal_hwnd().as_ref().and_then(Self::debug_modal_edit) {
+                        Some(edit) => {
+                            unsafe {
+                                let key_up = |vk: u16| w::msg::wm::KeyUp {
+                                    vkey_code: co::VK::from_raw(vk),
+                                    repeat_count: 1,
+                                    scan_code: 0,
+                                    is_extended_key: false,
+                                    has_alt_key: false,
+                                    key_was_previously_down: true,
+                                    key_is_being_released: true,
+                                };
+                                match name.as_str() {
+                                    "down" => {
+                                        edit.SendMessage(key_down(0x28));
+                                    }
+                                    "up" => {
+                                        edit.SendMessage(key_down(0x26));
+                                    }
+                                    // カレット移動は押下で動かし、解放で補完を再評価させる。
+                                    "left" => {
+                                        edit.SendMessage(key_down(0x25));
+                                        edit.SendMessage(key_up(0x25));
+                                    }
+                                    "right" => {
+                                        edit.SendMessage(key_down(0x27));
+                                        edit.SendMessage(key_up(0x27));
+                                    }
+                                    "enter" => {
+                                        edit.SendMessage(w::msg::wm::Char {
+                                            char_code: 0x0D,
+                                            repeat_count: 1,
+                                            scan_code: 0,
+                                            is_extended_key: false,
+                                            has_alt_key: false,
+                                            key_was_previously_down: false,
+                                            key_is_being_released: false,
+                                        });
+                                    }
+                                    "ctrlspace" => {
+                                        edit.SendMessage(key_down(0x11));
+                                        edit.SendMessage(key_down(0x20));
+                                        edit.SendMessage(w::msg::wm::KeyUp {
+                                            vkey_code: co::VK::from_raw(0x11),
+                                            repeat_count: 1,
+                                            scan_code: 0,
+                                            is_extended_key: false,
+                                            has_alt_key: false,
+                                            key_was_previously_down: true,
+                                            key_is_being_released: true,
+                                        });
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            debug_server::Response::Json("{\"key\":true}".to_string())
+                        }
+                        None => debug_server::Response::BadRequest("no modal input open".into()),
+                    };
+                    let _ = tx.send(resp);
+                }
+                debug_server::Request::CompletionKeystrokes { text } => {
+                    // 実キー入力の模擬：WM_CHAR を 1 文字ずつ送る＝EN_CHANGE 経路を実際に通す。
+                    let resp = match self.debug_modal_hwnd().as_ref().and_then(Self::debug_modal_edit) {
+                        Some(edit) => {
+                            for ch in text.chars() {
+                                unsafe {
+                                    edit.SendMessage(w::msg::wm::Char {
+                                        char_code: ch as u16,
+                                        repeat_count: 1,
+                                        scan_code: 0,
+                                        is_extended_key: false,
+                                        has_alt_key: false,
+                                        key_was_previously_down: false,
+                                        key_is_being_released: false,
+                                    });
+                                }
+                            }
+                            debug_server::Response::Json("{\"typed\":true}".to_string())
+                        }
+                        None => debug_server::Response::BadRequest("no modal input open".into()),
+                    };
+                    let _ = tx.send(resp);
+                }
+                debug_server::Request::CompletionState => {
+                    let json = match crate::dialog::completion_probe::candidates() {
+                        Some(cands) => {
+                            let text = crate::dialog::completion_probe::text().unwrap_or_default();
+                            let visible = crate::dialog::completion_probe::visible().unwrap_or(false);
+                            let selected = crate::dialog::completion_probe::selected().unwrap_or(-1);
+                            serde_json::json!({
+                                "candidates": cands,
+                                "text": text,
+                                "visible": visible,
+                                "selected": selected,
+                            })
+                            .to_string()
+                        }
+                        None => "null".to_string(),
+                    };
+                    let _ = tx.send(debug_server::Response::Json(json));
+                }
+                debug_server::Request::CompletionAccept { idx } => {
+                    let ok = crate::dialog::completion_probe::accept(idx);
+                    let _ = tx.send(debug_server::Response::Json(format!("{{\"accepted\":{ok}}}")));
                 }
                 debug_server::Request::KeysPick { category, label } => {
                     let _ = tx.send(self.debug_keys_op(&category, |h| {

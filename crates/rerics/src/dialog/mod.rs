@@ -21,6 +21,8 @@ mod rename;
 mod list;
 pub use message::message_box;
 pub use input::{code_box, input_box, input_box_full, input_box_select};
+#[cfg(feature = "debug-server")]
+pub use input::completion_probe;
 pub use conflict::conflict_box;
 pub use archive_add::archive_add_box;
 pub use compress::compress_box;
@@ -88,11 +90,13 @@ pub mod keyhook {
     }
 
     const SUBCLASS_ID: usize = 0x5245_4b59; // "REKY"
-    const WM_KEYDOWN: u32 = 0x0100;
-    const WM_KEYUP: u32 = 0x0101;
+    pub const WM_KEYDOWN: u32 = 0x0100;
+    pub const WM_KEYUP: u32 = 0x0101;
+    pub const WM_CHAR: u32 = 0x0102;
 
-    /// `(vk, is_down)` を受け取る観測。`is_down` は押下 true・解放 false。
-    type Observer = Rc<dyn Fn(u16, bool)>;
+    /// `(msg, wparam)` を受け取る観測。`true` を返すとそのキーを消費して既定処理へ渡さない
+    /// （補完候補のキー操作などで Edit へキーを渡したくないとき）。`WM_KEYDOWN`/`WM_KEYUP`/`WM_CHAR` を受ける。
+    type Observer = Rc<dyn Fn(u32, usize) -> bool>;
 
     thread_local! {
         static OBSERVERS: RefCell<Vec<Observer>> = const { RefCell::new(Vec::new()) };
@@ -106,11 +110,13 @@ pub mod keyhook {
         _id: usize,
         _ref: usize,
     ) -> isize {
-        if msg == WM_KEYDOWN || msg == WM_KEYUP {
+        if msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_CHAR {
             // 借用を保持したまま呼ぶと観測内のメッセージ処理で再入し得るので Rc を取り出してから呼ぶ。
             let top = OBSERVERS.with(|o| o.borrow().last().cloned());
-            if let Some(f) = top {
-                f(wparam as u16, msg == WM_KEYDOWN);
+            if let Some(f) = top
+                && f(msg, wparam)
+            {
+                return 0; // 消費＝既定処理（DefSubclassProc）へ渡さない。
             }
         }
         unsafe { ffi::DefSubclassProc(hwnd, msg, wparam, lparam) }
@@ -118,7 +124,7 @@ pub mod keyhook {
 
     /// 観測を積み、`parent` の全子コントロールをサブクラス化してキーを横取りする。
     /// 子コントロールは作成済みである必要があるので `wm_create` の末尾で呼ぶ。
-    pub fn push(parent: &w::HWND, cb: impl Fn(u16, bool) + 'static) {
+    pub fn push(parent: &w::HWND, cb: impl Fn(u32, usize) -> bool + 'static) {
         OBSERVERS.with(|o| o.borrow_mut().push(Rc::new(cb)));
         if let Ok(mut cur) = parent.GetWindow(co::GW::CHILD) {
             loop {

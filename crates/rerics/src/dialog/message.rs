@@ -125,10 +125,12 @@ pub fn message_box(
         // Shift 押下中だけ「すべてに適用」を自動チェックする（Shift＋はい/いいえで全適用）。
         if let Some(cb) = &checkbox_k {
             let cb_k = cb.clone();
-            keyhook::push(hwnd, move |vk, down| {
-                if vk == 0x10 {
-                    cb_k.set_check(down);
+            keyhook::push(hwnd, move |msg, wparam| {
+                if (msg == keyhook::WM_KEYDOWN || msg == keyhook::WM_KEYUP) && wparam as u16 == 0x10
+                {
+                    cb_k.set_check(msg == keyhook::WM_KEYDOWN);
                 }
+                false
             });
         }
         Ok(())

@@ -1955,6 +1955,85 @@ fn settings_key_editor_binds_eval_code() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// 「引数」＝バインド済みの組込コマンド行で引数の式を編集すると、そのキーの呼び出しがその場で
+/// 差し替わる。既定 F4 の `=r.prompt(...)` を `=r.currentDir()` へ変え、OK で config.toml に残る。
+#[test]
+fn settings_key_editor_edits_bound_command_arg() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // 既定で F4 = ChangeDirectory("=r.prompt(...)")。r.prompt で F4 の行だけに絞って選ぶ。
+    server.req("POST", "/keys/filer/search", "r.prompt").unwrap();
+    assert!(keys().contains(r#"["ChangeDirectory",["F4"]]"#), "F4 の ChangeDirectory 行: {}", keys());
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+
+    // 引数を式へ差し替える（バインド済み＝そのキーの呼び出しをその場で置換）。
+    server.req("POST", "/keys/filer/arg", "=r.currentDir()").unwrap();
+
+    // OK で確定＝config.toml の F4 が新しい式へ更新される。
+    server.req("POST", "/modal/command/ok", "").expect("ok");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    let cfg = std::fs::read_to_string(server.base.join("data").join("config.toml")).unwrap();
+    assert!(
+        cfg.contains(r#"ChangeDirectory("=r.currentDir()")"#),
+        "F4 の引数が式へ差し替わって保存される: {cfg}"
+    );
+}
+
+/// 「引数」＝未割当の組込コマンド行へ引数の式を付けると、引数つきの未割当（－）行が生え、その行を
+/// キャプチャしてキーへ結べる。OK で `SelectMask("=式")` が当該キーに残る。
+#[test]
+fn settings_key_editor_attaches_arg_to_unbound_command() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // 既定で未バインドの SelectMask（bare 行）を選ぶ。
+    server.req("POST", "/keys/filer/search", "SelectMask").unwrap();
+    assert!(keys().contains(r#"["SelectMask",[]]"#), "未割当の SelectMask 行: {}", keys());
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+
+    // 引数を付ける＝引数つきの未割当行が生え、その行が選択される（apply_arg が選択する）。
+    server.req("POST", "/keys/filer/arg", "=r.cursorName()").unwrap();
+    // 選択中のその行をキャプチャ＝SelectMask("=r.cursorName()") が Ctrl+Alt+J に割り当たる。
+    server.req("POST", "/keys/filer/capture", "Ctrl+Alt+J").unwrap();
+
+    // OK で確定＝config.toml の Ctrl+Alt+J に引数つき呼び出しが残る。
+    server.req("POST", "/modal/command/ok", "").expect("ok");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+    let cfg = std::fs::read_to_string(server.base.join("data").join("config.toml")).unwrap();
+    assert!(
+        cfg.contains(r#"SelectMask("=r.cursorName()")"#),
+        "引数つき呼び出しがキーに割り当たって保存される: {cfg}"
+    );
+}
+
+/// 「引数」で作った未割当の引数つき行は、「キー定義を削除」でその定義ごと消せる（bare 行は残る）。
+#[test]
+fn settings_key_editor_deletes_unbound_arg_definition() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+    let count = || keys().matches(r#"["SelectMask",[]]"#).count();
+
+    // 未バインドの SelectMask（bare 行）を選んで引数を付ける＝引数つきの未割当行が増える。
+    server.req("POST", "/keys/filer/search", "SelectMask").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/arg", "=r.cursorName()").unwrap();
+    server.req("POST", "/keys/filer/search", "SelectMask").unwrap();
+    assert_eq!(count(), 2, "bare と引数つきで SelectMask 行が2つ: {}", keys());
+
+    // 引数つき行（bare の次＝index 1）を選んで「キー定義を削除」＝その定義が消えて bare だけ残る。
+    server.req("POST", "/keys/filer/select/1", "").unwrap();
+    server.req("POST", "/keys/filer/unbind", "").unwrap();
+    server.req("POST", "/keys/filer/search", "SelectMask").unwrap();
+    assert_eq!(count(), 1, "引数つきの定義が消えて bare だけ残る: {}", keys());
+}
+
 /// キー順で機能名をダブルクリック相当＝インライン機能ピッカーで別機能へ差し替える。
 /// 機能一覧は検索ボックスで絞り込め、確定でそのキーの定義が変わる（中止なら不変）。
 #[test]
@@ -2608,6 +2687,129 @@ fn script_commands_register_on_startup() {
         list.contains("logHi") && list.contains("goUp"),
         "registered commands should be listed: {list}"
     );
+}
+
+/// scripting：`/script/members` に補完候補（組込メンバー＋登録コマンド名）が並び、登録コマンドは
+/// `r.<name>()` でも呼べる（式/コードから対象操作を書ける）。
+#[test]
+fn script_members_list_and_commands_callable_via_r() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[(
+            "00-cmds.ts",
+            r#"rerics.registerCommand("goUp", () => { rerics.navigate(rerics.currentDir() + "/.."); });"#,
+        )],
+    );
+    // 組込メンバーと登録コマンド名が補完候補として並ぶ。
+    let members = poll(&server, "/script/members", |b| b.contains("goUp"));
+    assert!(
+        members.contains("currentDir") && members.contains("prompt"),
+        "組込メンバーが並ぶ: {members}"
+    );
+    assert!(members.contains("goUp"), "登録コマンド名が並ぶ: {members}");
+
+    // 登録コマンドは r.<name>() でも呼べる＝r.goUp() で親フォルダへ移動する。
+    let before = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+    server.req("POST", "/script/eval", "r.goUp()").unwrap();
+    let after = poll(&server, "/state/panes/left/location", |b| b.trim() != before);
+    assert_ne!(after.trim(), before, "r.goUp() で親へ移動する: {after}");
+}
+
+/// 設定エディタ：補完つき「引数」モーダルで `r.<prefix>` を打つと候補（組込メンバー＋登録コマンド）が
+/// 出て、候補の確定でカレット直前のプレフィックスがメンバ名へ置換される（headless 観測）。
+#[test]
+fn completion_popup_lists_members_and_inserts_on_accept() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[("00.ts", r#"rerics.registerCommand("myCmd", () => {});"#)],
+    );
+    poll(&server, "/script/members", |b| b.contains("myCmd"));
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    server.req("POST", "/settings/nav/5", "").expect("nav");
+    // 組込コマンド行（MakeDirectory）を選んで、補完つき「引数」モーダルを開く（応答先返し）。
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/openarg", "").unwrap();
+
+    // `=r.my` と実キー入力（WM_CHAR＝EN_CHANGE 経路）すると、登録コマンド myCmd が候補に出る。
+    server.req("POST", "/completion/keystrokes", "=r.my").unwrap();
+    let comp = poll(&server, "/completion", |b| b.contains("myCmd"));
+    assert!(comp.contains("myCmd"), "登録コマンドが補完候補に出る: {comp}");
+
+    // 先頭候補を確定＝プレフィックス `my` がメンバ名 `myCmd` へ置換される。
+    server.req("POST", "/completion/accept/0", "").unwrap();
+    let comp2 = poll(&server, "/completion", |b| b.contains(r#""text":"=r.myCmd"#));
+    assert!(comp2.contains(r#""text":"=r.myCmd"#), "確定でメンバ名が挿入される: {comp2}");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
+/// 補完つき入力欄のキーボード操作：↑↓で候補移動（クランプ）・Enter で確定・Ctrl+Space で強制表示。
+/// 実キー経路（WM_KEYDOWN/WM_CHAR を keyhook サブクラスが横取り）を headless で検証する。
+#[test]
+fn completion_keyboard_navigation_and_ctrl_space() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    server.req("POST", "/settings/nav/5", "").unwrap();
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/openarg", "").unwrap();
+    let comp = || server.req("GET", "/completion", "").unwrap().1;
+
+    // `=r.o` で候補（on/open/openDialog/oppositePane）が出て、先頭が選択されている。
+    server.req("POST", "/completion/keystrokes", "=r.o").unwrap();
+    let c = poll(&server, "/completion", |b| b.contains(r#""visible":true"#));
+    assert!(c.contains("oppositePane"), "候補が出る: {c}");
+    assert!(c.contains(r#""selected":0"#), "先頭が選択される: {c}");
+
+    // ↓↓↑ で選択が index 1（open）に動く。
+    server.req("POST", "/completion/key/down", "").unwrap();
+    server.req("POST", "/completion/key/down", "").unwrap();
+    server.req("POST", "/completion/key/up", "").unwrap();
+    let c2 = poll(&server, "/completion", |b| b.contains(r#""selected":1"#));
+    assert!(c2.contains(r#""selected":1"#), "↓↓↑ で index 1: {c2}");
+
+    // Enter で選択中（open）を確定＝プレフィックス o が open に置換される。
+    server.req("POST", "/completion/key/enter", "").unwrap();
+    let c3 = poll(&server, "/completion", |b| b.contains(r#""text":"=r.open"#));
+    assert!(c3.contains(r#""text":"=r.open"#), "Enter で open 確定: {c3}");
+
+    // 唯一一致 `=r.currentDir` は自動では隠れる。Ctrl+Space で強制表示できる。
+    server.req("POST", "/completion/keystrokes", "=r.currentDir").unwrap();
+    assert!(comp().contains(r#""visible":false"#), "唯一一致は自動で隠れる: {}", comp());
+    server.req("POST", "/completion/key/ctrlspace", "").unwrap();
+    let c5 = poll(&server, "/completion", |b| b.contains(r#""visible":true"#));
+    assert!(c5.contains("currentDir"), "Ctrl+Space で強制表示: {c5}");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
+/// 補完はカレット直前の文字列で判定する：`=r.co` で c と o の間へカレットを戻すと、`co` ではなく
+/// `c` の候補（currentDir 等）に変わる。確定は末尾の o を残すので利用者が自分で消す前提。
+#[test]
+fn completion_uses_text_up_to_caret() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    wait_modal(&server);
+    server.req("POST", "/settings/nav/5", "").unwrap();
+    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/openarg", "").unwrap();
+
+    // `=r.co` の末尾＝候補は co 前方一致（command/confirm/copy）。currentDir は含まれない。
+    server.req("POST", "/completion/keystrokes", "=r.co").unwrap();
+    let c = poll(&server, "/completion", |b| b.contains("confirm"));
+    assert!(c.contains("confirm"), "co の候補: {c}");
+    assert!(!c.contains("currentDir"), "co では currentDir は出ない: {c}");
+
+    // ← でカレットを c と o の間へ＝候補が c 前方一致へ変わり currentDir が入る。
+    server.req("POST", "/completion/key/left", "").unwrap();
+    let c2 = poll(&server, "/completion", |b| b.contains("currentDir"));
+    assert!(c2.contains("currentDir"), "カレットを戻すと c の候補（currentDir）に変わる: {c2}");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
 }
 
 /// scripting：`/script/eval` で評価したコードのログがアプリのログ欄へ出る（エンジン→UI 配線）。

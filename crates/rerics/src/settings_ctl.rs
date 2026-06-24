@@ -13,8 +13,9 @@ impl MainWindow {
         current.resolve_theme(system_is_light());
         self.in_dialog.set(true);
         let scripts = self.script_list_commands();
+        let members = self.script_list_members();
         let me = self.clone();
-        settings_dialog::show(&self.wnd, &current, scripts, move |new| {
+        settings_dialog::show(&self.wnd, &current, scripts, members, move |new| {
             let mut new = new.clone();
             new.resolve_theme(system_is_light());
             if let Err(e) = me.apply_config(new) {

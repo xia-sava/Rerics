@@ -2573,6 +2573,7 @@ pub fn show(
     parent: &impl GuiParent,
     current: &Config,
     scripts: Vec<crate::script::ScriptCommand>,
+    members: Vec<String>,
     on_apply: impl Fn(&Config) + 'static,
 ) {
     // 前回開いた設定ダイアログのキー編集フックを捨てる（このダイアログ生成で登録し直す）。
@@ -2649,9 +2650,11 @@ pub fn show(
     build_list(&pane_list, &shared);
     let columns_editor = ColumnsEditor::new(&pane_list, &shared);
     let registered = RegisteredPane::new(&pane_registered, &shared);
-    let keys = KeyEditor::new(&pane_keys, &shared, KeyCategory::Filer, scripts);
-    let keys_text = KeyEditor::new(&pane_keys_text, &shared, KeyCategory::TextViewer, Vec::new());
-    let keys_image = KeyEditor::new(&pane_keys_image, &shared, KeyCategory::ImageViewer, Vec::new());
+    let keys = KeyEditor::new(&pane_keys, &shared, KeyCategory::Filer, scripts, members.clone());
+    let keys_text =
+        KeyEditor::new(&pane_keys_text, &shared, KeyCategory::TextViewer, Vec::new(), members.clone());
+    let keys_image =
+        KeyEditor::new(&pane_keys_image, &shared, KeyCategory::ImageViewer, Vec::new(), members);
 
     // 配色 pane（ファイル一覧・ログ）とテキストビューア pane（ビューア専用色）。
     // 色変更後はそれぞれ対応するプレビューだけを再描画する。
