@@ -1340,6 +1340,41 @@ impl MainWindow {
         Ok(())
     }
 
+    /// 値返しクエリ組込の値を計算して返す。アクション系コマンドは `None`（呼び出し側が通常実行する）。
+    /// 副作用は持たない純粋な状態読み取りで、スクリプトの `r.token()` 経路だけが使う。返す値は
+    /// 文字列／数値／真偽のいずれか（合成しやすいスカラに限る）。
+    fn query_value(&self, is_left: bool, cmd: Command) -> Option<serde_json::Value> {
+        use serde_json::Value;
+        let state = self.view(is_left).state();
+        match cmd {
+            Command::CursorName => {
+                let s = state.borrow();
+                let name = s.items.get(s.cursor).map(|it| it.name.clone()).unwrap_or_default();
+                Some(Value::String(name))
+            }
+            Command::CursorPath => {
+                let name = {
+                    let s = state.borrow();
+                    s.items.get(s.cursor).map(|it| it.name.clone())
+                };
+                let path = match (self.pane(is_left).borrow().as_real_path(), name) {
+                    (Some(dir), Some(name)) => dir.join(&name).display().to_string(),
+                    _ => String::new(),
+                };
+                Some(Value::String(path))
+            }
+            Command::MarkedCount => {
+                let n = state.borrow().items.iter().filter(|it| it.selected).count();
+                Some(Value::from(n as u64))
+            }
+            Command::HasMarks => {
+                let any = state.borrow().items.iter().any(|it| it.selected);
+                Some(Value::Bool(any))
+            }
+            _ => None,
+        }
+    }
+
     fn wire_key_sink(&self) {
         self.key_sink.on().wm_get_dlg_code(move |_| {
             let flags = co::DLGC::WANTARROWS.raw() | co::DLGC::WANTALLKEYS.raw();

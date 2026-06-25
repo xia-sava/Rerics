@@ -32,7 +32,7 @@ rerics.registerCommand("up", () => {
 | `rerics.select(title, items)` | 一覧から選択 → `number \| null`（選んだ index・キャンセルで null） |
 | `rerics.activePane()` | アクティブペインの状態スナップショット → `RericsPane` |
 | `rerics.oppositePane()` | 反対側ペインの状態スナップショット → `RericsPane` |
-| `rerics.command(name, ...args)` | 内蔵コマンドを実行（同期・不明名/失敗は例外） |
+| `rerics.command(name, ...args)` | 内蔵コマンドを実行（同期・不明名/失敗は例外）。クエリ系は値、アクション系は `null` を返す |
 | `await rerics.listDir(path)` | ディレクトリ走査（裏スレッド・`Promise<RericsDirEntry[]>`） |
 | `rerics.registerCommand(name, handler, options?)` | 名前付きコマンドを登録（handler は同期/async どちらでも・`options` で `label`/`genre`/`summary` を添えられる） |
 | `rerics.on(event, handler)` | 本体のイベントを購読（`changeDirectory` / `executeCommand`） |
@@ -87,6 +87,34 @@ rerics.activePane().apply((d) => {
   for (const it of d.items) if (it.ext === "tmp") it.selected = true;
 });
 rerics.command("delete");  // 選んだ .tmp を削除（確認は本体設定に従う）
+```
+
+コマンドはトークン名そのままの名前付き関数 `r.<コマンド名>(...)` でも呼べる（`rerics.command()`
+と等価）。式（キー定義・メニュー）やスクリプトから同じ書き方で使える。
+
+```ts
+r.cursorDown();          // rerics.command("cursorDown") と同じ
+r.copy();                // 内蔵コピー（fast-path）
+```
+
+#### 状況を取得するクエリ系コマンド（値返し）
+
+状態を読むだけのクエリ系コマンドは**値を返す**（合成しやすいよう文字列・数値・真偽のスカラに限る）。
+副作用だけのアクション系（カーソル移動・コピーなど）は `null` を返す。
+
+| コマンド | 返り値 | 説明 |
+| --- | --- | --- |
+| `r.cursorName()` | `string` | カーソル下の項目名（無ければ空文字） |
+| `r.cursorPath()` | `string` | カーソル下の項目のフルパス（無ければ空文字） |
+| `r.markedCount()` | `number` | マーク（選択）項目の数 |
+| `r.hasMarks()` | `boolean` | マークされた項目があるか |
+
+```ts
+if (r.hasMarks()) {
+  rerics.log(`${r.markedCount()} 件マーク中`);
+} else {
+  rerics.log(`カーソル：${r.cursorName()}`);
+}
 ```
 
 `rerics.command()` でワーカーを起動する操作（コピー/移動/削除など）は「開始」まで戻り、

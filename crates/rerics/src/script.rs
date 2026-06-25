@@ -71,9 +71,9 @@ pub trait HostApi {
     fn set_selected(&self, is_left: bool, index: usize, selected: bool);
     /// `is_left` 側ペインの複数行の選択状態をまとめて適用する（再描画は 1 回）。
     fn apply_selection(&self, is_left: bool, changes: &[(usize, bool)]);
-    /// 内蔵コマンドを名前で実行する（同期）。不明な名前・実行失敗はエラー文字列を返す。
-    /// ワーカーを起動する操作は「開始」までで戻り、完了は待たない。
-    fn command(&self, name: &str, args: &[String]) -> Result<(), String>;
+    /// 内蔵コマンドを名前で実行する（同期）。値返しクエリは値を、アクション系は `null` を返す。
+    /// 不明な名前・実行失敗はエラー文字列を返す。ワーカーを起動する操作は「開始」までで戻り、完了は待たない。
+    fn command(&self, name: &str, args: &[String]) -> Result<serde_json::Value, String>;
     /// 非同期ファイル操作を起動する。起動できたら**トークン**を返し、進行中は `events` へ進捗を
     /// 流し、完了時に完了イベント（成功 or 失敗/中止）を 1 度送る。`items` が空なら対象＝アクティブ
     /// ペインの選択（行き先＝反対ペイン）、非空なら対象＝そのパス群・行き先＝`dest`（delete では
@@ -254,13 +254,15 @@ fn op_apply_selection(
     state.borrow::<Host>().apply_selection(is_left, &changes);
 }
 
-/// 内蔵コマンドを名前で実行する同期 op。不明な名前・実行失敗は JS の例外になる。
+/// 内蔵コマンドを名前で実行する同期 op。値返しクエリは値を、アクション系は `null` を返す。
+/// 不明な名前・実行失敗は JS の例外になる。
 #[op2]
+#[serde]
 fn op_command(
     state: &mut OpState,
     #[string] name: &str,
     #[serde] args: Vec<String>,
-) -> Result<(), deno_error::JsErrorBox> {
+) -> Result<serde_json::Value, deno_error::JsErrorBox> {
     state
         .borrow::<Host>()
         .command(name, &args)
@@ -990,12 +992,12 @@ mod tests {
         fn apply_selection(&self, is_left: bool, changes: &[(usize, bool)]) {
             self.applied.borrow_mut().push((is_left, changes.to_vec()));
         }
-        fn command(&self, name: &str, args: &[String]) -> Result<(), String> {
+        fn command(&self, name: &str, args: &[String]) -> Result<serde_json::Value, String> {
             if self.failing_command.as_deref() == Some(name) {
                 return Err(format!("boom: {name}"));
             }
             self.commands.borrow_mut().push((name.to_string(), args.to_vec()));
-            Ok(())
+            Ok(serde_json::Value::Null)
         }
         fn begin_operation(
             &self,

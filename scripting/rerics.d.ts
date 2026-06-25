@@ -153,6 +153,10 @@ declare const rerics: {
    * 内蔵コマンドを名前で実行する（アクティブペイン文脈・同期）。引数は文字列で渡す。
    * 不明なコマンド名・実行失敗は例外を投げる（`try/catch` で拾える）。
    *
+   * **値返し**：状態を読むクエリ系コマンド（`cursorName` / `cursorPath` / `markedCount` /
+   * `hasMarks` など）は値（文字列・数値・真偽）を返す。副作用だけのアクション系（カーソル移動・
+   * コピーなど）は `null` を返す。`r.<コマンド名>()` の名前付き呼び出しでも同じ値が返る。
+   *
    * ワーカーを起動する操作（コピー/移動/削除など）は「開始」まで戻り、**完了は待たない**。
    * 完了を待ちたいときは `await rerics.copy()` などの非同期版を使う。
    *
@@ -161,9 +165,11 @@ declare const rerics: {
    *   for (const it of d.items) if (it.ext === "tmp") it.selected = true;
    * });
    * rerics.command("delete");   // 選んだ .tmp を削除（開始まで・完了は待たない）
+   *
+   * if (r.hasMarks()) rerics.log(`${r.markedCount()} 件マーク中：${r.cursorName()}`);
    * ```
    */
-  command(name: string, ...args: string[]): void;
+  command(name: string, ...args: string[]): string | number | boolean | null;
 
   /**
    * `path` 直下を裏スレッドで走査して返す。重いディレクトリでも UI を止めない。

@@ -184,6 +184,11 @@ pub enum Command {
     End,
     Restart,
     Quit,
+    // 情報取得（値返しクエリ）
+    CursorName,
+    CursorPath,
+    MarkedCount,
+    HasMarks,
     // テキストビューア
     ViewerClose,
     ViewerScrollUp,
@@ -399,6 +404,10 @@ impl Command {
             (End, "end", "アプリケーションの終了", "アプリケーションを終了する"),
             (Restart, "restart", "再起動", "アプリケーションを再起動する"),
             (Quit, "quit", "閉じる（最後ならアプリ終了）", "タブを閉じる（最後のタブならアプリを終了する）"),
+            (CursorName, "cursorName", "カーソル項目名", "カーソル下の項目の名前を返す（無ければ空文字）"),
+            (CursorPath, "cursorPath", "カーソル項目のパス", "カーソル下の項目のフルパスを返す（無ければ空文字）"),
+            (MarkedCount, "markedCount", "マーク数", "マーク（選択）されている項目の数を返す"),
+            (HasMarks, "hasMarks", "マークの有無", "マーク（選択）された項目があるかを真偽で返す"),
             (ViewerClose, "viewerClose", "ビューアを閉じる", "ビューアを閉じてファイル一覧へ戻る"),
             (ViewerScrollUp, "viewerScrollUp", "1行上へ", "ビューアを 1 行上へスクロールする"),
             (ViewerScrollDown, "viewerScrollDown", "1行下へ", "ビューアを 1 行下へスクロールする"),
@@ -622,6 +631,11 @@ impl Command {
                 }],
                 examples: &[r#"sort("name")"#, r#"sort("size")"#],
             },
+            // 値返しクエリ＝引数なし。スクリプトで `const n = r.markedCount()` のように値を使う。
+            CursorName => CommandMeta { summary, args: &[], examples: &["cursorName()"] },
+            CursorPath => CommandMeta { summary, args: &[], examples: &["cursorPath()"] },
+            MarkedCount => CommandMeta { summary, args: &[], examples: &["markedCount()"] },
+            HasMarks => CommandMeta { summary, args: &[], examples: &["hasMarks()"] },
             _ => CommandMeta { summary, args: &[], examples: &[] },
         }
     }

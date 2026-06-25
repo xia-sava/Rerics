@@ -2721,6 +2721,40 @@ fn script_members_list_and_commands_callable_via_r() {
     assert_ne!(after.trim(), before, "r.goUp() で親へ移動する: {after}");
 }
 
+/// 値返しクエリ組込（cursorName/markedCount/hasMarks）はスクリプトの `r.token()` で実値（文字列／
+/// 数値／真偽）を返し、状態変化に追従する。アクション系（cursorDown 等）は `null` を返す。
+#[test]
+fn script_query_builtins_return_scalar_values() {
+    let server = Server::start_with_scripts(
+        &["a.txt", "b.txt", "c.txt"],
+        &[(
+            "00.ts",
+            r#"
+            rerics.registerCommand("probe", () => {
+              const before = r.markedCount();
+              const hasBefore = r.hasMarks();
+              rerics.activePane().apply((d) => {
+                for (const it of d.items) if (it.name === "a.txt") it.selected = true;
+              });
+              const after = r.markedCount();
+              const hasAfter = r.hasMarks();
+              rerics.log("Q nameType=" + (typeof r.cursorName())
+                + " before=" + before + " hasBefore=" + hasBefore
+                + " after=" + after + " hasAfter=" + hasAfter
+                + " act=" + r.cursorDown());
+            });
+            "#,
+        )],
+    );
+    poll(&server, "/script/commands", |b| b.contains("probe"));
+    server.req("POST", "/script/eval", "r.probe()").unwrap();
+    let log = poll(&server, "/state/log/lines", |b| b.contains("Q nameType="));
+    assert!(log.contains("nameType=string"), "cursorName は文字列を返す: {log}");
+    assert!(log.contains("before=0") && log.contains("hasBefore=false"), "初期はマーク無し: {log}");
+    assert!(log.contains("after=1") && log.contains("hasAfter=true"), "マーク後は数と真偽が追従: {log}");
+    assert!(log.contains("act=null"), "アクション系コマンドは null を返す: {log}");
+}
+
 /// 設定エディタ：補完つき「引数」モーダルで `r.<prefix>` を打つと候補（組込メンバー＋登録コマンド）が
 /// 出て、候補の確定でカレット直前のプレフィックスがメンバ名へ置換される（headless 観測）。
 #[test]

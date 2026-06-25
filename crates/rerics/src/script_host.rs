@@ -56,7 +56,7 @@ pub enum HostResp {
     Text(Option<String>),
     Index(Option<usize>),
     Snapshot(script::PaneSnapshot),
-    CommandResult(Result<(), String>),
+    CommandResult(Result<serde_json::Value, String>),
     OpStarted(Result<u64, String>),
 }
 
@@ -272,7 +272,7 @@ impl HostApi for GuiHost {
         );
     }
 
-    fn command(&self, name: &str, args: &[String]) -> Result<(), String> {
+    fn command(&self, name: &str, args: &[String]) -> Result<serde_json::Value, String> {
         match ui_marshal::call(
             &self.queue,
             self.hwnd_ptr,
@@ -669,20 +669,25 @@ impl MainWindow {
     /// スクリプトからの内蔵コマンド要求を実行する。名前を解決し、アクティブペイン文脈で
     /// `exec` する。不明な名前・実行失敗はエラー文字列にする。モーダルを開くコマンドは
     /// ネストループが SCRIPT_WAKE を回し続けるのでデッドロックしない。
-    fn run_script_command(&self, name: &str, args: Vec<String>) -> Result<(), String> {
+    fn run_script_command(&self, name: &str, args: Vec<String>) -> Result<serde_json::Value, String> {
         let Some(cmd) = Command::from_token(name) else {
             return Err(format!("unknown command: {name}"));
         };
+        let is_left = !self.active_right.get();
+        // 値返しクエリ＝副作用なしの状態読み取り。アクション実行をせず値だけ返す。
+        if let Some(value) = self.query_value(is_left, cmd) {
+            return Ok(value);
+        }
         let call = Call::Builtin {
             command: cmd,
             args: args.into_iter().map(serde_json::Value::String).collect(),
         };
-        let is_left = !self.active_right.get();
         // スクリプト発のコマンド実行中は executeCommand を抑止する（無限再帰を防ぐ）。
         self.script.suppress_events.set(true);
         let result = self.exec(is_left, &call);
         self.script.suppress_events.set(false);
-        result.map_err(|e| e.to_string())
+        // アクション系コマンドは値を返さない（`undefined` 相当の null）。
+        result.map(|()| serde_json::Value::Null).map_err(|e| e.to_string())
     }
 
     /// ペインの一覧読込が完了したとき呼ぶ。前回撃った現在地と違えば changeDirectory を配る
