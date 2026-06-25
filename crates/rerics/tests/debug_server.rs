@@ -3448,3 +3448,48 @@ fn command_direct_runs_typed_command() {
         "不正コマンドではカーソルは動かない"
     );
 }
+
+/// config の `[[menus]]` で定義した名前付きメニューを解決し（参照式サブメニュー込み）、項目を
+/// 選ぶとキー押下と同じ経路で実行する。ネイティブポップアップは headless で駆動できないので、
+/// `/menu/<name>` で解決済みモデルを観測し、`/menu/<name>/select/<idx>` で実行する。
+#[test]
+fn named_menu_resolves_and_dispatches() {
+    let config = r#"
+[[menus]]
+name = "test"
+items = [
+  { label = "下へ(&D)", command = "CursorDown" },
+  { separator = true },
+  { label = "サブ(&S)", command = 'Menu("sub")' },
+]
+
+[[menus]]
+name = "sub"
+items = [
+  { label = "先頭へ", command = "CursorTop" },
+]
+"#;
+    let server = Server::start(&["a.txt", "b.txt", "c.txt"], config);
+
+    // 解決済みの項目木：コマンド・セパレータ・参照式サブメニューが出る。
+    let tree = server.req("GET", "/menu/test", "").unwrap().1;
+    assert!(tree.contains("\"command\":\"CursorDown\""), "コマンド項目: {tree}");
+    assert!(tree.contains("\"sep\":true"), "セパレータ: {tree}");
+    assert!(tree.contains("\"command\":\"CursorTop\""), "サブメニューが展開される: {tree}");
+    // サブメニュー内の項目にも深さ優先で葉インデックスが振られる。
+    assert!(tree.contains("\"leaf\":1"), "サブメニューの葉も採番される: {tree}");
+
+    // 葉 0（CursorDown）を選ぶとカーソルが 1 へ動く。
+    server.req("POST", "/menu/test/select/0", "").unwrap();
+    let c = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+    assert_eq!(c.trim(), "1", "葉0=CursorDown でカーソルが 1 へ");
+
+    // 葉 1（サブメニュー内の CursorTop）を選ぶとカーソルが 0 へ戻る＝サブメニュー項目も実行できる。
+    server.req("POST", "/menu/test/select/1", "").unwrap();
+    let c = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "0");
+    assert_eq!(c.trim(), "0", "葉1=サブメニューの CursorTop でカーソルが 0 へ");
+
+    // 未定義メニューは null。
+    let unknown = server.req("GET", "/menu/nope", "").unwrap().1;
+    assert_eq!(unknown.trim(), "null", "未定義メニューは null: {unknown}");
+}

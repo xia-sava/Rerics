@@ -2,7 +2,7 @@
 
 use std::sync::mpsc::Sender;
 use winsafe::{self as w, co, prelude::*};
-use rerics_core::{Command, CommandContext, Invocation};
+use rerics_core::{Command, CommandContext, Invocation, ResolvedItem};
 use crate::{ActiveView, DebugCmdClass, MainWindow, debug_command_class, debug_json, debug_server, parse_region};
 
 impl MainWindow {
@@ -105,6 +105,12 @@ impl MainWindow {
                     let names = self.script_list_members();
                     let json = serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_string());
                     let _ = tx.send(debug_server::Response::Json(json));
+                }
+                debug_server::Request::Menu { name } => {
+                    let _ = tx.send(self.debug_menu(&name));
+                }
+                debug_server::Request::MenuSelect { name, idx } => {
+                    self.debug_menu_select(&name, idx, tx);
                 }
                 debug_server::Request::ScriptInvoke { name } => {
                     self.script_send(crate::script_host::EngineCmd::Invoke(name));
@@ -422,6 +428,51 @@ impl MainWindow {
                 ));
                 let _ = self.exec(is_left, &inv);
             }
+        }
+    }
+
+    /// 名前付きメニューを解決し、項目木を JSON で返す（未定義は null）。ネイティブポップアップは
+    /// headless で駆動できないので、見た目ではなく解決済みモデルを観測する。各実行項目には深さ
+    /// 優先で振った葉インデックス（`/menu/<name>/select/<idx>` の idx）を `leaf` に添える。
+    #[cfg(feature = "debug-server")]
+    fn debug_menu(&self, name: &str) -> debug_server::Response {
+        let Some(items) = self.menu_registry().resolve(name) else {
+            return debug_server::Response::Json("null".to_string());
+        };
+        let mut leaf = 0usize;
+        let tree = serde_json::Value::Array(menu_items_to_json(&items, &mut leaf));
+        debug_server::Response::Json(tree.to_string())
+    }
+
+    /// 解決済みメニューの idx 番目の実行項目（深さ優先のコマンド葉）を、キー押下と同じ exec へ流す。
+    /// モーダルを開き得る項目は HTTP が詰まらないよう応答を先に返す（command 経路と同じ作法）。
+    #[cfg(feature = "debug-server")]
+    fn debug_menu_select(&self, name: &str, idx: usize, tx: Sender<debug_server::Response>) {
+        let Some(items) = self.menu_registry().resolve(name) else {
+            let _ = tx.send(debug_server::Response::NotFound);
+            return;
+        };
+        let mut leaves: Vec<Invocation> = Vec::new();
+        flatten_menu_leaves(&items, &mut leaves);
+        let Some(inv) = leaves.get(idx).cloned() else {
+            let _ = tx.send(debug_server::Response::BadRequest(format!(
+                "メニュー項目が範囲外です: {idx}"
+            )));
+            return;
+        };
+        let is_left = !self.active_right.get();
+        if matches!(debug_command_class(inv.command), DebugCmdClass::NonModal) {
+            let r = match self.exec(is_left, &inv) {
+                Ok(()) => {
+                    self.settle_pending_jobs();
+                    debug_server::Response::Json(self.debug_state_value().to_string())
+                }
+                Err(e) => debug_server::Response::Error(format!("exec error: {e}")),
+            };
+            let _ = tx.send(r);
+        } else {
+            let _ = tx.send(debug_server::Response::Json("{\"maybe_modal\":true}".to_string()));
+            let _ = self.exec(is_left, &inv);
         }
     }
 
@@ -1286,6 +1337,43 @@ impl MainWindow {
             Some(Ok(())) => debug_server::Response::Json("\"ok\"".to_string()),
             Some(Err(e)) => debug_server::Response::BadRequest(e),
             None => debug_server::Response::NotFound,
+        }
+    }
+}
+
+/// 解決済みメニュー項目列を JSON 配列へ変換する。実行項目には深さ優先で `leaf` インデックスを
+/// 振る（`build_resolved_menu` のディスパッチ順・`flatten_menu_leaves` と一致）。
+#[cfg(feature = "debug-server")]
+fn menu_items_to_json(items: &[ResolvedItem], leaf: &mut usize) -> Vec<serde_json::Value> {
+    use serde_json::json;
+    items
+        .iter()
+        .map(|item| match item {
+            ResolvedItem::Separator => json!({ "sep": true }),
+            ResolvedItem::Command { label, invocation } => {
+                let idx = *leaf;
+                *leaf += 1;
+                json!({ "label": label, "command": invocation.to_token_string(), "leaf": idx })
+            }
+            ResolvedItem::Submenu { label, items } => {
+                json!({ "label": label, "items": menu_items_to_json(items, leaf) })
+            }
+            ResolvedItem::Invalid { label, reason } => {
+                json!({ "label": label, "invalid": reason })
+            }
+        })
+        .collect()
+}
+
+/// 解決済みメニューの実行項目の呼び出しを深さ優先で集める（`build_resolved_menu` の
+/// ディスパッチ順と一致＝`/menu/<name>/select/<idx>` の idx 解決に使う）。
+#[cfg(feature = "debug-server")]
+fn flatten_menu_leaves(items: &[ResolvedItem], out: &mut Vec<Invocation>) {
+    for item in items {
+        match item {
+            ResolvedItem::Command { invocation, .. } => out.push(invocation.clone()),
+            ResolvedItem::Submenu { items, .. } => flatten_menu_leaves(items, out),
+            _ => {}
         }
     }
 }

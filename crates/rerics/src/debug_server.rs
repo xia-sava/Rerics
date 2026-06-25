@@ -349,6 +349,12 @@ pub enum Request {
     KeysAddKeyDef { category: String, chord: String },
     /// `POST /settings/nav/<pane>`：設定ダイアログの左ナビを pane 番号のページへ切り替える。
     SettingsNav { pane: usize },
+    /// `GET /menu/<name>`：名前付きメニューを解決した項目木（JSON）。未定義は null。
+    /// ネイティブポップアップは headless で駆動できないので、見た目ではなくモデルを観測する。
+    Menu { name: String },
+    /// `POST /menu/<name>/select/<idx>`：解決済みメニューの idx 番目の実行項目（深さ優先の
+    /// コマンド葉）の呼び出しを、キー押下と同じ exec 経路へ流す。
+    MenuSelect { name: String, idx: usize },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -465,6 +471,8 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::ScriptMembers)
             } else if path == "/completion" {
                 Some(Request::CompletionState)
+            } else if let Some(name) = path.strip_prefix("/menu/") {
+                Some(Request::Menu { name: name.trim_end_matches('/').to_string() })
             } else {
                 path.strip_prefix("/keys/").map(|cat| Request::KeysState {
                     category: cat.trim_end_matches('/').to_string(),
@@ -486,6 +494,13 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                         return;
                     }
                 }
+            } else if let Some(rest) = path.strip_prefix("/menu/") {
+                rest.trim_end_matches('/').rsplit_once("/select/").and_then(|(name, n)| {
+                    n.parse::<usize>().ok().map(|idx| Request::MenuSelect {
+                        name: name.to_string(),
+                        idx,
+                    })
+                })
             } else if let Some(name) = path.strip_prefix("/completion/key/") {
                 Some(Request::CompletionKey { name: name.trim_end_matches('/').to_string() })
             } else if path == "/completion/type" {
