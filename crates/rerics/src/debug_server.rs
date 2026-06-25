@@ -274,6 +274,8 @@ pub mod modal_registry {
         pub delete_item: Box<dyn Fn()>,
         /// 選択中の項目を delta（-1/+1）方向へ並べ替える。
         pub move_item: Box<dyn Fn(i32)>,
+        /// 項目コマンドの機能ピッカー（モーダル）を開く。閉じるまでブロックする。
+        pub pick_command: Box<dyn Fn()>,
     }
 
     thread_local! {
@@ -396,9 +398,12 @@ pub enum Request {
     SettingsNav { pane: usize },
     /// `GET /menu-editor`：メニュー編集ページの現在状態（JSON）。未オープンは null。
     MenuEditorState,
-    /// `POST /menu-editor/<op>[/<arg>]`：メニュー編集ページを駆動する（select/add/rename/delete/move）。
-    /// `add`/`rename` は body で名前を、`select`/`move` は arg を取る。
+    /// `POST /menu-editor/<op>[/<arg>]`：メニュー編集ページを駆動する（select/add/rename/delete/move
+    /// や item-*）。`add`/`rename` は body で名前を、`select`/`move` は arg を取る。
     MenuEditorOp { op: String, arg: String, body: String },
+    /// `POST /menu-editor/item-pick`：項目コマンドの機能ピッカー（モーダル）を開く。モーダルは
+    /// 閉じるまでブロックするので、開く前に応答を返す（`/modal/*` を捌けるように）。
+    MenuEditorPick,
     /// `GET /menu/<name>`：名前付きメニューを解決した項目木（JSON）。未定義は null。
     /// ネイティブポップアップは headless で駆動できないので、見た目ではなくモデルを観測する。
     Menu { name: String },
@@ -546,6 +551,8 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                         return;
                     }
                 }
+            } else if path == "/menu-editor/item-pick" {
+                Some(Request::MenuEditorPick)
             } else if let Some(rest) = path.strip_prefix("/menu-editor/") {
                 let mut body = String::new();
                 let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);

@@ -11,8 +11,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rerics_core::{
-    Bookmark, Colors, Column, ColumnKind, Config, FileOpSettings, IconSize, Layout, MenuDef,
-    MenuItem, Rgb, ResolvedTheme, SizeFormat, SortType, Theme, WheelAction,
+    Bookmark, Colors, Column, ColumnKind, Command, Config, FileOpSettings, IconSize, Layout,
+    MenuDef, MenuItem, Rgb, ResolvedTheme, SizeFormat, SortType, Theme, WheelAction,
 };
 use winsafe::{self as w, co, gui, msg::lb, prelude::*};
 
@@ -2279,6 +2279,23 @@ fn menu_item_columns(it: &MenuItem) -> [String; 2] {
 /// メニュー項目を編集欄の内容（ラベル／コマンド／セパレータ）で操作するクロージャ。
 type MenuItemOp = Rc<dyn Fn(&str, &str, bool)>;
 
+/// 機能ピッカー（モーダル）の表示行と、各行に対応するコマンドトークン（並列）。キー編集器と
+/// 同じ `command_genre` 順に並べ、ジャンル見出し付きで見せる。選んだ行のトークンをコマンド欄へ
+/// 挿入する（引数や `Script(...)`/`Menu(...)` 参照は欄で手書きする前提なので base のみ）。
+fn command_picker_rows() -> (Vec<String>, Vec<String>) {
+    let mut cmds: Vec<Command> = Command::all().collect();
+    cmds.sort_by_key(|c| crate::key_editor::command_genre(*c).0);
+    let rows = cmds
+        .iter()
+        .map(|c| {
+            let genre = crate::key_editor::command_genre(*c).1;
+            format!("〔{}〕{}（{}）", genre, c.display_name(), c.as_token())
+        })
+        .collect();
+    let tokens = cmds.iter().map(|c| c.as_token().to_string()).collect();
+    (rows, tokens)
+}
+
 /// 編集欄の内容から項目を1つ作る。セパレータ時はラベル/コマンドを無視し区切り線にする。
 /// それ以外でラベルが空なら既定名で埋める。
 fn build_menu_item(label: &str, command: &str, sep: bool) -> MenuItem {
@@ -2303,7 +2320,7 @@ struct MenusPane {
 }
 
 impl MenusPane {
-    fn new(parent: &gui::WindowControl, shared: &Rc<Shared>) -> Self {
+    fn new(parent: &gui::WindowControl, shared: &Rc<Shared>, wnd: &gui::WindowModal) -> Self {
         label(parent, "メニュー（Menu(\"名前\") で開く）。選ぶと右に項目が出る。", 8, 8, 520);
         let menu_list = gui::ListView::<()>::new(
             parent,
@@ -2364,11 +2381,12 @@ impl MenusPane {
             parent,
             gui::EditOpts {
                 position: gui::dpi(514, 460),
-                width: gui::dpi_x(254),
+                width: gui::dpi_x(178),
                 height: gui::dpi_y(22),
                 ..Default::default()
             },
         );
+        let pick_btn = button(parent, "選択(&P)", 696, 459, 72);
         let sep_check = gui::CheckBox::new(
             parent,
             gui::CheckBoxOpts {
@@ -2641,6 +2659,24 @@ impl MenusPane {
             }
         });
 
+        // コマンド欄から機能ピッカー（モーダル）を開き、選んだトークンを欄へ挿入する。現在欄の
+        // トークンに一致する行を初期選択にする。ボタンと debug フックの両方から呼ぶ。
+        let pick_command: Rc<dyn Fn()> = Rc::new({
+            let wnd = wnd.clone();
+            let command_edit = command_edit.clone();
+            move || {
+                let (rows, tokens) = command_picker_rows();
+                let current = command_edit.text().unwrap_or_default();
+                let initial = tokens.iter().position(|t| t.as_str() == current.trim()).unwrap_or(0);
+                if let Some(idx) =
+                    crate::dialog::list_box(&wnd, "機能の選択", "menupick", &rows, initial)
+                    && let Some(tok) = tokens.get(idx)
+                {
+                    let _ = command_edit.set_text(tok);
+                }
+            }
+        });
+
         // ボタンは名前欄の内容を使って操作を呼ぶ。
         {
             let f = do_add.clone();
@@ -2722,6 +2758,13 @@ impl MenusPane {
                 Ok(())
             });
         }
+        {
+            let f = pick_command.clone();
+            pick_btn.on().bn_clicked(move || {
+                f();
+                Ok(())
+            });
+        }
 
         // debug-server：標準コントロールは generic な `/modal/*` で叩けないので、操作フックを
         // 登録して `/menu-editor/*` から駆動・観測できるようにする。
@@ -2768,6 +2811,9 @@ impl MenusPane {
                 let shared = shared.clone();
                 let selected_menu = selected_menu.clone();
                 let selected_item = selected_item.clone();
+                let label_edit = label_edit.clone();
+                let command_edit = command_edit.clone();
+                let sep_check = sep_check.clone();
                 move || {
                     let cfg = shared.cfg.borrow();
                     let menus: Vec<_> = cfg
@@ -2792,6 +2838,11 @@ impl MenusPane {
                         "menus": menus,
                         "selected_menu": selected_menu.get(),
                         "selected_item": selected_item.get(),
+                        "draft": {
+                            "label": label_edit.text().unwrap_or_default(),
+                            "command": command_edit.text().unwrap_or_default(),
+                            "separator": sep_check.is_checked(),
+                        },
                     })
                     .to_string()
                 }
@@ -2837,6 +2888,10 @@ impl MenusPane {
                 move_item: Box::new({
                     let f = do_item_move.clone();
                     move |d| f(d)
+                }),
+                pick_command: Box::new({
+                    let f = pick_command.clone();
+                    move || f()
                 }),
             });
         }
@@ -3240,7 +3295,7 @@ pub fn show(
     build_list(&pane_list, &shared);
     let columns_editor = ColumnsEditor::new(&pane_list, &shared);
     let registered = RegisteredPane::new(&pane_registered, &shared);
-    let menus_pane = MenusPane::new(&pane_menus, &shared);
+    let menus_pane = MenusPane::new(&pane_menus, &shared, &wnd);
     let keys = KeyEditor::new(&pane_keys, &shared, KeyCategory::Filer, scripts, members.clone());
     let keys_text =
         KeyEditor::new(&pane_keys_text, &shared, KeyCategory::TextViewer, Vec::new(), members.clone());

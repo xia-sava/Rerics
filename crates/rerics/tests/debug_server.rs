@@ -3617,6 +3617,46 @@ items = [ { label = "コピー", command = "Copy" } ]
     assert!(s.contains("\"label\":\"切り取り\"") && s.contains("\"separator\":true"), "他は残る: {s}");
 }
 
+/// 設定の「メニュー」ページのコマンド欄から機能ピッカー（モーダル）を開き、選んだ機能の
+/// トークンがコマンド欄へ入る。ピッカーは閉じるまでブロックするので item-pick は respond-first。
+/// ネストモーダルは既存の `/modal/*`（list_box が配線済み）で観測・駆動する。
+#[test]
+fn menu_editor_command_picker_inserts_token() {
+    let config = r#"
+[[menus]]
+name = "alpha"
+items = [ { label = "コピー", command = "Copy" } ]
+"#;
+    let server = Server::start(&["a.txt"], config);
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    poll(&server, "/menu-editor", |b| b.contains("\"name\":\"alpha\""));
+
+    // メニュー・項目を選ぶと、その項目のコマンドが下書き欄へ載る。
+    server.req("POST", "/menu-editor/select/0", "").unwrap();
+    let s = server.req("POST", "/menu-editor/item-select/0", "").unwrap().1;
+    assert!(s.contains("\"command\":\"Copy\""), "選択項目が下書き欄へ: {s}");
+
+    // ピッカーを開く（respond-first）。最前面モーダルがリスト選択（機能の選択）になる。
+    let r = server.req("POST", "/menu-editor/item-pick", "").unwrap().1;
+    assert!(r.contains("modal_opening"), "respond-first: {r}");
+    let st = poll(&server, "/state", |b| b.contains("機能の選択"));
+
+    // モーダルの行から Delete の行を見つけて選び、OK で確定する。
+    let v: serde_json::Value = serde_json::from_str(&st).unwrap();
+    let items = v["modal"]["items"].as_array().expect("modal items");
+    let idx = items
+        .iter()
+        .position(|x| x.as_str().unwrap_or("").contains("（Delete）"))
+        .expect("Delete の行がある");
+    server.req("POST", &format!("/modal/select/{idx}"), "").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+
+    // ピッカーが閉じたらコマンド下書き欄が Delete に置き換わる。メニュー項目自体は OK 前なので
+    // まだ Copy のまま（欄への挿入だけ）。
+    let s = poll(&server, "/menu-editor", |b| b.contains("\"command\":\"Delete\""));
+    assert!(s.contains("\"command\":\"Copy\""), "項目はまだ Copy のまま: {s}");
+}
+
 /// メニュー項目に `Script("名前", 引数...)` を書くと、選んだとき登録スクリプトが引数ごと
 /// 実行される（原作のスクリプト連携メニューを移植する経路・引数転送つき）。
 #[test]

@@ -163,7 +163,8 @@ fn label_display(label: &str) -> String {
 
 /// 機能ピッカーの並び・見出し用ジャンル。`(並び順, 見出し)` を返す。並びは機能ピッカーを
 /// ジャンルごとに固まらせるためのもので、設定 UI 専用の括り（コアの文脈分けとは別軸）。
-fn command_genre(cmd: Command) -> (u8, &'static str) {
+/// メニュー編集のコマンドピッカー（[`crate::settings_dialog`]）も同じ括りで流用する。
+pub(crate) fn command_genre(cmd: Command) -> (u8, &'static str) {
     use Command::*;
     match cmd {
         CursorUp | CursorDown | CursorTop | CursorEnd | CursorPageUp | CursorPageDown

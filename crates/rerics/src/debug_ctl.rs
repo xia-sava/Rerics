@@ -114,6 +114,19 @@ impl MainWindow {
                 debug_server::Request::MenuEditorOp { op, arg, body } => {
                     let _ = tx.send(self.debug_menu_editor_op(&op, &arg, &body));
                 }
+                debug_server::Request::MenuEditorPick => {
+                    // ピッカーは閉じるまでブロックするので、開く前に応答を返す（/modal/* を捌けるように）。
+                    let opened = debug_server::modal_registry::with_menu_editor(|_| ()).is_some();
+                    if opened {
+                        let _ = tx.send(debug_server::Response::Json(
+                            "{\"modal_opening\":true}".to_string(),
+                        ));
+                        debug_server::modal_registry::with_menu_editor(|h| (h.pick_command)());
+                    } else {
+                        let _ = tx
+                            .send(debug_server::Response::BadRequest("menu editor not open".into()));
+                    }
+                }
                 debug_server::Request::Menu { name } => {
                     let _ = tx.send(self.debug_menu(&name));
                 }
