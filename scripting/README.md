@@ -34,7 +34,7 @@ rerics.registerCommand("up", () => {
 | `rerics.oppositePane()` | 反対側ペインの状態スナップショット → `RericsPane` |
 | `rerics.command(name, ...args)` | 内蔵コマンドを実行（同期・不明名/失敗は例外） |
 | `await rerics.listDir(path)` | ディレクトリ走査（裏スレッド・`Promise<RericsDirEntry[]>`） |
-| `rerics.registerCommand(name, handler)` | 名前付きコマンドを登録（handler は同期/async どちらでも） |
+| `rerics.registerCommand(name, handler, options?)` | 名前付きコマンドを登録（handler は同期/async どちらでも・`options` で `label`/`genre`/`summary` を添えられる） |
 | `rerics.on(event, handler)` | 本体のイベントを購読（`changeDirectory` / `executeCommand`） |
 | `await rerics.copy()` / `await rerics.move()` / `await rerics.delete()` | 選択をコピー/移動/削除（ワーカー実行・完了を待てる・`cancel()` 可・`onProgress` で進捗） |
 

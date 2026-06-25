@@ -110,7 +110,8 @@ pub struct ProcessResult {
 }
 
 /// 登録済みスクリプトコマンドのメタ情報（`registerCommand` の第3引数）。`label` は設定 UI の
-/// 機能名カラムに出す日本語名、`genre` は機能順での見出しグループ。どちらも省略可（`None`）。
+/// 機能名カラムに出す日本語名、`genre` は機能順での見出しグループ、`summary` は補完やヘルプに
+/// 出す 1 行説明（組込コマンドの [`rerics_core::CommandMeta::summary`] と同じ役割）。いずれも省略可。
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct ScriptCommand {
     /// 登録名（`invoke`／`script("name")` で指す識別子）。
@@ -121,6 +122,9 @@ pub struct ScriptCommand {
     /// 機能順での所属ジャンル（既知ジャンル名なら組込群に混ぜ、未知なら「スクリプト」群へ）。
     #[serde(default)]
     pub genre: Option<String>,
+    /// 補完・ヘルプに出す 1 行説明（組込の summary と同じインタフェース）。
+    #[serde(default)]
+    pub summary: Option<String>,
 }
 
 /// スクリプトが起動する非同期ファイル操作の種別。
@@ -608,6 +612,7 @@ const BOOTSTRAP: &str = r#"
         fn,
         label: o.label == null ? null : String(o.label),
         genre: o.genre == null ? null : String(o.genre),
+        summary: o.summary == null ? null : String(o.summary),
       });
       // 登録コマンドを r.<name>() でも呼べるようにする（式/コードから対象操作を書ける）。
       // 組込メンバーと衝突する名前は組込を優先し、r へは生やさない（マップには残る）。
@@ -667,7 +672,12 @@ const BOOTSTRAP: &str = r#"
   // 補完候補＝`r.` で呼べるもの（組込メンバー＋公開済み登録コマンド）の名前を昇順で返す。
   globalThis.__memberNames = () => Object.keys(globalThis.rerics).sort();
   globalThis.__commandMetas = () =>
-    [...commands.entries()].map(([name, e]) => ({ name, label: e.label, genre: e.genre }));
+    [...commands.entries()].map(([name, e]) => ({
+      name,
+      label: e.label,
+      genre: e.genre,
+      summary: e.summary,
+    }));
   globalThis.__menuDefs = () =>
     [...menus.entries()].map(([name, items]) => ({ name, items }));
   globalThis.__invokeCommand = (name, ...args) => {
@@ -1239,7 +1249,7 @@ mod tests {
         eng.run_to_completion(
             "test:meta",
             r#"
-              rerics.registerCommand("organize", () => {}, { label: "整理する", genre: "片付け" });
+              rerics.registerCommand("organize", () => {}, { label: "整理する", genre: "片付け", summary: "散らかりを整える" });
               rerics.registerCommand("onlyLabel", () => {}, { label: "ラベルだけ" });
               rerics.registerCommand("plain", () => {});
             "#
@@ -1254,13 +1264,15 @@ mod tests {
                     name: "organize".into(),
                     label: Some("整理する".into()),
                     genre: Some("片付け".into()),
+                    summary: Some("散らかりを整える".into()),
                 },
                 ScriptCommand {
                     name: "onlyLabel".into(),
                     label: Some("ラベルだけ".into()),
                     genre: None,
+                    summary: None,
                 },
-                ScriptCommand { name: "plain".into(), label: None, genre: None },
+                ScriptCommand { name: "plain".into(), label: None, genre: None, summary: None },
             ]
         );
         // 名前一覧は従来どおり（メタ化で壊れない）。

@@ -173,9 +173,14 @@ declare const rerics: {
 
   /**
    * 名前付きコマンドを登録する。`handler` は同期でも `async`（Promise を返す）でもよい。
-   * 同名で再登録すると後勝ちで上書きする。
+   * 同名で再登録すると後勝ちで上書きする。`options` で設定 UI・補完に出すメタ情報を添えられる
+   * （`label`＝機能名・`genre`＝機能順の見出しグループ・`summary`＝補完やヘルプに出す 1 行説明）。
    */
-  registerCommand(name: string, handler: () => void | Promise<void>): void;
+  registerCommand(
+    name: string,
+    handler: (...args: unknown[]) => unknown,
+    options?: { label?: string; genre?: string; summary?: string },
+  ): void;
 
   /**
    * ファイラー本体のイベントにハンドラを登録する。同じイベントに複数登録でき、登録順に

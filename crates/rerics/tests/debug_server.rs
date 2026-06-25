@@ -2783,6 +2783,33 @@ fn completion_annotates_builtin_members_with_meta() {
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
 
+/// 式エディタの `r.` 補完は、登録スクリプト関数にも `registerCommand` の summary を添える
+/// （組込メタと同じインタフェース＝組込／スクリプトを区別せず説明が出る）。
+#[test]
+fn completion_annotates_script_members_with_summary() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[(
+            "00.ts",
+            r#"rerics.registerCommand("organize", () => {}, { summary: "散らかりを整える" });"#,
+        )],
+    );
+    poll(&server, "/script/members", |b| b.contains("organize"));
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
+    wait_modal(&server);
+    server.req("POST", "/settings/nav/5", "").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/openexpr", "").unwrap();
+    server.req("POST", "/modal/text", "").unwrap();
+
+    server.req("POST", "/completion/keystrokes", "=r.organi").unwrap();
+    let c = poll(&server, "/completion", |b| b.contains("organize"));
+    assert!(c.contains("散らかりを整える"), "スクリプト関数に summary が添う: {c}");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
 /// 補完つき入力欄のキーボード操作：↑↓で候補移動（クランプ）・Enter で確定・Ctrl+Space で強制表示。
 /// 実キー経路（WM_KEYDOWN/WM_CHAR を keyhook サブクラスが横取り）を headless で検証する。
 #[test]

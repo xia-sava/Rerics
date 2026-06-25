@@ -231,6 +231,13 @@ struct CompletionItem {
     detail: Option<String>,
 }
 
+/// `code_box` の `r.` 補完に渡すメンバ 1 件。組込／host API／スクリプト関数を区別せず名前で持つ。
+/// `script_summary` は登録スクリプト関数の 1 行説明（組込はメタデータから引くので不要・`None`）。
+pub struct CompletionMember {
+    pub name: String,
+    pub script_summary: Option<String>,
+}
+
 /// 組込コマンドのメタデータから、補完候補に添える 1 行ヒント（引数シグネチャ＋説明）を作る。
 fn meta_hint(cmd: rerics_core::Command) -> String {
     let m = cmd.meta();
@@ -467,7 +474,7 @@ pub fn code_box(
     parent: &impl GuiParent,
     message: &str,
     value: &str,
-    members: &[String],
+    members: &[CompletionMember],
 ) -> Option<String> {
     let (wnd, arm) = modal_window("コードを割り当て", 480, 400);
 
@@ -568,10 +575,15 @@ pub fn code_box(
 
     // 補完モデル＝カレット直前が `r.`／`rerics.` のときだけ、その後の識別子に前方一致するメンバを出す。
     // 表示＝挿入（メンバ名そのもの）。`force` は Ctrl+Space＝「唯一かつ入力済みと同一」でも出す。
-    let members_for = members.to_vec();
+    // メンバ名の一覧（前方一致の絞り込み用）と、スクリプト関数の説明（名前→1行説明）を分けて持つ。
+    let names: Vec<String> = members.iter().map(|m| m.name.clone()).collect();
+    let script_summaries: std::collections::HashMap<String, String> = members
+        .iter()
+        .filter_map(|m| m.script_summary.clone().map(|s| (m.name.clone(), s)))
+        .collect();
     let complete: CompleteFn = Rc::new(move |before, caret, force| {
         let (plen, prefix) = completion_prefix(before)?;
-        let list = completion_candidates(&members_for, &prefix);
+        let list = completion_candidates(&names, &prefix);
         let only_exact = list.len() == 1 && list[0].eq_ignore_ascii_case(&prefix);
         if list.is_empty() || (!force && only_exact) {
             return None;
@@ -580,7 +592,10 @@ pub fn code_box(
         let items = list
             .into_iter()
             .map(|m| {
-                let detail = rerics_core::Command::from_token(&m).map(meta_hint);
+                // 組込はメタデータから引数ヒント＋説明を、スクリプト関数は登録時の説明を添える。
+                let detail = rerics_core::Command::from_token(&m)
+                    .map(meta_hint)
+                    .or_else(|| script_summaries.get(&m).cloned());
                 CompletionItem { display: m.clone(), insert: m, detail }
             })
             .collect();
