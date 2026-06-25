@@ -4,6 +4,7 @@
 
 mod archive;
 mod attrs;
+mod call;
 mod config;
 mod file_list;
 mod highlight;
@@ -39,6 +40,7 @@ pub use file_list::{
     auto_adjust_columns, column_sample, default_columns, find_match, glob_match, read_items,
     sequence_rename,
 };
+pub use call::Call;
 pub use input::{Command, CommandContext, Invocation, KeyChord, KeyMap, vk};
 pub use menu::{MenuDef, MenuItem, MenuRegistry, ResolvedItem};
 pub use naming::unique_name;
