@@ -792,12 +792,12 @@ fn rename_meta_dialog_opens_and_closes() {
     assert!(items.contains("\"name\":\"a.txt\""), "a.txt should still exist: {items}");
 }
 
-/// CreateFile＝入力したファイル名で空ファイルを作成する。
+/// CreateFileDialog＝入力したファイル名で空ファイルを作成する。
 #[test]
 fn create_file_makes_empty_file() {
     let server = Server::start_writable(&["a.txt"]);
 
-    server.req("POST", "/command/CreateFile", "").unwrap();
+    server.req("POST", "/command/CreateFileDialog", "").unwrap();
     // ファイル名入力ダイアログが開く。
     let modal = wait_modal(&server);
     assert!(modal.contains("\"has_input\":true"), "should ask for a name: {modal}");
@@ -1149,7 +1149,7 @@ fn viewer_commands_dispatch_in_text_context() {
     assert_eq!(av2.trim(), "\"none\"", "Esc の実キー経路で一覧へ戻る");
 }
 
-/// RegisterPath で現在地を登録し、JumpDialog でそこへ戻る。
+/// PathRegisterDialog で現在地を登録し、JumpDialog でそこへ戻る。
 #[test]
 fn nav_register_and_jump() {
     let server = Server::start(&["a.txt"], "");
@@ -1161,7 +1161,7 @@ fn nav_register_and_jump() {
         .to_string();
 
     // 現在地（sbx）を "home" として登録する。
-    server.req("POST", "/command/RegisterPath", "").unwrap();
+    server.req("POST", "/command/PathRegisterDialog", "").unwrap();
     let m = wait_modal(&server);
     assert!(m.contains("\"has_input\":true"), "register should ask for a label: {m}");
     server.req("POST", "/modal/text", "home").unwrap();
@@ -3209,8 +3209,8 @@ fn quit_closes_tab_when_multiple_keeps_app_alive() {
     let server = Server::start(&["a.txt"], "");
     let count = || server.req("GET", "/state/tabs/count", "").expect("count").1;
     assert_eq!(count().trim(), "1", "初期は 1 タブ");
-    server.req("POST", "/command/NewTab", "").expect("NewTab");
-    assert_eq!(count().trim(), "2", "NewTab で 2 タブ");
+    server.req("POST", "/command/NewFiler", "").expect("NewFiler");
+    assert_eq!(count().trim(), "2", "NewFiler で 2 タブ");
     // タブが複数あるので Quit は現タブを閉じるだけ（アプリは終了しない）。
     server.req("POST", "/command/Quit", "").expect("Quit");
     assert_eq!(count().trim(), "1", "Quit で 1 タブに減る");

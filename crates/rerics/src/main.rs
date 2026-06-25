@@ -101,7 +101,7 @@ enum DebugCmdClass {
 fn debug_command_class(cmd: Command) -> DebugCmdClass {
     use Command::*;
     match cmd {
-        MakeDirectory | CreateFile | Rename | Delete | Copy | Move | Compress | Extract
+        MakeDirectory | CreateFileDialog | Rename | Delete | Copy | Move | Compress | Extract
         | RenameSequenceDialog | SendToRecycled | CreateShortcut | ClipPaste => {
             DebugCmdClass::ModalWrite
         }
@@ -116,7 +116,7 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         ChangeDriveDialog => DebugCmdClass::MaybeModal,
         // ジャンプ（リスト選択）・登録（ラベル入力）はモーダルを開く。登録は config.toml を
         // 書くがユーザファイル操作ではないので allow_write は要さない。
-        JumpDialog | RegisterPath => DebugCmdClass::MaybeModal,
+        JumpDialog | PathRegisterDialog => DebugCmdClass::MaybeModal,
         // キー割り当て一覧はリスト選択モーダル（読取専用・選択結果は使わない）。
         KeyBindsDialog => DebugCmdClass::MaybeModal,
         // インクリメンタルサーチは入力モーダル（打鍵追従でカーソル移動・読取のみ）。
@@ -1009,7 +1009,7 @@ impl MainWindow {
                 self.jump_dialog(is_left)?;
                 return Ok(());
             }
-            Command::RegisterPath => {
+            Command::PathRegisterDialog => {
                 self.register_path(is_left)?;
                 return Ok(());
             }
@@ -1122,11 +1122,11 @@ impl MainWindow {
                 self.page_previous()?;
                 return Ok(());
             }
-            Command::NewTab => {
+            Command::NewFiler => {
                 self.new_tab()?;
                 return Ok(());
             }
-            Command::CloseTab => {
+            Command::Exit => {
                 self.close_tab()?;
                 return Ok(());
             }
@@ -1134,7 +1134,7 @@ impl MainWindow {
                 self.make_directory(is_left)?;
                 return Ok(());
             }
-            Command::CreateFile => {
+            Command::CreateFileDialog => {
                 self.create_file(is_left)?;
                 return Ok(());
             }

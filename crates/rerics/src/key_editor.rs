@@ -170,17 +170,17 @@ fn command_genre(cmd: Command) -> (u8, &'static str) {
         | SetCursorPosition | CursorOpposite => (0, "カーソル移動"),
         EnterDir | ToParent | ToRoot | HistoryBack | HistoryForward | PathHistoryDialog
         | ChangeDirectory | ChangeDirectoryDialog | ChangeDrive | ChangeDriveDialog | JumpDialog
-        | RegisterPath | IncrementalSearchDialog | NextDrive | PreviousDrive => (1, "移動・ナビゲーション"),
+        | PathRegisterDialog | IncrementalSearchDialog | NextDrive | PreviousDrive => (1, "移動・ナビゲーション"),
         MarkToggle | SelectAll | ClearAll | ReverseAll | SelectAllFile | ReverseAllFile
         | SelectFile | SelectMask | PathMask => (2, "選択"),
         Reload | Refresh | View | ViewFile | DirectoryInformation | SortByName | SortByExtension
         | SortBySize | SortByDate | Sort | SortDialog | SortReverseToggle => (3, "表示・並べ替え"),
-        PageNext | PagePrevious | NewTab | CloseTab => (4, "タブ"),
+        PageNext | PagePrevious | NewFiler | Exit => (4, "タブ"),
         FocusLeft | FocusRight | SwapPath | OppositeToCurrent | CurrentToOpposite | MaximizeLeft
         | MaximizeRight | MaximizeLeftForce | MaximizeRightForce | MaximizeCurrent | BorderLeft
         | BorderRight | BorderReset => (5, "ペイン"),
         MakeDirectory | Copy | Move | Rename | RenameSequenceDialog | Delete | SendToRecycled
-        | CreateShortcut | ClipCopy | ClipCut | ClipPaste | CreateFile | Edit | PropertyDialog
+        | CreateShortcut | ClipCopy | ClipCut | ClipPaste | CreateFileDialog | Edit | PropertyDialog
         | Compress | Extract => (6, "ファイル操作"),
         OpenTaskManager | OpenSettings | KeyBindsDialog | CommandDirect | Menu | CopyLog | ClearLog
         | Nop | End | Restart | Quit | MaximizeWindow | MinimizeWindow => (7, "アプリ・その他"),

@@ -861,7 +861,7 @@ mod tests {
         assert_eq!(km.resolve(&KeyChord::key(vk::DOWN)), Some(Command::CursorDown));
         assert_eq!(
             km.resolve(&KeyChord::new(vk::T, true, false, false)),
-            Some(Command::NewTab)
+            Some(Command::NewFiler)
         );
     }
 
