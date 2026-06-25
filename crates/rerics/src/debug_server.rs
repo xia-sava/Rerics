@@ -344,6 +344,8 @@ pub enum Request {
     /// `GET /meta/<token>`：組込コマンドのメタデータ（説明・引数仕様・使用例・有効文脈）を JSON で返す。
     /// 未知のトークンは 404。
     Meta { token: String },
+    /// `GET /help`：コマンドリファレンス HTML（`openHelp` がブラウザで開くものと同じ生成物）を返す。
+    Help,
     /// `POST /script/invoke/<name>`：登録済みスクリプトコマンドを名前で実行する（投げっぱなし）。
     ScriptInvoke { name: String },
     /// `POST /script/eval`：body の TS/JS ソースをスクリプトエンジンで評価する（投げっぱなし）。
@@ -416,6 +418,8 @@ pub enum Request {
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
 pub enum Response {
     Json(String),
+    /// HTML テキスト（コマンドリファレンス等）。
+    Html(String),
     /// PNG バイト列（スナップショット）。
     Png(Vec<u8>),
     /// JSON Pointer がツリーに存在しなかった（404 で返す）。
@@ -527,6 +531,8 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::ScriptMembers)
             } else if let Some(token) = path.strip_prefix("/meta/") {
                 Some(Request::Meta { token: token.trim_end_matches('/').to_string() })
+            } else if path == "/help" {
+                Some(Request::Help)
             } else if path == "/completion" {
                 Some(Request::CompletionState)
             } else if path == "/menu-editor" {
@@ -755,6 +761,12 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
     match reply {
         Ok(Response::Json(s)) => {
             let _ = req.respond(json_response(s));
+        }
+        Ok(Response::Html(s)) => {
+            let header =
+                tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
+                    .expect("valid header");
+            let _ = req.respond(tiny_http::Response::from_string(s).with_header(header));
         }
         Ok(Response::Png(bytes)) => {
             let header =

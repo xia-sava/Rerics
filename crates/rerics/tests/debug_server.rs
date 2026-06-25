@@ -3971,3 +3971,29 @@ fn command_meta_endpoint_reports_args_examples_and_contexts() {
         "未知トークンは 404"
     );
 }
+
+/// GET /help はコマンドリファレンス HTML を返す。組込（説明・例つき）と登録スクリプトが同じ表形式で
+/// 並び、各コマンドに標準キーと現在キーを併記する（`openHelp` がブラウザで開くのと同じ生成物）。
+#[test]
+fn help_endpoint_returns_command_reference() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[(
+            "00.ts",
+            r#"rerics.registerCommand("organize", () => {}, { summary: "散らかりを整える" });"#,
+        )],
+    );
+    poll(&server, "/script/commands", |b| b.contains("organize"));
+
+    let (st, html) = server.req("GET", "/help", "").expect("help");
+    assert_eq!(st, 200, "/help は 200");
+    assert!(html.contains("<title>Rerics コマンドリファレンス</title>"), "HTML ヘルプである");
+    // 組込：トークンと使用例。
+    assert!(html.contains("cursorDown") && html.contains("cursorDown({select:true})"), "組込＋例");
+    // 値返しクエリも並ぶ。
+    assert!(html.contains("markedCount"), "クエリ組込");
+    // 標準キー／現在キーの両列。
+    assert!(html.contains("標準キー") && html.contains("現在キー"), "両キー列");
+    // スクリプトも同じ表形式で並ぶ＝組込/スクリプトの統一。
+    assert!(html.contains("organize") && html.contains("散らかりを整える"), "スクリプトも同表に");
+}

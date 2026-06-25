@@ -126,6 +126,9 @@ impl MainWindow {
                     };
                     let _ = tx.send(r);
                 }
+                debug_server::Request::Help => {
+                    let _ = tx.send(debug_server::Response::Html(self.build_help_html()));
+                }
                 debug_server::Request::MenuEditorState => {
                     let v = debug_server::modal_registry::with_menu_editor(|h| (h.read)())
                         .unwrap_or_else(|| "null".to_string());

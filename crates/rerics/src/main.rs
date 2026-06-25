@@ -9,6 +9,7 @@ mod ui_marshal;
 mod script_host;
 mod dialog;
 mod file_list;
+mod help;
 mod icons;
 mod log_view;
 mod menu;
@@ -1237,6 +1238,10 @@ impl MainWindow {
                 self.open_settings()?;
                 return Ok(());
             }
+            Command::OpenHelp => {
+                self.open_help();
+                return Ok(());
+            }
             Command::KeyBindsDialog => {
                 self.keybinds_dialog();
                 return Ok(());
@@ -1372,6 +1377,43 @@ impl MainWindow {
                 Some(Value::Bool(any))
             }
             _ => None,
+        }
+    }
+
+    /// コマンドリファレンスの HTML を、標準キーマップ・現在のキーマップ・登録スクリプトから組む。
+    /// `openHelp` コマンドと debug の `/help` が共用する（生成だけ・ブラウザは開かない）。
+    pub(crate) fn build_help_html(&self) -> String {
+        let cfg = self.config.borrow();
+        let cur_filer = cfg.keymap();
+        let cur_text = cfg.keymap_textviewer();
+        let cur_image = cfg.keymap_imageviewer();
+        drop(cfg);
+        let def_filer = KeyMap::default();
+        let def_text = KeyMap::default_textviewer();
+        let def_image = KeyMap::default_imageviewer();
+        let scripts = self.script_list_commands();
+        help::help_html(
+            &[&def_filer, &def_text, &def_image],
+            &[&cur_filer, &cur_text, &cur_image],
+            &scripts,
+        )
+    }
+
+    /// コマンドリファレンスを生成して `data_dir()/help.html` に書き出し、既定ブラウザで開く。
+    fn open_help(&self) {
+        let html = self.build_help_html();
+        let path = rerics_core::data_dir().join("help.html");
+        if let Err(e) = std::fs::write(&path, html) {
+            self.log.error(&format!("ヘルプを書き出せませんでした: {e}"));
+            return;
+        }
+        if self
+            .wnd
+            .hwnd()
+            .ShellExecute("open", &path.to_string_lossy(), None, None, co::SW::SHOWNORMAL)
+            .is_err()
+        {
+            self.log.error("ヘルプをブラウザで開けませんでした");
         }
     }
 
