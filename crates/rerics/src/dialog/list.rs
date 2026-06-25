@@ -19,6 +19,13 @@ pub fn list_box(
         gui::ListBoxOpts {
             position: gui::dpi(16, 14),
             size: gui::dpi(388, 250),
+            // 縦スクロールを付ける。これが無いと項目が窓に収まらなくてもスクロール範囲が生まれず、
+            // ネイティブのホイールスクロールも効かない（機能ピッカーのような長い一覧で必須）。
+            window_style: co::WS::CHILD
+                | co::WS::GROUP
+                | co::WS::TABSTOP
+                | co::WS::VISIBLE
+                | co::WS::VSCROLL,
             ..Default::default()
         },
     );
@@ -134,8 +141,9 @@ pub fn list_box(
         });
     }
 
-    // ホイールで一覧をスクロールする。list_box は標準ホイールに頼らず自前で動かす作りなので、
-    // 回転量ぶん先頭行をずらす（長い一覧＝機能ピッカー等で効くように）。
+    // ホイールスクロールは ListBox の `WS_VSCROLL` でネイティブに効くが、フォーカスがボタン側に
+    // あるなどでホイールが一覧でなくモーダル窓へ伝播してきた場合の保険として、ここでも回転量ぶん
+    // 先頭行をずらす。
     {
         let list = list.clone();
         wnd.on().wm_mouse_wheel(move |p| {
