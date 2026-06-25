@@ -335,6 +335,9 @@ pub enum Request {
     /// `POST /modal/resize/<w>x<h>`：開いているモーダルの窓サイズを w×h（物理px）へ変える。
     /// WM_SIZE が飛んでダイアログの再レイアウトが走るので、リサイズ追従を headless で検証できる。
     ModalResize { width: i32, height: i32 },
+    /// `POST /modal/wheel/<delta>`：開いているモーダルのリストへホイール回転を送る。`delta` は
+    /// 回転量（120＝1ノッチ・正で上へ・負で下へ）。先頭行が動くので `/state` の `modal.top` で観測。
+    ModalWheel { delta: i32 },
     /// `GET /script/commands`：登録済みスクリプトコマンド名の一覧（JSON 文字列配列）。
     ScriptCommands,
     /// `GET /script/members`：`r.` で呼べるメンバー名の一覧（補完候補・JSON 文字列配列・昇順）。
@@ -634,6 +637,8 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                         height: h.parse().ok()?,
                     })
                 })
+            } else if let Some(d) = path.strip_prefix("/modal/wheel/") {
+                d.trim_end_matches('/').parse::<i32>().ok().map(|delta| Request::ModalWheel { delta })
             } else if let Some(name) = path.strip_prefix("/script/invoke/") {
                 Some(Request::ScriptInvoke {
                     name: name.trim_end_matches('/').to_string(),

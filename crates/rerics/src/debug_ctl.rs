@@ -96,6 +96,9 @@ impl MainWindow {
                 debug_server::Request::ModalResize { width, height } => {
                     let _ = tx.send(self.debug_modal_resize(width, height));
                 }
+                debug_server::Request::ModalWheel { delta } => {
+                    let _ = tx.send(self.debug_modal_wheel(delta));
+                }
                 debug_server::Request::ScriptCommands => {
                     let names = self.script_list_commands();
                     let json = serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_string());
@@ -668,6 +671,39 @@ impl MainWindow {
             co::SWP::NOMOVE | co::SWP::NOZORDER | co::SWP::NOACTIVATE,
         ) {
             return debug_server::Response::Error(format!("resize failed: {e}"));
+        }
+        debug_server::Response::Json(self.debug_state_value().to_string())
+    }
+
+    /// `POST /modal/wheel/<delta>`：開いているモーダルのリストへホイール回転（`WM_MOUSEWHEEL`）を
+    /// 送る。`delta` は回転量（120＝1ノッチ・正で上へ・負で下へ）。`WS_VSCROLL` 付きのリストが
+    /// ネイティブにスクロールする実経路を踏む。先頭行は `/state` の `modal.top` で観測する。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn debug_modal_wheel(&self, delta: i32) -> debug_server::Response {
+        const WM_MOUSEWHEEL: u32 = 0x020A;
+        let Some(modal) = self.debug_modal_hwnd() else {
+            return debug_server::Response::BadRequest("no modal open".into());
+        };
+        let Some(list) = Self::debug_modal_listbox(&modal) else {
+            return debug_server::Response::BadRequest("modal has no list".into());
+        };
+        // wParam の HIWORD＝回転量。lParam はリスト中央のスクリーン座標（ヒットテスト用）。
+        let wparam = (delta as i16 as u16 as usize) << 16;
+        let lparam = list
+            .GetWindowRect()
+            .ok()
+            .map(|r| {
+                let x = ((r.left + r.right) / 2) as u16 as isize;
+                let y = ((r.top + r.bottom) / 2) as u16 as isize;
+                (y << 16) | x
+            })
+            .unwrap_or(0);
+        unsafe {
+            let _ = list.SendMessage(w::msg::WndMsg {
+                msg_id: co::WM::from_raw(WM_MOUSEWHEEL),
+                wparam,
+                lparam,
+            });
         }
         debug_server::Response::Json(self.debug_state_value().to_string())
     }
@@ -1294,22 +1330,28 @@ impl MainWindow {
                 };
                 // 多列 ListView はフックから行・選択をライブで読む（プログレッシブ更新も反映）。
                 // 単列 ListBox は実コントロールから選択を読む。それ以外は静的値。
-                let (rows, headers, selected) = match &e.list_view {
+                let (rows, headers, selected, top) = match &e.list_view {
                     Some(h) => {
                         let (rows, sel) = (h.read)();
-                        (rows, h.headers.clone(), sel)
+                        (rows, h.headers.clone(), sel, 0usize)
                     }
                     None => {
+                        let m = unsafe { w::HWND::from_ptr(e.modal_ptr as *mut std::ffi::c_void) };
+                        let lb = Self::debug_modal_listbox(&m);
                         let selected = if e.items.is_empty() {
                             e.selected
                         } else {
-                            let m = unsafe { w::HWND::from_ptr(e.modal_ptr as *mut std::ffi::c_void) };
-                            Self::debug_modal_listbox(&m)
+                            lb.as_ref()
                                 .and_then(|l| unsafe { l.SendMessage(w::msg::lb::GetCurSel {}) })
                                 .map(|n| n as usize)
                                 .unwrap_or(e.selected)
                         };
-                        (Vec::new(), Vec::new(), selected)
+                        // 先頭表示行（ホイール/スクロールの観測用）。
+                        let top = lb
+                            .and_then(|l| unsafe { l.SendMessage(w::msg::lb::GetTopIndex {}).ok() })
+                            .map(|n| n as usize)
+                            .unwrap_or(0);
+                        (Vec::new(), Vec::new(), selected, top)
                     }
                 };
                 json!({
@@ -1322,6 +1364,7 @@ impl MainWindow {
                     "rows": rows,
                     "headers": headers,
                     "selected": selected,
+                    "top": top,
                     "buttons": e.buttons.iter().map(|(l, id)| json!({ "label": l, "id": id })).collect::<Vec<_>>(),
                 })
             }

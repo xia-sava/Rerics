@@ -3718,6 +3718,42 @@ items = [ { label = "コピー", command = "Copy" } ]
     assert!(s.contains("\"command\":\"Copy\""), "項目はまだ Copy のまま: {s}");
 }
 
+/// 機能ピッカー（多数行のリスト選択モーダル）に `/modal/wheel/<delta>` でホイールを送ると、
+/// 先頭表示行（`/state` の `modal.top`）が動く。`WS_VSCROLL` 付きリストのネイティブスクロールを
+/// headless で駆動・観測する経路。
+#[test]
+fn modal_wheel_scrolls_list() {
+    let config = r#"
+[[menus]]
+name = "alpha"
+items = [ { label = "コピー", command = "Copy" } ]
+"#;
+    let server = Server::start(&["a.txt"], config);
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    poll(&server, "/menu-editor", |b| b.contains("\"name\":\"alpha\""));
+    server.req("POST", "/menu-editor/select/0", "").unwrap();
+    server.req("POST", "/menu-editor/item-pick", "").unwrap();
+    poll(&server, "/state", |b| b.contains("機能の選択"));
+
+    let top = |s: &Server| -> u64 {
+        let st = s.req("GET", "/state", "").unwrap().1;
+        let v: serde_json::Value = serde_json::from_str(&st).unwrap();
+        v["modal"]["top"].as_u64().expect("modal.top")
+    };
+    assert_eq!(top(&server), 0, "初期は先頭");
+
+    // 下へ回すと先頭行が進む。
+    server.req("POST", "/modal/wheel/-240", "").unwrap();
+    let down = top(&server);
+    assert!(down > 0, "下スクロールで先頭行が進む: {down}");
+
+    // 上へ大きく回すと先頭へ戻る（クランプ）。
+    server.req("POST", "/modal/wheel/2400", "").unwrap();
+    assert_eq!(top(&server), 0, "上スクロールで先頭へ戻る");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
 /// メニュー項目に `Script("名前", 引数...)` を書くと、選んだとき登録スクリプトが引数ごと
 /// 実行される（原作のスクリプト連携メニューを移植する経路・引数転送つき）。
 #[test]
