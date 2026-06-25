@@ -1103,7 +1103,7 @@ unsafe extern "system" {
 
 /// OS のホイール1ノッチあたりのスクロール行数（既定3）。`WHEEL_PAGESCROLL`
 /// （= u32::MAX）のときは「1画面分」を表す。
-fn os_wheel_scroll_lines() -> u32 {
+pub(crate) fn os_wheel_scroll_lines() -> u32 {
     const SPI_GETWHEELSCROLLLINES: u32 = 0x0068;
     let mut lines: u32 = 3;
     unsafe {
