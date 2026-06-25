@@ -155,7 +155,6 @@ pub(crate) fn command_genre(cmd: Command) -> (u8, &'static str) {
         | Compress | Extract => (6, "ファイル操作"),
         OpenTaskManager | OpenSettings | KeyBindsDialog | CommandDirect | Menu | CopyLog | ClearLog
         | Nop | End | Restart | Quit | MaximizeWindow | MinimizeWindow => (7, "アプリ・その他"),
-        Script | Eval => (14, "スクリプト"),
         ViewerScrollUp | ViewerScrollDown | ViewerPageUp | ViewerPageDown | ViewerScrollTop
         | ViewerScrollBottom => (8, "スクロール"),
         ViewerSearchDialog | ViewerFindNext | ViewerFindPrevious => (9, "検索"),

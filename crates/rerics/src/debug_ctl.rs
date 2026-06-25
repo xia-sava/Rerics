@@ -53,6 +53,16 @@ impl MainWindow {
                 debug_server::Request::Command { name, args } => {
                     self.debug_dispatch_command(&name, args, tx)
                 }
+                debug_server::Request::Exec { expr } => {
+                    let call = rerics_core::Call::parse(&expr);
+                    let is_left = !self.active_right.get();
+                    // スクリプト式はエンジンへ投げて即返る。組込はその場で同期実行する。
+                    let r = match self.exec(is_left, &call) {
+                        Ok(()) => debug_server::Response::Json(self.debug_state_value().to_string()),
+                        Err(e) => debug_server::Response::Error(format!("exec error: {e}")),
+                    };
+                    let _ = tx.send(r);
+                }
                 debug_server::Request::ViewKey { action } => {
                     let _ = tx.send(self.debug_view_key(&action));
                 }

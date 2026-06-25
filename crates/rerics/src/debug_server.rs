@@ -300,6 +300,9 @@ pub enum Request {
     /// `POST /command/<Name>`：`Command` をアクティブ側ペインに実行（非モーダルのみ）。
     /// body が JSON 文字列配列（例 `["D:"]`）なら引数として渡す。空 body は引数なし。
     Command { name: String, args: Vec<String> },
+    /// `POST /exec`：body の式（機能欄の式そのもの）を [`Call::parse`] し、アクティブ側ペインで
+    /// キー押下と同じ `exec` を通す。スクリプト式（[`Call::Script`]）はエンジンへ流れる。
+    Exec { expr: String },
     /// `POST /view/key/<action>`：重ね表示中ビューアの操作（next/prev/close）。
     ViewKey { action: String },
     /// `POST /view/search`：テキストビューアのインライン検索バーへ文字列を入れて即時検索（値は body）。
@@ -532,7 +535,11 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
             }
         }
         tiny_http::Method::Post => {
-            if let Some(name) = path.strip_prefix("/command/") {
+            if path == "/exec" {
+                let mut body = String::new();
+                let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);
+                Some(Request::Exec { expr: body })
+            } else if let Some(name) = path.strip_prefix("/command/") {
                 let mut body = String::new();
                 let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);
                 match parse_command_args(&body) {

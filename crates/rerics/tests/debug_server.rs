@@ -3242,16 +3242,14 @@ fn script_builtin_command_callable_as_r_method() {
     assert_eq!(c.trim(), "1", "r.cursorDown() で内蔵コマンドが走りカーソルが 1 へ");
 }
 
-/// キーバインド経路：`eval("code")` コマンドが `exec` からエンジンへ流れ、コードが評価される。
-/// `/command/eval` は実際のキー押下と同じ `exec` を通るので、これでキー→コード評価の配線を検証する。
+/// キーバインド経路：機能欄のスクリプト式（コード）が `exec` からエンジンへ流れ、評価される。
+/// `/exec` は実際のキー押下と同じ `exec` を通るので、これでキー→コード評価の配線を検証する。
 #[test]
-fn eval_command_dispatches_code_to_engine() {
+fn exec_dispatches_script_code_to_engine() {
     let server = Server::start_with_scripts(&["a.txt"], &[]);
-    server
-        .req("POST", "/command/eval", r#"["rerics.log(\"cmd-eval-marker-7\");"]"#)
-        .expect("eval");
+    server.req("POST", "/exec", r#"rerics.log("cmd-eval-marker-7");"#).expect("exec");
     let log = poll(&server, "/state/log", |b| b.contains("cmd-eval-marker-7"));
-    assert!(log.contains("cmd-eval-marker-7"), "eval コマンドがコードを評価して記録するはず: {log}");
+    assert!(log.contains("cmd-eval-marker-7"), "コード式が評価されて記録するはず: {log}");
 }
 
 /// 値返し eval：最後の式の値が文字列で返る。undefined/null は空、Promise は解決を待つ。
@@ -3295,10 +3293,10 @@ fn run_executes_process_and_returns_result() {
     assert!(log.contains("rerics-run-9"), "run は stdout を返すはず: {log}");
 }
 
-/// キーバインド経路：`script("name")` コマンドが `exec` からエンジンへ流れ、登録コマンドを実行する。
+/// キーバインド経路：登録コマンドの呼び出し式（`r.goUp()`）が `exec` からエンジンへ流れ、実行される。
 /// 登録コマンドがアクティブペインを移動させ、UI に反映されることで配線を検証する。
 #[test]
-fn script_command_invokes_registered_command() {
+fn exec_invokes_registered_command() {
     let server = Server::start_with_scripts(
         &["a.txt"],
         &[(
@@ -3309,39 +3307,37 @@ fn script_command_invokes_registered_command() {
     let loc0 = server.req("GET", "/state/panes/left/location", "").unwrap().1;
     assert!(loc0.contains("sbx"), "サンドボックスから開始するはず: {loc0}");
 
-    server.req("POST", "/command/script", r#"["goUp"]"#).expect("script");
+    server.req("POST", "/exec", "r.goUp()").expect("exec");
     let loc1 = poll(&server, "/state/panes/left/location", |b| !b.contains("sbx"));
     assert!(
         !loc1.contains("sbx"),
-        "script コマンドが登録コマンドを実行してペインが移動するはず: {loc1}"
+        "登録コマンドの呼び出し式が実行されてペインが移動するはず: {loc1}"
     );
 }
 
-/// 第3弾：引数の式（`=...`）が別スレッドで非同期評価され、その値で本体コマンドが走る。
-/// `=r.currentDir() + "/sub"` を評価して実フォルダへ移動できる（マクロ展開ではなく式評価の経路）。
+/// 計算引数：機能欄のスクリプト式が組込を `r.` のネスト呼びで包み、引数を式の値で渡せる。
+/// `r.changeDirectory(r.currentDir() + "/sub")` を評価して実フォルダへ移動できる（エンジン経路）。
 #[test]
-fn expr_arg_evaluates_async_and_runs_command() {
+fn script_expr_computes_arg_and_runs_command() {
     let server = Server::start(&["a.txt"], "");
     std::fs::create_dir_all(server.base.join("sbx").join("sub")).unwrap();
-    // 引数の式は現在地を読んで "/sub" を足す＝HostApi（currentDir）を式中から呼ぶ非同期評価。
+    // 式は現在地を読んで "/sub" を足す＝HostApi（currentDir）を式中から呼んで組込へ渡す。
     server
-        .req("POST", "/command/changeDirectory", r#"["=r.currentDir() + \"/sub\""]"#)
-        .expect("cd");
+        .req("POST", "/exec", r#"r.changeDirectory(r.currentDir() + "/sub")"#)
+        .expect("exec");
     let loc = poll(&server, "/state/panes/left/location", |b| b.contains("sub"));
     assert!(loc.contains("sub"), "式の値でサブフォルダへ移動するはず: {loc}");
 }
 
-/// 第3弾の核心：引数の式が `r.prompt()` 等のモーダルを呼んでも、UI は recv でブロックしない
-/// （結果は別チャネル＋wake で届く）のでデッドロックしない。プロンプトへ入れたパスへ移動できる。
+/// 計算引数の核心：式が `r.prompt()` 等のモーダルを呼んでも、UI スレッドはブロックしない
+/// （エンジンは別スレッド）のでデッドロックしない。プロンプトへ入れたパスへ移動できる。
 #[test]
-fn expr_arg_with_modal_does_not_deadlock() {
+fn script_expr_with_modal_does_not_deadlock() {
     let server = Server::start(&["a.txt"], "");
     let target = server.base.join("sbx").join("target");
     std::fs::create_dir_all(&target).unwrap();
-    // 式が prompt を開く。コマンドは即返り、モーダルを debug 駆動してパスを返す。
-    server
-        .req("POST", "/command/changeDirectory", r#"["=r.prompt(\"dir?\")"]"#)
-        .expect("cd");
+    // 式が prompt を開く。exec は即返り、モーダルを debug 駆動してパスを返す。
+    server.req("POST", "/exec", r#"r.changeDirectory(r.prompt("dir?"))"#).expect("exec");
     wait_modal(&server);
     server.req("POST", "/modal/text", &target.display().to_string()).expect("text");
     server.req("POST", "/modal/key/enter", "").expect("enter");
@@ -3349,19 +3345,17 @@ fn expr_arg_with_modal_does_not_deadlock() {
     assert!(loc.contains("target"), "プロンプトのパスへ移動するはず（デッドロックしない）: {loc}");
 }
 
-/// 第3弾：引数の式が開いたモーダルをキャンセルすると、式は空（null）になり実行中止＝移動しない
-/// （マクロのキャンセルと同じ無音中止）。
+/// 計算引数：式が開いたモーダルをキャンセルすると prompt は null を返し、`r.changeDirectory(null)`
+/// は移動しない（無音中止）。
 #[test]
-fn expr_arg_modal_cancel_aborts_silently() {
+fn script_expr_modal_cancel_aborts_silently() {
     let server = Server::start(&["a.txt"], "");
     // 基準点を sbx から動かしておく（移動しないことを確かめるため）。
     let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
     server.req("POST", "/command/toParent", "").unwrap();
     let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx);
-    // 式が prompt を開く→Esc でキャンセル→式は空→中止＝場所は変わらない。
-    server
-        .req("POST", "/command/changeDirectory", r#"["=r.prompt(\"dir?\")"]"#)
-        .unwrap();
+    // 式が prompt を開く→Esc でキャンセル→prompt は null→移動しない。
+    server.req("POST", "/exec", r#"r.changeDirectory(r.prompt("dir?"))"#).unwrap();
     wait_modal(&server);
     server.req("POST", "/modal/key/esc", "").unwrap();
     poll(&server, "/state/modal", |b| b.trim() == "null");
@@ -3779,8 +3773,8 @@ items = [ { label = "コピー", command = "copy" } ]
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
 
-/// メニュー項目に `script("名前", 引数...)` を書くと、選んだとき登録スクリプトが引数ごと
-/// 実行される（原作のスクリプト連携メニューを移植する経路・引数転送つき）。
+/// メニュー項目に登録スクリプトの呼び出し式（`r.名前(引数)`）を書くと、選んだとき登録スクリプトが
+/// 引数ごと実行される（スクリプト連携メニュー・引数転送つき）。
 #[test]
 fn menu_script_token_runs_registered_script_with_args() {
     let server = Server::start_with_scripts(
@@ -3789,7 +3783,7 @@ fn menu_script_token_runs_registered_script_with_args() {
             "00.ts",
             r#"
             rerics.registerCommand("ping", (msg) => rerics.log("PONG:" + msg));
-            rerics.registerMenu("fns", [{ label: "ピング", command: 'script("ping", "hi")' }]);
+            rerics.registerMenu("fns", [{ label: "ピング", command: 'r.ping("hi")' }]);
             "#,
         )],
     );

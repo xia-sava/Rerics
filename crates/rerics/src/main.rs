@@ -150,15 +150,6 @@ fn flush_pending_chars() {
     }
 }
 
-/// `Call::Builtin` の引数値を、スクリプト系（`Script`/`Eval`）・式引数の旧経路が要求する文字列に
-/// する。文字列値はそのまま、それ以外（数値・真偽など）は JSON 表現にする。
-fn value_as_arg(v: &serde_json::Value) -> String {
-    match v {
-        serde_json::Value::String(s) => s.clone(),
-        other => other.to_string(),
-    }
-}
-
 /// 解決済みメニュー項目列からポップアップ `HMENU` を再帰的に組む。実行項目には 1 始まりの
 /// ID を採番し、`dispatch` に同順で [`Call`] を積む（選択 ID → `dispatch[ID-1]`）。
 /// サブメニューは入れ子の `HMENU`、無効項目はグレーアウト掲示、セパレータは区切り線。
@@ -820,7 +811,7 @@ impl MainWindow {
     fn exec(&self, is_left: bool, call: &Call) -> w::AnyResult<()> {
         let view = self.view(is_left);
         match call {
-            // 組込呼び出し（リテラル引数）。ホットパスは同期実行、スクリプト系・式引数は下で捌く。
+            // 組込呼び出し（リテラル引数）はホットパスで同期実行する。
             Call::Builtin { command, args } => {
                 let cmd = *command;
                 // 書庫の読込中はキー入力を抑止し、Esc（clearAll）と「親へ戻る」（toParent・既定 BS）を
@@ -832,34 +823,6 @@ impl MainWindow {
                     return Ok(());
                 }
                 self.fire_script_event("executeCommand", cmd.as_token());
-                // スクリプト系は引数を生のままエンジンへ渡す（登録名・コードを改変しない）。
-                match cmd {
-                    Command::Script => {
-                        if let Some(name) = args.first().and_then(|v| v.as_str()) {
-                            let rest = args[1..].iter().map(value_as_arg).collect();
-                            self.script_send(script_host::EngineCmd::Invoke {
-                                name: name.to_owned(),
-                                args: rest,
-                            });
-                        }
-                        return Ok(());
-                    }
-                    Command::Eval => {
-                        if let Some(code) = args.first().and_then(|v| v.as_str()) {
-                            self.script_send(script_host::EngineCmd::Eval(code.to_owned()));
-                        }
-                        return Ok(());
-                    }
-                    _ => {}
-                }
-                // 引数に式（`=...`）があれば、別スレッドで非同期評価してから本体を走らせる。UI は
-                // ブロックしないので、式が `r.prompt()` 等のモーダルを呼んでもデッドロックしない。
-                let str_args: Vec<String> = args.iter().map(value_as_arg).collect();
-                if str_args.iter().any(|a| a.starts_with('=')) {
-                    let slots = script_host::arg_slots(&str_args);
-                    self.begin_expr_dispatch(is_left, cmd, slots);
-                    return Ok(());
-                }
                 self.exec_resolved(is_left, cmd, Args::from_values(args.clone()))
             }
             // 簡約できない式（ネスト呼び出し・スクリプト関数・制御構文など）はエンジンへ丸投げ。
@@ -1665,11 +1628,6 @@ fn short_desc(names: &[String]) -> String {
 pub(crate) struct Args(Vec<serde_json::Value>);
 
 impl Args {
-    /// 文字列列（キー定義由来の生引数）から作る。
-    pub(crate) fn from_strings(values: Vec<String>) -> Self {
-        Args(values.into_iter().map(serde_json::Value::String).collect())
-    }
-
     /// 式パーサ由来の値列（`Vec<serde_json::Value>`）から作る。
     pub(crate) fn from_values(values: Vec<serde_json::Value>) -> Self {
         Args(values)
