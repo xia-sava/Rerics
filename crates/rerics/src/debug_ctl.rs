@@ -106,6 +106,14 @@ impl MainWindow {
                     let json = serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_string());
                     let _ = tx.send(debug_server::Response::Json(json));
                 }
+                debug_server::Request::MenuEditorState => {
+                    let v = debug_server::modal_registry::with_menu_editor(|h| (h.read)())
+                        .unwrap_or_else(|| "null".to_string());
+                    let _ = tx.send(debug_server::Response::Json(v));
+                }
+                debug_server::Request::MenuEditorOp { op, arg, body } => {
+                    let _ = tx.send(self.debug_menu_editor_op(&op, &arg, &body));
+                }
                 debug_server::Request::Menu { name } => {
                     let _ = tx.send(self.debug_menu(&name));
                 }
@@ -428,6 +436,40 @@ impl MainWindow {
                 ));
                 let _ = self.exec(is_left, &inv);
             }
+        }
+    }
+
+    /// メニュー編集ページ（設定の「メニュー」）を駆動する。標準コントロールは generic な
+    /// `/modal/*` で叩けないので、ページ生成時に登録したフックを名前で呼ぶ。操作後の状態を返す。
+    #[cfg(feature = "debug-server")]
+    fn debug_menu_editor_op(&self, op: &str, arg: &str, body: &str) -> debug_server::Response {
+        use debug_server::modal_registry::with_menu_editor;
+        let done = with_menu_editor(|h| {
+            match op {
+                "select" => {
+                    if let Ok(i) = arg.parse::<usize>() {
+                        (h.select_menu)(i);
+                    }
+                }
+                "add" => (h.add_menu)(body.trim()),
+                "rename" => (h.rename_menu)(body.trim()),
+                "delete" => (h.delete_menu)(),
+                "move" => {
+                    if let Ok(d) = arg.parse::<i32>() {
+                        (h.move_menu)(d);
+                    }
+                }
+                _ => return Err(format!("unknown menu-editor op: {op}")),
+            }
+            Ok(())
+        });
+        match done {
+            Some(Ok(())) => {
+                let v = with_menu_editor(|h| (h.read)()).unwrap_or_else(|| "null".to_string());
+                debug_server::Response::Json(v)
+            }
+            Some(Err(e)) => debug_server::Response::BadRequest(e),
+            None => debug_server::Response::BadRequest("menu editor not open".into()),
         }
     }
 

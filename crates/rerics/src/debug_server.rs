@@ -219,6 +219,7 @@ pub mod modal_registry {
     pub fn clear_key_editors() {
         KEY_EDITORS.with(|e| e.borrow_mut().clear());
         SETTINGS_NAV.with(|n| *n.borrow_mut() = None);
+        MENU_EDITOR.with(|m| *m.borrow_mut() = None);
     }
 
     thread_local! {
@@ -244,6 +245,37 @@ pub mod modal_registry {
                 .find(|(c, _)| *c == category)
                 .map(|(_, h)| f(h))
         })
+    }
+
+    /// メニュー編集ページを UI スレッドで読み書きするフック（設定ダイアログに1つ）。
+    pub struct MenuEditorHooks {
+        /// 現在の編集状態を JSON 文字列で返す（menus／selected_menu／selected_item）。
+        pub read: Box<dyn Fn() -> String>,
+        /// 左のメニュー idx を選ぶ（範囲外は何もしない）。
+        pub select_menu: Box<dyn Fn(usize)>,
+        /// 名前で空メニューを末尾に追加する。
+        pub add_menu: Box<dyn Fn(&str)>,
+        /// 選択中のメニューを名前で改名する（未選択・空名は無視）。
+        pub rename_menu: Box<dyn Fn(&str)>,
+        /// 選択中のメニューを削除する。
+        pub delete_menu: Box<dyn Fn()>,
+        /// 選択中のメニューを delta（-1/+1）方向へ並べ替える。
+        pub move_menu: Box<dyn Fn(i32)>,
+    }
+
+    thread_local! {
+        /// 開いている設定ダイアログのメニュー編集ページのフック。設定を開くたびに作り直す。
+        static MENU_EDITOR: RefCell<Option<MenuEditorHooks>> = const { RefCell::new(None) };
+    }
+
+    /// メニュー編集ページのフックを登録する（`MenusPane` が生成時に呼ぶ）。
+    pub fn register_menu_editor(hooks: MenuEditorHooks) {
+        MENU_EDITOR.with(|m| *m.borrow_mut() = Some(hooks));
+    }
+
+    /// メニュー編集ページに対して処理する（開いていなければ `None`）。
+    pub fn with_menu_editor<R>(f: impl FnOnce(&MenuEditorHooks) -> R) -> Option<R> {
+        MENU_EDITOR.with(|m| m.borrow().as_ref().map(f))
     }
 }
 
@@ -349,6 +381,11 @@ pub enum Request {
     KeysAddKeyDef { category: String, chord: String },
     /// `POST /settings/nav/<pane>`：設定ダイアログの左ナビを pane 番号のページへ切り替える。
     SettingsNav { pane: usize },
+    /// `GET /menu-editor`：メニュー編集ページの現在状態（JSON）。未オープンは null。
+    MenuEditorState,
+    /// `POST /menu-editor/<op>[/<arg>]`：メニュー編集ページを駆動する（select/add/rename/delete/move）。
+    /// `add`/`rename` は body で名前を、`select`/`move` は arg を取る。
+    MenuEditorOp { op: String, arg: String, body: String },
     /// `GET /menu/<name>`：名前付きメニューを解決した項目木（JSON）。未定義は null。
     /// ネイティブポップアップは headless で駆動できないので、見た目ではなくモデルを観測する。
     Menu { name: String },
@@ -471,6 +508,8 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::ScriptMembers)
             } else if path == "/completion" {
                 Some(Request::CompletionState)
+            } else if path == "/menu-editor" {
+                Some(Request::MenuEditorState)
             } else if let Some(name) = path.strip_prefix("/menu/") {
                 Some(Request::Menu { name: name.trim_end_matches('/').to_string() })
             } else {
@@ -494,6 +533,16 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                         return;
                     }
                 }
+            } else if let Some(rest) = path.strip_prefix("/menu-editor/") {
+                let mut body = String::new();
+                let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);
+                let rest = rest.trim_end_matches('/');
+                let (op, arg) = rest.split_once('/').map_or((rest, ""), |(o, a)| (o, a));
+                Some(Request::MenuEditorOp {
+                    op: op.to_string(),
+                    arg: arg.to_string(),
+                    body,
+                })
             } else if let Some(rest) = path.strip_prefix("/menu/") {
                 rest.trim_end_matches('/').rsplit_once("/select/").and_then(|(name, n)| {
                     n.parse::<usize>().ok().map(|idx| Request::MenuSelect {

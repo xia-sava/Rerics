@@ -3524,6 +3524,46 @@ fn named_menu_includes_script_registered() {
     assert_eq!(top.trim(), "0", "CursorTop で先頭へ戻る");
 }
 
+/// 設定の「メニュー」ページでメニューの追加/選択/改名/並べ替え/削除を駆動できる。標準
+/// コントロールは generic な `/modal/*` で叩けないので、専用フック `/menu-editor/*` で観測・駆動する。
+/// 編集は作業コピー（Shared.cfg）に対してで、OK を押すまで実 config には触れない。
+#[test]
+fn menu_editor_drives_menu_crud() {
+    let config = r#"
+[[menus]]
+name = "alpha"
+items = [ { label = "コピー", command = "Copy" } ]
+
+[[menus]]
+name = "beta"
+items = []
+"#;
+    let server = Server::start(&["a.txt"], config);
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    // 設定が開いてメニュー編集フックが登録されるまで待つ。
+    let s0 = poll(&server, "/menu-editor", |b| b.contains("\"name\":\"alpha\""));
+    assert!(s0.contains("\"name\":\"beta\""), "初期状態に config の2メニュー: {s0}");
+    assert!(s0.contains("\"selected_menu\":null"), "初期は未選択: {s0}");
+
+    // 追加：末尾に新メニューが付き、それが選択される。
+    let s = server.req("POST", "/menu-editor/add", "gamma").unwrap().1;
+    assert!(s.contains("\"name\":\"gamma\""), "追加された: {s}");
+    assert!(s.contains("\"selected_menu\":2"), "追加分が選択される: {s}");
+
+    // 改名：選択中（gamma）を改名する。
+    let s = server.req("POST", "/menu-editor/rename", "gamma2").unwrap().1;
+    assert!(s.contains("\"name\":\"gamma2\"") && !s.contains("\"name\":\"gamma\""), "改名: {s}");
+
+    // 並べ替え：上へ動かすと index 1 へ。
+    let s = server.req("POST", "/menu-editor/move/-1", "").unwrap().1;
+    assert!(s.contains("\"selected_menu\":1"), "上へ移動で index 1: {s}");
+
+    // 削除：選択中（gamma2）が消える。
+    let s = server.req("POST", "/menu-editor/delete", "").unwrap().1;
+    assert!(!s.contains("gamma2"), "削除された: {s}");
+    assert!(s.contains("\"name\":\"alpha\"") && s.contains("\"name\":\"beta\""), "他は残る: {s}");
+}
+
 /// メニュー項目に `Script("名前", 引数...)` を書くと、選んだとき登録スクリプトが引数ごと
 /// 実行される（原作のスクリプト連携メニューを移植する経路・引数転送つき）。
 #[test]
