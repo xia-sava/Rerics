@@ -224,9 +224,38 @@ fn caret_offset(edit: &gui::Edit) -> u32 {
 
 /// 補完候補1件＝リストに見せる表示文字列と、確定時に入力欄へ挿入する文字列。多くは同一だが、
 /// コマンドパレットのように「和名 (Token) を見せて Token を挿入」する用途で別々にできる。
+/// `detail` は組込コマンドの引数シグネチャ＋説明（メタデータ由来）。あれば候補行の右に添える。
 struct CompletionItem {
     display: String,
     insert: String,
+    detail: Option<String>,
+}
+
+/// 組込コマンドのメタデータから、補完候補に添える 1 行ヒント（引数シグネチャ＋説明）を作る。
+fn meta_hint(cmd: rerics_core::Command) -> String {
+    let m = cmd.meta();
+    let sig = arg_signature(m.args);
+    if sig.is_empty() { m.summary.to_string() } else { format!("{sig}  {}", m.summary) }
+}
+
+/// 引数仕様を `(path)` `(by)` `({select?})` のようなシグネチャ文字列にする。引数なしは空。
+fn arg_signature(args: &[rerics_core::ArgSpec]) -> String {
+    use rerics_core::ArgType;
+    if args.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = args
+        .iter()
+        .map(|a| match a.ty {
+            ArgType::Options(opts) => {
+                let keys: Vec<String> = opts.iter().map(|o| format!("{}?", o.name)).collect();
+                format!("{{{}}}", keys.join(", "))
+            }
+            _ if a.required => a.name.to_string(),
+            _ => format!("{}?", a.name),
+        })
+        .collect();
+    format!("({})", parts.join(", "))
 }
 
 /// 補完モデル。カレットまでの文字列 `before`・カレットの UTF-16 位置・`force`（Ctrl+Space の
@@ -275,7 +304,13 @@ fn install_completion(arm: &ModalArm, edit: &gui::Edit, cand: &gui::ListBox, com
             match complete(&before, caret, force) {
                 Some((start, items)) if !items.is_empty() => {
                     cand.items().delete_all();
-                    let displays: Vec<String> = items.iter().map(|i| i.display.clone()).collect();
+                    let displays: Vec<String> = items
+                        .iter()
+                        .map(|i| match &i.detail {
+                            Some(d) => format!("{}    {}", i.display, d),
+                            None => i.display.clone(),
+                        })
+                        .collect();
                     let _ = cand.items().add(&displays);
                     *inserts.borrow_mut() = items.into_iter().map(|i| i.insert).collect();
                     let _ = unsafe { cand.hwnd().SendMessage(lb::SetCurSel { index: Some(0) }) };
@@ -544,7 +579,10 @@ pub fn code_box(
         let start = caret - plen as u32;
         let items = list
             .into_iter()
-            .map(|m| CompletionItem { display: m.clone(), insert: m })
+            .map(|m| {
+                let detail = rerics_core::Command::from_token(&m).map(meta_hint);
+                CompletionItem { display: m.clone(), insert: m, detail }
+            })
             .collect();
         Some((start, items))
     });
@@ -671,7 +709,14 @@ pub fn command_box(
             .filter(|(disp, tok)| {
                 q.is_empty() || tok.to_lowercase().contains(&ql) || disp.contains(q)
             })
-            .map(|(disp, tok)| CompletionItem { display: disp.clone(), insert: tok.clone() })
+            .map(|(disp, tok)| {
+                // パレットのトークンは `cursorDown()` 形なので Call::parse で組込を引く。
+                let detail = match rerics_core::Call::parse(tok) {
+                    rerics_core::Call::Builtin { command, .. } => Some(meta_hint(command)),
+                    rerics_core::Call::Script { .. } => None,
+                };
+                CompletionItem { display: disp.clone(), insert: tok.clone(), detail }
+            })
             .collect();
         let only_exact = items.len() == 1 && items[0].insert.eq_ignore_ascii_case(q);
         if items.is_empty() || (!force && only_exact) {

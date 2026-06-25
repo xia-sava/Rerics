@@ -2753,6 +2753,36 @@ fn completion_popup_lists_members_and_inserts_on_accept() {
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
 
+/// 式エディタの `r.` 補完は、組込コマンドのメンバに引数シグネチャ＋説明（メタデータ由来）を
+/// 添えて見せる。非組込（host API・スクリプト関数）には付かない。
+#[test]
+fn completion_annotates_builtin_members_with_meta() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
+    wait_modal(&server);
+    server.req("POST", "/settings/nav/5", "").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/openexpr", "").unwrap();
+    server.req("POST", "/modal/text", "").unwrap();
+
+    // 引数を取る組込（cursorDown）＝シグネチャ {select?} と説明文が添う。
+    server.req("POST", "/completion/keystrokes", "=r.cursorDow").unwrap();
+    let c = poll(&server, "/completion", |b| b.contains("cursorDown"));
+    assert!(
+        c.contains("{select?}") && c.contains("カーソルを 1 つ下の項目へ移動する"),
+        "組込メンバに引数ヒントと説明が添う: {c}"
+    );
+
+    // 引数なしの組込（reload）＝シグネチャは無く説明文だけが添う。
+    server.req("POST", "/modal/text", "").unwrap();
+    server.req("POST", "/completion/keystrokes", "=r.reloa").unwrap();
+    let c2 = poll(&server, "/completion", |b| b.contains("reload"));
+    assert!(c2.contains("最新にする"), "引数なし組込は説明だけが添う: {c2}");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
 /// 補完つき入力欄のキーボード操作：↑↓で候補移動（クランプ）・Enter で確定・Ctrl+Space で強制表示。
 /// 実キー経路（WM_KEYDOWN/WM_CHAR を keyhook サブクラスが横取り）を headless で検証する。
 #[test]
@@ -3438,6 +3468,11 @@ fn command_direct_runs_typed_command() {
     assert!(
         c.contains("カーソルを下へ (cursorDown)"),
         "和名でコマンド名補完が引ける: {c}"
+    );
+    // 候補行にはメタデータ由来の引数シグネチャと説明文が添えられる。
+    assert!(
+        c.contains("{select?}") && c.contains("カーソルを 1 つ下の項目へ移動する"),
+        "補完候補に引数ヒントと説明が出る: {c}"
     );
 
     // 本文を内部名 cursorDown() にして OK＝実行され、カーソルが 1 へ動く。
