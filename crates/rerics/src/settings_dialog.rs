@@ -11,8 +11,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rerics_core::{
-    Bookmark, Colors, Column, ColumnKind, Config, FileOpSettings, IconSize, Layout, MenuItem, Rgb,
-    ResolvedTheme, SizeFormat, SortType, Theme, WheelAction,
+    Bookmark, Colors, Column, ColumnKind, Config, FileOpSettings, IconSize, Layout, MenuDef,
+    MenuItem, Rgb, ResolvedTheme, SizeFormat, SortType, Theme, WheelAction,
 };
 use winsafe::{self as w, co, gui, msg::lb, prelude::*};
 
@@ -2278,14 +2278,13 @@ fn menu_item_columns(it: &MenuItem) -> [String; 2] {
 
 /// 「メニュー」ページ。左にメニュー名一覧、右に選択メニューの項目（ラベル／コマンド）を出す
 /// マスターディテール。`Menu("名前")` で開く名前付きメニュー（`shared.cfg.menus`）を編集する。
-/// 増分1は表示のみ（追加/削除/並べ替え・コマンド選択は後続増分）。
+/// 左の名前欄＋ボタンでメニューの追加/改名/削除/並べ替え。項目の編集は後続増分。
 #[derive(Clone)]
 struct MenusPane {
-    shared: Rc<Shared>,
     menu_list: gui::ListView<()>,
     item_list: gui::ListView<()>,
-    /// 左で選択中のメニュー index（= `cfg.menus` の index）。
-    selected_menu: Rc<Cell<Option<usize>>>,
+    /// 左のメニュー名一覧を `cfg.menus` から組み直し、指定 index を選び直す。
+    rebuild_menus: Rc<dyn Fn(Option<usize>)>,
 }
 
 impl MenusPane {
@@ -2318,6 +2317,22 @@ impl MenusPane {
             },
         );
 
+        label(parent, "メニュー名", 8, 440, 240);
+        let name_edit = gui::Edit::new(
+            parent,
+            gui::EditOpts {
+                position: gui::dpi(8, 460),
+                width: gui::dpi_x(240),
+                height: gui::dpi_y(22),
+                ..Default::default()
+            },
+        );
+        let add = button(parent, "追加(&N)", 8, 488, 74);
+        let rename = button(parent, "改名(&R)", 86, 488, 74);
+        let del = button(parent, "削除(&D)", 164, 488, 74);
+        let up = button(parent, "↑", 8, 518, 74);
+        let down = button(parent, "↓", 86, 518, 74);
+
         let selected_menu: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
 
         // 右の項目一覧を、指定メニューの items から組み直す。
@@ -2337,25 +2352,146 @@ impl MenusPane {
             }
         });
 
-        // 左の選択が変わったら、その index を覚えて右を組み直す。
-        {
-            let menu_list2 = menu_list.clone();
+        // 左を cfg.menus から組み直し、sel を選び直して右へも反映する。
+        let rebuild_menus: Rc<dyn Fn(Option<usize>)> = Rc::new({
+            let menu_list = menu_list.clone();
+            let shared = shared.clone();
             let selected_menu = selected_menu.clone();
             let rebuild_items = rebuild_items.clone();
+            move |sel| {
+                let _ = menu_list.items().delete_all();
+                for m in shared.cfg.borrow().menus.iter() {
+                    let _ = menu_list.items().add(std::slice::from_ref(&m.name), None, ());
+                }
+                if let Some(i) = sel
+                    && let Some(it) = menu_list.items().iter().nth(i)
+                {
+                    let _ = it.select(true);
+                    let _ = it.focus();
+                }
+                selected_menu.set(sel);
+                rebuild_items(sel);
+            }
+        });
+
+        // 左の選択が変わったら、その index を覚えて名前欄と右を更新する。
+        {
+            let menu_list2 = menu_list.clone();
+            let shared = shared.clone();
+            let selected_menu = selected_menu.clone();
+            let rebuild_items = rebuild_items.clone();
+            let ne = name_edit.clone();
             menu_list.on().lvn_item_changed(move |_| {
                 let sel = menu_list2.items().iter().position(|it| it.is_selected());
+                if let Some(i) = sel
+                    && let Some(m) = shared.cfg.borrow().menus.get(i)
+                {
+                    let _ = ne.set_text(&m.name);
+                }
                 selected_menu.set(sel);
                 rebuild_items(sel);
                 Ok(())
             });
         }
 
-        Self {
-            shared: shared.clone(),
-            menu_list,
-            item_list,
-            selected_menu,
+        // 追加：名前欄の名前で空メニューを末尾に足す（空欄なら既定名）。
+        {
+            let shared = shared.clone();
+            let rebuild_menus = rebuild_menus.clone();
+            let ne = name_edit.clone();
+            add.on().bn_clicked(move || {
+                let raw = ne.text().unwrap_or_default();
+                let name = raw.trim();
+                let name = if name.is_empty() { "新しいメニュー" } else { name };
+                let idx = {
+                    let mut cfg = shared.cfg.borrow_mut();
+                    cfg.menus.push(MenuDef { name: name.to_owned(), items: Vec::new() });
+                    cfg.menus.len() - 1
+                };
+                rebuild_menus(Some(idx));
+                Ok(())
+            });
         }
+
+        // 改名：選択メニューの名前を名前欄で上書きする（空欄は無視）。
+        {
+            let shared = shared.clone();
+            let rebuild_menus = rebuild_menus.clone();
+            let selected_menu = selected_menu.clone();
+            let ne = name_edit.clone();
+            rename.on().bn_clicked(move || {
+                let Some(i) = selected_menu.get() else { return Ok(()) };
+                let raw = ne.text().unwrap_or_default();
+                let name = raw.trim();
+                if name.is_empty() {
+                    return Ok(());
+                }
+                {
+                    let mut cfg = shared.cfg.borrow_mut();
+                    if let Some(m) = cfg.menus.get_mut(i) {
+                        m.name = name.to_owned();
+                    }
+                }
+                rebuild_menus(Some(i));
+                Ok(())
+            });
+        }
+
+        // 削除：選択メニューを消す。直前を選び直す。
+        {
+            let shared = shared.clone();
+            let rebuild_menus = rebuild_menus.clone();
+            let selected_menu = selected_menu.clone();
+            del.on().bn_clicked(move || {
+                let Some(i) = selected_menu.get() else { return Ok(()) };
+                let next = {
+                    let mut cfg = shared.cfg.borrow_mut();
+                    if i < cfg.menus.len() {
+                        cfg.menus.remove(i);
+                    }
+                    if cfg.menus.is_empty() {
+                        None
+                    } else {
+                        Some(i.saturating_sub(1).min(cfg.menus.len() - 1))
+                    }
+                };
+                rebuild_menus(next);
+                Ok(())
+            });
+        }
+
+        // ↑/↓：選択メニューを入れ替えて並べ替える。
+        {
+            let shared = shared.clone();
+            let rebuild_menus = rebuild_menus.clone();
+            let selected_menu = selected_menu.clone();
+            up.on().bn_clicked(move || {
+                let Some(i) = selected_menu.get() else { return Ok(()) };
+                if i == 0 {
+                    return Ok(());
+                }
+                shared.cfg.borrow_mut().menus.swap(i, i - 1);
+                rebuild_menus(Some(i - 1));
+                Ok(())
+            });
+        }
+        {
+            let shared = shared.clone();
+            let rebuild_menus = rebuild_menus.clone();
+            let selected_menu = selected_menu.clone();
+            down.on().bn_clicked(move || {
+                let Some(i) = selected_menu.get() else { return Ok(()) };
+                let len = shared.cfg.borrow().menus.len();
+                if i + 1 >= len {
+                    return Ok(());
+                }
+                shared.cfg.borrow_mut().menus.swap(i, i + 1);
+                rebuild_menus(Some(i + 1));
+                Ok(())
+            });
+        }
+
+        Self { menu_list, item_list, rebuild_menus }
     }
 
     /// 窓生成後に列を作り（生成前の add は無効化されるため）、左のメニュー名一覧を `cfg.menus`
@@ -2364,12 +2500,7 @@ impl MenusPane {
         let _ = self.menu_list.cols().add("メニュー", gui::dpi_x(224));
         let _ = self.item_list.cols().add("ラベル", gui::dpi_x(220));
         let _ = self.item_list.cols().add("コマンド", gui::dpi_x(270));
-        let _ = self.menu_list.items().delete_all();
-        let _ = self.item_list.items().delete_all();
-        self.selected_menu.set(None);
-        for m in self.shared.cfg.borrow().menus.iter() {
-            let _ = self.menu_list.items().add(std::slice::from_ref(&m.name), None, ());
-        }
+        (self.rebuild_menus)(None);
     }
 }
 
