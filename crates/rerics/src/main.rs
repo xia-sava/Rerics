@@ -847,7 +847,7 @@ impl MainWindow {
             return Ok(());
         }
         // 式でない引数はリテラルとして使う。
-        self.exec_resolved(is_left, cmd, inv.args.clone())
+        self.exec_resolved(is_left, cmd, Args::from_strings(inv.args.clone()))
     }
 
     /// 任意コマンド実行（原作 `CommandDirect`）。コマンド名補完つきの入力ボックスを開き、打った
@@ -936,7 +936,7 @@ impl MainWindow {
     /// 解決済み引数でコマンド本体を実行する（引数解決のあとの同期処理＝コマンドアーム群を集約）。
     /// 引数解決は `exec` 側で済ませる（現状はマクロ展開・将来は式評価）。文脈外のビューア専用
     /// コマンドは何もしない。
-    fn exec_resolved(&self, is_left: bool, cmd: Command, args: Vec<String>) -> w::AnyResult<()> {
+    fn exec_resolved(&self, is_left: bool, cmd: Command, args: Args) -> w::AnyResult<()> {
         let view = self.view(is_left);
         let state = view.state();
         let pr = view.page_rows();
@@ -944,35 +944,35 @@ impl MainWindow {
             Command::CursorUp => {
                 let mut s = state.borrow_mut();
                 let c = s.cursor as isize;
-                s.move_cursor(c - 1, pr, arg_is_select(&args));
+                s.move_cursor(c - 1, pr, args.is_select());
             }
             Command::CursorDown => {
                 let mut s = state.borrow_mut();
                 let c = s.cursor as isize;
-                s.move_cursor(c + 1, pr, arg_is_select(&args));
+                s.move_cursor(c + 1, pr, args.is_select());
             }
             Command::CursorTop => {
-                state.borrow_mut().move_cursor(0, pr, arg_is_select(&args));
+                state.borrow_mut().move_cursor(0, pr, args.is_select());
             }
             Command::CursorEnd => {
                 let mut s = state.borrow_mut();
                 let last = s.count() as isize - 1;
-                s.move_cursor(last, pr, arg_is_select(&args));
+                s.move_cursor(last, pr, args.is_select());
             }
             Command::CursorPageUp => {
                 let mut s = state.borrow_mut();
                 let c = s.cursor as isize;
-                s.move_cursor(c - pr as isize, pr, arg_is_select(&args));
+                s.move_cursor(c - pr as isize, pr, args.is_select());
             }
             Command::CursorPageDown => {
                 let mut s = state.borrow_mut();
                 let c = s.cursor as isize;
-                s.move_cursor(c + pr as isize, pr, arg_is_select(&args));
+                s.move_cursor(c + pr as isize, pr, args.is_select());
             }
             Command::SetCursorPosition => {
-                if let Some(name) = args.first() {
+                if let Some(name) = args.str(0) {
                     let mut s = state.borrow_mut();
-                    if let Some(idx) = s.items.iter().position(|it| it.name == *name) {
+                    if let Some(idx) = s.items.iter().position(|it| it.name == name) {
                         s.set_cursor(idx as isize, pr);
                     }
                 }
@@ -983,7 +983,7 @@ impl MainWindow {
                 return Ok(());
             }
             Command::View => {
-                self.view_command(is_left, args.first().map(String::as_str))?;
+                self.view_command(is_left, args.str(0))?;
                 return Ok(());
             }
             Command::ToParent => {
@@ -1007,11 +1007,11 @@ impl MainWindow {
                 return Ok(());
             }
             Command::ChangeDirectory => {
-                self.change_directory(is_left, args.first().map(String::as_str))?;
+                self.change_directory(is_left, args.str(0))?;
                 return Ok(());
             }
             Command::ChangeDrive => {
-                self.change_drive_to(is_left, args.first().map(String::as_str))?;
+                self.change_drive_to(is_left, args.str(0))?;
                 return Ok(());
             }
             Command::ChangeDirectoryDialog => {
@@ -1039,7 +1039,7 @@ impl MainWindow {
                 return Ok(());
             }
             Command::Menu => {
-                self.open_named_menu(is_left, args.first().map(String::as_str).unwrap_or(""))?;
+                self.open_named_menu(is_left, args.str(0).unwrap_or(""))?;
                 return Ok(());
             }
             Command::DirectoryInformation => {
@@ -1069,7 +1069,7 @@ impl MainWindow {
                 return Ok(());
             }
             Command::MarkToggle => {
-                let delta = mark_move_delta(&args, self.config.borrow().cursor.down_after_select);
+                let delta = args.move_delta(self.config.borrow().cursor.down_after_select);
                 let mut s = state.borrow_mut();
                 let c = s.cursor;
                 s.reverse_file(c, pr);
@@ -1077,7 +1077,7 @@ impl MainWindow {
                 s.set_cursor(c + delta, pr);
             }
             Command::SelectFile => {
-                let delta = mark_move_delta(&args, self.config.borrow().cursor.down_after_select);
+                let delta = args.move_delta(self.config.borrow().cursor.down_after_select);
                 let mut s = state.borrow_mut();
                 let c = s.cursor;
                 s.select_file(c, pr);
@@ -1119,7 +1119,7 @@ impl MainWindow {
             Command::SortBySize => self.sort_active(is_left, SortType::Length, false),
             Command::SortByDate => self.sort_active(is_left, SortType::LastWriteTime, false),
             Command::Sort => {
-                if let Some(t) = args.first().and_then(|s| SortType::from_token(s)) {
+                if let Some(t) = args.str(0).and_then(SortType::from_token) {
                     self.sort_active(is_left, t, false);
                 }
             }
@@ -1639,20 +1639,36 @@ fn short_desc(names: &[String]) -> String {
     }
 }
 
-/// カーソル移動コマンドの引数が「選択しながら移動」を表すか（select/true/1・大小無視）。
-fn arg_is_select(args: &[String]) -> bool {
-    args.first().is_some_and(|a| {
-        matches!(a.trim().to_ascii_lowercase().as_str(), "select" | "true" | "1")
-    })
-}
+/// `exec_resolved` に渡る引数列。式パース・JS・JSON のどの入口も値は JSON 形なので、
+/// `serde_json::Value` の列として保持し、用途ごとのアクセサで読み取る。
+pub(crate) struct Args(Vec<serde_json::Value>);
 
-/// マーク操作（反転・選択）後のカーソル移動量。引数があればその整数（原作 `ReverseFile(n)` 相当）、
-/// 無ければ `down_after_select` に従い 1（下）か 0（移動なし）。
-fn mark_move_delta(args: &[String], down_after_select: bool) -> isize {
-    if let Some(v) = args.first().and_then(|a| a.trim().parse::<isize>().ok()) {
-        return v;
+impl Args {
+    /// 文字列列（キー定義由来の生引数）から作る。
+    pub(crate) fn from_strings(values: Vec<String>) -> Self {
+        Args(values.into_iter().map(serde_json::Value::String).collect())
     }
-    if down_after_select { 1 } else { 0 }
+
+    /// `i` 番目を文字列として読む（文字列値はそのまま、その他は `None`）。
+    fn str(&self, i: usize) -> Option<&str> {
+        self.0.get(i).and_then(|v| v.as_str())
+    }
+
+    /// カーソル移動コマンドの引数が「選択しながら移動」を表すか（select/true/1・大小無視）。
+    fn is_select(&self) -> bool {
+        self.str(0).is_some_and(|a| {
+            matches!(a.trim().to_ascii_lowercase().as_str(), "select" | "true" | "1")
+        })
+    }
+
+    /// マーク操作（反転・選択）後のカーソル移動量。引数があればその整数、
+    /// 無ければ `down_after_select` に従い 1（下）か 0（移動なし）。
+    fn move_delta(&self, down_after_select: bool) -> isize {
+        if let Some(v) = self.str(0).and_then(|a| a.trim().parse::<isize>().ok()) {
+            return v;
+        }
+        if down_after_select { 1 } else { 0 }
+    }
 }
 
 fn place(hwnd: &w::HWND, x: i32, y: i32, cx: i32, cy: i32) -> w::AnyResult<()> {

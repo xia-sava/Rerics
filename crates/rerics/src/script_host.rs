@@ -615,7 +615,7 @@ impl MainWindow {
                     ArgSlot::Pending(_) => String::new(),
                 })
                 .collect();
-            let _ = self.exec_resolved(is_left, cmd, args);
+            let _ = self.exec_resolved(is_left, cmd, crate::Args::from_strings(args));
             return;
         };
         let id = self.script.next_eval_id.get().wrapping_add(1);
@@ -676,7 +676,7 @@ impl MainWindow {
         match next {
             Next::Eval(id, code) => self.script_send(EngineCmd::EvalArg { id, code }),
             Next::Run(is_left, cmd, args) => {
-                let _ = self.exec_resolved(is_left, cmd, args);
+                let _ = self.exec_resolved(is_left, cmd, crate::Args::from_strings(args));
             }
             Next::Nothing => {}
         }
