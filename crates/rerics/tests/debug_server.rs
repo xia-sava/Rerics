@@ -3564,6 +3564,34 @@ items = []
     assert!(s.contains("\"name\":\"alpha\"") && s.contains("\"name\":\"beta\""), "他は残る: {s}");
 }
 
+/// メニュー名は重複させず、同名を足すと末尾へ ` (2)`, ` (3)` … が自動で付く。改名で他メニュー
+/// 名にぶつけても同様に一意化される（`MenuRegistry` は同名後勝ちなので埋もれを防ぐ）。
+#[test]
+fn menu_editor_dedupes_menu_names() {
+    let config = r#"
+[[menus]]
+name = "alpha"
+items = []
+
+[[menus]]
+name = "beta"
+items = []
+"#;
+    let server = Server::start(&["a.txt"], config);
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    poll(&server, "/menu-editor", |b| b.contains("\"name\":\"alpha\""));
+
+    // 同名 alpha を足すと alpha (2)。
+    let s = server.req("POST", "/menu-editor/add", "alpha").unwrap().1;
+    assert!(s.contains("\"name\":\"alpha (2)\""), "同名は (2): {s}");
+
+    // 改名で beta を alpha へぶつけると、alpha・alpha (2) を避けて alpha (3)。
+    server.req("POST", "/menu-editor/select/1", "").unwrap();
+    let s = server.req("POST", "/menu-editor/rename", "alpha").unwrap().1;
+    assert!(s.contains("\"name\":\"alpha (3)\""), "改名も一意化: {s}");
+    assert!(!s.contains("\"name\":\"beta\""), "beta は消える: {s}");
+}
+
 /// 設定の「メニュー」ページで、選択中メニューの項目（ラベル/コマンド/セパレータ）を
 /// 追加/選択/更新/並べ替え/削除できる。項目操作 body は `{label,command,separator}` JSON。
 #[test]

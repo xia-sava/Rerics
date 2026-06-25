@@ -2517,10 +2517,12 @@ impl MenusPane {
             let rebuild_menus = rebuild_menus.clone();
             move |name: &str| {
                 let name = name.trim();
-                let name = if name.is_empty() { "新しいメニュー" } else { name };
+                let base = if name.is_empty() { "新しいメニュー" } else { name };
                 let idx = {
                     let mut cfg = shared.cfg.borrow_mut();
-                    cfg.menus.push(MenuDef { name: name.to_owned(), items: Vec::new() });
+                    let existing: Vec<String> = cfg.menus.iter().map(|m| m.name.clone()).collect();
+                    let unique = rerics_core::unique_name(base, &existing);
+                    cfg.menus.push(MenuDef { name: unique, items: Vec::new() });
                     cfg.menus.len() - 1
                 };
                 rebuild_menus(Some(idx));
@@ -2536,8 +2538,20 @@ impl MenusPane {
                 if name.is_empty() {
                     return;
                 }
-                if let Some(m) = shared.cfg.borrow_mut().menus.get_mut(i) {
-                    m.name = name.to_owned();
+                {
+                    let mut cfg = shared.cfg.borrow_mut();
+                    // 自分以外の名前と衝突しないよう一意化する（同名へ戻すだけなら自分は除くので不変）。
+                    let existing: Vec<String> = cfg
+                        .menus
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, _)| *j != i)
+                        .map(|(_, m)| m.name.clone())
+                        .collect();
+                    let unique = rerics_core::unique_name(name, &existing);
+                    if let Some(m) = cfg.menus.get_mut(i) {
+                        m.name = unique;
+                    }
                 }
                 rebuild_menus(Some(i));
             }

@@ -11,6 +11,7 @@ mod input;
 mod log;
 mod media;
 mod menu;
+mod naming;
 pub mod messages;
 mod operation;
 mod spinner;
@@ -40,6 +41,7 @@ pub use file_list::{
 };
 pub use input::{Command, CommandContext, Invocation, KeyChord, KeyMap, vk};
 pub use menu::{MenuDef, MenuItem, MenuRegistry, ResolvedItem};
+pub use naming::unique_name;
 pub use log::{LogLevel, LogLine, LogState};
 pub use media::{
     AnimatedImage, Frame, FrameSource, MediaKind, Placement, StillImage, clamp_pan,
