@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use winsafe::{self as w, co, prelude::*};
-use rerics_core::{Command, Invocation, KeyChord, Location, MediaKind, open_archive};
+use rerics_core::{Call, Command, KeyChord, Location, MediaKind, open_archive};
 use crate::media_view::NavResolver;
 use crate::file_list::FileListView;
 use crate::{ActiveView, MainWindow, dialog, join_inner_path, viewer};
@@ -242,16 +242,23 @@ impl MainWindow {
     /// ビューア表示中のキー操作。固定キー（設定対象外）。
     pub(crate) fn viewer_key(&self, vk: u16, ctrl: bool, shift: bool) -> w::AnyResult<()> {
         let chord = KeyChord::new(vk, ctrl, shift, false);
-        let resolved = self.viewer_keymap.borrow().resolve_inv(&chord).cloned();
-        if let Some(inv) = resolved {
-            self.exec_viewer(&inv)?;
+        let resolved = self.viewer_keymap.borrow().resolve_call(&chord);
+        if let Some(call) = resolved {
+            self.exec_viewer(&call)?;
         }
         Ok(())
     }
 
     /// テキストビューアのコマンドを実行する（キーバインド・メニューの共通入口）。
-    pub(crate) fn exec_viewer(&self, inv: &Invocation) -> w::AnyResult<()> {
-        match inv.command {
+    pub(crate) fn exec_viewer(&self, call: &Call) -> w::AnyResult<()> {
+        let cmd = match call {
+            Call::Builtin { command, .. } => *command,
+            Call::Script { source } => {
+                self.script_send(crate::script_host::EngineCmd::Eval(source.clone()));
+                return Ok(());
+            }
+        };
+        match cmd {
             Command::ViewerClose => self.close_viewer()?,
             Command::ViewerScrollUp => self.viewer.scroll_by(-1)?,
             Command::ViewerScrollDown => self.viewer.scroll_by(1)?,
@@ -287,16 +294,23 @@ impl MainWindow {
     /// ビューア表示中の画像/動画キー操作。
     pub(crate) fn media_key(&self, vk: u16, ctrl: bool, shift: bool) -> w::AnyResult<()> {
         let chord = KeyChord::new(vk, ctrl, shift, false);
-        let resolved = self.media_keymap.borrow().resolve_inv(&chord).cloned();
-        if let Some(inv) = resolved {
-            self.exec_media(&inv)?;
+        let resolved = self.media_keymap.borrow().resolve_call(&chord);
+        if let Some(call) = resolved {
+            self.exec_media(&call)?;
         }
         Ok(())
     }
 
     /// 画像・動画ビューアのコマンドを実行する（キーバインドの共通入口）。
-    pub(crate) fn exec_media(&self, inv: &Invocation) -> w::AnyResult<()> {
-        match inv.command {
+    pub(crate) fn exec_media(&self, call: &Call) -> w::AnyResult<()> {
+        let cmd = match call {
+            Call::Builtin { command, .. } => *command,
+            Call::Script { source } => {
+                self.script_send(crate::script_host::EngineCmd::Eval(source.clone()));
+                return Ok(());
+            }
+        };
+        match cmd {
             Command::ViewerClose => self.close_viewer()?,
             Command::MediaTogglePlay => self.media.toggle_play()?,
             Command::ImagePrevious => self.media.navigate(-1)?,

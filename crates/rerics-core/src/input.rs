@@ -5,6 +5,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use crate::call::Call;
+
 /// 仮想キーコード（Win32 VK と同値の `u16`。winsafe `co::VK` とも一致）。
 pub mod vk {
     pub const BACK: u16 = 0x08;
@@ -430,10 +432,8 @@ impl Command {
     }
 }
 
-/// 「コマンド＋引数」一回分の呼び出し。キーバインド・メニュー・スクリプトの共通入口。
-///
-/// 引数なしコマンドは `args` が空。引数文字列は生の値で、先頭が `=` なら TS 式（実行直前に
-/// エンジンで評価）、それ以外はリテラルとして使う。
+/// 組込コマンド＋リテラル引数の呼び出し。機能欄の式のうち、単一組込呼び出しに簡約できる
+/// ものを「コマンド名＋文字列引数」で表す（キー編集 UI の組込行・メニュー解決で使う）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Invocation {
     pub command: Command,
@@ -468,11 +468,12 @@ impl Invocation {
         }
     }
 
-    /// 設定トークンへ変換する。引数なしは `Name`（＝従来表記・後方互換）、ありは `Name("a", "b")`。
+    /// 式文字列へ変換する。`()` は常に付ける（機能欄は関数呼び出し形が必須）。
+    /// 引数なしは `name()`、ありは `name("a", "b")`。
     pub fn to_token_string(&self) -> String {
         let name = self.command.as_token();
         if self.args.is_empty() {
-            return name.to_owned();
+            return format!("{name}()");
         }
         let quoted: Vec<String> = self
             .args
@@ -684,7 +685,7 @@ impl KeyChord {
 /// [`KeyMap::default`] がデフォルトバインド一式、[`KeyMap::new`] が空のマップを返す。
 #[derive(Debug, Clone)]
 pub struct KeyMap {
-    map: HashMap<KeyChord, Invocation>,
+    map: HashMap<KeyChord, String>,
 }
 
 impl Default for KeyMap {
@@ -720,13 +721,13 @@ impl Default for KeyMap {
         m.bind(KeyChord::new(vk::RIGHT, false, false, true), HistoryForward);
         m.bind(KeyChord::key(vk::LEFT), FocusLeft);
         m.bind(KeyChord::key(vk::RIGHT), FocusRight);
-        m.bind_inv(
+        m.bind_expr(
             KeyChord::key(vk::F4),
-            Invocation::new(ChangeDirectory, vec!["=r.prompt(\"ディレクトリの入力\")".into()]),
+            r#"{ const d = r.prompt("ディレクトリの入力"); if (d) r.changeDirectory(d); }"#,
         );
-        m.bind_inv(
+        m.bind_expr(
             KeyChord::new(vk::F4, false, true, false),
-            Invocation::new(ChangeDirectory, vec!["=r.folderDialog(\"ディレクトリの選択\")".into()]),
+            r#"{ const d = r.folderDialog("ディレクトリの選択"); if (d) r.changeDirectory(d); }"#,
         );
         m.bind(KeyChord::key(vk::J), JumpDialog);
         m.bind(KeyChord::key(vk::Z), CommandDirect);
@@ -878,13 +879,19 @@ impl KeyMap {
 
     /// 引数なしコマンドを割り当てる（既定マップ記述用の簡易版）。
     pub fn bind(&mut self, chord: KeyChord, cmd: Command) -> &mut Self {
-        self.map.insert(chord, Invocation::bare(cmd));
+        self.map.insert(chord, format!("{}()", cmd.as_token()));
         self
     }
 
-    /// 引数つきの呼び出しを割り当てる。
+    /// 組込呼び出し（コマンド＋リテラル引数）を割り当てる。
     pub fn bind_inv(&mut self, chord: KeyChord, inv: Invocation) -> &mut Self {
-        self.map.insert(chord, inv);
+        self.map.insert(chord, inv.to_token_string());
+        self
+    }
+
+    /// 任意の式文字列を割り当てる（ネスト呼び出し・スクリプトコードなど）。
+    pub fn bind_expr(&mut self, chord: KeyChord, expr: &str) -> &mut Self {
+        self.map.insert(chord, expr.to_owned());
         self
     }
 
@@ -892,38 +899,42 @@ impl KeyMap {
         self.map.remove(chord);
     }
 
-    /// 割り当てられたコマンドだけを返す（引数は見ない簡易問い合わせ・テスト/内観用）。
+    /// 割り当てられた組込コマンドだけを返す（引数・スクリプト式は見ない簡易問い合わせ・
+    /// テスト/内観用）。式がスクリプト送りに簡約されるバインドでは `None`。
     pub fn resolve(&self, chord: &KeyChord) -> Option<Command> {
-        self.map.get(chord).map(|inv| inv.command)
+        match self.map.get(chord).map(|s| Call::parse(s)) {
+            Some(Call::Builtin { command, .. }) => Some(command),
+            _ => None,
+        }
     }
 
-    /// 割り当てられた呼び出し（コマンド＋引数）を返す。実行配線はこちらを使う。
-    pub fn resolve_inv(&self, chord: &KeyChord) -> Option<&Invocation> {
-        self.map.get(chord)
+    /// 割り当てられた式を解釈した [`Call`] を返す。実行配線はこちらを使う。
+    pub fn resolve_call(&self, chord: &KeyChord) -> Option<Call> {
+        self.map.get(chord).map(|s| Call::parse(s))
     }
 
-    /// トークン文字列のマップ（チョード→呼び出し）からキーマップを組む。
-    /// 解釈できない行は無視する。**値が空文字のキーは未バインド**にする（既定を差分マージで
-    /// 上書きしたうえでここで読み飛ばす＝ユーザ config で既定キーを潰す手段）。
+    /// 式文字列のマップ（チョード→式）からキーマップを組む。
+    /// **値が空文字のキーは未バインド**にする（既定を差分マージで上書きしたうえでここで
+    /// 読み飛ばす＝ユーザ config で既定キーを潰す手段）。
     pub fn from_string_map(map: &BTreeMap<String, String>) -> Self {
         let mut m = Self::new();
         for (k, v) in map {
             if v.trim().is_empty() {
                 continue;
             }
-            if let (Some(chord), Some(inv)) = (KeyChord::parse(k), Invocation::parse(v)) {
-                m.bind_inv(chord, inv);
+            if let Some(chord) = KeyChord::parse(k) {
+                m.map.insert(chord, v.clone());
             }
         }
         m
     }
 
-    /// トークン文字列のマップ（チョード→呼び出し）へ変換する。
+    /// 式文字列のマップ（チョード→式）へ変換する。
     pub fn to_string_map(&self) -> BTreeMap<String, String> {
         let mut out = BTreeMap::new();
-        for (chord, inv) in &self.map {
+        for (chord, expr) in &self.map {
             if let Some(tok) = chord.to_token() {
-                out.insert(tok, inv.to_token_string());
+                out.insert(tok, expr.clone());
             }
         }
         out
@@ -985,19 +996,12 @@ mod tests {
             m.resolve(&KeyChord::new(vk::RIGHT, false, false, true)),
             Some(Command::HistoryForward)
         );
-        // F4＝入力式つき changeDirectory・Shift+F4＝フォルダ選択式つき。
-        assert_eq!(m.resolve(&KeyChord::key(vk::F4)), Some(Command::ChangeDirectory));
-        assert_eq!(
-            m.resolve_inv(&KeyChord::key(vk::F4)),
-            Some(&Invocation::new(
-                Command::ChangeDirectory,
-                vec!["=r.prompt(\"ディレクトリの入力\")".into()]
-            ))
-        );
-        assert_eq!(
-            m.resolve(&KeyChord::new(vk::F4, false, true, false)),
-            Some(Command::ChangeDirectory)
-        );
+        // F4＝入力ダイアログから changeDirectory・Shift+F4＝フォルダ選択から（どちらもスクリプト式）。
+        assert!(matches!(m.resolve_call(&KeyChord::key(vk::F4)), Some(Call::Script { .. })));
+        assert!(matches!(
+            m.resolve_call(&KeyChord::new(vk::F4, false, true, false)),
+            Some(Call::Script { .. })
+        ));
         assert_eq!(m.resolve(&KeyChord::key(vk::J)), Some(Command::JumpDialog));
         assert_eq!(m.resolve(&KeyChord::key(vk::F)), Some(Command::IncrementalSearchDialog));
         assert_eq!(m.resolve(&KeyChord::key(vk::I)), Some(Command::DirectoryInformation));
@@ -1092,14 +1096,18 @@ mod tests {
             (vk::PRIOR, Command::CursorPageUp),
             (vk::NEXT, Command::CursorPageDown),
         ] {
-            let inv = m.resolve_inv(&KeyChord::new(vk, false, true, false)).unwrap();
-            assert_eq!(inv.command, cmd);
-            assert_eq!(inv.args, vec!["select".to_string()]);
+            assert!(matches!(
+                m.resolve_call(&KeyChord::new(vk, false, true, false)),
+                Some(Call::Builtin { command, args })
+                    if command == cmd && args == vec![serde_json::json!("select")]
+            ));
         }
         // Shift+Space＝反転＋上移動（markToggle("-1")）。
-        let space = m.resolve_inv(&KeyChord::new(vk::SPACE, false, true, false)).unwrap();
-        assert_eq!(space.command, Command::MarkToggle);
-        assert_eq!(space.args, vec!["-1".to_string()]);
+        assert!(matches!(
+            m.resolve_call(&KeyChord::new(vk::SPACE, false, true, false)),
+            Some(Call::Builtin { command, args })
+                if command == Command::MarkToggle && args == vec![serde_json::json!("-1")]
+        ));
     }
 
     #[test]
@@ -1188,7 +1196,7 @@ mod tests {
     #[test]
     fn invocation_token_roundtrip() {
         for s in [
-            "cursorDown",
+            "cursorDown()",
             r#"changeDirectoryDialog("D:")"#,
             r#"newFiler("a", "b")"#,
             r#"reload("say \"hi\"\\")"#,
@@ -1211,17 +1219,18 @@ mod tests {
         let sm = m.to_string_map();
         assert_eq!(sm.get("F4").map(String::as_str), Some(r#"changeDirectoryDialog("D:")"#));
         let back = KeyMap::from_string_map(&sm);
-        assert_eq!(
-            back.resolve_inv(&KeyChord::key(vk::F4)),
-            Some(&Invocation::new(Command::ChangeDirectoryDialog, vec!["D:".into()]))
-        );
+        assert!(matches!(
+            back.resolve_call(&KeyChord::key(vk::F4)),
+            Some(Call::Builtin { command, args })
+                if command == Command::ChangeDirectoryDialog && args == vec![serde_json::json!("D:")]
+        ));
     }
 
     #[test]
     fn empty_value_unbinds_key() {
         // 値が空文字のキーは未バインドになる（既定打ち消し用）。
         let mut sm = KeyMap::default().to_string_map();
-        assert_eq!(sm.get("Down").map(String::as_str), Some("cursorDown"));
+        assert_eq!(sm.get("Down").map(String::as_str), Some("cursorDown()"));
         sm.insert("Down".to_string(), String::new());
         let m = KeyMap::from_string_map(&sm);
         assert_eq!(m.resolve(&KeyChord::key(vk::DOWN)), None);

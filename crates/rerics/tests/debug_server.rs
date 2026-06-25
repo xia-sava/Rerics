@@ -1956,7 +1956,7 @@ fn settings_key_editor_binds_eval_code() {
 }
 
 /// 「引数」＝バインド済みの組込コマンド行で引数の式を編集すると、そのキーの呼び出しがその場で
-/// 差し替わる。既定 F4 の `=r.prompt(...)` を `=r.currentDir()` へ変え、OK で config.toml に残る。
+/// 差し替わる。既定 J の `jumpDialog()` に式引数を付け、OK で config.toml に残る。
 #[test]
 fn settings_key_editor_edits_bound_command_arg() {
     let server = Server::start(&["a.txt"], "");
@@ -1964,21 +1964,21 @@ fn settings_key_editor_edits_bound_command_arg() {
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // 既定で F4 = changeDirectory("=r.prompt(...)")。r.prompt で F4 の行だけに絞って選ぶ。
-    server.req("POST", "/keys/filer/search", "r.prompt").unwrap();
-    assert!(keys().contains(r#"["changeDirectory",["F4"]]"#), "F4 の changeDirectory 行: {}", keys());
+    // 既定で J = jumpDialog()。jumpDialog で絞って J の行を選ぶ。
+    server.req("POST", "/keys/filer/search", "jumpDialog").unwrap();
+    assert!(keys().contains(r#"["jumpDialog",["J"]]"#), "J の jumpDialog 行: {}", keys());
     server.req("POST", "/keys/filer/select/0", "").unwrap();
 
     // 引数を式へ差し替える（バインド済み＝そのキーの呼び出しをその場で置換）。
     server.req("POST", "/keys/filer/arg", "=r.currentDir()").unwrap();
 
-    // OK で確定＝config.toml の F4 が新しい式へ更新される。
+    // OK で確定＝config.toml の J が新しい式へ更新される。
     server.req("POST", "/modal/command/ok", "").expect("ok");
     poll(&server, "/state/modal", |b| b.trim() == "null");
     let cfg = std::fs::read_to_string(server.base.join("data").join("config.toml")).unwrap();
     assert!(
-        cfg.contains(r#"changeDirectory("=r.currentDir()")"#),
-        "F4 の引数が式へ差し替わって保存される: {cfg}"
+        cfg.contains(r#"jumpDialog("=r.currentDir()")"#),
+        "J の引数が式へ差し替わって保存される: {cfg}"
     );
 }
 
@@ -3407,10 +3407,10 @@ fn command_direct_lists_registered_script_commands() {
     let c = poll(&server, "/completion", |b| b.contains("整理する（スクリプト）"));
     assert!(c.contains("整理する（スクリプト）"), "スクリプトコマンドが候補に出る: {c}");
 
-    // 先頭候補を確定＝入力欄に script("organize") トークンが入る。
+    // 先頭候補を確定＝入力欄に r.organize() 式が入る。
     server.req("POST", "/completion/accept/0", "").unwrap();
-    let c2 = poll(&server, "/completion", |b| b.contains(r#"script(\"organize\")"#));
-    assert!(c2.contains(r#"script(\"organize\")"#), "確定で script トークンが挿入される: {c2}");
+    let c2 = poll(&server, "/completion", |b| b.contains(r#"r.organize()"#));
+    assert!(c2.contains(r#"r.organize()"#), "確定で r.organize() 式が挿入される: {c2}");
 
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
@@ -3436,26 +3436,26 @@ fn command_direct_runs_typed_command() {
         "和名でコマンド名補完が引ける: {c}"
     );
 
-    // 本文を内部名 cursorDown にして OK＝実行され、カーソルが 1 へ動く。
-    server.req("POST", "/completion/type", "cursorDown").unwrap();
+    // 本文を内部名 cursorDown() にして OK＝実行され、カーソルが 1 へ動く。
+    server.req("POST", "/completion/type", "cursorDown()").unwrap();
     server.req("POST", "/modal/command/ok", "").unwrap();
     poll(&server, "/state/modal", |b| b.trim() == "null");
     assert_eq!(
         server.req("GET", "/state/panes/left/cursor", "").unwrap().1.trim(),
         "1",
-        "パレットで cursorDown を実行するとカーソルが 1 へ動く"
+        "パレットで cursorDown() を実行するとカーソルが 1 へ動く"
     );
 
-    // 解釈できない文字列は実行されずログに警告が出る（カーソルは動かない）。
+    // 組込に簡約できない式はエンジンへ送られ、評価に失敗してログへ出る（カーソルは動かない）。
     server.req("POST", "/command/commandDirect", "").expect("CommandDirect2");
     wait_modal(&server);
     server.req("POST", "/completion/type", "ぜんぜん違う文字列").unwrap();
     server.req("POST", "/modal/command/ok", "").unwrap();
     poll(&server, "/state/modal", |b| b.trim() == "null");
-    let log = server.req("GET", "/state/log/lines", "").unwrap().1;
+    let log = poll(&server, "/state/log/lines", |b| b.contains("エラー"));
     assert!(
-        log.contains("コマンドとして解釈できません"),
-        "不正コマンドは警告ログに出る: {log}"
+        log.contains("エラー"),
+        "不正な式はエンジンの評価エラーになる: {log}"
     );
     assert_eq!(
         server.req("GET", "/state/panes/left/cursor", "").unwrap().1.trim(),
@@ -3473,7 +3473,7 @@ fn named_menu_resolves_and_dispatches() {
 [[menus]]
 name = "test"
 items = [
-  { label = "下へ(&D)", command = "cursorDown" },
+  { label = "下へ(&D)", command = "cursorDown()" },
   { separator = true },
   { label = "サブ(&S)", command = 'menu("sub")' },
 ]
@@ -3481,16 +3481,16 @@ items = [
 [[menus]]
 name = "sub"
 items = [
-  { label = "先頭へ", command = "cursorTop" },
+  { label = "先頭へ", command = "cursorTop()" },
 ]
 "#;
     let server = Server::start(&["a.txt", "b.txt", "c.txt"], config);
 
     // 解決済みの項目木：コマンド・セパレータ・参照式サブメニューが出る。
     let tree = server.req("GET", "/menu/test", "").unwrap().1;
-    assert!(tree.contains("\"command\":\"cursorDown\""), "コマンド項目: {tree}");
+    assert!(tree.contains("\"command\":\"cursorDown()\""), "コマンド項目: {tree}");
     assert!(tree.contains("\"sep\":true"), "セパレータ: {tree}");
-    assert!(tree.contains("\"command\":\"cursorTop\""), "サブメニューが展開される: {tree}");
+    assert!(tree.contains("\"command\":\"cursorTop()\""), "サブメニューが展開される: {tree}");
     // サブメニュー内の項目にも深さ優先で葉インデックスが振られる。
     assert!(tree.contains("\"leaf\":1"), "サブメニューの葉も採番される: {tree}");
 
@@ -3518,15 +3518,15 @@ fn named_menu_includes_script_registered() {
         &[(
             "00.ts",
             r#"rerics.registerMenu("scripted", [
-                { label: "末尾へ", command: "cursorEnd" },
-                { label: "先頭へ", command: "cursorTop" },
+                { label: "末尾へ", command: "cursorEnd()" },
+                { label: "先頭へ", command: "cursorTop()" },
             ]);"#,
         )],
     );
 
     let tree = server.req("GET", "/menu/scripted", "").unwrap().1;
-    assert!(tree.contains("\"command\":\"cursorEnd\""), "登録メニューが解決される: {tree}");
-    assert!(tree.contains("\"command\":\"cursorTop\""), "2 項目目も出る: {tree}");
+    assert!(tree.contains("\"command\":\"cursorEnd()\""), "登録メニューが解決される: {tree}");
+    assert!(tree.contains("\"command\":\"cursorTop()\""), "2 項目目も出る: {tree}");
 
     // 葉 0（cursorEnd）でカーソルが末尾へ動く。
     server.req("POST", "/menu/scripted/select/0", "").unwrap();

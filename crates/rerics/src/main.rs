@@ -56,8 +56,8 @@ use tab_bar::TabBar;
 use task::{TaskEntry, WorkerEvent};
 use viewer::ViewerView;
 use rerics_core::{
-    Command, Config, FileListState, Invocation, KeyChord, KeyMap, Location, MenuRegistry, Pane,
-    ResolvedItem, SortType, WindowState,
+    Call, Command, Config, FileListState, KeyChord, KeyMap, Location, MenuRegistry,
+    Pane, ResolvedItem, SortType, WindowState,
 };
 use winsafe::{self as w, co, gui, prelude::*};
 
@@ -150,12 +150,21 @@ fn flush_pending_chars() {
     }
 }
 
+/// `Call::Builtin` の引数値を、スクリプト系（`Script`/`Eval`）・式引数の旧経路が要求する文字列に
+/// する。文字列値はそのまま、それ以外（数値・真偽など）は JSON 表現にする。
+fn value_as_arg(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
 /// 解決済みメニュー項目列からポップアップ `HMENU` を再帰的に組む。実行項目には 1 始まりの
-/// ID を採番し、`dispatch` に同順で [`Invocation`] を積む（選択 ID → `dispatch[ID-1]`）。
+/// ID を採番し、`dispatch` に同順で [`Call`] を積む（選択 ID → `dispatch[ID-1]`）。
 /// サブメニューは入れ子の `HMENU`、無効項目はグレーアウト掲示、セパレータは区切り線。
 fn build_resolved_menu(
     items: &[ResolvedItem],
-    dispatch: &mut Vec<Invocation>,
+    dispatch: &mut Vec<Call>,
 ) -> w::SysResult<w::HMENU> {
     let menu = w::HMENU::CreatePopupMenu()?;
     for item in items {
@@ -163,8 +172,8 @@ fn build_resolved_menu(
             ResolvedItem::Separator => {
                 menu.AppendMenu(co::MF::SEPARATOR, w::IdMenu::None, w::BmpPtrStr::None)?;
             }
-            ResolvedItem::Command { label, invocation } => {
-                dispatch.push(invocation.clone());
+            ResolvedItem::Command { label, call } => {
+                dispatch.push(call.clone());
                 let id = dispatch.len() as u16;
                 menu.AppendMenu(co::MF::STRING, w::IdMenu::Id(id), w::BmpPtrStr::from_str(label))?;
             }
@@ -587,10 +596,10 @@ impl MainWindow {
             // 割り当て済みなら、そちらを優先して実行する。
             let this = self.clone();
             self.viewer.on_chord(move |chord| {
-                let resolved = this.viewer_keymap.borrow().resolve_inv(&chord).cloned();
+                let resolved = this.viewer_keymap.borrow().resolve_call(&chord);
                 match resolved {
-                    Some(inv) => {
-                        let _ = this.exec_viewer(&inv);
+                    Some(call) => {
+                        let _ = this.exec_viewer(&call);
                         true
                     }
                     None => false,
@@ -603,7 +612,7 @@ impl MainWindow {
             let this = self.clone();
             self.wnd.on().wm_command_acc_menu(id, move || {
                 let is_left = !this.active_right.get();
-                this.exec(is_left, &Invocation::bare(cmd))?;
+                this.exec(is_left, &Call::Builtin { command: cmd, args: Vec::new() })?;
                 Ok(())
             });
         }
@@ -808,61 +817,79 @@ impl MainWindow {
     }
 
 
-    fn exec(&self, is_left: bool, inv: &Invocation) -> w::AnyResult<()> {
-        let cmd = inv.command;
+    fn exec(&self, is_left: bool, call: &Call) -> w::AnyResult<()> {
         let view = self.view(is_left);
-        // 書庫の読込中はキー入力を抑止し、Esc（clearAll）と「親へ戻る」（toParent・既定 BS）を
-        // 展開中止に割り当てる。デカい書庫にうっかり潜った時、咄嗟の「出る」操作で抜けられる。
-        if view.is_loading() {
-            if matches!(cmd, Command::ClearAll | Command::ToParent) {
-                self.cancel_archive_load();
-            }
-            return Ok(());
-        }
-        self.fire_script_event("executeCommand", cmd.as_token());
-        // スクリプト系は引数を生のままエンジンへ渡す（登録名・コードをマクロ展開で改変しない）。
-        match cmd {
-            Command::Script => {
-                if let Some(name) = inv.args.first() {
-                    self.script_send(script_host::EngineCmd::Invoke {
-                        name: name.clone(),
-                        args: inv.args[1..].to_vec(),
-                    });
+        match call {
+            // 組込呼び出し（リテラル引数）。ホットパスは同期実行、スクリプト系・式引数は下で捌く。
+            Call::Builtin { command, args } => {
+                let cmd = *command;
+                // 書庫の読込中はキー入力を抑止し、Esc（clearAll）と「親へ戻る」（toParent・既定 BS）を
+                // 展開中止に割り当てる。デカい書庫にうっかり潜った時、咄嗟の「出る」操作で抜けられる。
+                if view.is_loading() {
+                    if matches!(cmd, Command::ClearAll | Command::ToParent) {
+                        self.cancel_archive_load();
+                    }
+                    return Ok(());
                 }
-                return Ok(());
-            }
-            Command::Eval => {
-                if let Some(code) = inv.args.first() {
-                    self.script_send(script_host::EngineCmd::Eval(code.clone()));
+                self.fire_script_event("executeCommand", cmd.as_token());
+                // スクリプト系は引数を生のままエンジンへ渡す（登録名・コードを改変しない）。
+                match cmd {
+                    Command::Script => {
+                        if let Some(name) = args.first().and_then(|v| v.as_str()) {
+                            let rest = args[1..].iter().map(value_as_arg).collect();
+                            self.script_send(script_host::EngineCmd::Invoke {
+                                name: name.to_owned(),
+                                args: rest,
+                            });
+                        }
+                        return Ok(());
+                    }
+                    Command::Eval => {
+                        if let Some(code) = args.first().and_then(|v| v.as_str()) {
+                            self.script_send(script_host::EngineCmd::Eval(code.to_owned()));
+                        }
+                        return Ok(());
+                    }
+                    _ => {}
                 }
-                return Ok(());
+                // 引数に式（`=...`）があれば、別スレッドで非同期評価してから本体を走らせる。UI は
+                // ブロックしないので、式が `r.prompt()` 等のモーダルを呼んでもデッドロックしない。
+                let str_args: Vec<String> = args.iter().map(value_as_arg).collect();
+                if str_args.iter().any(|a| a.starts_with('=')) {
+                    let slots = script_host::arg_slots(&str_args);
+                    self.begin_expr_dispatch(is_left, cmd, slots);
+                    return Ok(());
+                }
+                self.exec_resolved(is_left, cmd, Args::from_values(args.clone()))
             }
-            _ => {}
+            // 簡約できない式（ネスト呼び出し・スクリプト関数・制御構文など）はエンジンへ丸投げ。
+            Call::Script { source } => {
+                if view.is_loading() {
+                    return Ok(());
+                }
+                self.script_send(script_host::EngineCmd::Eval(source.clone()));
+                Ok(())
+            }
         }
-        // 引数に式（`=...`）があれば、別スレッドで非同期評価してから本体を走らせる。UI は
-        // ブロックしないので、式が `r.prompt()` 等のモーダルを呼んでもデッドロックしない。
-        if inv.args.iter().any(|a| a.starts_with('=')) {
-            let slots = script_host::arg_slots(&inv.args);
-            self.begin_expr_dispatch(is_left, cmd, slots);
-            return Ok(());
-        }
-        // 式でない引数はリテラルとして使う。
-        self.exec_resolved(is_left, cmd, Args::from_strings(inv.args.clone()))
     }
 
     /// 任意コマンド実行（原作 `CommandDirect`）。コマンド名補完つきの入力ボックスを開き、打った
-    /// 文字列を [`Invocation`] として解釈し、キー押下と同じ `exec` 経路へ流す。空入力は無視、
-    /// 解釈できない文字列はログに出す。補完候補はファイラ文脈の組込コマンド（和名＋内部名）。
+    /// 式を [`Call`] として解釈し、キー押下と同じ `exec` 経路へ流す。空入力は無視。補完候補は
+    /// ファイラ文脈の組込コマンド（和名＋内部名・`()` つき）と登録済みスクリプトコマンド。
     fn command_direct(&self, is_left: bool) -> w::AnyResult<()> {
         let mut commands: Vec<(String, String)> = Command::all()
             .filter(|c| c.available_in(rerics_core::CommandContext::Filer))
-            .map(|c| (format!("{} ({})", c.display_name(), c.as_token()), c.as_token().to_string()))
+            .map(|c| {
+                (
+                    format!("{} ({})", c.display_name(), c.as_token()),
+                    format!("{}()", c.as_token()),
+                )
+            })
             .collect();
-        // 登録済みスクリプトコマンドも候補に出す（挿入は `script("name")` トークン）。
+        // 登録済みスクリプトコマンドも候補に出す（挿入は `r.name()` 式）。
         for sc in self.script_list_commands() {
             let label = sc.label.unwrap_or_else(|| sc.name.clone());
-            let token = Invocation::new(Command::Script, vec![sc.name]).to_token_string();
-            commands.push((format!("{label}（スクリプト）"), token));
+            commands.push((format!("{label}（スクリプト）"), format!("r.{}()", sc.name)));
         }
         let Some(text) =
             crate::dialog::command_box(&self.wnd, "実行するコマンド（和名・内部名で補完）", &commands)
@@ -873,13 +900,7 @@ impl MainWindow {
         if text.is_empty() {
             return Ok(());
         }
-        match Invocation::parse(text) {
-            Some(inv) => self.exec(is_left, &inv),
-            None => {
-                self.log.warn(&format!("コマンドとして解釈できません: {text}"));
-                Ok(())
-            }
-        }
+        self.exec(is_left, &Call::parse(text))
     }
 
     /// config の `[[menus]]` とスクリプトの `registerMenu` 登録を集約した名前付きメニューの
@@ -912,7 +933,7 @@ impl MainWindow {
         if self.debug.headless {
             return Ok(());
         }
-        let mut dispatch: Vec<Invocation> = Vec::new();
+        let mut dispatch: Vec<Call> = Vec::new();
         let menu = build_resolved_menu(&items, &mut dispatch)?;
         let owner = self.view(is_left).hwnd();
         let pt = self.view(is_left).menu_anchor();
@@ -926,9 +947,9 @@ impl MainWindow {
             owner,
         )?;
         if let Some(id) = chosen
-            && let Some(inv) = dispatch.get(id as usize - 1)
+            && let Some(call) = dispatch.get(id as usize - 1)
         {
-            self.exec(is_left, &inv.clone())?;
+            self.exec(is_left, &call.clone())?;
         }
         Ok(())
     }
@@ -1382,10 +1403,10 @@ impl MainWindow {
             let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
             let shift = w::GetAsyncKeyState(co::VK::SHIFT);
             let chord = KeyChord::new(p.vkey_code.raw(), ctrl, shift, p.has_alt_key);
-            let resolved = this.keymap.borrow().resolve_inv(&chord).cloned();
-            if let Some(inv) = resolved {
+            let resolved = this.keymap.borrow().resolve_call(&chord);
+            if let Some(call) = resolved {
                 let is_left = !this.active_right.get();
-                let _ = this.exec(is_left, &inv);
+                let _ = this.exec(is_left, &call);
             }
             Ok(())
         });
@@ -1647,6 +1668,11 @@ impl Args {
     /// 文字列列（キー定義由来の生引数）から作る。
     pub(crate) fn from_strings(values: Vec<String>) -> Self {
         Args(values.into_iter().map(serde_json::Value::String).collect())
+    }
+
+    /// 式パーサ由来の値列（`Vec<serde_json::Value>`）から作る。
+    pub(crate) fn from_values(values: Vec<serde_json::Value>) -> Self {
+        Args(values)
     }
 
     /// `i` 番目を文字列として読む（文字列値はそのまま、その他は `None`）。

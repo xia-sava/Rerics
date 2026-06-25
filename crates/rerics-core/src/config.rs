@@ -777,7 +777,7 @@ mod tests {
         assert_eq!(cfg.colors.dark.background, Config::default().colors.dark.background);
         assert_eq!(cfg.colors.light, Config::default().colors.light);
         assert_eq!(cfg.keybinds.get("Ctrl+T").map(String::as_str), Some("reload"));
-        assert_eq!(cfg.keybinds.get("Down").map(String::as_str), Some("cursorDown"));
+        assert_eq!(cfg.keybinds.get("Down").map(String::as_str), Some("cursorDown()"));
         let _ = std::fs::remove_file(&path);
     }
 

@@ -13,7 +13,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::input::{Command, Invocation};
+use crate::call::Call;
+use crate::input::Command;
 
 /// 名前付きメニュー1つ分の定義。`name` で参照し、`menu("name")` で開く。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,7 +35,7 @@ pub struct MenuItem {
     /// 表示ラベル（`&` の次の文字がアクセスキー）。セパレータでは無視。
     #[serde(default)]
     pub label: String,
-    /// 実行するコマンドトークン（[`Invocation::parse`] で解釈）。セパレータでは空。
+    /// 実行する機能欄の式（[`Call::parse`] で解釈）。セパレータでは空。
     #[serde(default)]
     pub command: String,
     /// 区切り線なら true（`label`/`command` を無視）。
@@ -54,12 +55,12 @@ impl MenuItem {
     }
 }
 
-/// 解決済みメニュー項目。参照サブメニューを展開し、各項目を [`Invocation`] 化したもの。
+/// 解決済みメニュー項目。参照サブメニューを展開し、各項目を [`Call`] 化したもの。
 /// GUI はこの木をそのままポップアップへ変換できる。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ResolvedItem {
-    /// 実行可能な項目：ラベルと実行する呼び出し。
-    Command { label: String, invocation: Invocation },
+    /// 実行可能な項目：ラベルと実行する式の解釈結果。
+    Command { label: String, call: Call },
     /// サブメニュー：見出しラベルと展開済みの子項目。
     Submenu { label: String, items: Vec<ResolvedItem> },
     /// 区切り線。
@@ -122,15 +123,10 @@ impl MenuRegistry {
         if item.separator {
             return ResolvedItem::Separator;
         }
-        let Some(inv) = Invocation::parse(&item.command) else {
-            return ResolvedItem::Invalid {
-                label: item.label.clone(),
-                reason: format!("コマンドとして解釈できません: {}", item.command),
-            };
-        };
+        let call = Call::parse(&item.command);
         // `menu("他名")` は参照式サブメニューとして展開する。
-        if inv.command == Command::Menu {
-            let target = inv.args.first().map(String::as_str).unwrap_or("");
+        if let Call::Builtin { command: Command::Menu, args } = &call {
+            let target = args.first().and_then(|v| v.as_str()).unwrap_or("");
             if target.is_empty() {
                 return ResolvedItem::Invalid {
                     label: item.label.clone(),
@@ -154,7 +150,7 @@ impl MenuRegistry {
             path.pop();
             return ResolvedItem::Submenu { label: item.label.clone(), items };
         }
-        ResolvedItem::Command { label: item.label.clone(), invocation: inv }
+        ResolvedItem::Command { label: item.label.clone(), call }
     }
 }
 
@@ -171,16 +167,16 @@ mod tests {
         let reg = MenuRegistry::from_defs([menu(
             "編集",
             vec![
-                MenuItem::entry("コピー(&C)", "copy"),
+                MenuItem::entry("コピー(&C)", "copy()"),
                 MenuItem::separator(),
-                MenuItem::entry("移動(&M)", "move"),
+                MenuItem::entry("移動(&M)", "move()"),
             ],
         )]);
         let items = reg.resolve("編集").unwrap();
         assert_eq!(items.len(), 3);
-        assert!(matches!(&items[0], ResolvedItem::Command { invocation, .. } if invocation.command == Command::Copy));
+        assert!(matches!(&items[0], ResolvedItem::Command { call: Call::Builtin { command, .. }, .. } if *command == Command::Copy));
         assert!(matches!(items[1], ResolvedItem::Separator));
-        assert!(matches!(&items[2], ResolvedItem::Command { invocation, .. } if invocation.command == Command::Move));
+        assert!(matches!(&items[2], ResolvedItem::Command { call: Call::Builtin { command, .. }, .. } if *command == Command::Move));
     }
 
     #[test]
@@ -193,14 +189,14 @@ mod tests {
     fn submenu_is_expanded_by_reference() {
         let reg = MenuRegistry::from_defs([
             menu("親", vec![MenuItem::entry("子を開く", "menu(\"子\")")]),
-            menu("子", vec![MenuItem::entry("削除", "delete")]),
+            menu("子", vec![MenuItem::entry("削除", "delete()")]),
         ]);
         let items = reg.resolve("親").unwrap();
         match &items[0] {
             ResolvedItem::Submenu { label, items } => {
                 assert_eq!(label, "子を開く");
                 assert_eq!(items.len(), 1);
-                assert!(matches!(&items[0], ResolvedItem::Command { invocation, .. } if invocation.command == Command::Delete));
+                assert!(matches!(&items[0], ResolvedItem::Command { call: Call::Builtin { command, .. }, .. } if *command == Command::Delete));
             }
             other => panic!("サブメニューのはず: {other:?}"),
         }
@@ -228,19 +224,20 @@ mod tests {
     }
 
     #[test]
-    fn unparseable_command_is_invalid() {
+    fn unparseable_command_becomes_script() {
+        // 組込に簡約できない式はスクリプト送り（選択時にエンジンが評価＝失敗はログへ）。
         let reg = MenuRegistry::from_defs([menu("親", vec![MenuItem::entry("変な項目", "ぜんぜん違う")])]);
         let items = reg.resolve("親").unwrap();
-        assert!(matches!(&items[0], ResolvedItem::Invalid { .. }));
+        assert!(matches!(&items[0], ResolvedItem::Command { call: Call::Script { .. }, .. }));
     }
 
     #[test]
     fn later_definition_wins() {
         let mut reg = MenuRegistry::new();
-        reg.insert(menu("M", vec![MenuItem::entry("旧", "copy")]));
-        reg.insert(menu("M", vec![MenuItem::entry("新", "move")]));
+        reg.insert(menu("M", vec![MenuItem::entry("旧", "copy()")]));
+        reg.insert(menu("M", vec![MenuItem::entry("新", "move()")]));
         let items = reg.resolve("M").unwrap();
         assert_eq!(items.len(), 1);
-        assert!(matches!(&items[0], ResolvedItem::Command { invocation, .. } if invocation.command == Command::Move));
+        assert!(matches!(&items[0], ResolvedItem::Command { call: Call::Builtin { command, .. }, .. } if *command == Command::Move));
     }
 }

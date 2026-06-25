@@ -2,7 +2,7 @@
 
 use std::sync::mpsc::Sender;
 use winsafe::{self as w, co, prelude::*};
-use rerics_core::{Command, CommandContext, Invocation, ResolvedItem};
+use rerics_core::{Call, Command, CommandContext, ResolvedItem};
 use crate::{ActiveView, DebugCmdClass, MainWindow, debug_command_class, debug_json, debug_server, parse_region};
 
 impl MainWindow {
@@ -392,7 +392,10 @@ impl MainWindow {
             )));
             return;
         };
-        let inv = Invocation::new(cmd, args);
+        let call = Call::Builtin {
+            command: cmd,
+            args: args.into_iter().map(serde_json::Value::String).collect(),
+        };
         let is_left = !self.active_right.get();
         // 表示中ビューアのコマンドはそのビューア文脈で実行する。
         let viewer_is_text = match self.active_view.get() {
@@ -405,10 +408,10 @@ impl MainWindow {
             // ブロックする。単一スレッドの HTTP が `/modal/*` を捌けなくなるのを避け、先に応答する。
             if !matches!(debug_command_class(cmd), DebugCmdClass::NonModal) {
                 let _ = tx.send(debug_server::Response::Json("{\"maybe_modal\":true}".to_string()));
-                let _ = if is_text { self.exec_viewer(&inv) } else { self.exec_media(&inv) };
+                let _ = if is_text { self.exec_viewer(&call) } else { self.exec_media(&call) };
                 return;
             }
-            let result = if is_text { self.exec_viewer(&inv) } else { self.exec_media(&inv) };
+            let result = if is_text { self.exec_viewer(&call) } else { self.exec_media(&call) };
             let r = match result {
                 Ok(()) => {
                     self.settle_pending_jobs();
@@ -421,7 +424,7 @@ impl MainWindow {
         }
         match debug_command_class(cmd) {
             DebugCmdClass::NonModal => {
-                let r = match self.exec(is_left, &inv) {
+                let r = match self.exec(is_left, &call) {
                     Ok(()) => {
                         self.settle_pending_jobs();
                         debug_server::Response::Json(self.debug_state_value().to_string())
@@ -437,7 +440,7 @@ impl MainWindow {
                 let _ = tx.send(debug_server::Response::Json(
                     "{\"maybe_modal\":true}".to_string(),
                 ));
-                let _ = self.exec(is_left, &inv);
+                let _ = self.exec(is_left, &call);
             }
             DebugCmdClass::ModalWrite => {
                 if !self.debug.allow_write {
@@ -450,7 +453,7 @@ impl MainWindow {
                 let _ = tx.send(debug_server::Response::Json(
                     "{\"modal_opening\":true}".to_string(),
                 ));
-                let _ = self.exec(is_left, &inv);
+                let _ = self.exec(is_left, &call);
             }
         }
     }
@@ -529,17 +532,22 @@ impl MainWindow {
             let _ = tx.send(debug_server::Response::NotFound);
             return;
         };
-        let mut leaves: Vec<Invocation> = Vec::new();
+        let mut leaves: Vec<Call> = Vec::new();
         flatten_menu_leaves(&items, &mut leaves);
-        let Some(inv) = leaves.get(idx).cloned() else {
+        let Some(call) = leaves.get(idx).cloned() else {
             let _ = tx.send(debug_server::Response::BadRequest(format!(
                 "メニュー項目が範囲外です: {idx}"
             )));
             return;
         };
         let is_left = !self.active_right.get();
-        if matches!(debug_command_class(inv.command), DebugCmdClass::NonModal) {
-            let r = match self.exec(is_left, &inv) {
+        // スクリプト式の項目は常にエンジン送り＝モーダルを開き得る扱いにする。
+        let class = match &call {
+            Call::Builtin { command, .. } => debug_command_class(*command),
+            Call::Script { .. } => DebugCmdClass::MaybeModal,
+        };
+        if matches!(class, DebugCmdClass::NonModal) {
+            let r = match self.exec(is_left, &call) {
                 Ok(()) => {
                     self.settle_pending_jobs();
                     debug_server::Response::Json(self.debug_state_value().to_string())
@@ -549,7 +557,7 @@ impl MainWindow {
             let _ = tx.send(r);
         } else {
             let _ = tx.send(debug_server::Response::Json("{\"maybe_modal\":true}".to_string()));
-            let _ = self.exec(is_left, &inv);
+            let _ = self.exec(is_left, &call);
         }
     }
 
@@ -1467,10 +1475,10 @@ fn menu_items_to_json(items: &[ResolvedItem], leaf: &mut usize) -> Vec<serde_jso
         .iter()
         .map(|item| match item {
             ResolvedItem::Separator => json!({ "sep": true }),
-            ResolvedItem::Command { label, invocation } => {
+            ResolvedItem::Command { label, call } => {
                 let idx = *leaf;
                 *leaf += 1;
-                json!({ "label": label, "command": invocation.to_token_string(), "leaf": idx })
+                json!({ "label": label, "command": call.to_expr(), "leaf": idx })
             }
             ResolvedItem::Submenu { label, items } => {
                 json!({ "label": label, "items": menu_items_to_json(items, leaf) })
@@ -1485,10 +1493,10 @@ fn menu_items_to_json(items: &[ResolvedItem], leaf: &mut usize) -> Vec<serde_jso
 /// 解決済みメニューの実行項目の呼び出しを深さ優先で集める（`build_resolved_menu` の
 /// ディスパッチ順と一致＝`/menu/<name>/select/<idx>` の idx 解決に使う）。
 #[cfg(feature = "debug-server")]
-fn flatten_menu_leaves(items: &[ResolvedItem], out: &mut Vec<Invocation>) {
+fn flatten_menu_leaves(items: &[ResolvedItem], out: &mut Vec<Call>) {
     for item in items {
         match item {
-            ResolvedItem::Command { invocation, .. } => out.push(invocation.clone()),
+            ResolvedItem::Command { call, .. } => out.push(call.clone()),
             ResolvedItem::Submenu { items, .. } => flatten_menu_leaves(items, out),
             _ => {}
         }

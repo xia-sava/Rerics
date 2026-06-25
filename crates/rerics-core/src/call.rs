@@ -23,6 +23,18 @@ impl Call {
         let src = expr.trim();
         parse_builtin(src).unwrap_or_else(|| Call::Script { source: src.to_owned() })
     }
+
+    /// 式文字列へ戻す（表示・観測用）。`Builtin` は `name(args)`（引数は JSON 表現）、
+    /// `Script` はソースそのまま。
+    pub fn to_expr(&self) -> String {
+        match self {
+            Call::Builtin { command, args } => {
+                let parts: Vec<String> = args.iter().map(|v| v.to_string()).collect();
+                format!("{}({})", command.as_token(), parts.join(", "))
+            }
+            Call::Script { source } => source.clone(),
+        }
+    }
 }
 
 /// `name(args)` 形（先頭 `r.`/`rerics.` は省略記法として剥がす）を、リテラル引数の組込呼び出しへ

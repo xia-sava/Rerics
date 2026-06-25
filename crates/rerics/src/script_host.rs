@@ -17,7 +17,7 @@ use winsafe::prelude::*;
 use crate::MainWindow;
 use crate::dialog::{InputMode, MessageResult, MessageStyle, input_box, list_box, message_box};
 use crate::shell;
-use rerics_core::{Command, Invocation};
+use rerics_core::{Call, Command};
 
 use crate::script::{self, HostApi, PaneItem, PaneSnapshot, ScriptCommand, ScriptOp};
 use crate::ui_marshal::{self, WakeQueue};
@@ -827,11 +827,14 @@ impl MainWindow {
         let Some(cmd) = Command::from_token(name) else {
             return Err(format!("unknown command: {name}"));
         };
-        let inv = Invocation::new(cmd, args);
+        let call = Call::Builtin {
+            command: cmd,
+            args: args.into_iter().map(serde_json::Value::String).collect(),
+        };
         let is_left = !self.active_right.get();
         // スクリプト発のコマンド実行中は executeCommand を抑止する（無限再帰を防ぐ）。
         self.script.suppress_events.set(true);
-        let result = self.exec(is_left, &inv);
+        let result = self.exec(is_left, &call);
         self.script.suppress_events.set(false);
         result.map_err(|e| e.to_string())
     }
