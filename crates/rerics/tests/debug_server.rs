@@ -3564,6 +3564,39 @@ items = []
     assert!(s.contains("\"name\":\"alpha\"") && s.contains("\"name\":\"beta\""), "他は残る: {s}");
 }
 
+/// メニュー編集を OK で確定すると、`config.toml` へ保存される（ライブ反映＋ディスク永続化）。
+/// 設定ダイアログの OK は arm 登録済みなので `/modal/command/ok` で押せる。
+#[test]
+fn menu_editor_persists_to_config_on_ok() {
+    let config = r#"
+[[menus]]
+name = "alpha"
+items = [ { label = "コピー", command = "Copy" } ]
+"#;
+    let server = Server::start(&["a.txt"], config);
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    poll(&server, "/menu-editor", |b| b.contains("\"name\":\"alpha\""));
+
+    // メニューを足して OK で確定（ライブ反映＋config.toml へ保存）。
+    server.req("POST", "/menu-editor/add", "gamma").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    // 設定モーダルが閉じるまで待つ（OK 処理＝検証→反映→保存→close が走り切る）。
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+
+    // config.toml に追加メニューが書き出され、既存も残っている。
+    let cfg_path = server.base.join("data").join("config.toml");
+    let mut saved = String::new();
+    for _ in 0..50 {
+        saved = std::fs::read_to_string(&cfg_path).unwrap_or_default();
+        if saved.contains("gamma") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    assert!(saved.contains("name = \"gamma\""), "追加メニューが保存される: {saved}");
+    assert!(saved.contains("name = \"alpha\""), "既存メニューも残る: {saved}");
+}
+
 /// メニュー名は重複させず、同名を足すと末尾へ ` (2)`, ` (3)` … が自動で付く。改名で他メニュー
 /// 名にぶつけても同様に一意化される（`MenuRegistry` は同名後勝ちなので埋もれを防ぐ）。
 #[test]
