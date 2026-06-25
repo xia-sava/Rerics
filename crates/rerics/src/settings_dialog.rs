@@ -953,7 +953,7 @@ const NAV_ROWS: &[NavRow] = &[
     NavRow::Page { label: "カーソル", pane: 3 },
     NavRow::Page { label: "ビューア", pane: 6 },
     NavRow::Header("登録"),
-    NavRow::Page { label: "登録ディレクトリ", pane: 4 },
+    NavRow::Page { label: "ディレクトリ", pane: 4 },
     NavRow::Page { label: "メニュー", pane: 13 },
     NavRow::Header("キー"),
     NavRow::Page { label: "ファイラー", pane: 5 },
