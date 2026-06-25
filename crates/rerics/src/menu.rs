@@ -59,7 +59,7 @@ const MENUS: &[MenuDef] = &[
             on("設定(&S)", Command::OpenSettings),
             off("プラグインの設定"),
             SEP,
-            on("タブを閉じる(&C)", Command::CloseTab),
+            on("タブを閉じる(&C)", Command::Exit),
             on("再起動(&R)", Command::Restart),
             on("終了(&X)", Command::End),
             off("Debug"),
@@ -112,7 +112,7 @@ const MENUS: &[MenuDef] = &[
             off("コマンドプロンプト"),
             off("実行コマンドの入力"),
             off("ファイル名付き実行コマンドの入力"),
-            on("新規ファイルの作成", Command::CreateFile),
+            on("新規ファイルの作成", Command::CreateFileDialog),
             on("テキストエディタ", Command::Edit),
         ],
     },
@@ -120,7 +120,7 @@ const MENUS: &[MenuDef] = &[
         label: "登録(&R)",
         items: &[
             off("ファイルの関連付けに追加(&F)"),
-            on("登録ディレクトリに追加(&D)", Command::RegisterPath),
+            on("登録ディレクトリに追加(&D)", Command::PathRegisterDialog),
         ],
     },
     MenuDef {

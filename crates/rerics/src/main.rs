@@ -56,8 +56,8 @@ use tab_bar::TabBar;
 use task::{TaskEntry, WorkerEvent};
 use viewer::ViewerView;
 use rerics_core::{
-    Command, Config, FileListState, Invocation, KeyChord, KeyMap, Location, Pane, SortType,
-    WindowState,
+    Command, Config, FileListState, Invocation, KeyChord, KeyMap, Location, MenuRegistry, Pane,
+    ResolvedItem, SortType, WindowState,
 };
 use winsafe::{self as w, co, gui, prelude::*};
 
@@ -101,7 +101,7 @@ enum DebugCmdClass {
 fn debug_command_class(cmd: Command) -> DebugCmdClass {
     use Command::*;
     match cmd {
-        MakeDirectory | CreateFile | Rename | Delete | Copy | Move | Compress | Extract
+        MakeDirectory | CreateFileDialog | Rename | Delete | Copy | Move | Compress | Extract
         | RenameSequenceDialog | SendToRecycled | CreateShortcut | ClipPaste => {
             DebugCmdClass::ModalWrite
         }
@@ -116,7 +116,7 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         ChangeDriveDialog => DebugCmdClass::MaybeModal,
         // ジャンプ（リスト選択）・登録（ラベル入力）はモーダルを開く。登録は config.toml を
         // 書くがユーザファイル操作ではないので allow_write は要さない。
-        JumpDialog | RegisterPath => DebugCmdClass::MaybeModal,
+        JumpDialog | PathRegisterDialog => DebugCmdClass::MaybeModal,
         // キー割り当て一覧はリスト選択モーダル（読取専用・選択結果は使わない）。
         KeyBindsDialog => DebugCmdClass::MaybeModal,
         // インクリメンタルサーチは入力モーダル（打鍵追従でカーソル移動・読取のみ）。
@@ -137,6 +137,55 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         OpenTaskManager => DebugCmdClass::MaybeModal,
         _ => DebugCmdClass::NonModal,
     }
+}
+
+/// メッセージキューに溜まっている文字メッセージ（WM_CHAR/WM_SYSCHAR）を捨てる。キー押下で
+/// ポップアップメニューを開く直前に呼び、押下キーの文字がメニューのアクセスキー入力として
+/// 食われてビープが鳴るのを防ぐ。
+fn flush_pending_chars() {
+    let mut msg: w::MSG = unsafe { std::mem::zeroed() };
+    while w::PeekMessage(&mut msg, None, co::WM::CHAR.raw(), co::WM::CHAR.raw(), co::PM::REMOVE) {}
+    while w::PeekMessage(&mut msg, None, co::WM::SYSCHAR.raw(), co::WM::SYSCHAR.raw(), co::PM::REMOVE)
+    {
+    }
+}
+
+/// 解決済みメニュー項目列からポップアップ `HMENU` を再帰的に組む。実行項目には 1 始まりの
+/// ID を採番し、`dispatch` に同順で [`Invocation`] を積む（選択 ID → `dispatch[ID-1]`）。
+/// サブメニューは入れ子の `HMENU`、無効項目はグレーアウト掲示、セパレータは区切り線。
+fn build_resolved_menu(
+    items: &[ResolvedItem],
+    dispatch: &mut Vec<Invocation>,
+) -> w::SysResult<w::HMENU> {
+    let menu = w::HMENU::CreatePopupMenu()?;
+    for item in items {
+        match item {
+            ResolvedItem::Separator => {
+                menu.AppendMenu(co::MF::SEPARATOR, w::IdMenu::None, w::BmpPtrStr::None)?;
+            }
+            ResolvedItem::Command { label, invocation } => {
+                dispatch.push(invocation.clone());
+                let id = dispatch.len() as u16;
+                menu.AppendMenu(co::MF::STRING, w::IdMenu::Id(id), w::BmpPtrStr::from_str(label))?;
+            }
+            ResolvedItem::Submenu { label, items } => {
+                let sub = build_resolved_menu(items, dispatch)?;
+                menu.AppendMenu(
+                    co::MF::POPUP,
+                    w::IdMenu::Menu(&sub),
+                    w::BmpPtrStr::from_str(label),
+                )?;
+            }
+            ResolvedItem::Invalid { label, .. } => {
+                menu.AppendMenu(
+                    co::MF::STRING | co::MF::GRAYED,
+                    w::IdMenu::None,
+                    w::BmpPtrStr::from_str(label),
+                )?;
+            }
+        }
+    }
+    Ok(menu)
 }
 
 fn main() {
@@ -775,7 +824,10 @@ impl MainWindow {
         match cmd {
             Command::Script => {
                 if let Some(name) = inv.args.first() {
-                    self.script_send(script_host::EngineCmd::Invoke(name.clone()));
+                    self.script_send(script_host::EngineCmd::Invoke {
+                        name: name.clone(),
+                        args: inv.args[1..].to_vec(),
+                    });
                 }
                 return Ok(());
             }
@@ -828,6 +880,57 @@ impl MainWindow {
                 Ok(())
             }
         }
+    }
+
+    /// config の `[[menus]]` とスクリプトの `registerMenu` 登録を集約した名前付きメニューの
+    /// レジストリを組む。同名はスクリプトが後勝ち（config を上書きできる）。
+    fn menu_registry(&self) -> MenuRegistry {
+        let mut reg = MenuRegistry::new();
+        for def in &self.config.borrow().menus {
+            reg.insert(def.clone());
+        }
+        for def in self.script_list_menus() {
+            reg.insert(def);
+        }
+        reg
+    }
+
+    /// 名前付きメニュー（原作 `Menu("名前")`）を開く。レジストリで名前を解決し、参照式
+    /// サブメニューを展開したポップアップをカーソル行へ出す。選んだ項目の [`Invocation`] を
+    /// キー押下と同じ `exec` 経路へ流す。名前が無い/未定義ならログに出す。headless（debug）
+    /// では駆動できないネイティブポップアップを出さず解決のみ行う（観測は `/menu/*` 経由）。
+    fn open_named_menu(&self, is_left: bool, name: &str) -> w::AnyResult<()> {
+        if name.is_empty() {
+            self.log.warn("Menu に開くメニュー名がありません");
+            return Ok(());
+        }
+        let Some(items) = self.menu_registry().resolve(name) else {
+            self.log.warn(&format!("メニューが見つかりません: {name}"));
+            return Ok(());
+        };
+        #[cfg(feature = "debug-server")]
+        if self.debug.headless {
+            return Ok(());
+        }
+        let mut dispatch: Vec<Invocation> = Vec::new();
+        let menu = build_resolved_menu(&items, &mut dispatch)?;
+        let owner = self.view(is_left).hwnd();
+        let pt = self.view(is_left).menu_anchor();
+        // キーで開いた直後はそのキーの WM_CHAR がキューに残り、TrackPopupMenu のモーダル
+        // ループがそれをアクセスキー入力として食う→不一致でビープが鳴る。先に捨てる。
+        flush_pending_chars();
+        let _ = owner.SetForegroundWindow();
+        let chosen = menu.TrackPopupMenu(
+            co::TPM::RETURNCMD | co::TPM::LEFTALIGN | co::TPM::TOPALIGN,
+            pt,
+            owner,
+        )?;
+        if let Some(id) = chosen
+            && let Some(inv) = dispatch.get(id as usize - 1)
+        {
+            self.exec(is_left, &inv.clone())?;
+        }
+        Ok(())
     }
 
     /// 解決済み引数でコマンド本体を実行する（引数解決のあとの同期処理＝コマンドアーム群を集約）。
@@ -923,7 +1026,7 @@ impl MainWindow {
                 self.jump_dialog(is_left)?;
                 return Ok(());
             }
-            Command::RegisterPath => {
+            Command::PathRegisterDialog => {
                 self.register_path(is_left)?;
                 return Ok(());
             }
@@ -933,6 +1036,10 @@ impl MainWindow {
             }
             Command::CommandDirect => {
                 self.command_direct(is_left)?;
+                return Ok(());
+            }
+            Command::Menu => {
+                self.open_named_menu(is_left, args.first().map(String::as_str).unwrap_or(""))?;
                 return Ok(());
             }
             Command::DirectoryInformation => {
@@ -1032,11 +1139,11 @@ impl MainWindow {
                 self.page_previous()?;
                 return Ok(());
             }
-            Command::NewTab => {
+            Command::NewFiler => {
                 self.new_tab()?;
                 return Ok(());
             }
-            Command::CloseTab => {
+            Command::Exit => {
                 self.close_tab()?;
                 return Ok(());
             }
@@ -1044,7 +1151,7 @@ impl MainWindow {
                 self.make_directory(is_left)?;
                 return Ok(());
             }
-            Command::CreateFile => {
+            Command::CreateFileDialog => {
                 self.create_file(is_left)?;
                 return Ok(());
             }

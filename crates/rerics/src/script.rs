@@ -465,6 +465,7 @@ const BOOTSTRAP: &str = r#"
 (() => {
   const ops = Deno.core.ops;
   const commands = new Map();
+  const menus = new Map();
   const eventHandlers = new Map();
   // スナップショットから 1 ペインを組む。`sink(index, selected)` は item.selected を
   // 書いたときの送り先で、即時版は op を直に撃ち、apply() の draft 版は配列へ溜める。
@@ -603,6 +604,19 @@ const BOOTSTRAP: &str = r#"
       // 組込メンバーと衝突する名前は組込を優先し、r へは生やさない（マップには残る）。
       if (!builtinMembers.has(key)) rerics[key] = (...args) => fn(...args);
     },
+    registerMenu: (name, items) => {
+      if (!Array.isArray(items)) throw new TypeError("registerMenu: items must be an array");
+      const norm = items.map((it) =>
+        it && it.separator
+          ? { label: "", command: "", separator: true }
+          : {
+              label: it && it.label != null ? String(it.label) : "",
+              command: it && it.command != null ? String(it.command) : "",
+              separator: false,
+            }
+      );
+      menus.set(String(name), norm);
+    },
     on: (event, fn) => {
       if (typeof fn !== "function") throw new TypeError("on: fn must be a function");
       const key = String(event);
@@ -636,13 +650,15 @@ const BOOTSTRAP: &str = r#"
   globalThis.__memberNames = () => Object.keys(globalThis.rerics).sort();
   globalThis.__commandMetas = () =>
     [...commands.entries()].map(([name, e]) => ({ name, label: e.label, genre: e.genre }));
-  globalThis.__invokeCommand = (name) => {
+  globalThis.__menuDefs = () =>
+    [...menus.entries()].map(([name, items]) => ({ name, items }));
+  globalThis.__invokeCommand = (name, ...args) => {
     const entry = commands.get(String(name));
     if (!entry) throw new Error("unknown command: " + name);
     const fn = entry.fn;
     const report = (e) => rerics.log("command error [" + name + "]: " + ((e && e.stack) || e));
     try {
-      const r = fn();
+      const r = fn(...args);
       if (r && typeof r.then === "function") return r.then(undefined, report);
       return r;
     } catch (e) {
@@ -773,6 +789,18 @@ impl Engine {
         deno_core::serde_v8::from_v8::<Vec<ScriptCommand>>(scope, local).unwrap_or_default()
     }
 
+    /// `registerMenu` で登録された名前付きメニュー定義を登録順で返す。`Menu("名前")` の解決時に
+    /// config 定義とマージする。
+    pub fn registered_menus(&mut self) -> Vec<rerics_core::MenuDef> {
+        let global = self
+            .runtime
+            .execute_script("rerics:list-menus", "globalThis.__menuDefs()")
+            .expect("__menuDefs must not fail");
+        deno_core::scope!(scope, &mut self.runtime);
+        let local = deno_core::v8::Local::new(scope, global);
+        deno_core::serde_v8::from_v8::<Vec<rerics_core::MenuDef>>(scope, local).unwrap_or_default()
+    }
+
     /// `r.` で呼べるメンバー名を昇順で返す（組込ホスト API＋公開済み登録コマンド）。設定 UI の
     /// 引数/コード欄の補完候補に使う。
     pub fn registered_member_names(&mut self) -> Vec<String> {
@@ -795,10 +823,14 @@ impl Engine {
             .map_err(|e| e.to_string())
     }
 
-    /// 登録済みコマンドを名前で実行する。コールバックが非同期でも Promise を完了させる。
-    pub fn invoke_command(&mut self, name: &str) -> Result<(), String> {
-        let literal = serde_json::to_string(name).map_err(|e| e.to_string())?;
-        let code = format!("globalThis.__invokeCommand({literal});");
+    /// 登録済みコマンドを名前で実行する。`args` はコールバックへ転送する。コールバックが
+    /// 非同期でも Promise を完了させる。
+    pub fn invoke_command(&mut self, name: &str, args: &[String]) -> Result<(), String> {
+        let mut call_args = Vec::with_capacity(args.len() + 1);
+        call_args.push(name.to_owned());
+        call_args.extend_from_slice(args);
+        let json = serde_json::to_string(&call_args).map_err(|e| e.to_string())?;
+        let code = format!("globalThis.__invokeCommand(...{json});");
         self.run_to_completion("rerics:invoke", code)
             .map_err(|e| e.to_string())
     }
@@ -1159,10 +1191,27 @@ mod tests {
         assert_eq!(eng.registered_commands(), vec!["up".to_string()]);
         assert!(host.navigated.borrow().is_empty());
 
-        eng.invoke_command("up").unwrap();
+        eng.invoke_command("up", &[]).unwrap();
         assert_eq!(*host.navigated.borrow(), vec!["C:\\base/..".to_string()]);
 
-        assert!(eng.invoke_command("missing").is_err());
+        assert!(eng.invoke_command("missing", &[]).is_err());
+    }
+
+    #[test]
+    fn invoke_command_forwards_args_to_callback() {
+        let host = Rc::new(MockHost {
+            dir: "C:\\base".into(),
+            ..Default::default()
+        });
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:args",
+            r#"rerics.registerCommand("go", (p) => rerics.navigate(String(p)));"#.to_string(),
+        )
+        .unwrap();
+        // Script("go", "C:\\target") 相当＝引数がコールバックへ転送される（Func_ シムの実体）。
+        eng.invoke_command("go", &["C:\\target".to_string()]).unwrap();
+        assert_eq!(*host.navigated.borrow(), vec!["C:\\target".to_string()]);
     }
 
     #[test]
@@ -1198,6 +1247,36 @@ mod tests {
         );
         // 名前一覧は従来どおり（メタ化で壊れない）。
         assert_eq!(eng.registered_commands(), vec!["organize", "onlyLabel", "plain"]);
+    }
+
+    #[test]
+    fn register_menu_is_exposed_as_menu_defs() {
+        use rerics_core::{MenuDef, MenuItem};
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:menu",
+            r#"
+              rerics.registerMenu("編集", [
+                { label: "コピー", command: "Copy" },
+                { separator: true },
+                { label: "サブ", command: 'Menu("他")' },
+              ]);
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            eng.registered_menus(),
+            vec![MenuDef {
+                name: "編集".into(),
+                items: vec![
+                    MenuItem::entry("コピー", "Copy"),
+                    MenuItem::separator(),
+                    MenuItem::entry("サブ", "Menu(\"他\")"),
+                ],
+            }]
+        );
     }
 
     #[test]
@@ -1560,7 +1639,7 @@ mod tests {
         let mut eng = Engine::new(host.clone());
         let errors = load_dir(&mut eng, &dir);
         assert!(errors.is_empty(), "errors: {errors:?}");
-        eng.invoke_command("useShared").unwrap();
+        eng.invoke_command("useShared", &[]).unwrap();
         assert_eq!(*host.logs.borrow(), vec!["lib:42".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -163,27 +163,28 @@ fn label_display(label: &str) -> String {
 
 /// 機能ピッカーの並び・見出し用ジャンル。`(並び順, 見出し)` を返す。並びは機能ピッカーを
 /// ジャンルごとに固まらせるためのもので、設定 UI 専用の括り（コアの文脈分けとは別軸）。
-fn command_genre(cmd: Command) -> (u8, &'static str) {
+/// メニュー編集のコマンドピッカー（[`crate::settings_dialog`]）も同じ括りで流用する。
+pub(crate) fn command_genre(cmd: Command) -> (u8, &'static str) {
     use Command::*;
     match cmd {
         CursorUp | CursorDown | CursorTop | CursorEnd | CursorPageUp | CursorPageDown
         | SetCursorPosition | CursorOpposite => (0, "カーソル移動"),
         EnterDir | ToParent | ToRoot | HistoryBack | HistoryForward | PathHistoryDialog
         | ChangeDirectory | ChangeDirectoryDialog | ChangeDrive | ChangeDriveDialog | JumpDialog
-        | RegisterPath | IncrementalSearchDialog | NextDrive | PreviousDrive => (1, "移動・ナビゲーション"),
+        | PathRegisterDialog | IncrementalSearchDialog | NextDrive | PreviousDrive => (1, "移動・ナビゲーション"),
         MarkToggle | SelectAll | ClearAll | ReverseAll | SelectAllFile | ReverseAllFile
         | SelectFile | SelectMask | PathMask => (2, "選択"),
         Reload | Refresh | View | ViewFile | DirectoryInformation | SortByName | SortByExtension
         | SortBySize | SortByDate | Sort | SortDialog | SortReverseToggle => (3, "表示・並べ替え"),
-        PageNext | PagePrevious | NewTab | CloseTab => (4, "タブ"),
+        PageNext | PagePrevious | NewFiler | Exit => (4, "タブ"),
         FocusLeft | FocusRight | SwapPath | OppositeToCurrent | CurrentToOpposite | MaximizeLeft
         | MaximizeRight | MaximizeLeftForce | MaximizeRightForce | MaximizeCurrent | BorderLeft
         | BorderRight | BorderReset => (5, "ペイン"),
         MakeDirectory | Copy | Move | Rename | RenameSequenceDialog | Delete | SendToRecycled
-        | CreateShortcut | ClipCopy | ClipCut | ClipPaste | CreateFile | Edit | PropertyDialog
+        | CreateShortcut | ClipCopy | ClipCut | ClipPaste | CreateFileDialog | Edit | PropertyDialog
         | Compress | Extract => (6, "ファイル操作"),
-        OpenTaskManager | OpenSettings | KeyBindsDialog | CommandDirect | CopyLog | ClearLog | Nop
-        | End | Restart | Quit | MaximizeWindow | MinimizeWindow => (7, "アプリ・その他"),
+        OpenTaskManager | OpenSettings | KeyBindsDialog | CommandDirect | Menu | CopyLog | ClearLog
+        | Nop | End | Restart | Quit | MaximizeWindow | MinimizeWindow => (7, "アプリ・その他"),
         Script | Eval => (14, "スクリプト"),
         ViewerScrollUp | ViewerScrollDown | ViewerPageUp | ViewerPageDown | ViewerScrollTop
         | ViewerScrollBottom => (8, "スクロール"),

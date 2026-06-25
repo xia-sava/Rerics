@@ -219,6 +219,7 @@ pub mod modal_registry {
     pub fn clear_key_editors() {
         KEY_EDITORS.with(|e| e.borrow_mut().clear());
         SETTINGS_NAV.with(|n| *n.borrow_mut() = None);
+        MENU_EDITOR.with(|m| *m.borrow_mut() = None);
     }
 
     thread_local! {
@@ -244,6 +245,52 @@ pub mod modal_registry {
                 .find(|(c, _)| *c == category)
                 .map(|(_, h)| f(h))
         })
+    }
+
+    /// メニュー項目を編集欄の内容（ラベル／コマンド／セパレータ）で操作するフック。
+    pub type ItemOpHook = Box<dyn Fn(&str, &str, bool)>;
+
+    /// メニュー編集ページを UI スレッドで読み書きするフック（設定ダイアログに1つ）。
+    pub struct MenuEditorHooks {
+        /// 現在の編集状態を JSON 文字列で返す（menus／selected_menu／selected_item）。
+        pub read: Box<dyn Fn() -> String>,
+        /// 左のメニュー idx を選ぶ（範囲外は何もしない）。
+        pub select_menu: Box<dyn Fn(usize)>,
+        /// 名前で空メニューを末尾に追加する。
+        pub add_menu: Box<dyn Fn(&str)>,
+        /// 選択中のメニューを名前で改名する（未選択・空名は無視）。
+        pub rename_menu: Box<dyn Fn(&str)>,
+        /// 選択中のメニューを削除する。
+        pub delete_menu: Box<dyn Fn()>,
+        /// 選択中のメニューを delta（-1/+1）方向へ並べ替える。
+        pub move_menu: Box<dyn Fn(i32)>,
+        /// 右の項目 idx を選ぶ（左メニュー未選択・範囲外は何もしない）。
+        pub select_item: Box<dyn Fn(usize)>,
+        /// 選択中メニューへ項目を末尾追加する（ラベル／コマンド／セパレータ）。
+        pub add_item: ItemOpHook,
+        /// 選択中の項目を更新する（未選択は無視）。
+        pub update_item: ItemOpHook,
+        /// 選択中の項目を削除する。
+        pub delete_item: Box<dyn Fn()>,
+        /// 選択中の項目を delta（-1/+1）方向へ並べ替える。
+        pub move_item: Box<dyn Fn(i32)>,
+        /// 項目コマンドの機能ピッカー（モーダル）を開く。閉じるまでブロックする。
+        pub pick_command: Box<dyn Fn()>,
+    }
+
+    thread_local! {
+        /// 開いている設定ダイアログのメニュー編集ページのフック。設定を開くたびに作り直す。
+        static MENU_EDITOR: RefCell<Option<MenuEditorHooks>> = const { RefCell::new(None) };
+    }
+
+    /// メニュー編集ページのフックを登録する（`MenusPane` が生成時に呼ぶ）。
+    pub fn register_menu_editor(hooks: MenuEditorHooks) {
+        MENU_EDITOR.with(|m| *m.borrow_mut() = Some(hooks));
+    }
+
+    /// メニュー編集ページに対して処理する（開いていなければ `None`）。
+    pub fn with_menu_editor<R>(f: impl FnOnce(&MenuEditorHooks) -> R) -> Option<R> {
+        MENU_EDITOR.with(|m| m.borrow().as_ref().map(f))
     }
 }
 
@@ -288,6 +335,9 @@ pub enum Request {
     /// `POST /modal/resize/<w>x<h>`：開いているモーダルの窓サイズを w×h（物理px）へ変える。
     /// WM_SIZE が飛んでダイアログの再レイアウトが走るので、リサイズ追従を headless で検証できる。
     ModalResize { width: i32, height: i32 },
+    /// `POST /modal/wheel/<delta>`：開いているモーダルのリストへホイール回転を送る。`delta` は
+    /// 回転量（120＝1ノッチ・正で上へ・負で下へ）。先頭行が動くので `/state` の `modal.top` で観測。
+    ModalWheel { delta: i32 },
     /// `GET /script/commands`：登録済みスクリプトコマンド名の一覧（JSON 文字列配列）。
     ScriptCommands,
     /// `GET /script/members`：`r.` で呼べるメンバー名の一覧（補完候補・JSON 文字列配列・昇順）。
@@ -349,6 +399,20 @@ pub enum Request {
     KeysAddKeyDef { category: String, chord: String },
     /// `POST /settings/nav/<pane>`：設定ダイアログの左ナビを pane 番号のページへ切り替える。
     SettingsNav { pane: usize },
+    /// `GET /menu-editor`：メニュー編集ページの現在状態（JSON）。未オープンは null。
+    MenuEditorState,
+    /// `POST /menu-editor/<op>[/<arg>]`：メニュー編集ページを駆動する（select/add/rename/delete/move
+    /// や item-*）。`add`/`rename` は body で名前を、`select`/`move` は arg を取る。
+    MenuEditorOp { op: String, arg: String, body: String },
+    /// `POST /menu-editor/item-pick`：項目コマンドの機能ピッカー（モーダル）を開く。モーダルは
+    /// 閉じるまでブロックするので、開く前に応答を返す（`/modal/*` を捌けるように）。
+    MenuEditorPick,
+    /// `GET /menu/<name>`：名前付きメニューを解決した項目木（JSON）。未定義は null。
+    /// ネイティブポップアップは headless で駆動できないので、見た目ではなくモデルを観測する。
+    Menu { name: String },
+    /// `POST /menu/<name>/select/<idx>`：解決済みメニューの idx 番目の実行項目（深さ優先の
+    /// コマンド葉）の呼び出しを、キー押下と同じ exec 経路へ流す。
+    MenuSelect { name: String, idx: usize },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -465,6 +529,10 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::ScriptMembers)
             } else if path == "/completion" {
                 Some(Request::CompletionState)
+            } else if path == "/menu-editor" {
+                Some(Request::MenuEditorState)
+            } else if let Some(name) = path.strip_prefix("/menu/") {
+                Some(Request::Menu { name: name.trim_end_matches('/').to_string() })
             } else {
                 path.strip_prefix("/keys/").map(|cat| Request::KeysState {
                     category: cat.trim_end_matches('/').to_string(),
@@ -486,6 +554,25 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                         return;
                     }
                 }
+            } else if path == "/menu-editor/item-pick" {
+                Some(Request::MenuEditorPick)
+            } else if let Some(rest) = path.strip_prefix("/menu-editor/") {
+                let mut body = String::new();
+                let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);
+                let rest = rest.trim_end_matches('/');
+                let (op, arg) = rest.split_once('/').map_or((rest, ""), |(o, a)| (o, a));
+                Some(Request::MenuEditorOp {
+                    op: op.to_string(),
+                    arg: arg.to_string(),
+                    body,
+                })
+            } else if let Some(rest) = path.strip_prefix("/menu/") {
+                rest.trim_end_matches('/').rsplit_once("/select/").and_then(|(name, n)| {
+                    n.parse::<usize>().ok().map(|idx| Request::MenuSelect {
+                        name: name.to_string(),
+                        idx,
+                    })
+                })
             } else if let Some(name) = path.strip_prefix("/completion/key/") {
                 Some(Request::CompletionKey { name: name.trim_end_matches('/').to_string() })
             } else if path == "/completion/type" {
@@ -550,6 +637,8 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                         height: h.parse().ok()?,
                     })
                 })
+            } else if let Some(d) = path.strip_prefix("/modal/wheel/") {
+                d.trim_end_matches('/').parse::<i32>().ok().map(|delta| Request::ModalWheel { delta })
             } else if let Some(name) = path.strip_prefix("/script/invoke/") {
                 Some(Request::ScriptInvoke {
                     name: name.trim_end_matches('/').to_string(),

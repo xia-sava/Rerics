@@ -111,7 +111,7 @@ pub enum Command {
     ChangeDrive,
     ChangeDriveDialog,
     JumpDialog,
-    RegisterPath,
+    PathRegisterDialog,
     IncrementalSearchDialog,
     DirectoryInformation,
     RenameSequenceDialog,
@@ -133,8 +133,8 @@ pub enum Command {
     SortReverseToggle,
     PageNext,
     PagePrevious,
-    NewTab,
-    CloseTab,
+    NewFiler,
+    Exit,
     MakeDirectory,
     Copy,
     Move,
@@ -148,7 +148,7 @@ pub enum Command {
     ClipCopy,
     ClipCut,
     ClipPaste,
-    CreateFile,
+    CreateFileDialog,
     ViewFile,
     Edit,
     PropertyDialog,
@@ -162,6 +162,7 @@ pub enum Command {
     OpenSettings,
     KeyBindsDialog,
     CommandDirect,
+    Menu,
     CopyLog,
     ClearLog,
     MaximizeLeft,
@@ -251,7 +252,7 @@ impl Command {
             (ChangeDrive, "ChangeDrive", "ドライブの変更"),
             (ChangeDriveDialog, "ChangeDriveDialog", "ドライブリスト"),
             (JumpDialog, "JumpDialog", "登録ディレクトリ"),
-            (RegisterPath, "RegisterPath", "登録ディレクトリに追加"),
+            (PathRegisterDialog, "PathRegisterDialog", "登録ディレクトリに追加"),
             (IncrementalSearchDialog, "IncrementalSearchDialog", "インクリメンタルサーチ"),
             (DirectoryInformation, "DirectoryInformation", "ディレクトリの容量計算"),
             (RenameSequenceDialog, "RenameSequenceDialog", "連番リネーム"),
@@ -273,8 +274,8 @@ impl Command {
             (SortReverseToggle, "SortReverseToggle", "昇順／降順を反転"),
             (PageNext, "PageNext", "次のタブへ"),
             (PagePrevious, "PagePrevious", "前のタブへ"),
-            (NewTab, "NewTab", "新しいタブ"),
-            (CloseTab, "CloseTab", "タブを閉じる"),
+            (NewFiler, "NewFiler", "新しいタブ"),
+            (Exit, "Exit", "タブを閉じる"),
             (MakeDirectory, "MakeDirectory", "ディレクトリの作成"),
             (Copy, "Copy", "コピー"),
             (Move, "Move", "移動"),
@@ -288,7 +289,7 @@ impl Command {
             (ClipCopy, "ClipCopy", "クリップボードにコピー"),
             (ClipCut, "ClipCut", "クリップボードに切り取り"),
             (ClipPaste, "ClipPaste", "クリップボードから貼り付け"),
-            (CreateFile, "CreateFile", "新規ファイルの作成"),
+            (CreateFileDialog, "CreateFileDialog", "新規ファイルの作成"),
             (ViewFile, "ViewFile", "ビューアで開く"),
             (Edit, "Edit", "エディタで開く"),
             (PropertyDialog, "PropertyDialog", "プロパティの表示"),
@@ -302,6 +303,7 @@ impl Command {
             (OpenSettings, "OpenSettings", "設定を開く"),
             (KeyBindsDialog, "KeyBindsDialog", "キーバインドリスト"),
             (CommandDirect, "CommandDirect", "任意のコマンドを実行"),
+            (Menu, "Menu", "名前付きメニューを開く"),
             (CopyLog, "CopyLog", "ログをコピー"),
             (ClearLog, "ClearLog", "ログクリア"),
             (MaximizeLeft, "MaximizeLeft", "左リストを最大化"),
@@ -380,6 +382,19 @@ impl Command {
             .iter()
             .find(|(_, t, _)| *t == s)
             .map(|(c, _, _)| *c)
+            .or_else(|| Self::alias_token(s))
+    }
+
+    /// 原作で別名だったトークンを正式コマンドへ解決する（原作 config や移植したメニューが
+    /// 原作名のまま書かれていても通す）。`as_token`/`to_token_string` は正式名を返すので、
+    /// 別名は入力の解釈時にだけ受け付ける。
+    fn alias_token(s: &str) -> Option<Command> {
+        Some(match s {
+            "CD" => Command::ChangeDirectory,
+            "RegisteredPathDialog" => Command::JumpDialog,
+            "UnPack" => Command::Extract,
+            _ => return None,
+        })
     }
 
     /// 全コマンドを列挙する（設定 UI 用）。
@@ -771,8 +786,8 @@ impl Default for KeyMap {
         // タブ操作。
         m.bind(KeyChord::new(vk::TAB, true, false, false), PageNext);
         m.bind(KeyChord::new(vk::TAB, true, true, false), PagePrevious);
-        m.bind(KeyChord::new(vk::T, true, false, false), NewTab);
-        m.bind(KeyChord::new(vk::W, true, false, false), CloseTab);
+        m.bind(KeyChord::new(vk::T, true, false, false), NewFiler);
+        m.bind(KeyChord::new(vk::W, true, false, false), Exit);
         m
     }
 }
@@ -1007,11 +1022,11 @@ mod tests {
         );
         assert_eq!(
             m.resolve(&KeyChord::new(vk::T, true, false, false)),
-            Some(Command::NewTab)
+            Some(Command::NewFiler)
         );
         assert_eq!(
             m.resolve(&KeyChord::new(vk::W, true, false, false)),
-            Some(Command::CloseTab)
+            Some(Command::Exit)
         );
     }
 
@@ -1150,8 +1165,8 @@ mod tests {
         );
         // 複数引数・引数間の空白。
         assert_eq!(
-            Invocation::parse(r#"NewTab("a" ,  "b")"#),
-            Some(Invocation::new(Command::NewTab, vec!["a".into(), "b".into()]))
+            Invocation::parse(r#"NewFiler("a" ,  "b")"#),
+            Some(Invocation::new(Command::NewFiler, vec!["a".into(), "b".into()]))
         );
         // 空括弧は引数なし。
         assert_eq!(Invocation::parse("Reload()"), Some(Invocation::bare(Command::Reload)));
@@ -1175,7 +1190,7 @@ mod tests {
         for s in [
             "CursorDown",
             r#"ChangeDirectoryDialog("D:")"#,
-            r#"NewTab("a", "b")"#,
+            r#"NewFiler("a", "b")"#,
             r#"Reload("say \"hi\"\\")"#,
             r#"Script("myCommand")"#,
             r#"Eval("rerics.log(\"hi\")")"#,
@@ -1315,4 +1330,37 @@ mod tests {
         assert_eq!(m.resolve(&KeyChord::key(vk::DOWN)), Some(Command::CursorUp));
         assert_eq!(m.resolve(&KeyChord::key(vk::UP)), Some(Command::CursorDown));
     }
+
+    #[test]
+    fn renamed_tokens_use_original_canonical_names() {
+        // 原作正式名へ寄せたトークンが正式名で引け、正式名を返す。
+        for (token, cmd) in [
+            ("CreateFileDialog", Command::CreateFileDialog),
+            ("PathRegisterDialog", Command::PathRegisterDialog),
+            ("NewFiler", Command::NewFiler),
+            ("Exit", Command::Exit),
+        ] {
+            assert_eq!(Command::from_token(token), Some(cmd));
+            assert_eq!(cmd.as_token(), token);
+        }
+        // 原作 Exit（タブを閉じる）とアプリ終了 End は別物。
+        assert_ne!(Command::Exit, Command::End);
+    }
+
+    #[test]
+    fn original_alias_tokens_resolve_to_canonical() {
+        // 原作で別名だったトークンは入力時に正式コマンドへ解決する（出力は正式名）。
+        assert_eq!(Command::from_token("CD"), Some(Command::ChangeDirectory));
+        assert_eq!(Command::from_token("RegisteredPathDialog"), Some(Command::JumpDialog));
+        assert_eq!(Command::from_token("UnPack"), Some(Command::Extract));
+        // 別名は出力には現れない（正式名を返す）。
+        assert_eq!(Command::ChangeDirectory.as_token(), "ChangeDirectory");
+        assert_eq!(Command::Extract.as_token(), "Extract");
+        // 引数つきの別名も Invocation で通る（移植したメニューが原作名で書けるように）。
+        assert_eq!(
+            Invocation::parse(r#"CD("C:\\tmp")"#),
+            Some(Invocation::new(Command::ChangeDirectory, vec!["C:\\tmp".into()]))
+        );
+    }
+
 }

@@ -373,6 +373,24 @@ impl FileListView {
         Some((0, y, rc.right - rc.left, ih))
     }
 
+    /// メニューを開くときのアンカー画面座標（カーソル行の左下）。カーソルが不可視なら
+    /// クライアント先頭付近へ落とす。`Menu` コマンドをキーで起動したときのポップアップ位置。
+    pub fn menu_anchor(&self) -> w::POINT {
+        let ih = self.item_height().max(1);
+        let (cursor, scroll_top) = {
+            let s = self.inner.state.borrow();
+            (s.cursor, s.scroll_top)
+        };
+        let y = if cursor >= scroll_top {
+            self.header_height() + (cursor - scroll_top) as i32 * ih + ih
+        } else {
+            self.header_height()
+        };
+        self.hwnd()
+            .ClientToScreen(w::POINT { x: 8, y })
+            .unwrap_or(w::POINT { x: 8, y })
+    }
+
     pub fn page_rows(&self) -> usize {
         let Ok(rc) = self.hwnd().GetClientRect() else {
             return 1;
@@ -1085,7 +1103,7 @@ unsafe extern "system" {
 
 /// OS のホイール1ノッチあたりのスクロール行数（既定3）。`WHEEL_PAGESCROLL`
 /// （= u32::MAX）のときは「1画面分」を表す。
-fn os_wheel_scroll_lines() -> u32 {
+pub(crate) fn os_wheel_scroll_lines() -> u32 {
     const SPI_GETWHEELSCROLLLINES: u32 = 0x0068;
     let mut lines: u32 = 3;
     unsafe {

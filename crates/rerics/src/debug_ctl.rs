@@ -2,7 +2,7 @@
 
 use std::sync::mpsc::Sender;
 use winsafe::{self as w, co, prelude::*};
-use rerics_core::{Command, CommandContext, Invocation};
+use rerics_core::{Command, CommandContext, Invocation, ResolvedItem};
 use crate::{ActiveView, DebugCmdClass, MainWindow, debug_command_class, debug_json, debug_server, parse_region};
 
 impl MainWindow {
@@ -96,6 +96,9 @@ impl MainWindow {
                 debug_server::Request::ModalResize { width, height } => {
                     let _ = tx.send(self.debug_modal_resize(width, height));
                 }
+                debug_server::Request::ModalWheel { delta } => {
+                    let _ = tx.send(self.debug_modal_wheel(delta));
+                }
                 debug_server::Request::ScriptCommands => {
                     let names = self.script_list_commands();
                     let json = serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_string());
@@ -106,8 +109,35 @@ impl MainWindow {
                     let json = serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_string());
                     let _ = tx.send(debug_server::Response::Json(json));
                 }
+                debug_server::Request::MenuEditorState => {
+                    let v = debug_server::modal_registry::with_menu_editor(|h| (h.read)())
+                        .unwrap_or_else(|| "null".to_string());
+                    let _ = tx.send(debug_server::Response::Json(v));
+                }
+                debug_server::Request::MenuEditorOp { op, arg, body } => {
+                    let _ = tx.send(self.debug_menu_editor_op(&op, &arg, &body));
+                }
+                debug_server::Request::MenuEditorPick => {
+                    // ピッカーは閉じるまでブロックするので、開く前に応答を返す（/modal/* を捌けるように）。
+                    let opened = debug_server::modal_registry::with_menu_editor(|_| ()).is_some();
+                    if opened {
+                        let _ = tx.send(debug_server::Response::Json(
+                            "{\"modal_opening\":true}".to_string(),
+                        ));
+                        debug_server::modal_registry::with_menu_editor(|h| (h.pick_command)());
+                    } else {
+                        let _ = tx
+                            .send(debug_server::Response::BadRequest("menu editor not open".into()));
+                    }
+                }
+                debug_server::Request::Menu { name } => {
+                    let _ = tx.send(self.debug_menu(&name));
+                }
+                debug_server::Request::MenuSelect { name, idx } => {
+                    self.debug_menu_select(&name, idx, tx);
+                }
                 debug_server::Request::ScriptInvoke { name } => {
-                    self.script_send(crate::script_host::EngineCmd::Invoke(name));
+                    self.script_send(crate::script_host::EngineCmd::Invoke { name, args: Vec::new() });
                     let _ = tx.send(debug_server::Response::Json("\"ok\"".to_string()));
                 }
                 debug_server::Request::ScriptEval { code } => {
@@ -425,6 +455,104 @@ impl MainWindow {
         }
     }
 
+    /// メニュー編集ページ（設定の「メニュー」）を駆動する。標準コントロールは generic な
+    /// `/modal/*` で叩けないので、ページ生成時に登録したフックを名前で呼ぶ。操作後の状態を返す。
+    #[cfg(feature = "debug-server")]
+    fn debug_menu_editor_op(&self, op: &str, arg: &str, body: &str) -> debug_server::Response {
+        use debug_server::modal_registry::with_menu_editor;
+        let done = with_menu_editor(|h| {
+            match op {
+                "select" => {
+                    if let Ok(i) = arg.parse::<usize>() {
+                        (h.select_menu)(i);
+                    }
+                }
+                "add" => (h.add_menu)(body.trim()),
+                "rename" => (h.rename_menu)(body.trim()),
+                "delete" => (h.delete_menu)(),
+                "move" => {
+                    if let Ok(d) = arg.parse::<i32>() {
+                        (h.move_menu)(d);
+                    }
+                }
+                "item-select" => {
+                    if let Ok(i) = arg.parse::<usize>() {
+                        (h.select_item)(i);
+                    }
+                }
+                "item-add" => {
+                    let (l, c, s) = parse_item_body(body);
+                    (h.add_item)(&l, &c, s);
+                }
+                "item-update" => {
+                    let (l, c, s) = parse_item_body(body);
+                    (h.update_item)(&l, &c, s);
+                }
+                "item-delete" => (h.delete_item)(),
+                "item-move" => {
+                    if let Ok(d) = arg.parse::<i32>() {
+                        (h.move_item)(d);
+                    }
+                }
+                _ => return Err(format!("unknown menu-editor op: {op}")),
+            }
+            Ok(())
+        });
+        match done {
+            Some(Ok(())) => {
+                let v = with_menu_editor(|h| (h.read)()).unwrap_or_else(|| "null".to_string());
+                debug_server::Response::Json(v)
+            }
+            Some(Err(e)) => debug_server::Response::BadRequest(e),
+            None => debug_server::Response::BadRequest("menu editor not open".into()),
+        }
+    }
+
+    /// 名前付きメニューを解決し、項目木を JSON で返す（未定義は null）。ネイティブポップアップは
+    /// headless で駆動できないので、見た目ではなく解決済みモデルを観測する。各実行項目には深さ
+    /// 優先で振った葉インデックス（`/menu/<name>/select/<idx>` の idx）を `leaf` に添える。
+    #[cfg(feature = "debug-server")]
+    fn debug_menu(&self, name: &str) -> debug_server::Response {
+        let Some(items) = self.menu_registry().resolve(name) else {
+            return debug_server::Response::Json("null".to_string());
+        };
+        let mut leaf = 0usize;
+        let tree = serde_json::Value::Array(menu_items_to_json(&items, &mut leaf));
+        debug_server::Response::Json(tree.to_string())
+    }
+
+    /// 解決済みメニューの idx 番目の実行項目（深さ優先のコマンド葉）を、キー押下と同じ exec へ流す。
+    /// モーダルを開き得る項目は HTTP が詰まらないよう応答を先に返す（command 経路と同じ作法）。
+    #[cfg(feature = "debug-server")]
+    fn debug_menu_select(&self, name: &str, idx: usize, tx: Sender<debug_server::Response>) {
+        let Some(items) = self.menu_registry().resolve(name) else {
+            let _ = tx.send(debug_server::Response::NotFound);
+            return;
+        };
+        let mut leaves: Vec<Invocation> = Vec::new();
+        flatten_menu_leaves(&items, &mut leaves);
+        let Some(inv) = leaves.get(idx).cloned() else {
+            let _ = tx.send(debug_server::Response::BadRequest(format!(
+                "メニュー項目が範囲外です: {idx}"
+            )));
+            return;
+        };
+        let is_left = !self.active_right.get();
+        if matches!(debug_command_class(inv.command), DebugCmdClass::NonModal) {
+            let r = match self.exec(is_left, &inv) {
+                Ok(()) => {
+                    self.settle_pending_jobs();
+                    debug_server::Response::Json(self.debug_state_value().to_string())
+                }
+                Err(e) => debug_server::Response::Error(format!("exec error: {e}")),
+            };
+            let _ = tx.send(r);
+        } else {
+            let _ = tx.send(debug_server::Response::Json("{\"maybe_modal\":true}".to_string()));
+            let _ = self.exec(is_left, &inv);
+        }
+    }
+
     /// 最前面モーダルの HWND を得る（無ければ None）。
     #[cfg(feature = "debug-server")]
     pub(crate) fn debug_modal_hwnd(&self) -> Option<w::HWND> {
@@ -543,6 +671,39 @@ impl MainWindow {
             co::SWP::NOMOVE | co::SWP::NOZORDER | co::SWP::NOACTIVATE,
         ) {
             return debug_server::Response::Error(format!("resize failed: {e}"));
+        }
+        debug_server::Response::Json(self.debug_state_value().to_string())
+    }
+
+    /// `POST /modal/wheel/<delta>`：開いているモーダルのリストへホイール回転（`WM_MOUSEWHEEL`）を
+    /// 送る。`delta` は回転量（120＝1ノッチ・正で上へ・負で下へ）。`WS_VSCROLL` 付きのリストが
+    /// ネイティブにスクロールする実経路を踏む。先頭行は `/state` の `modal.top` で観測する。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn debug_modal_wheel(&self, delta: i32) -> debug_server::Response {
+        const WM_MOUSEWHEEL: u32 = 0x020A;
+        let Some(modal) = self.debug_modal_hwnd() else {
+            return debug_server::Response::BadRequest("no modal open".into());
+        };
+        let Some(list) = Self::debug_modal_listbox(&modal) else {
+            return debug_server::Response::BadRequest("modal has no list".into());
+        };
+        // wParam の HIWORD＝回転量。lParam はリスト中央のスクリーン座標（ヒットテスト用）。
+        let wparam = (delta as i16 as u16 as usize) << 16;
+        let lparam = list
+            .GetWindowRect()
+            .ok()
+            .map(|r| {
+                let x = ((r.left + r.right) / 2) as u16 as isize;
+                let y = ((r.top + r.bottom) / 2) as u16 as isize;
+                (y << 16) | x
+            })
+            .unwrap_or(0);
+        unsafe {
+            let _ = list.SendMessage(w::msg::WndMsg {
+                msg_id: co::WM::from_raw(WM_MOUSEWHEEL),
+                wparam,
+                lparam,
+            });
         }
         debug_server::Response::Json(self.debug_state_value().to_string())
     }
@@ -1169,22 +1330,28 @@ impl MainWindow {
                 };
                 // 多列 ListView はフックから行・選択をライブで読む（プログレッシブ更新も反映）。
                 // 単列 ListBox は実コントロールから選択を読む。それ以外は静的値。
-                let (rows, headers, selected) = match &e.list_view {
+                let (rows, headers, selected, top) = match &e.list_view {
                     Some(h) => {
                         let (rows, sel) = (h.read)();
-                        (rows, h.headers.clone(), sel)
+                        (rows, h.headers.clone(), sel, 0usize)
                     }
                     None => {
+                        let m = unsafe { w::HWND::from_ptr(e.modal_ptr as *mut std::ffi::c_void) };
+                        let lb = Self::debug_modal_listbox(&m);
                         let selected = if e.items.is_empty() {
                             e.selected
                         } else {
-                            let m = unsafe { w::HWND::from_ptr(e.modal_ptr as *mut std::ffi::c_void) };
-                            Self::debug_modal_listbox(&m)
+                            lb.as_ref()
                                 .and_then(|l| unsafe { l.SendMessage(w::msg::lb::GetCurSel {}) })
                                 .map(|n| n as usize)
                                 .unwrap_or(e.selected)
                         };
-                        (Vec::new(), Vec::new(), selected)
+                        // 先頭表示行（ホイール/スクロールの観測用）。
+                        let top = lb
+                            .and_then(|l| unsafe { l.SendMessage(w::msg::lb::GetTopIndex {}).ok() })
+                            .map(|n| n as usize)
+                            .unwrap_or(0);
+                        (Vec::new(), Vec::new(), selected, top)
                     }
                 };
                 json!({
@@ -1197,6 +1364,7 @@ impl MainWindow {
                     "rows": rows,
                     "headers": headers,
                     "selected": selected,
+                    "top": top,
                     "buttons": e.buttons.iter().map(|(l, id)| json!({ "label": l, "id": id })).collect::<Vec<_>>(),
                 })
             }
@@ -1288,4 +1456,51 @@ impl MainWindow {
             None => debug_server::Response::NotFound,
         }
     }
+}
+
+/// 解決済みメニュー項目列を JSON 配列へ変換する。実行項目には深さ優先で `leaf` インデックスを
+/// 振る（`build_resolved_menu` のディスパッチ順・`flatten_menu_leaves` と一致）。
+#[cfg(feature = "debug-server")]
+fn menu_items_to_json(items: &[ResolvedItem], leaf: &mut usize) -> Vec<serde_json::Value> {
+    use serde_json::json;
+    items
+        .iter()
+        .map(|item| match item {
+            ResolvedItem::Separator => json!({ "sep": true }),
+            ResolvedItem::Command { label, invocation } => {
+                let idx = *leaf;
+                *leaf += 1;
+                json!({ "label": label, "command": invocation.to_token_string(), "leaf": idx })
+            }
+            ResolvedItem::Submenu { label, items } => {
+                json!({ "label": label, "items": menu_items_to_json(items, leaf) })
+            }
+            ResolvedItem::Invalid { label, reason } => {
+                json!({ "label": label, "invalid": reason })
+            }
+        })
+        .collect()
+}
+
+/// 解決済みメニューの実行項目の呼び出しを深さ優先で集める（`build_resolved_menu` の
+/// ディスパッチ順と一致＝`/menu/<name>/select/<idx>` の idx 解決に使う）。
+#[cfg(feature = "debug-server")]
+fn flatten_menu_leaves(items: &[ResolvedItem], out: &mut Vec<Invocation>) {
+    for item in items {
+        match item {
+            ResolvedItem::Command { invocation, .. } => out.push(invocation.clone()),
+            ResolvedItem::Submenu { items, .. } => flatten_menu_leaves(items, out),
+            _ => {}
+        }
+    }
+}
+
+/// メニュー編集の項目操作 body（`{label,command,separator}` JSON）を分解する。欠けは既定値。
+#[cfg(feature = "debug-server")]
+fn parse_item_body(body: &str) -> (String, String, bool) {
+    let v: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
+    let label = v.get("label").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let command = v.get("command").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let separator = v.get("separator").and_then(|x| x.as_bool()).unwrap_or(false);
+    (label, command, separator)
 }

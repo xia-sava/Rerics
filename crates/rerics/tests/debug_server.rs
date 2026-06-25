@@ -792,12 +792,12 @@ fn rename_meta_dialog_opens_and_closes() {
     assert!(items.contains("\"name\":\"a.txt\""), "a.txt should still exist: {items}");
 }
 
-/// CreateFile＝入力したファイル名で空ファイルを作成する。
+/// CreateFileDialog＝入力したファイル名で空ファイルを作成する。
 #[test]
 fn create_file_makes_empty_file() {
     let server = Server::start_writable(&["a.txt"]);
 
-    server.req("POST", "/command/CreateFile", "").unwrap();
+    server.req("POST", "/command/CreateFileDialog", "").unwrap();
     // ファイル名入力ダイアログが開く。
     let modal = wait_modal(&server);
     assert!(modal.contains("\"has_input\":true"), "should ask for a name: {modal}");
@@ -1149,7 +1149,7 @@ fn viewer_commands_dispatch_in_text_context() {
     assert_eq!(av2.trim(), "\"none\"", "Esc の実キー経路で一覧へ戻る");
 }
 
-/// RegisterPath で現在地を登録し、JumpDialog でそこへ戻る。
+/// PathRegisterDialog で現在地を登録し、JumpDialog でそこへ戻る。
 #[test]
 fn nav_register_and_jump() {
     let server = Server::start(&["a.txt"], "");
@@ -1161,7 +1161,7 @@ fn nav_register_and_jump() {
         .to_string();
 
     // 現在地（sbx）を "home" として登録する。
-    server.req("POST", "/command/RegisterPath", "").unwrap();
+    server.req("POST", "/command/PathRegisterDialog", "").unwrap();
     let m = wait_modal(&server);
     assert!(m.contains("\"has_input\":true"), "register should ask for a label: {m}");
     server.req("POST", "/modal/text", "home").unwrap();
@@ -3209,8 +3209,8 @@ fn quit_closes_tab_when_multiple_keeps_app_alive() {
     let server = Server::start(&["a.txt"], "");
     let count = || server.req("GET", "/state/tabs/count", "").expect("count").1;
     assert_eq!(count().trim(), "1", "初期は 1 タブ");
-    server.req("POST", "/command/NewTab", "").expect("NewTab");
-    assert_eq!(count().trim(), "2", "NewTab で 2 タブ");
+    server.req("POST", "/command/NewFiler", "").expect("NewFiler");
+    assert_eq!(count().trim(), "2", "NewFiler で 2 タブ");
     // タブが複数あるので Quit は現タブを閉じるだけ（アプリは終了しない）。
     server.req("POST", "/command/Quit", "").expect("Quit");
     assert_eq!(count().trim(), "1", "Quit で 1 タブに減る");
@@ -3447,4 +3447,330 @@ fn command_direct_runs_typed_command() {
         "1",
         "不正コマンドではカーソルは動かない"
     );
+}
+
+/// config の `[[menus]]` で定義した名前付きメニューを解決し（参照式サブメニュー込み）、項目を
+/// 選ぶとキー押下と同じ経路で実行する。ネイティブポップアップは headless で駆動できないので、
+/// `/menu/<name>` で解決済みモデルを観測し、`/menu/<name>/select/<idx>` で実行する。
+#[test]
+fn named_menu_resolves_and_dispatches() {
+    let config = r#"
+[[menus]]
+name = "test"
+items = [
+  { label = "下へ(&D)", command = "CursorDown" },
+  { separator = true },
+  { label = "サブ(&S)", command = 'Menu("sub")' },
+]
+
+[[menus]]
+name = "sub"
+items = [
+  { label = "先頭へ", command = "CursorTop" },
+]
+"#;
+    let server = Server::start(&["a.txt", "b.txt", "c.txt"], config);
+
+    // 解決済みの項目木：コマンド・セパレータ・参照式サブメニューが出る。
+    let tree = server.req("GET", "/menu/test", "").unwrap().1;
+    assert!(tree.contains("\"command\":\"CursorDown\""), "コマンド項目: {tree}");
+    assert!(tree.contains("\"sep\":true"), "セパレータ: {tree}");
+    assert!(tree.contains("\"command\":\"CursorTop\""), "サブメニューが展開される: {tree}");
+    // サブメニュー内の項目にも深さ優先で葉インデックスが振られる。
+    assert!(tree.contains("\"leaf\":1"), "サブメニューの葉も採番される: {tree}");
+
+    // 葉 0（CursorDown）を選ぶとカーソルが 1 へ動く。
+    server.req("POST", "/menu/test/select/0", "").unwrap();
+    let c = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+    assert_eq!(c.trim(), "1", "葉0=CursorDown でカーソルが 1 へ");
+
+    // 葉 1（サブメニュー内の CursorTop）を選ぶとカーソルが 0 へ戻る＝サブメニュー項目も実行できる。
+    server.req("POST", "/menu/test/select/1", "").unwrap();
+    let c = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "0");
+    assert_eq!(c.trim(), "0", "葉1=サブメニューの CursorTop でカーソルが 0 へ");
+
+    // 未定義メニューは null。
+    let unknown = server.req("GET", "/menu/nope", "").unwrap().1;
+    assert_eq!(unknown.trim(), "null", "未定義メニューは null: {unknown}");
+}
+
+/// スクリプトが `registerMenu` で登録した名前付きメニューも `Menu("名前")` の解決対象になる
+/// （config 定義と同じレジストリへマージされる）。`/menu/<name>` で出て `select` で実行できる。
+#[test]
+fn named_menu_includes_script_registered() {
+    let server = Server::start_with_scripts(
+        &["a.txt", "b.txt", "c.txt"],
+        &[(
+            "00.ts",
+            r#"rerics.registerMenu("scripted", [
+                { label: "末尾へ", command: "CursorEnd" },
+                { label: "先頭へ", command: "CursorTop" },
+            ]);"#,
+        )],
+    );
+
+    let tree = server.req("GET", "/menu/scripted", "").unwrap().1;
+    assert!(tree.contains("\"command\":\"CursorEnd\""), "登録メニューが解決される: {tree}");
+    assert!(tree.contains("\"command\":\"CursorTop\""), "2 項目目も出る: {tree}");
+
+    // 葉 0（CursorEnd）でカーソルが末尾へ動く。
+    server.req("POST", "/menu/scripted/select/0", "").unwrap();
+    let moved = poll(&server, "/state/panes/left/cursor", |b| b.trim() != "0");
+    assert_ne!(moved.trim(), "0", "CursorEnd で末尾へ動く");
+
+    // 葉 1（CursorTop）でカーソルが先頭へ戻る。
+    server.req("POST", "/menu/scripted/select/1", "").unwrap();
+    let top = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "0");
+    assert_eq!(top.trim(), "0", "CursorTop で先頭へ戻る");
+}
+
+/// 設定の「メニュー」ページでメニューの追加/選択/改名/並べ替え/削除を駆動できる。標準
+/// コントロールは generic な `/modal/*` で叩けないので、専用フック `/menu-editor/*` で観測・駆動する。
+/// 編集は作業コピー（Shared.cfg）に対してで、OK を押すまで実 config には触れない。
+#[test]
+fn menu_editor_drives_menu_crud() {
+    let config = r#"
+[[menus]]
+name = "alpha"
+items = [ { label = "コピー", command = "Copy" } ]
+
+[[menus]]
+name = "beta"
+items = []
+"#;
+    let server = Server::start(&["a.txt"], config);
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    // 設定が開いてメニュー編集フックが登録されるまで待つ。
+    let s0 = poll(&server, "/menu-editor", |b| b.contains("\"name\":\"alpha\""));
+    assert!(s0.contains("\"name\":\"beta\""), "初期状態に config の2メニュー: {s0}");
+    assert!(s0.contains("\"selected_menu\":null"), "初期は未選択: {s0}");
+
+    // 追加：末尾に新メニューが付き、それが選択される。
+    let s = server.req("POST", "/menu-editor/add", "gamma").unwrap().1;
+    assert!(s.contains("\"name\":\"gamma\""), "追加された: {s}");
+    assert!(s.contains("\"selected_menu\":2"), "追加分が選択される: {s}");
+
+    // 改名：選択中（gamma）を改名する。
+    let s = server.req("POST", "/menu-editor/rename", "gamma2").unwrap().1;
+    assert!(s.contains("\"name\":\"gamma2\"") && !s.contains("\"name\":\"gamma\""), "改名: {s}");
+
+    // 並べ替え：上へ動かすと index 1 へ。
+    let s = server.req("POST", "/menu-editor/move/-1", "").unwrap().1;
+    assert!(s.contains("\"selected_menu\":1"), "上へ移動で index 1: {s}");
+
+    // 削除：選択中（gamma2）が消える。
+    let s = server.req("POST", "/menu-editor/delete", "").unwrap().1;
+    assert!(!s.contains("gamma2"), "削除された: {s}");
+    assert!(s.contains("\"name\":\"alpha\"") && s.contains("\"name\":\"beta\""), "他は残る: {s}");
+}
+
+/// メニュー編集を OK で確定すると、`config.toml` へ保存される（ライブ反映＋ディスク永続化）。
+/// 設定ダイアログの OK は arm 登録済みなので `/modal/command/ok` で押せる。
+#[test]
+fn menu_editor_persists_to_config_on_ok() {
+    let config = r#"
+[[menus]]
+name = "alpha"
+items = [ { label = "コピー", command = "Copy" } ]
+"#;
+    let server = Server::start(&["a.txt"], config);
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    poll(&server, "/menu-editor", |b| b.contains("\"name\":\"alpha\""));
+
+    // メニューを足して OK で確定（ライブ反映＋config.toml へ保存）。
+    server.req("POST", "/menu-editor/add", "gamma").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    // 設定モーダルが閉じるまで待つ（OK 処理＝検証→反映→保存→close が走り切る）。
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+
+    // config.toml に追加メニューが書き出され、既存も残っている。
+    let cfg_path = server.base.join("data").join("config.toml");
+    let mut saved = String::new();
+    for _ in 0..50 {
+        saved = std::fs::read_to_string(&cfg_path).unwrap_or_default();
+        if saved.contains("gamma") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    assert!(saved.contains("name = \"gamma\""), "追加メニューが保存される: {saved}");
+    assert!(saved.contains("name = \"alpha\""), "既存メニューも残る: {saved}");
+}
+
+/// メニュー名は重複させず、同名を足すと末尾へ ` (2)`, ` (3)` … が自動で付く。改名で他メニュー
+/// 名にぶつけても同様に一意化される（`MenuRegistry` は同名後勝ちなので埋もれを防ぐ）。
+#[test]
+fn menu_editor_dedupes_menu_names() {
+    let config = r#"
+[[menus]]
+name = "alpha"
+items = []
+
+[[menus]]
+name = "beta"
+items = []
+"#;
+    let server = Server::start(&["a.txt"], config);
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    poll(&server, "/menu-editor", |b| b.contains("\"name\":\"alpha\""));
+
+    // 同名 alpha を足すと alpha (2)。
+    let s = server.req("POST", "/menu-editor/add", "alpha").unwrap().1;
+    assert!(s.contains("\"name\":\"alpha (2)\""), "同名は (2): {s}");
+
+    // 改名で beta を alpha へぶつけると、alpha・alpha (2) を避けて alpha (3)。
+    server.req("POST", "/menu-editor/select/1", "").unwrap();
+    let s = server.req("POST", "/menu-editor/rename", "alpha").unwrap().1;
+    assert!(s.contains("\"name\":\"alpha (3)\""), "改名も一意化: {s}");
+    assert!(!s.contains("\"name\":\"beta\""), "beta は消える: {s}");
+}
+
+/// 設定の「メニュー」ページで、選択中メニューの項目（ラベル/コマンド/セパレータ）を
+/// 追加/選択/更新/並べ替え/削除できる。項目操作 body は `{label,command,separator}` JSON。
+#[test]
+fn menu_editor_drives_item_crud() {
+    let config = r#"
+[[menus]]
+name = "alpha"
+items = [ { label = "コピー", command = "Copy" } ]
+"#;
+    let server = Server::start(&["a.txt"], config);
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    poll(&server, "/menu-editor", |b| b.contains("\"name\":\"alpha\""));
+
+    // 左メニューを選ぶ（項目操作は選択中メニューに対して行う）。
+    let s = server.req("POST", "/menu-editor/select/0", "").unwrap().1;
+    assert!(s.contains("\"selected_menu\":0"), "メニュー選択: {s}");
+    assert!(s.contains("\"selected_item\":null"), "項目は未選択: {s}");
+
+    // 項目追加：末尾に付き、それが選択される。
+    let s = server
+        .req("POST", "/menu-editor/item-add", r#"{"label":"切り取り","command":"Cut"}"#)
+        .unwrap()
+        .1;
+    assert!(s.contains("\"label\":\"切り取り\"") && s.contains("\"command\":\"Cut\""), "追加: {s}");
+    assert!(s.contains("\"selected_item\":1"), "追加分が選択される: {s}");
+
+    // セパレータ追加：区切り線が末尾に付く。
+    let s = server.req("POST", "/menu-editor/item-add", r#"{"separator":true}"#).unwrap().1;
+    assert!(s.contains("\"separator\":true"), "セパレータ追加: {s}");
+    assert!(s.contains("\"selected_item\":2"), "セパレータが選択される: {s}");
+
+    // 項目選択：先頭（コピー）を選び直す。
+    let s = server.req("POST", "/menu-editor/item-select/0", "").unwrap().1;
+    assert!(s.contains("\"selected_item\":0"), "先頭を選択: {s}");
+
+    // 項目更新：選択中（コピー）を別コマンドへ。
+    let s = server
+        .req("POST", "/menu-editor/item-update", r#"{"label":"複製","command":"Duplicate"}"#)
+        .unwrap()
+        .1;
+    assert!(s.contains("\"label\":\"複製\"") && s.contains("\"command\":\"Duplicate\""), "更新: {s}");
+    assert!(!s.contains("\"label\":\"コピー\""), "旧ラベルは消える: {s}");
+
+    // 並べ替え：下へ動かすと index 1 へ。
+    let s = server.req("POST", "/menu-editor/item-move/1", "").unwrap().1;
+    assert!(s.contains("\"selected_item\":1"), "下へ移動で index 1: {s}");
+
+    // 項目削除：選択中（複製）が消える。
+    let s = server.req("POST", "/menu-editor/item-delete", "").unwrap().1;
+    assert!(!s.contains("\"label\":\"複製\""), "削除された: {s}");
+    assert!(s.contains("\"label\":\"切り取り\"") && s.contains("\"separator\":true"), "他は残る: {s}");
+}
+
+/// 設定の「メニュー」ページのコマンド欄から機能ピッカー（モーダル）を開き、選んだ機能の
+/// トークンがコマンド欄へ入る。ピッカーは閉じるまでブロックするので item-pick は respond-first。
+/// ネストモーダルは既存の `/modal/*`（list_box が配線済み）で観測・駆動する。
+#[test]
+fn menu_editor_command_picker_inserts_token() {
+    let config = r#"
+[[menus]]
+name = "alpha"
+items = [ { label = "コピー", command = "Copy" } ]
+"#;
+    let server = Server::start(&["a.txt"], config);
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    poll(&server, "/menu-editor", |b| b.contains("\"name\":\"alpha\""));
+
+    // メニュー・項目を選ぶと、その項目のコマンドが下書き欄へ載る。
+    server.req("POST", "/menu-editor/select/0", "").unwrap();
+    let s = server.req("POST", "/menu-editor/item-select/0", "").unwrap().1;
+    assert!(s.contains("\"command\":\"Copy\""), "選択項目が下書き欄へ: {s}");
+
+    // ピッカーを開く（respond-first）。最前面モーダルがリスト選択（機能の選択）になる。
+    let r = server.req("POST", "/menu-editor/item-pick", "").unwrap().1;
+    assert!(r.contains("modal_opening"), "respond-first: {r}");
+    let st = poll(&server, "/state", |b| b.contains("機能の選択"));
+
+    // モーダルの行から Delete の行を見つけて選び、OK で確定する。
+    let v: serde_json::Value = serde_json::from_str(&st).unwrap();
+    let items = v["modal"]["items"].as_array().expect("modal items");
+    let idx = items
+        .iter()
+        .position(|x| x.as_str().unwrap_or("").contains("（Delete）"))
+        .expect("Delete の行がある");
+    server.req("POST", &format!("/modal/select/{idx}"), "").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+
+    // ピッカーが閉じたらコマンド下書き欄が Delete に置き換わる。メニュー項目自体は OK 前なので
+    // まだ Copy のまま（欄への挿入だけ）。
+    let s = poll(&server, "/menu-editor", |b| b.contains("\"command\":\"Delete\""));
+    assert!(s.contains("\"command\":\"Copy\""), "項目はまだ Copy のまま: {s}");
+}
+
+/// 機能ピッカー（多数行のリスト選択モーダル）に `/modal/wheel/<delta>` でホイールを送ると、
+/// 先頭表示行（`/state` の `modal.top`）が動く。`WS_VSCROLL` 付きリストのネイティブスクロールを
+/// headless で駆動・観測する経路。
+#[test]
+fn modal_wheel_scrolls_list() {
+    let config = r#"
+[[menus]]
+name = "alpha"
+items = [ { label = "コピー", command = "Copy" } ]
+"#;
+    let server = Server::start(&["a.txt"], config);
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    poll(&server, "/menu-editor", |b| b.contains("\"name\":\"alpha\""));
+    server.req("POST", "/menu-editor/select/0", "").unwrap();
+    server.req("POST", "/menu-editor/item-pick", "").unwrap();
+    poll(&server, "/state", |b| b.contains("機能の選択"));
+
+    let top = |s: &Server| -> u64 {
+        let st = s.req("GET", "/state", "").unwrap().1;
+        let v: serde_json::Value = serde_json::from_str(&st).unwrap();
+        v["modal"]["top"].as_u64().expect("modal.top")
+    };
+    assert_eq!(top(&server), 0, "初期は先頭");
+
+    // 下へ回すと先頭行が進む。
+    server.req("POST", "/modal/wheel/-240", "").unwrap();
+    let down = top(&server);
+    assert!(down > 0, "下スクロールで先頭行が進む: {down}");
+
+    // 上へ大きく回すと先頭へ戻る（クランプ）。
+    server.req("POST", "/modal/wheel/2400", "").unwrap();
+    assert_eq!(top(&server), 0, "上スクロールで先頭へ戻る");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
+/// メニュー項目に `Script("名前", 引数...)` を書くと、選んだとき登録スクリプトが引数ごと
+/// 実行される（原作のスクリプト連携メニューを移植する経路・引数転送つき）。
+#[test]
+fn menu_script_token_runs_registered_script_with_args() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[(
+            "00.ts",
+            r#"
+            rerics.registerCommand("ping", (msg) => rerics.log("PONG:" + msg));
+            rerics.registerMenu("fns", [{ label: "ピング", command: 'Script("ping", "hi")' }]);
+            "#,
+        )],
+    );
+
+    // 項目を選ぶと登録スクリプトが引数つきで走る（ログに出る）。
+    server.req("POST", "/menu/fns/select/0", "").unwrap();
+    let log = poll(&server, "/state/log/lines", |b| b.contains("PONG:hi"));
+    assert!(log.contains("PONG:hi"), "Script 経由でスクリプトが引数つきで実行される: {log}");
 }

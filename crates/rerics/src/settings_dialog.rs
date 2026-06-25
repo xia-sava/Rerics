@@ -11,8 +11,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rerics_core::{
-    Bookmark, Colors, Column, ColumnKind, Config, FileOpSettings, IconSize, Layout, Rgb,
-    ResolvedTheme, SizeFormat, SortType, Theme, WheelAction,
+    Bookmark, Colors, Column, ColumnKind, Command, Config, FileOpSettings, IconSize, Layout,
+    MenuDef, MenuItem, Rgb, ResolvedTheme, SizeFormat, SortType, Theme, WheelAction,
 };
 use winsafe::{self as w, co, gui, msg::lb, prelude::*};
 
@@ -953,7 +953,8 @@ const NAV_ROWS: &[NavRow] = &[
     NavRow::Page { label: "カーソル", pane: 3 },
     NavRow::Page { label: "ビューア", pane: 6 },
     NavRow::Header("登録"),
-    NavRow::Page { label: "登録ディレクトリ", pane: 4 },
+    NavRow::Page { label: "ディレクトリ", pane: 4 },
+    NavRow::Page { label: "メニュー", pane: 13 },
     NavRow::Header("キー"),
     NavRow::Page { label: "ファイラー", pane: 5 },
     NavRow::Page { label: "テキストビューア", pane: 10 },
@@ -2266,6 +2267,662 @@ fn leaf_label(path: &str) -> String {
         .unwrap_or_else(|| path.to_owned())
 }
 
+/// 項目1つを一覧の2列（ラベル／コマンド）へ整形する。セパレータは区切り線として見せる。
+fn menu_item_columns(it: &MenuItem) -> [String; 2] {
+    if it.separator {
+        ["──────────".to_string(), String::new()]
+    } else {
+        [it.label.clone(), it.command.clone()]
+    }
+}
+
+/// メニュー項目を編集欄の内容（ラベル／コマンド／セパレータ）で操作するクロージャ。
+type MenuItemOp = Rc<dyn Fn(&str, &str, bool)>;
+
+/// 機能ピッカー（モーダル）の表示行と、各行に対応するコマンドトークン（並列）。キー編集器と
+/// 同じ `command_genre` 順に並べ、ジャンル見出し付きで見せる。選んだ行のトークンをコマンド欄へ
+/// 挿入する（引数や `Script(...)`/`Menu(...)` 参照は欄で手書きする前提なので base のみ）。
+fn command_picker_rows() -> (Vec<String>, Vec<String>) {
+    let mut cmds: Vec<Command> = Command::all().collect();
+    cmds.sort_by_key(|c| crate::key_editor::command_genre(*c).0);
+    let rows = cmds
+        .iter()
+        .map(|c| {
+            let genre = crate::key_editor::command_genre(*c).1;
+            format!("〔{}〕{}（{}）", genre, c.display_name(), c.as_token())
+        })
+        .collect();
+    let tokens = cmds.iter().map(|c| c.as_token().to_string()).collect();
+    (rows, tokens)
+}
+
+/// 編集欄の内容から項目を1つ作る。セパレータ時はラベル/コマンドを無視し区切り線にする。
+/// それ以外でラベルが空なら既定名で埋める。
+fn build_menu_item(label: &str, command: &str, sep: bool) -> MenuItem {
+    if sep {
+        MenuItem::separator()
+    } else {
+        let label = label.trim();
+        let label = if label.is_empty() { "項目" } else { label };
+        MenuItem::entry(label, command.trim())
+    }
+}
+
+/// 「メニュー」ページ。左にメニュー名一覧、右に選択メニューの項目（ラベル／コマンド）を出す
+/// マスターディテール。`Menu("名前")` で開く名前付きメニュー（`shared.cfg.menus`）を編集する。
+/// 左の名前欄＋ボタンでメニューの追加/改名/削除/並べ替え。項目の編集は後続増分。
+#[derive(Clone)]
+struct MenusPane {
+    menu_list: gui::ListView<()>,
+    item_list: gui::ListView<()>,
+    /// 左のメニュー名一覧を `cfg.menus` から組み直し、指定 index を選び直す。
+    rebuild_menus: Rc<dyn Fn(Option<usize>)>,
+}
+
+impl MenusPane {
+    fn new(parent: &gui::WindowControl, shared: &Rc<Shared>, wnd: &gui::WindowModal) -> Self {
+        label(parent, "メニュー（Menu(\"名前\") で開く）。選ぶと右に項目が出る。", 8, 8, 520);
+        let menu_list = gui::ListView::<()>::new(
+            parent,
+            gui::ListViewOpts {
+                position: gui::dpi(8, 30),
+                size: gui::dpi(240, 400),
+                control_style: co::LVS::REPORT
+                    | co::LVS::NOSORTHEADER
+                    | co::LVS::SHOWSELALWAYS
+                    | co::LVS::SINGLESEL,
+                control_ex_style: co::LVS_EX::FULLROWSELECT,
+                ..Default::default()
+            },
+        );
+        let item_list = gui::ListView::<()>::new(
+            parent,
+            gui::ListViewOpts {
+                position: gui::dpi(258, 30),
+                size: gui::dpi(510, 400),
+                control_style: co::LVS::REPORT
+                    | co::LVS::NOSORTHEADER
+                    | co::LVS::SHOWSELALWAYS
+                    | co::LVS::SINGLESEL,
+                control_ex_style: co::LVS_EX::FULLROWSELECT,
+                ..Default::default()
+            },
+        );
+
+        label(parent, "メニュー名", 8, 440, 240);
+        let name_edit = gui::Edit::new(
+            parent,
+            gui::EditOpts {
+                position: gui::dpi(8, 460),
+                width: gui::dpi_x(240),
+                height: gui::dpi_y(22),
+                ..Default::default()
+            },
+        );
+        let add = button(parent, "追加(&N)", 8, 488, 74);
+        let rename = button(parent, "改名(&R)", 86, 488, 74);
+        let del = button(parent, "削除(&D)", 164, 488, 74);
+        let up = button(parent, "↑", 8, 518, 74);
+        let down = button(parent, "↓", 86, 518, 74);
+
+        // 右ペイン下部：選択中メニューの項目を編集する欄とボタン。
+        label(parent, "ラベル", 258, 440, 250);
+        let label_edit = gui::Edit::new(
+            parent,
+            gui::EditOpts {
+                position: gui::dpi(258, 460),
+                width: gui::dpi_x(250),
+                height: gui::dpi_y(22),
+                ..Default::default()
+            },
+        );
+        label(parent, "コマンド", 514, 440, 254);
+        let command_edit = gui::Edit::new(
+            parent,
+            gui::EditOpts {
+                position: gui::dpi(514, 460),
+                width: gui::dpi_x(178),
+                height: gui::dpi_y(22),
+                ..Default::default()
+            },
+        );
+        let pick_btn = button(parent, "選択(&P)", 696, 459, 72);
+        let sep_check = gui::CheckBox::new(
+            parent,
+            gui::CheckBoxOpts {
+                text: "セパレータ(&S)",
+                position: gui::dpi(258, 490),
+                size: gui::dpi(150, 22),
+                ..Default::default()
+            },
+        );
+        let item_add = button(parent, "項目追加(&A)", 258, 518, 90);
+        let item_update = button(parent, "更新(&U)", 352, 518, 74);
+        let item_del = button(parent, "項目削除(&X)", 430, 518, 90);
+        let item_up = button(parent, "↑", 524, 518, 40);
+        let item_down = button(parent, "↓", 568, 518, 40);
+
+        let selected_menu: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let selected_item: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+
+        // 選択中の項目を覚え、ラベル/コマンド/セパレータの編集欄へ反映する。None で欄を空に戻す。
+        let show_item: Rc<dyn Fn(Option<usize>)> = Rc::new({
+            let shared = shared.clone();
+            let selected_menu = selected_menu.clone();
+            let selected_item = selected_item.clone();
+            let label_edit = label_edit.clone();
+            let command_edit = command_edit.clone();
+            let sep_check = sep_check.clone();
+            move |item_sel| {
+                selected_item.set(item_sel);
+                let (label, command, sep) = item_sel
+                    .and_then(|ii| {
+                        let cfg = shared.cfg.borrow();
+                        cfg.menus
+                            .get(selected_menu.get()?)?
+                            .items
+                            .get(ii)
+                            .map(|it| (it.label.clone(), it.command.clone(), it.separator))
+                    })
+                    .unwrap_or_default();
+                let _ = label_edit.set_text(&label);
+                let _ = command_edit.set_text(&command);
+                sep_check.set_check(sep);
+            }
+        });
+
+        // 右の項目一覧を、選択中メニューの items から組み直す。引数は選び直す項目 index（None で
+        // 何も選ばず欄を空に）。
+        let rebuild_items: Rc<dyn Fn(Option<usize>)> = Rc::new({
+            let item_list = item_list.clone();
+            let shared = shared.clone();
+            let selected_menu = selected_menu.clone();
+            let show_item = show_item.clone();
+            move |item_sel| {
+                let _ = item_list.items().delete_all();
+                if let Some(mi) = selected_menu.get() {
+                    let cfg = shared.cfg.borrow();
+                    if let Some(menu) = cfg.menus.get(mi) {
+                        for it in &menu.items {
+                            let _ = item_list.items().add(&menu_item_columns(it), None, ());
+                        }
+                    }
+                }
+                if let Some(ii) = item_sel
+                    && let Some(it) = item_list.items().iter().nth(ii)
+                {
+                    let _ = it.select(true);
+                    let _ = it.focus();
+                }
+                show_item(item_sel);
+            }
+        });
+
+        // 左を cfg.menus から組み直し、sel を選び直して右へも反映する。
+        let rebuild_menus: Rc<dyn Fn(Option<usize>)> = Rc::new({
+            let menu_list = menu_list.clone();
+            let shared = shared.clone();
+            let selected_menu = selected_menu.clone();
+            let rebuild_items = rebuild_items.clone();
+            move |sel| {
+                let _ = menu_list.items().delete_all();
+                for m in shared.cfg.borrow().menus.iter() {
+                    let _ = menu_list.items().add(std::slice::from_ref(&m.name), None, ());
+                }
+                if let Some(i) = sel
+                    && let Some(it) = menu_list.items().iter().nth(i)
+                {
+                    let _ = it.select(true);
+                    let _ = it.focus();
+                }
+                selected_menu.set(sel);
+                rebuild_items(None);
+            }
+        });
+
+        // 左の選択が変わったら、その index を覚えて名前欄と右を更新する。
+        {
+            let menu_list2 = menu_list.clone();
+            let shared = shared.clone();
+            let selected_menu = selected_menu.clone();
+            let rebuild_items = rebuild_items.clone();
+            let ne = name_edit.clone();
+            menu_list.on().lvn_item_changed(move |_| {
+                let sel = menu_list2.items().iter().position(|it| it.is_selected());
+                if let Some(i) = sel
+                    && let Some(m) = shared.cfg.borrow().menus.get(i)
+                {
+                    let _ = ne.set_text(&m.name);
+                }
+                selected_menu.set(sel);
+                rebuild_items(None);
+                Ok(())
+            });
+        }
+
+        // 右の項目選択が変わったら、その index を覚えて編集欄へ反映する。
+        {
+            let item_list2 = item_list.clone();
+            let show_item = show_item.clone();
+            item_list.on().lvn_item_changed(move |_| {
+                let sel = item_list2.items().iter().position(|it| it.is_selected());
+                show_item(sel);
+                Ok(())
+            });
+        }
+
+        // メニュー操作はクロージャに抽出し、ボタンと debug フックの両方から呼ぶ。
+        let do_add: Rc<dyn Fn(&str)> = Rc::new({
+            let shared = shared.clone();
+            let rebuild_menus = rebuild_menus.clone();
+            move |name: &str| {
+                let name = name.trim();
+                let base = if name.is_empty() { "新しいメニュー" } else { name };
+                let idx = {
+                    let mut cfg = shared.cfg.borrow_mut();
+                    let existing: Vec<String> = cfg.menus.iter().map(|m| m.name.clone()).collect();
+                    let unique = rerics_core::unique_name(base, &existing);
+                    cfg.menus.push(MenuDef { name: unique, items: Vec::new() });
+                    cfg.menus.len() - 1
+                };
+                rebuild_menus(Some(idx));
+            }
+        });
+        let do_rename: Rc<dyn Fn(&str)> = Rc::new({
+            let shared = shared.clone();
+            let rebuild_menus = rebuild_menus.clone();
+            let selected_menu = selected_menu.clone();
+            move |name: &str| {
+                let Some(i) = selected_menu.get() else { return };
+                let name = name.trim();
+                if name.is_empty() {
+                    return;
+                }
+                {
+                    let mut cfg = shared.cfg.borrow_mut();
+                    // 自分以外の名前と衝突しないよう一意化する（同名へ戻すだけなら自分は除くので不変）。
+                    let existing: Vec<String> = cfg
+                        .menus
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, _)| *j != i)
+                        .map(|(_, m)| m.name.clone())
+                        .collect();
+                    let unique = rerics_core::unique_name(name, &existing);
+                    if let Some(m) = cfg.menus.get_mut(i) {
+                        m.name = unique;
+                    }
+                }
+                rebuild_menus(Some(i));
+            }
+        });
+        let do_delete: Rc<dyn Fn()> = Rc::new({
+            let shared = shared.clone();
+            let rebuild_menus = rebuild_menus.clone();
+            let selected_menu = selected_menu.clone();
+            move || {
+                let Some(i) = selected_menu.get() else { return };
+                let next = {
+                    let mut cfg = shared.cfg.borrow_mut();
+                    if i < cfg.menus.len() {
+                        cfg.menus.remove(i);
+                    }
+                    if cfg.menus.is_empty() {
+                        None
+                    } else {
+                        Some(i.saturating_sub(1).min(cfg.menus.len() - 1))
+                    }
+                };
+                rebuild_menus(next);
+            }
+        });
+        let do_move: Rc<dyn Fn(i32)> = Rc::new({
+            let shared = shared.clone();
+            let rebuild_menus = rebuild_menus.clone();
+            let selected_menu = selected_menu.clone();
+            move |delta: i32| {
+                let Some(i) = selected_menu.get() else { return };
+                let len = shared.cfg.borrow().menus.len();
+                let j = i as i32 + delta;
+                if j < 0 || j as usize >= len {
+                    return;
+                }
+                let j = j as usize;
+                shared.cfg.borrow_mut().menus.swap(i, j);
+                rebuild_menus(Some(j));
+            }
+        });
+
+        // 項目操作も同様にクロージャへ抽出し、ボタンと debug フックの両方から呼ぶ。
+        let do_item_add: MenuItemOp = Rc::new({
+            let shared = shared.clone();
+            let selected_menu = selected_menu.clone();
+            let rebuild_items = rebuild_items.clone();
+            move |label: &str, command: &str, sep: bool| {
+                let Some(mi) = selected_menu.get() else { return };
+                let new_idx = {
+                    let mut cfg = shared.cfg.borrow_mut();
+                    let Some(menu) = cfg.menus.get_mut(mi) else { return };
+                    menu.items.push(build_menu_item(label, command, sep));
+                    menu.items.len() - 1
+                };
+                rebuild_items(Some(new_idx));
+            }
+        });
+        let do_item_update: MenuItemOp = Rc::new({
+            let shared = shared.clone();
+            let selected_menu = selected_menu.clone();
+            let selected_item = selected_item.clone();
+            let rebuild_items = rebuild_items.clone();
+            move |label: &str, command: &str, sep: bool| {
+                let Some(mi) = selected_menu.get() else { return };
+                let Some(ii) = selected_item.get() else { return };
+                {
+                    let mut cfg = shared.cfg.borrow_mut();
+                    let Some(item) = cfg.menus.get_mut(mi).and_then(|m| m.items.get_mut(ii)) else {
+                        return;
+                    };
+                    *item = build_menu_item(label, command, sep);
+                }
+                rebuild_items(Some(ii));
+            }
+        });
+        let do_item_delete: Rc<dyn Fn()> = Rc::new({
+            let shared = shared.clone();
+            let selected_menu = selected_menu.clone();
+            let selected_item = selected_item.clone();
+            let rebuild_items = rebuild_items.clone();
+            move || {
+                let Some(mi) = selected_menu.get() else { return };
+                let Some(ii) = selected_item.get() else { return };
+                let next = {
+                    let mut cfg = shared.cfg.borrow_mut();
+                    let Some(menu) = cfg.menus.get_mut(mi) else { return };
+                    if ii < menu.items.len() {
+                        menu.items.remove(ii);
+                    }
+                    if menu.items.is_empty() {
+                        None
+                    } else {
+                        Some(ii.saturating_sub(1).min(menu.items.len() - 1))
+                    }
+                };
+                rebuild_items(next);
+            }
+        });
+        let do_item_move: Rc<dyn Fn(i32)> = Rc::new({
+            let shared = shared.clone();
+            let selected_menu = selected_menu.clone();
+            let selected_item = selected_item.clone();
+            let rebuild_items = rebuild_items.clone();
+            move |delta: i32| {
+                let Some(mi) = selected_menu.get() else { return };
+                let Some(ii) = selected_item.get() else { return };
+                let j = {
+                    let mut cfg = shared.cfg.borrow_mut();
+                    let Some(menu) = cfg.menus.get_mut(mi) else { return };
+                    let j = ii as i32 + delta;
+                    if j < 0 || j as usize >= menu.items.len() {
+                        return;
+                    }
+                    let j = j as usize;
+                    menu.items.swap(ii, j);
+                    j
+                };
+                rebuild_items(Some(j));
+            }
+        });
+
+        // コマンド欄から機能ピッカー（モーダル）を開き、選んだトークンを欄へ挿入する。現在欄の
+        // トークンに一致する行を初期選択にする。ボタンと debug フックの両方から呼ぶ。
+        let pick_command: Rc<dyn Fn()> = Rc::new({
+            let wnd = wnd.clone();
+            let command_edit = command_edit.clone();
+            move || {
+                let (rows, tokens) = command_picker_rows();
+                let current = command_edit.text().unwrap_or_default();
+                let initial = tokens.iter().position(|t| t.as_str() == current.trim()).unwrap_or(0);
+                if let Some(idx) =
+                    crate::dialog::list_box(&wnd, "機能の選択", "menupick", &rows, initial)
+                    && let Some(tok) = tokens.get(idx)
+                {
+                    let _ = command_edit.set_text(tok);
+                }
+            }
+        });
+
+        // ボタンは名前欄の内容を使って操作を呼ぶ。
+        {
+            let f = do_add.clone();
+            let ne = name_edit.clone();
+            add.on().bn_clicked(move || {
+                f(&ne.text().unwrap_or_default());
+                Ok(())
+            });
+        }
+        {
+            let f = do_rename.clone();
+            let ne = name_edit.clone();
+            rename.on().bn_clicked(move || {
+                f(&ne.text().unwrap_or_default());
+                Ok(())
+            });
+        }
+        {
+            let f = do_delete.clone();
+            del.on().bn_clicked(move || {
+                f();
+                Ok(())
+            });
+        }
+        {
+            let f = do_move.clone();
+            up.on().bn_clicked(move || {
+                f(-1);
+                Ok(())
+            });
+        }
+        {
+            let f = do_move.clone();
+            down.on().bn_clicked(move || {
+                f(1);
+                Ok(())
+            });
+        }
+
+        // 項目ボタンはラベル/コマンド欄とセパレータチェックの内容で操作を呼ぶ。
+        {
+            let f = do_item_add.clone();
+            let le = label_edit.clone();
+            let ce = command_edit.clone();
+            let sc = sep_check.clone();
+            item_add.on().bn_clicked(move || {
+                f(&le.text().unwrap_or_default(), &ce.text().unwrap_or_default(), sc.is_checked());
+                Ok(())
+            });
+        }
+        {
+            let f = do_item_update.clone();
+            let le = label_edit.clone();
+            let ce = command_edit.clone();
+            let sc = sep_check.clone();
+            item_update.on().bn_clicked(move || {
+                f(&le.text().unwrap_or_default(), &ce.text().unwrap_or_default(), sc.is_checked());
+                Ok(())
+            });
+        }
+        {
+            let f = do_item_delete.clone();
+            item_del.on().bn_clicked(move || {
+                f();
+                Ok(())
+            });
+        }
+        {
+            let f = do_item_move.clone();
+            item_up.on().bn_clicked(move || {
+                f(-1);
+                Ok(())
+            });
+        }
+        {
+            let f = do_item_move.clone();
+            item_down.on().bn_clicked(move || {
+                f(1);
+                Ok(())
+            });
+        }
+        {
+            let f = pick_command.clone();
+            pick_btn.on().bn_clicked(move || {
+                f();
+                Ok(())
+            });
+        }
+
+        // debug-server：標準コントロールは generic な `/modal/*` で叩けないので、操作フックを
+        // 登録して `/menu-editor/*` から駆動・観測できるようにする。
+        #[cfg(feature = "debug-server")]
+        {
+            use crate::debug_server::modal_registry::{MenuEditorHooks, register_menu_editor};
+            let do_select: Rc<dyn Fn(usize)> = Rc::new({
+                let menu_list = menu_list.clone();
+                let shared = shared.clone();
+                let selected_menu = selected_menu.clone();
+                let rebuild_items = rebuild_items.clone();
+                let ne = name_edit.clone();
+                move |idx: usize| {
+                    if idx >= shared.cfg.borrow().menus.len() {
+                        return;
+                    }
+                    if let Some(it) = menu_list.items().iter().nth(idx) {
+                        let _ = it.select(true);
+                        let _ = it.focus();
+                    }
+                    if let Some(m) = shared.cfg.borrow().menus.get(idx) {
+                        let _ = ne.set_text(&m.name);
+                    }
+                    selected_menu.set(Some(idx));
+                    rebuild_items(None);
+                }
+            });
+            // 範囲内の項目を選び直す（左メニュー未選択や範囲外は何もしない）。
+            let do_item_select: Rc<dyn Fn(usize)> = Rc::new({
+                let shared = shared.clone();
+                let selected_menu = selected_menu.clone();
+                let rebuild_items = rebuild_items.clone();
+                move |idx: usize| {
+                    let in_range = selected_menu
+                        .get()
+                        .and_then(|mi| shared.cfg.borrow().menus.get(mi).map(|m| idx < m.items.len()))
+                        .unwrap_or(false);
+                    if in_range {
+                        rebuild_items(Some(idx));
+                    }
+                }
+            });
+            let read: Box<dyn Fn() -> String> = Box::new({
+                let shared = shared.clone();
+                let selected_menu = selected_menu.clone();
+                let selected_item = selected_item.clone();
+                let label_edit = label_edit.clone();
+                let command_edit = command_edit.clone();
+                let sep_check = sep_check.clone();
+                move || {
+                    let cfg = shared.cfg.borrow();
+                    let menus: Vec<_> = cfg
+                        .menus
+                        .iter()
+                        .map(|m| {
+                            let items: Vec<_> = m
+                                .items
+                                .iter()
+                                .map(|it| {
+                                    serde_json::json!({
+                                        "label": it.label,
+                                        "command": it.command,
+                                        "separator": it.separator,
+                                    })
+                                })
+                                .collect();
+                            serde_json::json!({ "name": m.name, "items": items })
+                        })
+                        .collect();
+                    serde_json::json!({
+                        "menus": menus,
+                        "selected_menu": selected_menu.get(),
+                        "selected_item": selected_item.get(),
+                        "draft": {
+                            "label": label_edit.text().unwrap_or_default(),
+                            "command": command_edit.text().unwrap_or_default(),
+                            "separator": sep_check.is_checked(),
+                        },
+                    })
+                    .to_string()
+                }
+            });
+            register_menu_editor(MenuEditorHooks {
+                read,
+                select_menu: Box::new({
+                    let f = do_select;
+                    move |i| f(i)
+                }),
+                add_menu: Box::new({
+                    let f = do_add.clone();
+                    move |n| f(n)
+                }),
+                rename_menu: Box::new({
+                    let f = do_rename.clone();
+                    move |n| f(n)
+                }),
+                delete_menu: Box::new({
+                    let f = do_delete.clone();
+                    move || f()
+                }),
+                move_menu: Box::new({
+                    let f = do_move.clone();
+                    move |d| f(d)
+                }),
+                select_item: Box::new({
+                    let f = do_item_select;
+                    move |i| f(i)
+                }),
+                add_item: Box::new({
+                    let f = do_item_add.clone();
+                    move |l, c, s| f(l, c, s)
+                }),
+                update_item: Box::new({
+                    let f = do_item_update.clone();
+                    move |l, c, s| f(l, c, s)
+                }),
+                delete_item: Box::new({
+                    let f = do_item_delete.clone();
+                    move || f()
+                }),
+                move_item: Box::new({
+                    let f = do_item_move.clone();
+                    move |d| f(d)
+                }),
+                pick_command: Box::new({
+                    let f = pick_command.clone();
+                    move || f()
+                }),
+            });
+        }
+
+        Self { menu_list, item_list, rebuild_menus }
+    }
+
+    /// 窓生成後に列を作り（生成前の add は無効化されるため）、左のメニュー名一覧を `cfg.menus`
+    /// から組み直す。右の項目一覧は空に戻す。ページ表示時（`on_create`）に呼ぶ。
+    fn populate(&self) {
+        let _ = self.menu_list.cols().add("メニュー", gui::dpi_x(224));
+        let _ = self.item_list.cols().add("ラベル", gui::dpi_x(220));
+        let _ = self.item_list.cols().add("コマンド", gui::dpi_x(270));
+        (self.rebuild_menus)(None);
+    }
+}
+
 /// 「登録ディレクトリ」ページ。一覧（ショートカット/名前/場所）＋下部の入力欄でインライン編集
 /// （追加/更新/削除/並べ替え/フォルダ参照）。編集は即 `shared.cfg.bookmarks` へ反映する。
 #[derive(Clone)]
@@ -2608,6 +3265,7 @@ pub fn show(
     let pane_keys_text = make_pane(&wnd, pane_pos, pane_wide); // 10
     let pane_keys_image = make_pane(&wnd, pane_pos, pane_wide); // 11
     let pane_fileops = make_pane(&wnd, pane_pos, pane_wide); // 12
+    let pane_menus = make_pane(&wnd, pane_pos, pane_wide); // 13
     let panes = vec![
         pane_appearance.clone(),
         pane_colors.clone(),
@@ -2622,6 +3280,7 @@ pub fn show(
         pane_keys_text.clone(),
         pane_keys_image.clone(),
         pane_fileops.clone(),
+        pane_menus.clone(),
     ];
 
     // 右カラム：プレビュー（外観カテゴリ選択中だけ表示）。表示テーマは「配色テーマ」に追従する
@@ -2650,6 +3309,7 @@ pub fn show(
     build_list(&pane_list, &shared);
     let columns_editor = ColumnsEditor::new(&pane_list, &shared);
     let registered = RegisteredPane::new(&pane_registered, &shared);
+    let menus_pane = MenusPane::new(&pane_menus, &shared, &wnd);
     let keys = KeyEditor::new(&pane_keys, &shared, KeyCategory::Filer, scripts, members.clone());
     let keys_text =
         KeyEditor::new(&pane_keys_text, &shared, KeyCategory::TextViewer, Vec::new(), members.clone());
@@ -2737,6 +3397,7 @@ pub fn show(
         let keys_text = keys_text.clone();
         let keys_image = keys_image.clone();
         let registered = registered.clone();
+        let menus_pane = menus_pane.clone();
         let columns_editor = columns_editor.clone();
         arm.on_create(move |_| {
             // 初期表示：先頭ページ（pane 0）を出し、ナビへフォーカスを与える。
@@ -2746,6 +3407,7 @@ pub fn show(
             }
             nav.hwnd().SetFocus();
             registered.populate();
+            menus_pane.populate();
             keys.populate();
             keys_text.populate();
             keys_image.populate();
@@ -2854,7 +3516,7 @@ pub fn show(
     // 閉じたらキー編集フックを捨てる（破棄済みウィンドウを debug 経路が触らないように）。
     #[cfg(feature = "debug-server")]
     crate::debug_server::modal_registry::clear_key_editors();
-    let _ = (nav, panes, keys, keys_text, keys_image, registered, ok, cancel, apply, preview_label, preview, viewer_preview);
+    let _ = (nav, panes, keys, keys_text, keys_image, registered, menus_pane, ok, cancel, apply, preview_label, preview, viewer_preview);
 }
 
 #[cfg(test)]

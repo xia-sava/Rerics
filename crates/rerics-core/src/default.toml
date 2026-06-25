@@ -5,6 +5,7 @@ default_sort = "FileName"
 reverse_sort_date = false
 progress_delay_ms = 1000
 bookmarks = []
+menus = []
 editor = "notepad.exe"
 
 [font]
@@ -121,10 +122,10 @@ C = "Copy"
 "Ctrl+Left" = "MaximizeRight"
 "Ctrl+Right" = "MaximizeLeft"
 "Ctrl+Shift+Tab" = "PagePrevious"
-"Ctrl+T" = "NewTab"
+"Ctrl+T" = "NewFiler"
 "Ctrl+Tab" = "PageNext"
 "Ctrl+V" = "ClipPaste"
-"Ctrl+W" = "CloseTab"
+"Ctrl+W" = "Exit"
 "Ctrl+X" = "ClipCut"
 D = "Delete"
 Del = "SendToRecycled"
