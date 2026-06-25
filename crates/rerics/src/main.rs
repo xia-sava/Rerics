@@ -868,11 +868,15 @@ impl MainWindow {
         }
     }
 
-    /// config の `[[menus]]` から名前付きメニューのレジストリを組む（同名は後勝ち）。
+    /// config の `[[menus]]` とスクリプトの `registerMenu` 登録を集約した名前付きメニューの
+    /// レジストリを組む。同名はスクリプトが後勝ち（config を上書きできる）。
     fn menu_registry(&self) -> MenuRegistry {
         let mut reg = MenuRegistry::new();
         for def in &self.config.borrow().menus {
             reg.insert(def.clone());
+        }
+        for def in self.script_list_menus() {
+            reg.insert(def);
         }
         reg
     }

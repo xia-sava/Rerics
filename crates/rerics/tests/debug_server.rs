@@ -3493,3 +3493,33 @@ items = [
     let unknown = server.req("GET", "/menu/nope", "").unwrap().1;
     assert_eq!(unknown.trim(), "null", "未定義メニューは null: {unknown}");
 }
+
+/// スクリプトが `registerMenu` で登録した名前付きメニューも `Menu("名前")` の解決対象になる
+/// （config 定義と同じレジストリへマージされる）。`/menu/<name>` で出て `select` で実行できる。
+#[test]
+fn named_menu_includes_script_registered() {
+    let server = Server::start_with_scripts(
+        &["a.txt", "b.txt", "c.txt"],
+        &[(
+            "00.ts",
+            r#"rerics.registerMenu("scripted", [
+                { label: "末尾へ", command: "CursorEnd" },
+                { label: "先頭へ", command: "CursorTop" },
+            ]);"#,
+        )],
+    );
+
+    let tree = server.req("GET", "/menu/scripted", "").unwrap().1;
+    assert!(tree.contains("\"command\":\"CursorEnd\""), "登録メニューが解決される: {tree}");
+    assert!(tree.contains("\"command\":\"CursorTop\""), "2 項目目も出る: {tree}");
+
+    // 葉 0（CursorEnd）でカーソルが末尾へ動く。
+    server.req("POST", "/menu/scripted/select/0", "").unwrap();
+    let moved = poll(&server, "/state/panes/left/cursor", |b| b.trim() != "0");
+    assert_ne!(moved.trim(), "0", "CursorEnd で末尾へ動く");
+
+    // 葉 1（CursorTop）でカーソルが先頭へ戻る。
+    server.req("POST", "/menu/scripted/select/1", "").unwrap();
+    let top = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "0");
+    assert_eq!(top.trim(), "0", "CursorTop で先頭へ戻る");
+}

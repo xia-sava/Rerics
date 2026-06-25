@@ -465,6 +465,7 @@ const BOOTSTRAP: &str = r#"
 (() => {
   const ops = Deno.core.ops;
   const commands = new Map();
+  const menus = new Map();
   const eventHandlers = new Map();
   // スナップショットから 1 ペインを組む。`sink(index, selected)` は item.selected を
   // 書いたときの送り先で、即時版は op を直に撃ち、apply() の draft 版は配列へ溜める。
@@ -603,6 +604,19 @@ const BOOTSTRAP: &str = r#"
       // 組込メンバーと衝突する名前は組込を優先し、r へは生やさない（マップには残る）。
       if (!builtinMembers.has(key)) rerics[key] = (...args) => fn(...args);
     },
+    registerMenu: (name, items) => {
+      if (!Array.isArray(items)) throw new TypeError("registerMenu: items must be an array");
+      const norm = items.map((it) =>
+        it && it.separator
+          ? { label: "", command: "", separator: true }
+          : {
+              label: it && it.label != null ? String(it.label) : "",
+              command: it && it.command != null ? String(it.command) : "",
+              separator: false,
+            }
+      );
+      menus.set(String(name), norm);
+    },
     on: (event, fn) => {
       if (typeof fn !== "function") throw new TypeError("on: fn must be a function");
       const key = String(event);
@@ -636,6 +650,8 @@ const BOOTSTRAP: &str = r#"
   globalThis.__memberNames = () => Object.keys(globalThis.rerics).sort();
   globalThis.__commandMetas = () =>
     [...commands.entries()].map(([name, e]) => ({ name, label: e.label, genre: e.genre }));
+  globalThis.__menuDefs = () =>
+    [...menus.entries()].map(([name, items]) => ({ name, items }));
   globalThis.__invokeCommand = (name) => {
     const entry = commands.get(String(name));
     if (!entry) throw new Error("unknown command: " + name);
@@ -771,6 +787,18 @@ impl Engine {
         deno_core::scope!(scope, &mut self.runtime);
         let local = deno_core::v8::Local::new(scope, global);
         deno_core::serde_v8::from_v8::<Vec<ScriptCommand>>(scope, local).unwrap_or_default()
+    }
+
+    /// `registerMenu` で登録された名前付きメニュー定義を登録順で返す。`Menu("名前")` の解決時に
+    /// config 定義とマージする。
+    pub fn registered_menus(&mut self) -> Vec<rerics_core::MenuDef> {
+        let global = self
+            .runtime
+            .execute_script("rerics:list-menus", "globalThis.__menuDefs()")
+            .expect("__menuDefs must not fail");
+        deno_core::scope!(scope, &mut self.runtime);
+        let local = deno_core::v8::Local::new(scope, global);
+        deno_core::serde_v8::from_v8::<Vec<rerics_core::MenuDef>>(scope, local).unwrap_or_default()
     }
 
     /// `r.` で呼べるメンバー名を昇順で返す（組込ホスト API＋公開済み登録コマンド）。設定 UI の
@@ -1198,6 +1226,36 @@ mod tests {
         );
         // 名前一覧は従来どおり（メタ化で壊れない）。
         assert_eq!(eng.registered_commands(), vec!["organize", "onlyLabel", "plain"]);
+    }
+
+    #[test]
+    fn register_menu_is_exposed_as_menu_defs() {
+        use rerics_core::{MenuDef, MenuItem};
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:menu",
+            r#"
+              rerics.registerMenu("編集", [
+                { label: "コピー", command: "Copy" },
+                { separator: true },
+                { label: "サブ", command: 'Menu("他")' },
+              ]);
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            eng.registered_menus(),
+            vec![MenuDef {
+                name: "編集".into(),
+                items: vec![
+                    MenuItem::entry("コピー", "Copy"),
+                    MenuItem::separator(),
+                    MenuItem::entry("サブ", "Menu(\"他\")"),
+                ],
+            }]
+        );
     }
 
     #[test]
