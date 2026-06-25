@@ -113,7 +113,7 @@ pub struct ProcessResult {
 /// 機能名カラムに出す日本語名、`genre` は機能順での見出しグループ。どちらも省略可（`None`）。
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct ScriptCommand {
-    /// 登録名（`invoke`／`Script("name")` で指す識別子）。
+    /// 登録名（`invoke`／`script("name")` で指す識別子）。
     pub name: String,
     /// 設定 UI に出す表示名（無ければ既定の「スクリプト実行」を使う）。
     #[serde(default)]
@@ -789,7 +789,7 @@ impl Engine {
         deno_core::serde_v8::from_v8::<Vec<ScriptCommand>>(scope, local).unwrap_or_default()
     }
 
-    /// `registerMenu` で登録された名前付きメニュー定義を登録順で返す。`Menu("名前")` の解決時に
+    /// `registerMenu` で登録された名前付きメニュー定義を登録順で返す。`menu("名前")` の解決時に
     /// config 定義とマージする。
     pub fn registered_menus(&mut self) -> Vec<rerics_core::MenuDef> {
         let global = self
@@ -1209,7 +1209,7 @@ mod tests {
             r#"rerics.registerCommand("go", (p) => rerics.navigate(String(p)));"#.to_string(),
         )
         .unwrap();
-        // Script("go", "C:\\target") 相当＝引数がコールバックへ転送される（Func_ シムの実体）。
+        // script("go", "C:\\target") 相当＝引数がコールバックへ転送される（Func_ シムの実体）。
         eng.invoke_command("go", &["C:\\target".to_string()]).unwrap();
         assert_eq!(*host.navigated.borrow(), vec!["C:\\target".to_string()]);
     }
@@ -1258,9 +1258,9 @@ mod tests {
             "test:menu",
             r#"
               rerics.registerMenu("編集", [
-                { label: "コピー", command: "Copy" },
+                { label: "コピー", command: "copy" },
                 { separator: true },
-                { label: "サブ", command: 'Menu("他")' },
+                { label: "サブ", command: 'menu("他")' },
               ]);
             "#
             .to_string(),
@@ -1271,9 +1271,9 @@ mod tests {
             vec![MenuDef {
                 name: "編集".into(),
                 items: vec![
-                    MenuItem::entry("コピー", "Copy"),
+                    MenuItem::entry("コピー", "copy"),
                     MenuItem::separator(),
-                    MenuItem::entry("サブ", "Menu(\"他\")"),
+                    MenuItem::entry("サブ", "menu(\"他\")"),
                 ],
             }]
         );
@@ -1482,7 +1482,7 @@ mod tests {
         eng.run_to_completion(
             "test:command",
             r#"
-              rerics.command("CursorDown");
+              rerics.command("cursorDown");
               rerics.command("SortBy", "name", "asc");
               try { rerics.command("Boom"); rerics.log("no-throw"); }
               catch (e) { rerics.log("caught:" + e.message); }
@@ -1493,7 +1493,7 @@ mod tests {
         assert_eq!(
             *host.commands.borrow(),
             vec![
-                ("CursorDown".to_string(), vec![]),
+                ("cursorDown".to_string(), vec![]),
                 ("SortBy".to_string(), vec!["name".to_string(), "asc".to_string()]),
             ]
         );
@@ -1519,11 +1519,11 @@ mod tests {
         eng.fire_event("noSuchEvent", "").unwrap();
         // changeDirectory は両ハンドラが順に走る（ログ＋ホスト呼び出し）。
         eng.fire_event("changeDirectory", "C:\\d").unwrap();
-        eng.fire_event("executeCommand", "CursorDown").unwrap();
+        eng.fire_event("executeCommand", "cursorDown").unwrap();
 
         assert_eq!(
             *host.logs.borrow(),
-            vec!["cd1:C:\\d".to_string(), "cmd:CursorDown".to_string()]
+            vec!["cd1:C:\\d".to_string(), "cmd:cursorDown".to_string()]
         );
         assert_eq!(*host.navigated.borrow(), vec!["C:\\d/x".to_string()]);
     }

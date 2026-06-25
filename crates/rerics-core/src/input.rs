@@ -233,128 +233,128 @@ impl Command {
     const ALL: &'static [(Command, &'static str, &'static str)] = {
         use Command::*;
         &[
-            (CursorUp, "CursorUp", "カーソルを上へ"),
-            (CursorDown, "CursorDown", "カーソルを下へ"),
-            (CursorTop, "CursorTop", "先頭行へ移動"),
-            (CursorEnd, "CursorEnd", "最終行へ移動"),
-            (CursorPageUp, "CursorPageUp", "1ページ上へ"),
-            (CursorPageDown, "CursorPageDown", "1ページ下へ"),
-            (SetCursorPosition, "SetCursorPosition", "指定位置へカーソル移動"),
-            (EnterDir, "EnterDir", "開く（ディレクトリ・書庫へ）"),
-            (View, "View", "ビューアで表示"),
-            (ToParent, "ToParent", "親ディレクトリへ移動"),
-            (ToRoot, "ToRoot", "ルートディレクトリへ移動"),
-            (HistoryBack, "HistoryBack", "履歴を1つ戻る"),
-            (HistoryForward, "HistoryForward", "履歴を1つ進める"),
-            (PathHistoryDialog, "PathHistoryDialog", "ディレクトリ履歴"),
-            (ChangeDirectory, "ChangeDirectory", "ディレクトリの変更"),
-            (ChangeDirectoryDialog, "ChangeDirectoryDialog", "ディレクトリ変更ダイアログ"),
-            (ChangeDrive, "ChangeDrive", "ドライブの変更"),
-            (ChangeDriveDialog, "ChangeDriveDialog", "ドライブリスト"),
-            (JumpDialog, "JumpDialog", "登録ディレクトリ"),
-            (PathRegisterDialog, "PathRegisterDialog", "登録ディレクトリに追加"),
-            (IncrementalSearchDialog, "IncrementalSearchDialog", "インクリメンタルサーチ"),
-            (DirectoryInformation, "DirectoryInformation", "ディレクトリの容量計算"),
-            (RenameSequenceDialog, "RenameSequenceDialog", "連番リネーム"),
-            (FocusLeft, "FocusLeft", "左パスへ移動"),
-            (FocusRight, "FocusRight", "右パスへ移動"),
-            (MarkToggle, "MarkToggle", "選択／解除（カーソル位置）"),
-            (SelectAll, "SelectAll", "すべて選択"),
-            (ClearAll, "ClearAll", "すべて選択解除"),
-            (ReverseAll, "ReverseAll", "すべて選択反転"),
-            (SelectAllFile, "SelectAllFile", "ファイルのみ選択"),
-            (ReverseAllFile, "ReverseAllFile", "ファイルのみ選択反転"),
-            (Reload, "Reload", "最新の情報に更新"),
-            (SortByName, "SortByName", "名前順で並べ替え"),
-            (SortByExtension, "SortByExtension", "拡張子順で並べ替え"),
-            (SortBySize, "SortBySize", "サイズ順で並べ替え"),
-            (SortByDate, "SortByDate", "日付順で並べ替え"),
-            (Sort, "Sort", "並べ替え方法の指定"),
-            (SortDialog, "SortDialog", "ソート設定"),
-            (SortReverseToggle, "SortReverseToggle", "昇順／降順を反転"),
-            (PageNext, "PageNext", "次のタブへ"),
-            (PagePrevious, "PagePrevious", "前のタブへ"),
-            (NewFiler, "NewFiler", "新しいタブ"),
-            (Exit, "Exit", "タブを閉じる"),
-            (MakeDirectory, "MakeDirectory", "ディレクトリの作成"),
-            (Copy, "Copy", "コピー"),
-            (Move, "Move", "移動"),
-            (SwapPath, "SwapPath", "左右のパスを入れ替え"),
-            (OppositeToCurrent, "OppositeToCurrent", "反対側をカレントと同じに"),
-            (CurrentToOpposite, "CurrentToOpposite", "カレントを反対側と同じに"),
-            (Rename, "Rename", "名前の変更"),
-            (Delete, "Delete", "削除"),
-            (SendToRecycled, "SendToRecycled", "ごみ箱へ送る"),
-            (CreateShortcut, "CreateShortcut", "ショートカットの作成"),
-            (ClipCopy, "ClipCopy", "クリップボードにコピー"),
-            (ClipCut, "ClipCut", "クリップボードに切り取り"),
-            (ClipPaste, "ClipPaste", "クリップボードから貼り付け"),
-            (CreateFileDialog, "CreateFileDialog", "新規ファイルの作成"),
-            (ViewFile, "ViewFile", "ビューアで開く"),
-            (Edit, "Edit", "エディタで開く"),
-            (PropertyDialog, "PropertyDialog", "プロパティの表示"),
-            (Compress, "Compress", "圧縮"),
-            (Extract, "Extract", "解凍"),
-            (NextDrive, "NextDrive", "次のドライブへ"),
-            (PreviousDrive, "PreviousDrive", "前のドライブへ"),
-            (PathMask, "PathMask", "パスマスク"),
-            (SelectMask, "SelectMask", "マスクで選択"),
-            (OpenTaskManager, "OpenTaskManager", "タスクマネージャ"),
-            (OpenSettings, "OpenSettings", "設定を開く"),
-            (KeyBindsDialog, "KeyBindsDialog", "キーバインドリスト"),
-            (CommandDirect, "CommandDirect", "任意のコマンドを実行"),
-            (Menu, "Menu", "名前付きメニューを開く"),
-            (CopyLog, "CopyLog", "ログをコピー"),
-            (ClearLog, "ClearLog", "ログクリア"),
-            (MaximizeLeft, "MaximizeLeft", "左リストを最大化"),
-            (MaximizeRight, "MaximizeRight", "右リストを最大化"),
-            (MaximizeLeftForce, "MaximizeLeftForce", "左リストを最大化（強制）"),
-            (MaximizeRightForce, "MaximizeRightForce", "右リストを最大化（強制）"),
-            (BorderLeft, "BorderLeft", "境界線を左へ"),
-            (BorderRight, "BorderRight", "境界線を右へ"),
-            (BorderReset, "BorderReset", "境界線を定位置へ"),
-            (CursorOpposite, "CursorOpposite", "反対側パスへ移動"),
-            (SelectFile, "SelectFile", "ファイルを選択（カーソル位置）"),
-            (Refresh, "Refresh", "表示を更新"),
-            (Nop, "Nop", "無効コマンド"),
-            (MaximizeCurrent, "MaximizeCurrent", "現在のリストを最大化"),
-            (MaximizeWindow, "MaximizeWindow", "ウィンドウの最大化"),
-            (MinimizeWindow, "MinimizeWindow", "ウィンドウの最小化"),
-            (End, "End", "アプリケーションの終了"),
-            (Restart, "Restart", "再起動"),
-            (Quit, "Quit", "閉じる（最後ならアプリ終了）"),
-            (Script, "Script", "スクリプト実行"),
-            (Eval, "Eval", "コード評価"),
-            (ViewerClose, "ViewerClose", "ビューアを閉じる"),
-            (ViewerScrollUp, "ViewerScrollUp", "1行上へ"),
-            (ViewerScrollDown, "ViewerScrollDown", "1行下へ"),
-            (ViewerPageUp, "ViewerPageUp", "1ページ上へ"),
-            (ViewerPageDown, "ViewerPageDown", "1ページ下へ"),
-            (ViewerScrollTop, "ViewerScrollTop", "先頭行へ移動"),
-            (ViewerScrollBottom, "ViewerScrollBottom", "最終行へ移動"),
-            (ViewerSearchDialog, "ViewerSearchDialog", "検索"),
-            (ViewerFindNext, "ViewerFindNext", "次を検索"),
-            (ViewerFindPrevious, "ViewerFindPrevious", "前を検索"),
-            (ViewerSelectAll, "ViewerSelectAll", "すべて選択"),
-            (ViewerToggleMode, "ViewerToggleMode", "バイナリ／テキスト切替"),
-            (ViewerChangeEncoding, "ViewerChangeEncoding", "文字コードを切替"),
-            (ViewerCopy, "ViewerCopy", "選択範囲をコピー"),
-            (ViewerContextMenu, "ViewerContextMenu", "コンテキストメニュー"),
-            (ImageNext, "ImageNext", "次の画像"),
-            (ImagePrevious, "ImagePrevious", "前の画像"),
-            (ImageZoomIn, "ImageZoomIn", "拡大"),
-            (ImageZoomOut, "ImageZoomOut", "縮小"),
-            (ImageFitWindow, "ImageFitWindow", "画面に合わせて縮小"),
-            (ImageActualSize, "ImageActualSize", "等倍表示"),
-            (ImageFitWidth, "ImageFitWidth", "横幅に合わせる"),
-            (ImageFitHeight, "ImageFitHeight", "縦幅に合わせる"),
-            (ImageFitLarge, "ImageFitLarge", "なるべく大きく表示"),
-            (ImageRotateRight, "ImageRotateRight", "右回転"),
-            (ImageRotateLeft, "ImageRotateLeft", "左回転"),
-            (ImageFlipHorizontal, "ImageFlipHorizontal", "左右反転"),
-            (ImageFlipVertical, "ImageFlipVertical", "上下反転"),
-            (ImageCopy, "ImageCopy", "クリップボードにコピー"),
-            (MediaTogglePlay, "MediaTogglePlay", "再生／一時停止"),
+            (CursorUp, "cursorUp", "カーソルを上へ"),
+            (CursorDown, "cursorDown", "カーソルを下へ"),
+            (CursorTop, "cursorTop", "先頭行へ移動"),
+            (CursorEnd, "cursorEnd", "最終行へ移動"),
+            (CursorPageUp, "cursorPageUp", "1ページ上へ"),
+            (CursorPageDown, "cursorPageDown", "1ページ下へ"),
+            (SetCursorPosition, "setCursorPosition", "指定位置へカーソル移動"),
+            (EnterDir, "enterDir", "開く（ディレクトリ・書庫へ）"),
+            (View, "view", "ビューアで表示"),
+            (ToParent, "toParent", "親ディレクトリへ移動"),
+            (ToRoot, "toRoot", "ルートディレクトリへ移動"),
+            (HistoryBack, "historyBack", "履歴を1つ戻る"),
+            (HistoryForward, "historyForward", "履歴を1つ進める"),
+            (PathHistoryDialog, "pathHistoryDialog", "ディレクトリ履歴"),
+            (ChangeDirectory, "changeDirectory", "ディレクトリの変更"),
+            (ChangeDirectoryDialog, "changeDirectoryDialog", "ディレクトリ変更ダイアログ"),
+            (ChangeDrive, "changeDrive", "ドライブの変更"),
+            (ChangeDriveDialog, "changeDriveDialog", "ドライブリスト"),
+            (JumpDialog, "jumpDialog", "登録ディレクトリ"),
+            (PathRegisterDialog, "pathRegisterDialog", "登録ディレクトリに追加"),
+            (IncrementalSearchDialog, "incrementalSearchDialog", "インクリメンタルサーチ"),
+            (DirectoryInformation, "directoryInformation", "ディレクトリの容量計算"),
+            (RenameSequenceDialog, "renameSequenceDialog", "連番リネーム"),
+            (FocusLeft, "focusLeft", "左パスへ移動"),
+            (FocusRight, "focusRight", "右パスへ移動"),
+            (MarkToggle, "markToggle", "選択／解除（カーソル位置）"),
+            (SelectAll, "selectAll", "すべて選択"),
+            (ClearAll, "clearAll", "すべて選択解除"),
+            (ReverseAll, "reverseAll", "すべて選択反転"),
+            (SelectAllFile, "selectAllFile", "ファイルのみ選択"),
+            (ReverseAllFile, "reverseAllFile", "ファイルのみ選択反転"),
+            (Reload, "reload", "最新の情報に更新"),
+            (SortByName, "sortByName", "名前順で並べ替え"),
+            (SortByExtension, "sortByExtension", "拡張子順で並べ替え"),
+            (SortBySize, "sortBySize", "サイズ順で並べ替え"),
+            (SortByDate, "sortByDate", "日付順で並べ替え"),
+            (Sort, "sort", "並べ替え方法の指定"),
+            (SortDialog, "sortDialog", "ソート設定"),
+            (SortReverseToggle, "sortReverseToggle", "昇順／降順を反転"),
+            (PageNext, "pageNext", "次のタブへ"),
+            (PagePrevious, "pagePrevious", "前のタブへ"),
+            (NewFiler, "newFiler", "新しいタブ"),
+            (Exit, "exit", "タブを閉じる"),
+            (MakeDirectory, "makeDirectory", "ディレクトリの作成"),
+            (Copy, "copy", "コピー"),
+            (Move, "move", "移動"),
+            (SwapPath, "swapPath", "左右のパスを入れ替え"),
+            (OppositeToCurrent, "oppositeToCurrent", "反対側をカレントと同じに"),
+            (CurrentToOpposite, "currentToOpposite", "カレントを反対側と同じに"),
+            (Rename, "rename", "名前の変更"),
+            (Delete, "delete", "削除"),
+            (SendToRecycled, "sendToRecycled", "ごみ箱へ送る"),
+            (CreateShortcut, "createShortcut", "ショートカットの作成"),
+            (ClipCopy, "clipCopy", "クリップボードにコピー"),
+            (ClipCut, "clipCut", "クリップボードに切り取り"),
+            (ClipPaste, "clipPaste", "クリップボードから貼り付け"),
+            (CreateFileDialog, "createFileDialog", "新規ファイルの作成"),
+            (ViewFile, "viewFile", "ビューアで開く"),
+            (Edit, "edit", "エディタで開く"),
+            (PropertyDialog, "propertyDialog", "プロパティの表示"),
+            (Compress, "compress", "圧縮"),
+            (Extract, "extract", "解凍"),
+            (NextDrive, "nextDrive", "次のドライブへ"),
+            (PreviousDrive, "previousDrive", "前のドライブへ"),
+            (PathMask, "pathMask", "パスマスク"),
+            (SelectMask, "selectMask", "マスクで選択"),
+            (OpenTaskManager, "openTaskManager", "タスクマネージャ"),
+            (OpenSettings, "openSettings", "設定を開く"),
+            (KeyBindsDialog, "keyBindsDialog", "キーバインドリスト"),
+            (CommandDirect, "commandDirect", "任意のコマンドを実行"),
+            (Menu, "menu", "名前付きメニューを開く"),
+            (CopyLog, "copyLog", "ログをコピー"),
+            (ClearLog, "clearLog", "ログクリア"),
+            (MaximizeLeft, "maximizeLeft", "左リストを最大化"),
+            (MaximizeRight, "maximizeRight", "右リストを最大化"),
+            (MaximizeLeftForce, "maximizeLeftForce", "左リストを最大化（強制）"),
+            (MaximizeRightForce, "maximizeRightForce", "右リストを最大化（強制）"),
+            (BorderLeft, "borderLeft", "境界線を左へ"),
+            (BorderRight, "borderRight", "境界線を右へ"),
+            (BorderReset, "borderReset", "境界線を定位置へ"),
+            (CursorOpposite, "cursorOpposite", "反対側パスへ移動"),
+            (SelectFile, "selectFile", "ファイルを選択（カーソル位置）"),
+            (Refresh, "refresh", "表示を更新"),
+            (Nop, "nop", "無効コマンド"),
+            (MaximizeCurrent, "maximizeCurrent", "現在のリストを最大化"),
+            (MaximizeWindow, "maximizeWindow", "ウィンドウの最大化"),
+            (MinimizeWindow, "minimizeWindow", "ウィンドウの最小化"),
+            (End, "end", "アプリケーションの終了"),
+            (Restart, "restart", "再起動"),
+            (Quit, "quit", "閉じる（最後ならアプリ終了）"),
+            (Script, "script", "スクリプト実行"),
+            (Eval, "eval", "コード評価"),
+            (ViewerClose, "viewerClose", "ビューアを閉じる"),
+            (ViewerScrollUp, "viewerScrollUp", "1行上へ"),
+            (ViewerScrollDown, "viewerScrollDown", "1行下へ"),
+            (ViewerPageUp, "viewerPageUp", "1ページ上へ"),
+            (ViewerPageDown, "viewerPageDown", "1ページ下へ"),
+            (ViewerScrollTop, "viewerScrollTop", "先頭行へ移動"),
+            (ViewerScrollBottom, "viewerScrollBottom", "最終行へ移動"),
+            (ViewerSearchDialog, "viewerSearchDialog", "検索"),
+            (ViewerFindNext, "viewerFindNext", "次を検索"),
+            (ViewerFindPrevious, "viewerFindPrevious", "前を検索"),
+            (ViewerSelectAll, "viewerSelectAll", "すべて選択"),
+            (ViewerToggleMode, "viewerToggleMode", "バイナリ／テキスト切替"),
+            (ViewerChangeEncoding, "viewerChangeEncoding", "文字コードを切替"),
+            (ViewerCopy, "viewerCopy", "選択範囲をコピー"),
+            (ViewerContextMenu, "viewerContextMenu", "コンテキストメニュー"),
+            (ImageNext, "imageNext", "次の画像"),
+            (ImagePrevious, "imagePrevious", "前の画像"),
+            (ImageZoomIn, "imageZoomIn", "拡大"),
+            (ImageZoomOut, "imageZoomOut", "縮小"),
+            (ImageFitWindow, "imageFitWindow", "画面に合わせて縮小"),
+            (ImageActualSize, "imageActualSize", "等倍表示"),
+            (ImageFitWidth, "imageFitWidth", "横幅に合わせる"),
+            (ImageFitHeight, "imageFitHeight", "縦幅に合わせる"),
+            (ImageFitLarge, "imageFitLarge", "なるべく大きく表示"),
+            (ImageRotateRight, "imageRotateRight", "右回転"),
+            (ImageRotateLeft, "imageRotateLeft", "左回転"),
+            (ImageFlipHorizontal, "imageFlipHorizontal", "左右反転"),
+            (ImageFlipVertical, "imageFlipVertical", "上下反転"),
+            (ImageCopy, "imageCopy", "クリップボードにコピー"),
+            (MediaTogglePlay, "mediaTogglePlay", "再生／一時停止"),
         ]
     };
 
@@ -949,8 +949,8 @@ mod tests {
         // 原作准拠で Z＝任意コマンド実行。トークン round-trip も確認する。
         let m = KeyMap::default();
         assert_eq!(m.resolve(&KeyChord::key(vk::Z)), Some(Command::CommandDirect));
-        assert_eq!(Command::from_token("CommandDirect"), Some(Command::CommandDirect));
-        assert_eq!(Command::CommandDirect.as_token(), "CommandDirect");
+        assert_eq!(Command::from_token("commandDirect"), Some(Command::CommandDirect));
+        assert_eq!(Command::CommandDirect.as_token(), "commandDirect");
         assert_eq!(Command::CommandDirect.display_name(), "任意のコマンドを実行");
     }
 
@@ -985,7 +985,7 @@ mod tests {
             m.resolve(&KeyChord::new(vk::RIGHT, false, false, true)),
             Some(Command::HistoryForward)
         );
-        // F4＝入力式つき ChangeDirectory・Shift+F4＝フォルダ選択式つき。
+        // F4＝入力式つき changeDirectory・Shift+F4＝フォルダ選択式つき。
         assert_eq!(m.resolve(&KeyChord::key(vk::F4)), Some(Command::ChangeDirectory));
         assert_eq!(
             m.resolve_inv(&KeyChord::key(vk::F4)),
@@ -1006,7 +1006,7 @@ mod tests {
             Some(Command::RenameSequenceDialog)
         );
         // 既定キーを持たないコマンドは未割当（個人 config で付ける）。
-        assert_eq!(m.resolve(&KeyChord::key(vk::OEM_6)), None); // ] = PathHistoryDialog は個人設定
+        assert_eq!(m.resolve(&KeyChord::key(vk::OEM_6)), None); // ] = pathHistoryDialog は個人設定
     }
 
     #[test]
@@ -1096,7 +1096,7 @@ mod tests {
             assert_eq!(inv.command, cmd);
             assert_eq!(inv.args, vec!["select".to_string()]);
         }
-        // Shift+Space＝反転＋上移動（MarkToggle("-1")）。
+        // Shift+Space＝反転＋上移動（markToggle("-1")）。
         let space = m.resolve_inv(&KeyChord::new(vk::SPACE, false, true, false)).unwrap();
         assert_eq!(space.command, Command::MarkToggle);
         assert_eq!(space.args, vec!["-1".to_string()]);
@@ -1104,7 +1104,7 @@ mod tests {
 
     #[test]
     fn default_binds_mask() {
-        // Y・Shift+P=パスマスク。SelectMask は既定キー無し。
+        // Y・Shift+P=パスマスク。selectMask は既定キー無し。
         let m = KeyMap::default();
         assert_eq!(m.resolve(&KeyChord::key(vk::Y)), Some(Command::PathMask));
         assert_eq!(
@@ -1155,24 +1155,24 @@ mod tests {
     #[test]
     fn invocation_parse_bare_and_args() {
         // 引数なしは従来トークンと同義。
-        assert_eq!(Invocation::parse("CursorDown"), Some(Invocation::bare(Command::CursorDown)));
+        assert_eq!(Invocation::parse("cursorDown"), Some(Invocation::bare(Command::CursorDown)));
         // 余分な空白も許容。
-        assert_eq!(Invocation::parse("  Reload  "), Some(Invocation::bare(Command::Reload)));
+        assert_eq!(Invocation::parse("  reload  "), Some(Invocation::bare(Command::Reload)));
         // 引数つき。
         assert_eq!(
-            Invocation::parse(r#"ChangeDirectoryDialog("D:")"#),
+            Invocation::parse(r#"changeDirectoryDialog("D:")"#),
             Some(Invocation::new(Command::ChangeDirectoryDialog, vec!["D:".into()]))
         );
         // 複数引数・引数間の空白。
         assert_eq!(
-            Invocation::parse(r#"NewFiler("a" ,  "b")"#),
+            Invocation::parse(r#"newFiler("a" ,  "b")"#),
             Some(Invocation::new(Command::NewFiler, vec!["a".into(), "b".into()]))
         );
         // 空括弧は引数なし。
-        assert_eq!(Invocation::parse("Reload()"), Some(Invocation::bare(Command::Reload)));
+        assert_eq!(Invocation::parse("reload()"), Some(Invocation::bare(Command::Reload)));
         // エスケープ（\" と \\）。
         assert_eq!(
-            Invocation::parse(r#"Reload("say \"hi\"\\")"#),
+            Invocation::parse(r#"reload("say \"hi\"\\")"#),
             Some(Invocation::new(Command::Reload, vec!["say \"hi\"\\".into()]))
         );
     }
@@ -1180,20 +1180,20 @@ mod tests {
     #[test]
     fn invocation_parse_rejects_malformed() {
         assert!(Invocation::parse("Bogus").is_none()); // 未知コマンド
-        assert!(Invocation::parse("Reload(\"a\"").is_none()); // 閉じ括弧なし
-        assert!(Invocation::parse("Reload(a)").is_none()); // クォートなし引数
-        assert!(Invocation::parse("Reload(\"a\" \"b\")").is_none()); // カンマなし
+        assert!(Invocation::parse("reload(\"a\"").is_none()); // 閉じ括弧なし
+        assert!(Invocation::parse("reload(a)").is_none()); // クォートなし引数
+        assert!(Invocation::parse("reload(\"a\" \"b\")").is_none()); // カンマなし
     }
 
     #[test]
     fn invocation_token_roundtrip() {
         for s in [
-            "CursorDown",
-            r#"ChangeDirectoryDialog("D:")"#,
-            r#"NewFiler("a", "b")"#,
-            r#"Reload("say \"hi\"\\")"#,
-            r#"Script("myCommand")"#,
-            r#"Eval("rerics.log(\"hi\")")"#,
+            "cursorDown",
+            r#"changeDirectoryDialog("D:")"#,
+            r#"newFiler("a", "b")"#,
+            r#"reload("say \"hi\"\\")"#,
+            r#"script("myCommand")"#,
+            r#"eval("rerics.log(\"hi\")")"#,
         ] {
             let inv = Invocation::parse(s).unwrap();
             assert_eq!(inv.to_token_string(), s);
@@ -1209,7 +1209,7 @@ mod tests {
             Invocation::new(Command::ChangeDirectoryDialog, vec!["D:".into()]),
         );
         let sm = m.to_string_map();
-        assert_eq!(sm.get("F4").map(String::as_str), Some(r#"ChangeDirectoryDialog("D:")"#));
+        assert_eq!(sm.get("F4").map(String::as_str), Some(r#"changeDirectoryDialog("D:")"#));
         let back = KeyMap::from_string_map(&sm);
         assert_eq!(
             back.resolve_inv(&KeyChord::key(vk::F4)),
@@ -1221,7 +1221,7 @@ mod tests {
     fn empty_value_unbinds_key() {
         // 値が空文字のキーは未バインドになる（既定打ち消し用）。
         let mut sm = KeyMap::default().to_string_map();
-        assert_eq!(sm.get("Down").map(String::as_str), Some("CursorDown"));
+        assert_eq!(sm.get("Down").map(String::as_str), Some("cursorDown"));
         sm.insert("Down".to_string(), String::new());
         let m = KeyMap::from_string_map(&sm);
         assert_eq!(m.resolve(&KeyChord::key(vk::DOWN)), None);
@@ -1335,10 +1335,10 @@ mod tests {
     fn renamed_tokens_use_original_canonical_names() {
         // 原作正式名へ寄せたトークンが正式名で引け、正式名を返す。
         for (token, cmd) in [
-            ("CreateFileDialog", Command::CreateFileDialog),
-            ("PathRegisterDialog", Command::PathRegisterDialog),
-            ("NewFiler", Command::NewFiler),
-            ("Exit", Command::Exit),
+            ("createFileDialog", Command::CreateFileDialog),
+            ("pathRegisterDialog", Command::PathRegisterDialog),
+            ("newFiler", Command::NewFiler),
+            ("exit", Command::Exit),
         ] {
             assert_eq!(Command::from_token(token), Some(cmd));
             assert_eq!(cmd.as_token(), token);
@@ -1354,8 +1354,8 @@ mod tests {
         assert_eq!(Command::from_token("RegisteredPathDialog"), Some(Command::JumpDialog));
         assert_eq!(Command::from_token("UnPack"), Some(Command::Extract));
         // 別名は出力には現れない（正式名を返す）。
-        assert_eq!(Command::ChangeDirectory.as_token(), "ChangeDirectory");
-        assert_eq!(Command::Extract.as_token(), "Extract");
+        assert_eq!(Command::ChangeDirectory.as_token(), "changeDirectory");
+        assert_eq!(Command::Extract.as_token(), "extract");
         // 引数つきの別名も Invocation で通る（移植したメニューが原作名で書けるように）。
         assert_eq!(
             Invocation::parse(r#"CD("C:\\tmp")"#),

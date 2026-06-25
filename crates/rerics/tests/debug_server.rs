@@ -383,24 +383,24 @@ fn debug_server_smoke() {
         .expect("cursor before")
         .1;
     server
-        .req("POST", "/command/CursorDown", "")
-        .expect("CursorDown");
+        .req("POST", "/command/cursorDown", "")
+        .expect("cursorDown");
     let c1 = server
         .req("GET", "/state/panes/left/cursor", "")
         .expect("cursor after")
         .1;
     assert_eq!(c0.trim(), "0", "initial cursor");
-    assert_eq!(c1.trim(), "1", "cursor should move to 1 after CursorDown");
+    assert_eq!(c1.trim(), "1", "cursor should move to 1 after cursorDown");
 
-    let bst = server.req("POST", "/command/Nope", "").expect("bad command").0;
+    let bst = server.req("POST", "/command/nope", "").expect("bad command").0;
     assert_eq!(bst, 400, "unknown command should be 400");
 
     // 書込み許可なしなのでモーダル系コマンドは 400（破壊防止のゲート）。
     let mst = server
-        .req("POST", "/command/MakeDirectory", "")
+        .req("POST", "/command/makeDirectory", "")
         .expect("modal command")
         .0;
-    assert_eq!(mst, 400, "MakeDirectory without --debug-allow-write should be 400");
+    assert_eq!(mst, 400, "makeDirectory without --debug-allow-write should be 400");
 
     // 外見の設定反映：config.toml の font size=18 が解決値・ペイン保持値の双方に出る。
     let pf = server
@@ -447,7 +447,7 @@ fn broken_config_warns_and_starts_with_defaults() {
     assert_eq!(after.trim(), "null", "Enter でアラートを閉じられる");
 }
 
-/// ログのコピー／クリア（CopyLog/ClearLog）が配線され、ClearLog でログ行が消えることを検証する。
+/// ログのコピー／クリア（copyLog/clearLog）が配線され、clearLog でログ行が消えることを検証する。
 #[test]
 fn copy_and_clear_log() {
     // 壊れた config で起動すると読込失敗の旨が必ずログに出る（クリア対象を確実に用意する）。
@@ -460,14 +460,14 @@ fn copy_and_clear_log() {
     let log0 = server.req("GET", "/state/log", "").expect("log").1;
     assert!(log0.contains("config.toml"), "前提：ログに行がある: {log0}");
 
-    // CopyLog は非モーダル・非破壊で実行できる（クリップボード内容は headless では読まない）。
-    let (cst, _) = server.req("POST", "/command/CopyLog", "").expect("CopyLog");
-    assert_eq!(cst, 200, "CopyLog は実行できる");
+    // copyLog は非モーダル・非破壊で実行できる（クリップボード内容は headless では読まない）。
+    let (cst, _) = server.req("POST", "/command/copyLog", "").expect("copyLog");
+    assert_eq!(cst, 200, "copyLog は実行できる");
 
-    // ClearLog でログ行が空になる。
-    server.req("POST", "/command/ClearLog", "").expect("ClearLog");
+    // clearLog でログ行が空になる。
+    server.req("POST", "/command/clearLog", "").expect("clearLog");
     let log1 = poll(&server, "/state/log", |b| b.contains("\"lines\":[]"));
-    assert!(log1.contains("\"lines\":[]"), "ClearLog でログが空になる: {log1}");
+    assert!(log1.contains("\"lines\":[]"), "clearLog でログが空になる: {log1}");
 }
 
 /// `/command` の body 引数（JSON 文字列配列）が受理され、引数を見ないコマンドでは
@@ -476,10 +476,10 @@ fn copy_and_clear_log() {
 fn command_accepts_json_array_args() {
     let server = Server::start(&["a.txt", "b.txt", "c.txt"], "");
 
-    // 引数を取らない CursorDown に引数を付けても従来どおり動く（無視される）。
+    // 引数を取らない cursorDown に引数を付けても従来どおり動く（無視される）。
     let (st, _) = server
-        .req("POST", "/command/CursorDown", r#"["ignored"]"#)
-        .expect("CursorDown with args");
+        .req("POST", "/command/cursorDown", r#"["ignored"]"#)
+        .expect("cursorDown with args");
     assert_eq!(st, 200, "command with JSON array body should be accepted");
     let c = server
         .req("GET", "/state/panes/left/cursor", "")
@@ -489,14 +489,14 @@ fn command_accepts_json_array_args() {
 
     // 配列でない body は 400。
     let bad = server
-        .req("POST", "/command/CursorDown", "\"notarray\"")
+        .req("POST", "/command/cursorDown", "\"notarray\"")
         .expect("bad body")
         .0;
     assert_eq!(bad, 400, "non-array JSON body should be 400");
 
     // 文字列でない要素を含む配列も 400。
     let bad2 = server
-        .req("POST", "/command/CursorDown", "[1, 2]")
+        .req("POST", "/command/cursorDown", "[1, 2]")
         .expect("bad elem")
         .0;
     assert_eq!(bad2, 400, "non-string args should be 400");
@@ -518,10 +518,10 @@ fn archive_add_and_replace() {
     );
 
     // --- 非衝突 add：b.txt（実FS）→ zip。モーダル無しの無言 append。 ---
-    // 左 items は [.., a.txt, b.txt]。CursorDown×2 で b.txt。
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/Copy", "").unwrap();
+    // 左 items は [.., a.txt, b.txt]。cursorDown×2 で b.txt。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/copy", "").unwrap();
     let m = server.req("GET", "/state/modal", "").unwrap().1;
     assert_eq!(m.trim(), "null", "non-colliding add must not prompt: {m}");
     let r1 = poll(&server, "/state/panes/right/items", |b| {
@@ -530,9 +530,9 @@ fn archive_add_and_replace() {
     assert!(r1.contains("\"name\":\"b.txt\""), "b.txt should be added to the archive: {r1}");
 
     // --- 衝突 replace：a.txt（実FS, AAA）は zip の a.txt と同名 → モーダル → 既定=置換。 ---
-    // reload でカーソルは .. に戻る。CursorDown×1 で a.txt。
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/Copy", "").unwrap();
+    // reload でカーソルは .. に戻る。cursorDown×1 で a.txt。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/copy", "").unwrap();
     let modal = wait_modal(&server);
     assert!(
         modal.contains("\"kind\":\"archive_add\""),
@@ -565,8 +565,8 @@ fn archive_mkdir_and_move() {
     let server = Server::start_archive(&[("m.txt", b"MMM")], &[("existing.txt", b"keep")]);
 
     // 右ペイン（書庫）をアクティブにして mkdir。
-    server.req("POST", "/command/FocusRight", "").unwrap();
-    server.req("POST", "/command/MakeDirectory", "").unwrap();
+    server.req("POST", "/command/focusRight", "").unwrap();
+    server.req("POST", "/command/makeDirectory", "").unwrap();
     wait_modal(&server);
     server.req("POST", "/modal/text", "newdir").unwrap();
     server.req("POST", "/modal/key/enter", "").unwrap();
@@ -576,7 +576,7 @@ fn archive_mkdir_and_move() {
     assert!(r.contains("\"name\":\"newdir\""), "newdir should be created in the archive: {r}");
 
     // 同名 mkdir はエラー（実FS のディレクトリ作成と同じ挙動）。
-    server.req("POST", "/command/MakeDirectory", "").unwrap();
+    server.req("POST", "/command/makeDirectory", "").unwrap();
     wait_modal(&server);
     server.req("POST", "/modal/text", "newdir").unwrap();
     server.req("POST", "/modal/key/enter", "").unwrap();
@@ -596,10 +596,10 @@ fn archive_mkdir_and_move() {
     );
 
     // --- move：m.txt（実FS, 非衝突）→ 書庫。追加成功で元を削除する。 ---
-    server.req("POST", "/command/FocusLeft", "").unwrap();
-    // 左 items は [.., m.txt]。CursorDown×1 で m.txt。
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/Move", "").unwrap();
+    server.req("POST", "/command/focusLeft", "").unwrap();
+    // 左 items は [.., m.txt]。cursorDown×1 で m.txt。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/move", "").unwrap();
     let r3 = poll(&server, "/state/panes/right/items", |b| {
         b.contains("\"name\":\"m.txt\"")
     });
@@ -617,10 +617,10 @@ fn archive_delete() {
         &[("dummy.txt", b"x")],
         &[("a.txt", b"AAA"), ("b.txt", b"BBB"), ("keep.txt", b"K")],
     );
-    server.req("POST", "/command/FocusRight", "").unwrap();
-    // 右 items は [.., a.txt, b.txt, keep.txt]。CursorDown×1 で a.txt。
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/Delete", "").unwrap();
+    server.req("POST", "/command/focusRight", "").unwrap();
+    // 右 items は [.., a.txt, b.txt, keep.txt]。cursorDown×1 で a.txt。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/delete", "").unwrap();
     // YesNo 確認モーダル → はい（既定ボタン＝enter）。
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"message\""), "delete should confirm first: {modal}");
@@ -636,13 +636,13 @@ fn archive_delete() {
     );
 }
 
-/// ask_before_copy=true のとき、Copy の前に確認モーダルが出てキャンセルで中止できる。
+/// ask_before_copy=true のとき、copy の前に確認モーダルが出てキャンセルで中止できる。
 #[test]
 fn ask_before_copy_confirms() {
     let server = Server::start_writable_cfg(&["a.txt"], "[file_ops]\nask_before_copy = true\n");
-    // 左 items は [.., a.txt]。CursorDown×1 で a.txt にカーソル。
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/Copy", "").unwrap();
+    // 左 items は [.., a.txt]。cursorDown×1 で a.txt にカーソル。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/copy", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"message\""), "copy should confirm first: {modal}");
     assert!(modal.contains("コピー"), "confirm dialog titled コピー: {modal}");
@@ -653,13 +653,13 @@ fn ask_before_copy_confirms() {
     assert!(items.contains("\"name\":\"a.txt\""), "cancel leaves the file: {items}");
 }
 
-/// ask_before_delete=false のとき、Delete は確認モーダルを出さず即削除する。
+/// ask_before_delete=false のとき、delete は確認モーダルを出さず即削除する。
 #[test]
 fn ask_before_delete_off_skips_confirm() {
     let server = Server::start_writable_cfg(&["a.txt", "b.txt"], "[file_ops]\nask_before_delete = false\n");
-    // 左 items は [.., a.txt, b.txt]。CursorDown×1 で a.txt にカーソル。
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/Delete", "").unwrap();
+    // 左 items は [.., a.txt, b.txt]。cursorDown×1 で a.txt にカーソル。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/delete", "").unwrap();
     // 確認なしで a.txt が消える。
     let items = poll(&server, "/state/panes/left/items", |b| !b.contains("\"name\":\"a.txt\""));
     assert!(!items.contains("\"name\":\"a.txt\""), "a.txt should be deleted directly: {items}");
@@ -677,8 +677,8 @@ fn ask_before_delete_off_skips_confirm() {
 #[test]
 fn compress_creates_named_zip() {
     let server = Server::start_writable(&["a.txt", "b.txt"]);
-    server.req("POST", "/command/CursorDown", "").unwrap(); // .. -> a.txt
-    server.req("POST", "/command/Compress", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap(); // .. -> a.txt
+    server.req("POST", "/command/compress", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"compress\""), "compress dialog should open: {modal}");
     server.req("POST", "/modal/text", "out.zip").unwrap();
@@ -691,11 +691,11 @@ fn compress_creates_named_zip() {
 #[test]
 fn compress_one_by_one_makes_per_item_zips() {
     let server = Server::start_writable(&["a.txt", "b.txt"]);
-    // a.txt と b.txt を両方マーク（Space=MarkToggle はマーク後カーソルを下へ）。
-    server.req("POST", "/command/CursorDown", "").unwrap(); // .. -> a.txt
-    server.req("POST", "/command/MarkToggle", "").unwrap(); // mark a.txt -> b.txt
-    server.req("POST", "/command/MarkToggle", "").unwrap(); // mark b.txt
-    server.req("POST", "/command/Compress", "").unwrap();
+    // a.txt と b.txt を両方マーク（Space=markToggle はマーク後カーソルを下へ）。
+    server.req("POST", "/command/cursorDown", "").unwrap(); // .. -> a.txt
+    server.req("POST", "/command/markToggle", "").unwrap(); // mark a.txt -> b.txt
+    server.req("POST", "/command/markToggle", "").unwrap(); // mark b.txt
+    server.req("POST", "/command/compress", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"compress\""), "compress dialog should open: {modal}");
     // 個別圧縮にチェックして OK。
@@ -718,12 +718,12 @@ fn extract_create_directory_wraps_in_archive_named_dir() {
         &[("a.txt", b"AAA"), ("b.txt", b"BBB")],
         "[file_ops]\nextract_create_directory = true\n",
     );
-    server.req("POST", "/command/FocusRight", "").unwrap(); // 書庫ペインをアクティブに
+    server.req("POST", "/command/focusRight", "").unwrap(); // 書庫ペインをアクティブに
     // 右 items は [.., a.txt, b.txt]。両方マークして展開。
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/MarkToggle", "").unwrap();
-    server.req("POST", "/command/MarkToggle", "").unwrap();
-    server.req("POST", "/command/Extract", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/markToggle", "").unwrap();
+    server.req("POST", "/command/markToggle", "").unwrap();
+    server.req("POST", "/command/extract", "").unwrap();
     // 左（実）ペインに書庫名の arc フォルダができ、その中へ取り出される。
     let left = poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"arc\""));
     assert!(left.contains("\"name\":\"arc\""), "extract should create an 'arc' directory: {left}");
@@ -740,10 +740,10 @@ fn archive_rename() {
         &[("dummy.txt", b"x")],
         &[("a.txt", b"AAA"), ("b.txt", b"BBB")],
     );
-    server.req("POST", "/command/FocusRight", "").unwrap();
-    // 右 items は [.., a.txt, b.txt]。CursorDown×1 で a.txt。
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/Rename", "").unwrap();
+    server.req("POST", "/command/focusRight", "").unwrap();
+    // 右 items は [.., a.txt, b.txt]。cursorDown×1 で a.txt。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/rename", "").unwrap();
     wait_modal(&server);
     server.req("POST", "/modal/text", "z.txt").unwrap();
     server.req("POST", "/modal/key/enter", "").unwrap();
@@ -756,9 +756,9 @@ fn archive_rename() {
     );
 
     // 衝突：b.txt -> z.txt（z.txt は既存）はエラー。reload でカーソルは .. に戻る。
-    // items は [.., b.txt, z.txt]。CursorDown×1 で b.txt。
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/Rename", "").unwrap();
+    // items は [.., b.txt, z.txt]。cursorDown×1 で b.txt。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/rename", "").unwrap();
     wait_modal(&server);
     server.req("POST", "/modal/text", "z.txt").unwrap();
     server.req("POST", "/modal/key/enter", "").unwrap();
@@ -774,15 +774,15 @@ fn archive_rename() {
     assert!(r2.contains("\"name\":\"b.txt\""), "b.txt must remain after failed rename: {r2}");
 }
 
-/// 非書庫の Rename は名前/属性/更新日時の専用モーダルを開く。debug-server からは
+/// 非書庫の rename は名前/属性/更新日時の専用モーダルを開く。debug-server からは
 /// チェック値を操作できないので、開いて OK で閉じても対象が壊れない（デッドロックしない）
 /// ことだけを担保する。属性/日時の適用ロジック自体は core 側でテスト済み。
 #[test]
 fn rename_meta_dialog_opens_and_closes() {
     let server = Server::start_writable(&["a.txt"]);
-    // items は [.., a.txt]。CursorDown×1 で a.txt。
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/Rename", "").unwrap();
+    // items は [.., a.txt]。cursorDown×1 で a.txt。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/rename", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"rename\""), "should open rename meta modal: {modal}");
     // 既定値のまま OK（名前据え置き＝改名なし）。
@@ -792,12 +792,12 @@ fn rename_meta_dialog_opens_and_closes() {
     assert!(items.contains("\"name\":\"a.txt\""), "a.txt should still exist: {items}");
 }
 
-/// CreateFileDialog＝入力したファイル名で空ファイルを作成する。
+/// createFileDialog＝入力したファイル名で空ファイルを作成する。
 #[test]
 fn create_file_makes_empty_file() {
     let server = Server::start_writable(&["a.txt"]);
 
-    server.req("POST", "/command/CreateFileDialog", "").unwrap();
+    server.req("POST", "/command/createFileDialog", "").unwrap();
     // ファイル名入力ダイアログが開く。
     let modal = wait_modal(&server);
     assert!(modal.contains("\"has_input\":true"), "should ask for a name: {modal}");
@@ -811,7 +811,7 @@ fn create_file_makes_empty_file() {
     assert!(body.is_empty(), "new file should be empty: {body:?}");
 }
 
-/// ToRoot＝カレントのドライブルートへ移動する。
+/// toRoot＝カレントのドライブルートへ移動する。
 #[test]
 fn nav_to_root() {
     let server = Server::start(&["a.txt"], "");
@@ -822,12 +822,12 @@ fn nav_to_root() {
     // ルートは JSON では "X:\\"（X, :, \\）。
     let expected = format!("\"{drive}:\\\\\"");
 
-    server.req("POST", "/command/ToRoot", "").unwrap();
+    server.req("POST", "/command/toRoot", "").unwrap();
     let after = poll(&server, "/state/panes/left/location", |b| b.trim() == expected);
-    assert_eq!(after.trim(), expected, "ToRoot should jump to the drive root");
+    assert_eq!(after.trim(), expected, "toRoot should jump to the drive root");
 }
 
-/// HistoryBack/HistoryForward＝パス移動履歴を前後する。
+/// historyBack/historyForward＝パス移動履歴を前後する。
 #[test]
 fn nav_history_back_forward() {
     let server = Server::start(&["a.txt"], "");
@@ -835,20 +835,20 @@ fn nav_history_back_forward() {
     let sbx = sbx.trim().to_string();
 
     // 親へ移動（sbx → その親）。
-    server.req("POST", "/command/ToParent", "").unwrap();
+    server.req("POST", "/command/toParent", "").unwrap();
     let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx);
     let parent = parent.trim().to_string();
-    assert_ne!(parent, sbx, "ToParent should leave the sandbox");
+    assert_ne!(parent, sbx, "toParent should leave the sandbox");
 
     // 戻る＝sbx へ。
-    server.req("POST", "/command/HistoryBack", "").unwrap();
+    server.req("POST", "/command/historyBack", "").unwrap();
     let back = poll(&server, "/state/panes/left/location", |b| b.trim() == sbx);
-    assert_eq!(back.trim(), sbx, "HistoryBack should return to the sandbox");
+    assert_eq!(back.trim(), sbx, "historyBack should return to the sandbox");
 
     // 進む＝親へ。
-    server.req("POST", "/command/HistoryForward", "").unwrap();
+    server.req("POST", "/command/historyForward", "").unwrap();
     let fwd = poll(&server, "/state/panes/left/location", |b| b.trim() == parent);
-    assert_eq!(fwd.trim(), parent, "HistoryForward should go back to the parent");
+    assert_eq!(fwd.trim(), parent, "historyForward should go back to the parent");
 }
 
 /// #67: cursor.history=false でも、戻る/進むはカーソルを元の項目へ復元する（原作準拠＝常時復元）。
@@ -857,25 +857,25 @@ fn history_back_restores_cursor_even_with_history_off() {
     let server = Server::start(&["a.txt", "b.txt", "c.txt"], "[cursor]\nhistory = false\n");
     let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
 
-    // items: [.., a.txt, b.txt, c.txt]。CursorDown×3 で c.txt（index 3）へ。
+    // items: [.., a.txt, b.txt, c.txt]。cursorDown×3 で c.txt（index 3）へ。
     for _ in 0..3 {
-        server.req("POST", "/command/CursorDown", "").unwrap();
+        server.req("POST", "/command/cursorDown", "").unwrap();
     }
     let pre = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
     assert_eq!(pre.trim(), "3", "precondition: cursor should be on c.txt (index 3): {pre}");
 
     // 親へ移動 → 戻る。
-    server.req("POST", "/command/ToParent", "").unwrap();
+    server.req("POST", "/command/toParent", "").unwrap();
     poll(&server, "/state/panes/left/location", |b| b.trim() != sbx);
-    server.req("POST", "/command/HistoryBack", "").unwrap();
+    server.req("POST", "/command/historyBack", "").unwrap();
     poll(&server, "/state/panes/left/location", |b| b.trim() == sbx);
 
     // cursor.history=false でもカーソルは c.txt（index 3）へ復元される。
     let restored = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "3");
-    assert_eq!(restored.trim(), "3", "HistoryBack should restore the cursor even with cursor.history off: {restored}");
+    assert_eq!(restored.trim(), "3", "historyBack should restore the cursor even with cursor.history off: {restored}");
 }
 
-/// PathHistoryDialog＝訪問ログ（list_box モーダル・新しい順）から選んでジャンプする。
+/// pathHistoryDialog＝訪問ログ（list_box モーダル・新しい順）から選んでジャンプする。
 #[test]
 fn nav_path_history_dialog() {
     let server = Server::start(&["a.txt"], "");
@@ -883,17 +883,17 @@ fn nav_path_history_dialog() {
     let sbx_raw = sbx.trim_matches('"').replace("\\\\", "\\");
 
     // 親へ移動（履歴に親）→ パス入力で sbx へ戻る（履歴に sbx）。訪問ログは [親, sbx]。
-    server.req("POST", "/command/ToParent", "").unwrap();
+    server.req("POST", "/command/toParent", "").unwrap();
     let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx).trim().to_string();
-    assert_ne!(parent, sbx, "ToParent should leave the sandbox");
-    server.req("POST", "/command/ChangeDirectoryDialog", "").unwrap();
+    assert_ne!(parent, sbx, "toParent should leave the sandbox");
+    server.req("POST", "/command/changeDirectoryDialog", "").unwrap();
     wait_modal(&server);
     server.req("POST", "/modal/text", &sbx_raw).unwrap();
     server.req("POST", "/modal/key/enter", "").unwrap();
     poll(&server, "/state/panes/left/location", |b| b.trim() == sbx);
 
     // 履歴ダイアログを開く（新しい順＝[sbx, 親]）。訪問した sbx が一覧に出る。
-    server.req("POST", "/command/PathHistoryDialog", "").unwrap();
+    server.req("POST", "/command/pathHistoryDialog", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"list\""), "should open a list modal: {modal}");
     assert!(modal.contains("sbx"), "visited sbx should be listed: {modal}");
@@ -905,7 +905,7 @@ fn nav_path_history_dialog() {
     assert_eq!(now.trim(), parent, "selecting the parent entry should navigate there");
 }
 
-/// ChangeDirectoryDialog＝パスを入力してそこへ移動する（input_box モーダル）。
+/// changeDirectoryDialog＝パスを入力してそこへ移動する（input_box モーダル）。
 #[test]
 fn nav_change_directory_dialog() {
     let server = Server::start(&["a.txt"], "");
@@ -919,11 +919,11 @@ fn nav_change_directory_dialog() {
     let sbx_raw = sbx_json.trim_matches('"').replace("\\\\", "\\");
 
     // いったん親へ移動してから、ダイアログで sbx を打って戻る。
-    server.req("POST", "/command/ToParent", "").unwrap();
+    server.req("POST", "/command/toParent", "").unwrap();
     let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx_json);
-    assert_ne!(parent.trim(), sbx_json, "ToParent should leave the sandbox");
+    assert_ne!(parent.trim(), sbx_json, "toParent should leave the sandbox");
 
-    server.req("POST", "/command/ChangeDirectoryDialog", "").unwrap();
+    server.req("POST", "/command/changeDirectoryDialog", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"has_input\":true"), "CD should open a text-input modal: {modal}");
 
@@ -941,7 +941,7 @@ fn nav_change_directory_missing_path_shows_error_dialog() {
     let sbx_raw = sbx_json.trim_matches('"').replace("\\\\", "\\");
     let missing = format!("{sbx_raw}\\__no_such_dir__");
 
-    server.req("POST", "/command/ChangeDirectoryDialog", "").unwrap();
+    server.req("POST", "/command/changeDirectoryDialog", "").unwrap();
     wait_modal(&server);
     server.req("POST", "/modal/text", &missing).unwrap();
     server.req("POST", "/modal/key/enter", "").unwrap();
@@ -958,7 +958,7 @@ fn nav_change_directory_missing_path_shows_error_dialog() {
 }
 
 /// #66: ユーザが行き先を指定した移動（親移動・パス入力）が訪問ログに記録され、
-/// PathHistoryDialog に新しい順で出る。さらに history.toml の pathhistory バケツへ永続する。
+/// pathHistoryDialog に新しい順で出る。さらに history.toml の pathhistory バケツへ永続する。
 #[test]
 fn path_history_records_and_persists() {
     let server = Server::start(&["a.txt"], "");
@@ -966,16 +966,16 @@ fn path_history_records_and_persists() {
     let sbx_raw = sbx_json.trim_matches('"').replace("\\\\", "\\");
 
     // 親へ移動（履歴に親が入る）→ パス入力で sbx へ戻る（履歴に sbx が入る）。
-    server.req("POST", "/command/ToParent", "").unwrap();
+    server.req("POST", "/command/toParent", "").unwrap();
     poll(&server, "/state/panes/left/location", |b| b.trim() != sbx_json);
-    server.req("POST", "/command/ChangeDirectoryDialog", "").unwrap();
+    server.req("POST", "/command/changeDirectoryDialog", "").unwrap();
     wait_modal(&server);
     server.req("POST", "/modal/text", &sbx_raw).unwrap();
     server.req("POST", "/modal/key/enter", "").unwrap();
     poll(&server, "/state/panes/left/location", |b| b.trim() == sbx_json);
 
-    // PathHistoryDialog：訪問した sbx が一覧に出る（新しい順の先頭）。
-    server.req("POST", "/command/PathHistoryDialog", "").unwrap();
+    // pathHistoryDialog：訪問した sbx が一覧に出る（新しい順の先頭）。
+    server.req("POST", "/command/pathHistoryDialog", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"list\""), "path history should open a list modal: {modal}");
     assert!(modal.contains("sbx"), "visited sbx should be listed: {modal}");
@@ -1004,7 +1004,7 @@ fn path_history_back_forward_does_not_grow_log() {
     let sbx_json = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
 
     // 親へ一度移動して back/forward の素地を作る（ここで親と…は記録される）。
-    server.req("POST", "/command/ToParent", "").unwrap();
+    server.req("POST", "/command/toParent", "").unwrap();
     poll(&server, "/state/panes/left/location", |b| b.trim() != sbx_json);
 
     let hist_path = server.base.join("data").join("history.toml");
@@ -1022,15 +1022,15 @@ fn path_history_back_forward_does_not_grow_log() {
 
     // 戻る→進む を数回。履歴の再生なので pathhistory は増えないはず。
     for _ in 0..3 {
-        server.req("POST", "/command/HistoryBack", "").unwrap();
-        server.req("POST", "/command/HistoryForward", "").unwrap();
+        server.req("POST", "/command/historyBack", "").unwrap();
+        server.req("POST", "/command/historyForward", "").unwrap();
     }
     std::thread::sleep(std::time::Duration::from_millis(150));
     let after = count_paths(&read_hist());
     assert_eq!(after, before, "back/forward should not add path-history entries: before={before} after={after}");
 }
 
-/// 入力履歴（D2-1）：ChangeDirectory で打った値が history.toml の "changedir" バケツに永続する。
+/// 入力履歴（D2-1）：changeDirectory で打った値が history.toml の "changedir" バケツに永続する。
 /// 入力欄が履歴コンボへ変わっても `/modal/text`（コンボ内 Edit）で打てることも兼ねて確認する。
 #[test]
 fn input_history_changedir_persists() {
@@ -1038,7 +1038,7 @@ fn input_history_changedir_persists() {
     let sbx_json = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
     let sbx_raw = sbx_json.trim_matches('"').replace("\\\\", "\\");
 
-    server.req("POST", "/command/ChangeDirectoryDialog", "").unwrap();
+    server.req("POST", "/command/changeDirectoryDialog", "").unwrap();
     wait_modal(&server);
     server.req("POST", "/modal/text", &sbx_raw).unwrap();
     server.req("POST", "/modal/key/enter", "").unwrap();
@@ -1059,7 +1059,7 @@ fn input_history_changedir_persists() {
     assert!(hist.contains("sbx"), "entered path should be recorded: {hist}");
 }
 
-/// リテラル引数版 `Sort("size")` がソート種別を切り替える（段階3＝リテラル引数コマンド）。
+/// リテラル引数版 `sort("size")` がソート種別を切り替える（段階3＝リテラル引数コマンド）。
 #[test]
 fn sort_command_changes_sort_type() {
     let server = Server::start(&["a.txt", "b.txt"], "");
@@ -1067,17 +1067,17 @@ fn sort_command_changes_sort_type() {
     let before = server.req("GET", "/state/panes/left/sort/type", "").unwrap().1;
     assert_eq!(before.trim(), "\"FileName\"", "default sort should be FileName");
 
-    server.req("POST", "/command/Sort", r#"["size"]"#).unwrap();
+    server.req("POST", "/command/sort", r#"["size"]"#).unwrap();
     let after = server.req("GET", "/state/panes/left/sort/type", "").unwrap().1;
-    assert_eq!(after.trim(), "\"Length\"", "Sort(\"size\") should switch to Length");
+    assert_eq!(after.trim(), "\"Length\"", "sort(\"size\") should switch to Length");
 }
 
-/// `SetCursorPosition("c.txt")` がカーソルを指定名のファイルへ移す。
+/// `setCursorPosition("c.txt")` がカーソルを指定名のファイルへ移す。
 #[test]
 fn set_cursor_position_jumps_to_named_file() {
     let server = Server::start(&["a.txt", "b.txt", "c.txt"], "");
     server
-        .req("POST", "/command/SetCursorPosition", r#"["c.txt"]"#)
+        .req("POST", "/command/setCursorPosition", r#"["c.txt"]"#)
         .unwrap();
     let cur = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
     let cur = cur.trim();
@@ -1088,7 +1088,7 @@ fn set_cursor_position_jumps_to_named_file() {
     assert_eq!(name.trim(), "\"c.txt\"", "cursor should land on c.txt");
 }
 
-/// `ChangeDrive("X:")` がアクティブペインを指定ドライブのルートへ移す。
+/// `changeDrive("X:")` がアクティブペインを指定ドライブのルートへ移す。
 /// サンドボックスがどのドライブにあっても動くよう、現在地のドライブ文字を使う。
 #[test]
 fn change_drive_navigates_to_root() {
@@ -1098,7 +1098,7 @@ fn change_drive_navigates_to_root() {
     let drive = &loc_raw[..1];
 
     server
-        .req("POST", "/command/ChangeDrive", &format!(r#"["{drive}:"]"#))
+        .req("POST", "/command/changeDrive", &format!(r#"["{drive}:"]"#))
         .unwrap();
     let after = poll(&server, "/state/panes/left/location", |b| {
         b.trim().trim_matches('"').replace("\\\\", "\\") != loc_raw
@@ -1106,21 +1106,21 @@ fn change_drive_navigates_to_root() {
     let after_raw = after.trim().trim_matches('"').replace("\\\\", "\\");
     assert!(
         after_raw.starts_with(&format!("{drive}:")) && after_raw.len() <= 3,
-        "ChangeDrive should land on the drive root, got {after_raw}"
+        "changeDrive should land on the drive root, got {after_raw}"
     );
 }
 
-/// `View`（引数なし）はファイルを内蔵ビューアで開く（EnterDir の外部起動と違う手触り）。
+/// `view`（引数なし）はファイルを内蔵ビューアで開く（enterDir の外部起動と違う手触り）。
 #[test]
 fn view_command_opens_internal_viewer_for_file() {
     let server = Server::start(&["note.txt"], "");
     server
-        .req("POST", "/command/SetCursorPosition", r#"["note.txt"]"#)
+        .req("POST", "/command/setCursorPosition", r#"["note.txt"]"#)
         .unwrap();
-    // View（type なし）＝内蔵テキストビューアで開く。MaybeModal 扱いなので exec は応答後に走る。
-    server.req("POST", "/command/View", "").unwrap();
+    // view（type なし）＝内蔵テキストビューアで開く。MaybeModal 扱いなので exec は応答後に走る。
+    server.req("POST", "/command/view", "").unwrap();
     let av = poll(&server, "/state/active_view", |b| b.trim() == "\"text\"");
-    assert_eq!(av.trim(), "\"text\"", "View on a text file should open the internal text viewer");
+    assert_eq!(av.trim(), "\"text\"", "view on a text file should open the internal text viewer");
     // 閉じると元へ戻る。
     server.req("POST", "/view/key/close", "").unwrap();
     let av2 = poll(&server, "/state/active_view", |b| b.trim() == "\"none\"");
@@ -1132,15 +1132,15 @@ fn view_command_opens_internal_viewer_for_file() {
 fn viewer_commands_dispatch_in_text_context() {
     let server = Server::start(&["note.txt"], "");
     server
-        .req("POST", "/command/SetCursorPosition", r#"["note.txt"]"#)
+        .req("POST", "/command/setCursorPosition", r#"["note.txt"]"#)
         .unwrap();
-    server.req("POST", "/command/View", "").unwrap();
+    server.req("POST", "/command/view", "").unwrap();
     poll(&server, "/state/active_view", |b| b.trim() == "\"text\"");
     // バイナリ/テキスト切替は表示モードだけ変え、ビューアは開いたまま。
     let (st, _) = server
-        .req("POST", "/command/ViewerToggleMode", "")
-        .expect("ViewerToggleMode");
-    assert_eq!(st, 200, "ViewerToggleMode はテキストビューア文脈で実行される");
+        .req("POST", "/command/viewerToggleMode", "")
+        .expect("viewerToggleMode");
+    assert_eq!(st, 200, "viewerToggleMode はテキストビューア文脈で実行される");
     let av = server.req("GET", "/state/active_view", "").unwrap().1;
     assert_eq!(av.trim(), "\"text\"", "モード切替後もテキストビューアは開いたまま");
     // 実キー経路（キーマップ解決→コマンド実行）で Esc を送ると閉じる。
@@ -1149,7 +1149,7 @@ fn viewer_commands_dispatch_in_text_context() {
     assert_eq!(av2.trim(), "\"none\"", "Esc の実キー経路で一覧へ戻る");
 }
 
-/// PathRegisterDialog で現在地を登録し、JumpDialog でそこへ戻る。
+/// pathRegisterDialog で現在地を登録し、jumpDialog でそこへ戻る。
 #[test]
 fn nav_register_and_jump() {
     let server = Server::start(&["a.txt"], "");
@@ -1161,7 +1161,7 @@ fn nav_register_and_jump() {
         .to_string();
 
     // 現在地（sbx）を "home" として登録する。
-    server.req("POST", "/command/PathRegisterDialog", "").unwrap();
+    server.req("POST", "/command/pathRegisterDialog", "").unwrap();
     let m = wait_modal(&server);
     assert!(m.contains("\"has_input\":true"), "register should ask for a label: {m}");
     server.req("POST", "/modal/text", "home").unwrap();
@@ -1169,10 +1169,10 @@ fn nav_register_and_jump() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 
     // 親へ移動してから、ジャンプで登録先（sbx）へ戻る。
-    server.req("POST", "/command/ToParent", "").unwrap();
+    server.req("POST", "/command/toParent", "").unwrap();
     poll(&server, "/state/panes/left/location", |b| b.trim() != sbx_json);
 
-    server.req("POST", "/command/JumpDialog", "").unwrap();
+    server.req("POST", "/command/jumpDialog", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"jump\""), "jump should open the registered-dir list: {modal}");
     assert!(modal.contains("\"rows\":[["), "jump should be a multi-column list: {modal}");
@@ -1189,7 +1189,7 @@ fn nav_register_and_jump() {
 fn jump_dialog_shows_configured_shortcut() {
     let cfg = "[[bookmarks]]\nlabel = \"ルート\"\npath = \"C:\\\\\"\nshortcut = \"C\"\n";
     let server = Server::start(&["a.txt"], cfg);
-    server.req("POST", "/command/JumpDialog", "").unwrap();
+    server.req("POST", "/command/jumpDialog", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"jump\""), "should open the jump dialog: {modal}");
     assert!(modal.contains("ルート"), "configured label should be listed: {modal}");
@@ -1199,7 +1199,7 @@ fn jump_dialog_shows_configured_shortcut() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
-/// ChangeDriveDialog＝ドライブ一覧から選んでそのルートへ移動する。
+/// changeDriveDialog＝ドライブ一覧から選んでそのルートへ移動する。
 /// 既定選択は現在ドライブなので、OK で現在ドライブのルートへ移る。
 #[test]
 fn nav_change_drive_dialog() {
@@ -1208,7 +1208,7 @@ fn nav_change_drive_dialog() {
     let drive = before.chars().nth(1).expect("drive letter");
     let expected = format!("\"{drive}:\\\\\"");
 
-    server.req("POST", "/command/ChangeDriveDialog", "").unwrap();
+    server.req("POST", "/command/changeDriveDialog", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"drive\""), "drive dialog should open the drive selector: {modal}");
     assert!(modal.contains("\"rows\":[["), "should list at least one drive row: {modal}");
@@ -1220,26 +1220,26 @@ fn nav_change_drive_dialog() {
     assert_eq!(after.trim(), expected, "selecting the current drive should go to its root");
 }
 
-/// KeyBindsDialog＝現在のキー割り当てをリストモーダルで読み取り専用表示する。
+/// keyBindsDialog＝現在のキー割り当てをリストモーダルで読み取り専用表示する。
 #[test]
 fn keybinds_dialog_lists_current_bindings() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/KeyBindsDialog", "").unwrap();
+    server.req("POST", "/command/keyBindsDialog", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"list\""), "should open a list modal: {modal}");
-    // 既定キーの一つ（Enter→EnterDir）が一覧に出る。
-    assert!(modal.contains("EnterDir"), "binding list should include EnterDir: {modal}");
+    // 既定キーの一つ（Enter→enterDir）が一覧に出る。
+    assert!(modal.contains("enterDir"), "binding list should include enterDir: {modal}");
     // 閉じる（選択結果は使わない）。
     server.req("POST", "/modal/command/ok", "").unwrap();
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
-/// SortDialog＝ソート設定モーダルを開いて閉じる（並べ替えのみ＝allow-write 不要）。
+/// sortDialog＝ソート設定モーダルを開いて閉じる（並べ替えのみ＝allow-write 不要）。
 /// ラジオ値の選択は未対応だが、開閉でデッドロックしないこと＋種別/昇降の現在値表示を担保。
 #[test]
 fn sort_dialog_opens_and_closes() {
     let server = Server::start(&["a.txt", "b.txt"], "");
-    server.req("POST", "/command/SortDialog", "").unwrap();
+    server.req("POST", "/command/sortDialog", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"sort\""), "should open sort modal: {modal}");
     // 既定選択のまま OK（現在のソートで再適用＝無害）。
@@ -1259,7 +1259,7 @@ fn sort_dialog_explike_and_reverse() {
     let before = server.req("GET", "/state/panes/left/sort/type", "").unwrap().1;
     assert_eq!(before.trim(), "\"FileName\"", "default sort should be FileName");
 
-    server.req("POST", "/command/SortDialog", "").unwrap();
+    server.req("POST", "/command/sortDialog", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"sort\""), "should open sort modal: {modal}");
 
@@ -1279,12 +1279,12 @@ fn sort_dialog_explike_and_reverse() {
     assert_eq!(rev.trim(), "true", "降順チェックで reverse=true: {rev}");
 }
 
-/// IncrementalSearchDialog＝打鍵ごとにカーソルが一致項目へ追従し、OK で確定する。
+/// incrementalSearchDialog＝打鍵ごとにカーソルが一致項目へ追従し、OK で確定する。
 #[test]
 fn find_incremental_search_follows_typing() {
     let server = Server::start(&["alpha.txt", "banana.txt", "cherry.txt"], "");
     // items は [.., alpha(1), banana(2), cherry(3)]。
-    server.req("POST", "/command/IncrementalSearchDialog", "").unwrap();
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"incremental\""), "should open incremental modal: {modal}");
     assert!(modal.contains("\"has_input\":true"), "should have a text field: {modal}");
@@ -1306,11 +1306,11 @@ fn find_incremental_search_follows_typing() {
 fn find_incremental_search_cancel_restores() {
     let server = Server::start(&["alpha.txt", "banana.txt", "cherry.txt"], "");
     // 開始カーソルを 1（alpha）にしておく。
-    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
     let origin = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
     assert_eq!(origin.trim(), "1");
 
-    server.req("POST", "/command/IncrementalSearchDialog", "").unwrap();
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
     wait_modal(&server);
     server.req("POST", "/modal/text", "cher").unwrap();
     poll(&server, "/state/panes/left/cursor", |b| b.trim() == "3");
@@ -1322,16 +1322,16 @@ fn find_incremental_search_cancel_restores() {
     assert_eq!(c.trim(), "1", "cancel should restore the original cursor: {c}");
 }
 
-/// DirectoryInformation＝カーソル位置の使用量を計算し結果ダイアログを出す。
+/// directoryInformation＝カーソル位置の使用量を計算し結果ダイアログを出す。
 #[test]
 fn info_directory_information() {
     let server = Server::start(&["a.txt"], "");
     // ".." から a.txt（1バイト・b"x"）へカーソルを移す。
-    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
     poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
 
     // 計算はワーカで走り、完了後に結果モーダルが出る。
-    server.req("POST", "/command/DirectoryInformation", "").unwrap();
+    server.req("POST", "/command/directoryInformation", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("ファイル"), "should show a result dialog: {modal}");
     assert!(modal.contains("1 \u{30d0}\u{30a4}\u{30c8}"), "should count 1 byte: {modal}");
@@ -1341,16 +1341,16 @@ fn info_directory_information() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
-/// RenameSequenceDialog＝既定テンプレート（File<No:0000>.ext）で選択を連番リネームする。
+/// renameSequenceDialog＝既定テンプレート（File<No:0000>.ext）で選択を連番リネームする。
 #[test]
 fn rename_sequence_template_default() {
     let server = Server::start_writable(&["a.txt", "b.txt"]);
-    // a.txt(1) と b.txt(2) をマークする（Space＝MarkToggle はマーク後に下へ）。
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/MarkToggle", "").unwrap();
-    server.req("POST", "/command/MarkToggle", "").unwrap();
+    // a.txt(1) と b.txt(2) をマークする（Space＝markToggle はマーク後に下へ）。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/markToggle", "").unwrap();
+    server.req("POST", "/command/markToggle", "").unwrap();
 
-    server.req("POST", "/command/RenameSequenceDialog", "").unwrap();
+    server.req("POST", "/command/renameSequenceDialog", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"rename_seq\""), "should open rename_seq modal: {modal}");
 
@@ -1369,11 +1369,11 @@ fn rename_sequence_template_default() {
 #[test]
 fn rename_sequence_base_lowercase() {
     let server = Server::start_writable(&["a.txt", "b.txt"]);
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/MarkToggle", "").unwrap();
-    server.req("POST", "/command/MarkToggle", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/markToggle", "").unwrap();
+    server.req("POST", "/command/markToggle", "").unwrap();
 
-    server.req("POST", "/command/RenameSequenceDialog", "").unwrap();
+    server.req("POST", "/command/renameSequenceDialog", "").unwrap();
     wait_modal(&server);
     server.req("POST", "/modal/key/tab", "").unwrap();
     server.req("POST", "/modal/key/down", "").unwrap();
@@ -1385,16 +1385,16 @@ fn rename_sequence_base_lowercase() {
     assert!(items.contains("\"name\":\"file0002.ext\""), "主部小文字 b.txt -> file0002.ext: {items}");
 }
 
-/// SendToRecycled＝確認の上ゴミ箱へ送る（ファイルが一覧から消える）。
+/// sendToRecycled＝確認の上ゴミ箱へ送る（ファイルが一覧から消える）。
 /// ※検証で実ゴミ箱に 1 バイトの一時ファイルが入る（無害）。
 #[test]
 fn shell_send_to_recycled() {
     // ソート昇順で a_del.txt が先頭ファイル（index 1）、z_keep.txt が後。
     let server = Server::start_writable(&["a_del.txt", "z_keep.txt"]);
-    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
     poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
 
-    server.req("POST", "/command/SendToRecycled", "").unwrap();
+    server.req("POST", "/command/sendToRecycled", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\u{30b4}\u{30df}\u{7bb1}"), "should confirm before recycling: {modal}");
     // 「はい」で実行。
@@ -1409,15 +1409,15 @@ fn shell_send_to_recycled() {
     assert!(log.contains("SendToRecycled a_del.txt"), "per-item recycle log should appear: {log}");
 }
 
-/// CreateShortcut＝カーソル項目を指す .lnk を同じ場所に作る。
+/// createShortcut＝カーソル項目を指す .lnk を同じ場所に作る。
 #[test]
 fn shell_create_shortcut() {
     let server = Server::start_writable(&["doc.txt"]);
     // ".." から doc.txt（唯一のファイル・index 1）へ。
-    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
     poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
 
-    server.req("POST", "/command/CreateShortcut", "").unwrap();
+    server.req("POST", "/command/createShortcut", "").unwrap();
     let items = poll(&server, "/state/panes/left/items", |b| b.contains("doc.txt.lnk"));
     assert!(
         items.contains("\"name\":\"doc.txt.lnk\""),
@@ -1425,27 +1425,27 @@ fn shell_create_shortcut() {
     );
 }
 
-/// ClipCopy→（サブフォルダへ移動して）ClipPaste で実コピーされる。
+/// clipCopy→（サブフォルダへ移動して）clipPaste で実コピーされる。
 /// ※検証で OS のクリップボードを上書きする（汚染許容・テスト実行時のみ）。
 #[test]
 fn shell_clipboard_copy_paste() {
     let server = Server::start_writable(&["file.txt"]);
     // 貼付先サブフォルダをディスクに作って一覧へ反映。
     std::fs::create_dir_all(server.base.join("sbx").join("dest")).unwrap();
-    server.req("POST", "/command/Reload", "").unwrap();
+    server.req("POST", "/command/reload", "").unwrap();
     // items=[.., dest(1), file.txt(2)]。file.txt へカーソルを合わせてコピー。
     poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"dest\""));
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
     poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
-    server.req("POST", "/command/ClipCopy", "").unwrap();
+    server.req("POST", "/command/clipCopy", "").unwrap();
 
     // dest へ入って貼り付け。
-    server.req("POST", "/command/CursorUp", "").unwrap();
+    server.req("POST", "/command/cursorUp", "").unwrap();
     poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
-    server.req("POST", "/command/EnterDir", "").unwrap();
+    server.req("POST", "/command/enterDir", "").unwrap();
     poll(&server, "/state/panes/left/location", |b| b.contains("dest"));
-    server.req("POST", "/command/ClipPaste", "").unwrap();
+    server.req("POST", "/command/clipPaste", "").unwrap();
 
     let items = poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"file.txt\""));
     assert!(
@@ -1459,82 +1459,82 @@ fn shell_clipboard_copy_paste() {
 fn reload_keeps_cursor_on_same_file() {
     let server = Server::start(&["a.txt", "b.txt", "c.txt"], "");
 
-    // 左 items は [.., a.txt, b.txt, c.txt]。CursorDown×2 で b.txt(index 2)。
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/CursorDown", "").unwrap();
+    // 左 items は [.., a.txt, b.txt, c.txt]。cursorDown×2 で b.txt(index 2)。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
     let before = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
     assert_eq!(before.trim(), "2", "カーソルは b.txt(index 2) のはず");
 
     // F5 相当。カーソル保持なら 2 のまま、旧挙動なら 0(..) へ戻る。
-    server.req("POST", "/command/Reload", "").unwrap();
+    server.req("POST", "/command/reload", "").unwrap();
     let after = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
     assert_eq!(after.trim(), "2", "リロード後もカーソルは b.txt に留まるべき（先頭へ戻らない）");
 }
 
-/// CursorOpposite はアクティブペインを反対側へトグルする。
+/// cursorOpposite はアクティブペインを反対側へトグルする。
 #[test]
 fn cursor_opposite_toggles_active_pane() {
     let server = Server::start(&["a.txt"], "");
     let a0 = server.req("GET", "/state/active_pane", "").unwrap().1;
     assert!(a0.contains("left"), "初期は左アクティブ: {a0}");
-    server.req("POST", "/command/CursorOpposite", "").unwrap();
+    server.req("POST", "/command/cursorOpposite", "").unwrap();
     let a1 = poll(&server, "/state/active_pane", |b| b.contains("right"));
-    assert!(a1.contains("right"), "CursorOpposite で右へ: {a1}");
-    server.req("POST", "/command/CursorOpposite", "").unwrap();
+    assert!(a1.contains("right"), "cursorOpposite で右へ: {a1}");
+    server.req("POST", "/command/cursorOpposite", "").unwrap();
     let a2 = poll(&server, "/state/active_pane", |b| b.contains("left"));
     assert!(a2.contains("left"), "もう一度で左へ戻る: {a2}");
 }
 
 /// #74: CursorToParent=on のとき、アクティブ側ペインで外向きカーソルキー（左ペインで
-/// FocusLeft）が親移動になる。
+/// focusLeft）が親移動になる。
 #[test]
 fn cursor_to_parent_navigates_on_outward_key() {
     let server = Server::start(&["a.txt"], "[cursor]\nto_parent = true\n");
     let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
     assert!(server.req("GET", "/state/active_pane", "").unwrap().1.contains("left"), "初期は左アクティブ");
 
-    server.req("POST", "/command/FocusLeft", "").unwrap();
+    server.req("POST", "/command/focusLeft", "").unwrap();
     let up = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx);
-    assert_ne!(up.trim(), sbx, "left+FocusLeft with CursorToParent should go to parent");
+    assert_ne!(up.trim(), sbx, "left+focusLeft with CursorToParent should go to parent");
     // 移動先は sbx の祖先（親）のはず。
     let parent = up.trim().trim_matches('"');
     let sbx_raw = sbx.trim_matches('"');
     assert!(sbx_raw.starts_with(parent), "moved location should be an ancestor of sbx: {up} / {sbx}");
 }
 
-/// #74: CursorToParent=off（既定）では FocusLeft は親移動せず、フォーカス移動のみ。
+/// #74: CursorToParent=off（既定）では focusLeft は親移動せず、フォーカス移動のみ。
 #[test]
 fn cursor_to_parent_off_keeps_focus_only() {
     let server = Server::start(&["a.txt"], "");
     let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
-    server.req("POST", "/command/FocusLeft", "").unwrap();
+    server.req("POST", "/command/focusLeft", "").unwrap();
     std::thread::sleep(Duration::from_millis(250));
     let loc = server.req("GET", "/state/panes/left/location", "").unwrap().1;
-    assert_eq!(loc.trim(), sbx, "off: FocusLeft must not navigate to parent");
+    assert_eq!(loc.trim(), sbx, "off: focusLeft must not navigate to parent");
 }
 
-/// SelectFile はカーソル位置を（トグルでなく）マークし、カーソルを1つ下げる。
+/// selectFile はカーソル位置を（トグルでなく）マークし、カーソルを1つ下げる。
 #[test]
 fn select_file_marks_current_and_advances() {
     let server = Server::start(&["alpha.txt", "beta.txt"], "");
     // .. → alpha(index 1) へ。
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/SelectFile", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/selectFile", "").unwrap();
     // カーソルは beta(index 2) へ進む。
     let cur = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
-    assert_eq!(cur.trim(), "2", "SelectFile 後はカーソルが1つ下へ");
+    assert_eq!(cur.trim(), "2", "selectFile 後はカーソルが1つ下へ");
     // alpha(index 1) がマークされている（JSON Pointer の配列添字で直接取る）。
     let m = server.req("GET", "/state/panes/left/items/1/marked", "").unwrap().1;
     assert_eq!(m.trim(), "true", "alpha.txt(index 1) がマークされているはず");
 }
 
-/// down_after_select=false のとき、MarkToggle はマークするがカーソルを動かさない（#58/#63）。
+/// down_after_select=false のとき、markToggle はマークするがカーソルを動かさない（#58/#63）。
 #[test]
 fn mark_toggle_respects_down_after_select_off() {
     let server = Server::start(&["alpha.txt", "beta.txt"], "[cursor]\ndown_after_select = false\n");
     // .. → alpha(index 1) へ。
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/MarkToggle", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/markToggle", "").unwrap();
     // カーソルは alpha(index 1) のまま。
     let cur = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
     assert_eq!(cur.trim(), "1", "down_after_select=false ではカーソルは動かない");
@@ -1542,14 +1542,14 @@ fn mark_toggle_respects_down_after_select_off() {
     assert_eq!(m.trim(), "true", "alpha.txt はマークされる");
 }
 
-/// Shift+Space=MarkToggle("-1") はマーク反転後にカーソルを1つ上へ動かす（#59）。
+/// Shift+Space=markToggle("-1") はマーク反転後にカーソルを1つ上へ動かす（#59）。
 #[test]
 fn shift_space_toggles_and_moves_up() {
     let server = Server::start(&["alpha.txt", "beta.txt", "gamma.txt"], "");
     // .. → alpha(1) → beta(2)。
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/MarkToggle", r#"["-1"]"#).unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/markToggle", r#"["-1"]"#).unwrap();
     // beta(2) がマークされ、カーソルは alpha(1) へ上がる。
     let cur = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
     assert_eq!(cur.trim(), "1", "Shift+Space 後はカーソルが1つ上へ");
@@ -1562,10 +1562,10 @@ fn shift_space_toggles_and_moves_up() {
 fn shift_arrow_range_selects() {
     let server = Server::start(&["a.txt", "b.txt", "c.txt", "d.txt"], "");
     // .. → a(1)。ここがアンカー。
-    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
     // Shift+Down ×2＝a→b→c を範囲マーク。
-    server.req("POST", "/command/CursorDown", r#"["select"]"#).unwrap();
-    server.req("POST", "/command/CursorDown", r#"["select"]"#).unwrap();
+    server.req("POST", "/command/cursorDown", r#"["select"]"#).unwrap();
+    server.req("POST", "/command/cursorDown", r#"["select"]"#).unwrap();
     let cur = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "3");
     assert_eq!(cur.trim(), "3", "Shift+Down ×2 でカーソルは c(index 3)");
     for (idx, want) in [(1, "true"), (2, "true"), (3, "true"), (4, "false")] {
@@ -1576,7 +1576,7 @@ fn shift_arrow_range_selects() {
         assert_eq!(m.trim(), want, "index {idx} の marked");
     }
     // Shift+Up で範囲を縮めると c(3) のマークは落ちる（アンカー a は固定）。
-    server.req("POST", "/command/CursorUp", r#"["select"]"#).unwrap();
+    server.req("POST", "/command/cursorUp", r#"["select"]"#).unwrap();
     poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
     let m3 = server.req("GET", "/state/panes/left/items/3/marked", "").unwrap().1;
     assert_eq!(m3.trim(), "false", "範囲外になった c はマーク解除");
@@ -1584,18 +1584,18 @@ fn shift_arrow_range_selects() {
     assert_eq!(m1.trim(), "true", "アンカー a は依然マーク");
 }
 
-/// Refresh / Nop は副作用なし（200 を返し状態を変えない）。
+/// refresh / nop は副作用なし（200 を返し状態を変えない）。
 #[test]
 fn refresh_and_nop_are_noops() {
     let server = Server::start(&["a.txt", "b.txt"], "");
-    server.req("POST", "/command/CursorDown", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
     let before = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
-    let r = server.req("POST", "/command/Refresh", "").expect("Refresh").0;
-    assert_eq!(r, 200, "Refresh は 200");
-    let n = server.req("POST", "/command/Nop", "").expect("Nop").0;
-    assert_eq!(n, 200, "Nop は 200");
+    let r = server.req("POST", "/command/refresh", "").expect("refresh").0;
+    assert_eq!(r, 200, "refresh は 200");
+    let n = server.req("POST", "/command/nop", "").expect("nop").0;
+    assert_eq!(n, 200, "nop は 200");
     let after = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
-    assert_eq!(before.trim(), after.trim(), "Refresh/Nop でカーソルは不変");
+    assert_eq!(before.trim(), after.trim(), "refresh/nop でカーソルは不変");
 }
 
 /// 生バイトで HTTP 応答を読む（PNG 等のバイナリ用。`req` は UTF-8 前提でバイナリを落とす）。
@@ -1619,7 +1619,7 @@ fn req_bytes(port: u16, method: &str, path: &str) -> Option<(u16, Vec<u8>)> {
     Some((status, resp[sep + 4..].to_vec()))
 }
 
-/// 設定ダイアログ＝独自モーダルだが modal_registry に登録済み。OpenSettings で開き、
+/// 設定ダイアログ＝独自モーダルだが modal_registry に登録済み。openSettings で開き、
 /// スクリプト/コードの行は、キー割り当ての有無で位置が動かない（名前/コード順に固定）。
 #[test]
 fn settings_key_editor_script_rows_keep_position_when_bound() {
@@ -1631,22 +1631,22 @@ fn settings_key_editor_script_rows_keep_position_when_bound() {
         )],
     );
     poll(&server, "/script/commands", |b| b.contains("zzzScript"));
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // Script 系に絞ると aaaScript・zzzScript が名前順（aaa が先・zzz が後）に並ぶ。
-    server.req("POST", "/keys/filer/search", "Script").unwrap();
+    // script 系に絞ると aaaScript・zzzScript が名前順（aaa が先・zzz が後）に並ぶ。
+    server.req("POST", "/keys/filer/search", "script").unwrap();
     let before = keys();
-    assert!(before.contains(r#""rows":[["Script",[]],["Script",[]]]"#), "未割当 2 行: {before}");
+    assert!(before.contains(r#""rows":[["script",[]],["script",[]]]"#), "未割当 2 行: {before}");
 
     // 2 番目（zzzScript）へキーを割り当てても、行は 2 番目のまま動かない。
     server.req("POST", "/keys/filer/select/1", "").unwrap();
     server.req("POST", "/keys/filer/capture", "Ctrl+Alt+Z").unwrap();
-    server.req("POST", "/keys/filer/search", "Script").unwrap();
+    server.req("POST", "/keys/filer/search", "script").unwrap();
     let after = keys();
     assert!(
-        after.contains(r#""rows":[["Script",[]],["Script",["Ctrl+Alt+Z"]]]"#),
+        after.contains(r#""rows":[["script",[]],["script",["Ctrl+Alt+Z"]]]"#),
         "zzz は割り当て後も 2 番目に居座る（aaa が先・zzz が後）: {after}"
     );
 
@@ -1665,7 +1665,7 @@ fn settings_nav_switches_page_for_observation() {
         400,
         "未オープンは 400"
     );
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     // キー（ファイラー）ページ＝pane 5 へ切替。
     assert_eq!(server.req("POST", "/settings/nav/5", "").expect("nav").0, 200, "切替 ok");
@@ -1682,7 +1682,7 @@ fn settings_nav_switches_page_for_observation() {
 #[test]
 fn settings_dialog_opens_snapshots_and_closes() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"settings\""), "設定モーダルが開くはず: {modal}");
 
@@ -1711,7 +1711,7 @@ fn settings_dialog_opens_snapshots_and_closes() {
 #[test]
 fn settings_new_pages_reachable_and_snapshot() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
 
     let snap_ok = |label: &str| {
@@ -1747,35 +1747,35 @@ fn settings_key_editor_binds_unbinds_resets() {
         404,
         "設定が開いていなければ 404"
     );
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // 既定：MakeDirectory=K、SelectMask=未割当、衝突なし。
+    // 既定：makeDirectory=K、selectMask=未割当、衝突なし。
     let s = keys();
-    assert!(s.contains(r#"["MakeDirectory",["K"]]"#), "既定 MakeDirectory=K: {s}");
-    assert!(s.contains(r#"["SelectMask",[]]"#), "既定 SelectMask 未割当: {s}");
+    assert!(s.contains(r#"["makeDirectory",["K"]]"#), "既定 makeDirectory=K: {s}");
+    assert!(s.contains(r#"["selectMask",[]]"#), "既定 selectMask 未割当: {s}");
     assert!(s.contains(r#""conflicts":[]"#), "既定は衝突なし: {s}");
 
     // 未使用キーを割り当て（実打鍵キャプチャと同じ assign 経路・衝突なし）。
     assert_eq!(
-        server.req("POST", "/keys/filer/bind", r#"["SelectMask","Ctrl+Shift+M"]"#).unwrap().0,
+        server.req("POST", "/keys/filer/bind", r#"["selectMask","Ctrl+Shift+M"]"#).unwrap().0,
         200,
         "bind は ok"
     );
     let s = keys();
-    assert!(s.contains(r#"["SelectMask",["Ctrl+Shift+M"]]"#), "割り当てが反映: {s}");
+    assert!(s.contains(r#"["selectMask",["Ctrl+Shift+M"]]"#), "割り当てが反映: {s}");
     assert!(s.contains(r#""conflicts":[]"#), "未使用キーなので衝突なし: {s}");
     assert!(s.contains("を割り当てました"), "割り当て直後はメッセージが出る: {s}");
 
-    // unbind：直前の bind で選択は SelectMask。その割り当てを解除。
+    // unbind：直前の bind で選択は selectMask。その割り当てを解除。
     server.req("POST", "/keys/filer/unbind", "").unwrap();
-    assert!(keys().contains(r#"["SelectMask",[]]"#), "SelectMask の割り当てが消える");
+    assert!(keys().contains(r#"["selectMask",[]]"#), "selectMask の割り当てが消える");
 
-    // reset：既定へ戻る（MakeDirectory=K が復活）。直後はステータスにメッセージが残る。
+    // reset：既定へ戻る（makeDirectory=K が復活）。直後はステータスにメッセージが残る。
     server.req("POST", "/keys/filer/reset", "").unwrap();
     let s = keys();
-    assert!(s.contains(r#"["MakeDirectory",["K"]]"#), "reset で既定へ");
+    assert!(s.contains(r#"["makeDirectory",["K"]]"#), "reset で既定へ");
     assert!(!s.contains(r#""status":"""#), "reset 直後はメッセージが残る: {s}");
     // 次の操作（選択）でメッセージが消える＝残骸が居座らない。
     server.req("POST", "/keys/filer/select/0", "").unwrap();
@@ -1797,17 +1797,17 @@ fn settings_key_editor_binds_unbinds_resets() {
 #[test]
 fn settings_key_editor_conflicts_block_ok_until_resolved() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // K は既定で MakeDirectory。これを SelectMask にも割り当てる＝消えずに衝突。
-    server.req("POST", "/keys/filer/bind", r#"["SelectMask","K"]"#).unwrap();
+    // K は既定で makeDirectory。これを selectMask にも割り当てる＝消えずに衝突。
+    server.req("POST", "/keys/filer/bind", r#"["selectMask","K"]"#).unwrap();
     let s = keys();
-    assert!(s.contains(r#"["MakeDirectory",["K"]]"#), "MakeDirectory は K を保持: {s}");
-    assert!(s.contains(r#"["SelectMask",["K"]]"#), "SelectMask も K を得る: {s}");
+    assert!(s.contains(r#"["makeDirectory",["K"]]"#), "makeDirectory は K を保持: {s}");
+    assert!(s.contains(r#"["selectMask",["K"]]"#), "selectMask も K を得る: {s}");
     assert!(
-        s.contains(r#""conflicts":[["K",["MakeDirectory","SelectMask"]]]"#),
+        s.contains(r#""conflicts":[["K",["makeDirectory","selectMask"]]]"#),
         "K の衝突が立つ: {s}"
     );
 
@@ -1820,11 +1820,11 @@ fn settings_key_editor_conflicts_block_ok_until_resolved() {
         "衝突中は OK で閉じない"
     );
 
-    // 衝突を解消：選択中（SelectMask）の割り当てを外す＝K は MakeDirectory だけに戻る。
+    // 衝突を解消：選択中（selectMask）の割り当てを外す＝K は makeDirectory だけに戻る。
     server.req("POST", "/keys/filer/unbind", "").unwrap();
     let s = keys();
     assert!(s.contains(r#""conflicts":[]"#), "衝突が解消: {s}");
-    assert!(s.contains(r#"["MakeDirectory",["K"]]"#), "MakeDirectory=K に戻る: {s}");
+    assert!(s.contains(r#"["makeDirectory",["K"]]"#), "makeDirectory=K に戻る: {s}");
 
     // 解消後は OK で閉じられる。
     server.req("POST", "/modal/command/ok", "").expect("ok");
@@ -1835,33 +1835,33 @@ fn settings_key_editor_conflicts_block_ok_until_resolved() {
 #[test]
 fn settings_key_editor_per_chord_delete_in_command_view() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // MakeDirectory に未使用キーを足す＝1 キー=1 行なので 2 行に割れる（既定 K ＋ Ctrl+Shift+M）。
-    server.req("POST", "/keys/filer/bind", r#"["MakeDirectory","Ctrl+Shift+M"]"#).unwrap();
-    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    // makeDirectory に未使用キーを足す＝1 キー=1 行なので 2 行に割れる（既定 K ＋ Ctrl+Shift+M）。
+    server.req("POST", "/keys/filer/bind", r#"["makeDirectory","Ctrl+Shift+M"]"#).unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
     let s = keys();
     assert!(
-        s.contains(r#"["MakeDirectory",["Ctrl+Shift+M"]]"#)
-            && s.contains(r#"["MakeDirectory",["K"]]"#),
-        "MakeDirectory が 2 行に割れる: {s}"
+        s.contains(r#"["makeDirectory",["Ctrl+Shift+M"]]"#)
+            && s.contains(r#"["makeDirectory",["K"]]"#),
+        "makeDirectory が 2 行に割れる: {s}"
     );
 
     // K の行（chord 昇順で index 1）を選んで削除＝K 行だけ消え、Ctrl+Shift+M 行が残る。
     server.req("POST", "/keys/filer/select/1", "").unwrap();
     server.req("POST", "/keys/filer/unbind", "").unwrap();
-    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
     let s = keys();
-    assert!(s.contains(r#"["MakeDirectory",["Ctrl+Shift+M"]]"#), "Ctrl+Shift+M 行が残る: {s}");
-    assert!(!s.contains(r#"["MakeDirectory",["K"]]"#), "K 行は消える: {s}");
+    assert!(s.contains(r#"["makeDirectory",["Ctrl+Shift+M"]]"#), "Ctrl+Shift+M 行が残る: {s}");
+    assert!(!s.contains(r#"["makeDirectory",["K"]]"#), "K 行は消える: {s}");
 
     // 残った行も削除＝未割当の空行に戻る。
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/unbind", "").unwrap();
-    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
-    assert!(keys().contains(r#"["MakeDirectory",[]]"#), "未割当の空行に戻る: {}", keys());
+    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    assert!(keys().contains(r#"["makeDirectory",[]]"#), "未割当の空行に戻る: {}", keys());
 
     server.req("POST", "/modal/command/cancel", "").expect("cancel");
     poll(&server, "/state/modal", |b| b.trim() == "null");
@@ -1872,31 +1872,31 @@ fn settings_key_editor_per_chord_delete_in_command_view() {
 #[test]
 fn settings_key_editor_rebinds_selected_chord() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // MakeDirectory に 2 つ目のキーを足す＝2 行に割れる（chord 昇順 [Ctrl+Shift+M, K]）。
-    server.req("POST", "/keys/filer/bind", r#"["MakeDirectory","Ctrl+Shift+M"]"#).unwrap();
-    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    // makeDirectory に 2 つ目のキーを足す＝2 行に割れる（chord 昇順 [Ctrl+Shift+M, K]）。
+    server.req("POST", "/keys/filer/bind", r#"["makeDirectory","Ctrl+Shift+M"]"#).unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
     let s = keys();
-    assert!(s.contains(r#"["MakeDirectory",["K"]]"#), "K 行がある: {s}");
+    assert!(s.contains(r#"["makeDirectory",["K"]]"#), "K 行がある: {s}");
 
     // K の行（index 1）を選んで Ctrl+Alt+K へ変更＝K は外れ Ctrl+Alt+K になる（Ctrl+Shift+M は残る）。
     server.req("POST", "/keys/filer/select/1", "").unwrap();
     server.req("POST", "/keys/filer/rebind", "Ctrl+Alt+K").unwrap();
-    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
     let s = keys();
-    assert!(s.contains(r#"["MakeDirectory",["Ctrl+Alt+K"]]"#), "K が Ctrl+Alt+K に移る: {s}");
-    assert!(s.contains(r#"["MakeDirectory",["Ctrl+Shift+M"]]"#), "Ctrl+Shift+M は残る: {s}");
-    assert!(!s.contains(r#"["MakeDirectory",["K"]]"#), "K 行は無い: {s}");
+    assert!(s.contains(r#"["makeDirectory",["Ctrl+Alt+K"]]"#), "K が Ctrl+Alt+K に移る: {s}");
+    assert!(s.contains(r#"["makeDirectory",["Ctrl+Shift+M"]]"#), "Ctrl+Shift+M は残る: {s}");
+    assert!(!s.contains(r#"["makeDirectory",["K"]]"#), "K 行は無い: {s}");
 
     server.req("POST", "/modal/command/cancel", "").expect("cancel");
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
 /// 登録済みスクリプトが機能順の「スクリプト」ジャンルに未割当行で出て、選んでキャプチャすると
-/// `Script("name")` がキーへ割り当たる（debug の capture＝begin_capture→打鍵の経路）。
+/// `script("name")` がキーへ割り当たる（debug の capture＝begin_capture→打鍵の経路）。
 #[test]
 fn settings_key_editor_binds_registered_script() {
     let server = Server::start_with_scripts(
@@ -1905,21 +1905,21 @@ fn settings_key_editor_binds_registered_script() {
     );
     // エンジンが登録を終えてから設定を開く（open_settings がその一覧を編集器へ渡す）。
     poll(&server, "/script/commands", |b| b.contains("myScript"));
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // 登録スクリプトが未割当行（Script・キー無し）として出る。実呼び出し=名前で絞れる。
+    // 登録スクリプトが未割当行（script・キー無し）として出る。実呼び出し=名前で絞れる。
     server.req("POST", "/keys/filer/search", "myScript").unwrap();
-    assert!(keys().contains(r#"["Script",[]]"#), "未割当の Script 行が出る: {}", keys());
+    assert!(keys().contains(r#"["script",[]]"#), "未割当の Script 行が出る: {}", keys());
 
-    // 行を選んでキャプチャ＝Script("myScript") が Ctrl+Alt+S に割り当たる。
+    // 行を選んでキャプチャ＝script("myScript") が Ctrl+Alt+S に割り当たる。
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/capture", "Ctrl+Alt+S").unwrap();
     server.req("POST", "/keys/filer/search", "myScript").unwrap();
     assert!(
-        keys().contains(r#"["Script",["Ctrl+Alt+S"]]"#),
-        "Script が Ctrl+Alt+S に割り当たる: {}",
+        keys().contains(r#"["script",["Ctrl+Alt+S"]]"#),
+        "script が Ctrl+Alt+S に割り当たる: {}",
         keys()
     );
 
@@ -1927,27 +1927,27 @@ fn settings_key_editor_binds_registered_script() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
-/// 「コードを割り当て」＝コードを追加すると未割当（－）の `Eval` 行がスクリプトジャンルに生え、
+/// 「コードを割り当て」＝コードを追加すると未割当（－）の `eval` 行がスクリプトジャンルに生え、
 /// 通常どおりその行を選んでキャプチャするとキーへ結ばれる。実呼び出しカラムはラッパを剥がしたコード。
 #[test]
 fn settings_key_editor_binds_eval_code() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // コードを追加＝未割当の Eval 行が生える（前後スペースは trim される）。
+    // コードを追加＝未割当の eval 行が生える（前後スペースは trim される）。
     server.req("POST", "/keys/filer/code", "  r.log(42)  ").unwrap();
     server.req("POST", "/keys/filer/search", "r.log").unwrap();
-    assert!(keys().contains(r#"["Eval",[]]"#), "未割当の Eval 行が生える: {}", keys());
+    assert!(keys().contains(r#"["eval",[]]"#), "未割当の Eval 行が生える: {}", keys());
 
-    // その行を選んでキャプチャ＝Eval("r.log(42)") が Ctrl+Alt+G に割り当たる。
+    // その行を選んでキャプチャ＝eval("r.log(42)") が Ctrl+Alt+G に割り当たる。
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/capture", "Ctrl+Alt+G").unwrap();
     server.req("POST", "/keys/filer/search", "r.log").unwrap();
     assert!(
-        keys().contains(r#"["Eval",["Ctrl+Alt+G"]]"#),
-        "Eval が Ctrl+Alt+G に割り当たる: {}",
+        keys().contains(r#"["eval",["Ctrl+Alt+G"]]"#),
+        "eval が Ctrl+Alt+G に割り当たる: {}",
         keys()
     );
 
@@ -1960,13 +1960,13 @@ fn settings_key_editor_binds_eval_code() {
 #[test]
 fn settings_key_editor_edits_bound_command_arg() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // 既定で F4 = ChangeDirectory("=r.prompt(...)")。r.prompt で F4 の行だけに絞って選ぶ。
+    // 既定で F4 = changeDirectory("=r.prompt(...)")。r.prompt で F4 の行だけに絞って選ぶ。
     server.req("POST", "/keys/filer/search", "r.prompt").unwrap();
-    assert!(keys().contains(r#"["ChangeDirectory",["F4"]]"#), "F4 の ChangeDirectory 行: {}", keys());
+    assert!(keys().contains(r#"["changeDirectory",["F4"]]"#), "F4 の changeDirectory 行: {}", keys());
     server.req("POST", "/keys/filer/select/0", "").unwrap();
 
     // 引数を式へ差し替える（バインド済み＝そのキーの呼び出しをその場で置換）。
@@ -1977,28 +1977,28 @@ fn settings_key_editor_edits_bound_command_arg() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
     let cfg = std::fs::read_to_string(server.base.join("data").join("config.toml")).unwrap();
     assert!(
-        cfg.contains(r#"ChangeDirectory("=r.currentDir()")"#),
+        cfg.contains(r#"changeDirectory("=r.currentDir()")"#),
         "F4 の引数が式へ差し替わって保存される: {cfg}"
     );
 }
 
 /// 「引数」＝未割当の組込コマンド行へ引数の式を付けると、引数つきの未割当（－）行が生え、その行を
-/// キャプチャしてキーへ結べる。OK で `SelectMask("=式")` が当該キーに残る。
+/// キャプチャしてキーへ結べる。OK で `selectMask("=式")` が当該キーに残る。
 #[test]
 fn settings_key_editor_attaches_arg_to_unbound_command() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // 既定で未バインドの SelectMask（bare 行）を選ぶ。
-    server.req("POST", "/keys/filer/search", "SelectMask").unwrap();
-    assert!(keys().contains(r#"["SelectMask",[]]"#), "未割当の SelectMask 行: {}", keys());
+    // 既定で未バインドの selectMask（bare 行）を選ぶ。
+    server.req("POST", "/keys/filer/search", "selectMask").unwrap();
+    assert!(keys().contains(r#"["selectMask",[]]"#), "未割当の selectMask 行: {}", keys());
     server.req("POST", "/keys/filer/select/0", "").unwrap();
 
     // 引数を付ける＝引数つきの未割当行が生え、その行が選択される（apply_arg が選択する）。
     server.req("POST", "/keys/filer/arg", "=r.cursorName()").unwrap();
-    // 選択中のその行をキャプチャ＝SelectMask("=r.cursorName()") が Ctrl+Alt+J に割り当たる。
+    // 選択中のその行をキャプチャ＝selectMask("=r.cursorName()") が Ctrl+Alt+J に割り当たる。
     server.req("POST", "/keys/filer/capture", "Ctrl+Alt+J").unwrap();
 
     // OK で確定＝config.toml の Ctrl+Alt+J に引数つき呼び出しが残る。
@@ -2006,7 +2006,7 @@ fn settings_key_editor_attaches_arg_to_unbound_command() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
     let cfg = std::fs::read_to_string(server.base.join("data").join("config.toml")).unwrap();
     assert!(
-        cfg.contains(r#"SelectMask("=r.cursorName()")"#),
+        cfg.contains(r#"selectMask("=r.cursorName()")"#),
         "引数つき呼び出しがキーに割り当たって保存される: {cfg}"
     );
 }
@@ -2015,22 +2015,22 @@ fn settings_key_editor_attaches_arg_to_unbound_command() {
 #[test]
 fn settings_key_editor_deletes_unbound_arg_definition() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
-    let count = || keys().matches(r#"["SelectMask",[]]"#).count();
+    let count = || keys().matches(r#"["selectMask",[]]"#).count();
 
-    // 未バインドの SelectMask（bare 行）を選んで引数を付ける＝引数つきの未割当行が増える。
-    server.req("POST", "/keys/filer/search", "SelectMask").unwrap();
+    // 未バインドの selectMask（bare 行）を選んで引数を付ける＝引数つきの未割当行が増える。
+    server.req("POST", "/keys/filer/search", "selectMask").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/arg", "=r.cursorName()").unwrap();
-    server.req("POST", "/keys/filer/search", "SelectMask").unwrap();
-    assert_eq!(count(), 2, "bare と引数つきで SelectMask 行が2つ: {}", keys());
+    server.req("POST", "/keys/filer/search", "selectMask").unwrap();
+    assert_eq!(count(), 2, "bare と引数つきで selectMask 行が2つ: {}", keys());
 
     // 引数つき行（bare の次＝index 1）を選んで「キー定義を削除」＝その定義が消えて bare だけ残る。
     server.req("POST", "/keys/filer/select/1", "").unwrap();
     server.req("POST", "/keys/filer/unbind", "").unwrap();
-    server.req("POST", "/keys/filer/search", "SelectMask").unwrap();
+    server.req("POST", "/keys/filer/search", "selectMask").unwrap();
     assert_eq!(count(), 1, "引数つきの定義が消えて bare だけ残る: {}", keys());
 }
 
@@ -2039,24 +2039,24 @@ fn settings_key_editor_deletes_unbound_arg_definition() {
 #[test]
 fn settings_key_editor_inline_function_picker_changes_binding() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // 未使用キー Ctrl+Shift+Q を SelectMask に割り当て、キー順でその行を出す。
-    server.req("POST", "/keys/filer/bind", r#"["SelectMask","Ctrl+Shift+Q"]"#).unwrap();
+    // 未使用キー Ctrl+Shift+Q を selectMask に割り当て、キー順でその行を出す。
+    server.req("POST", "/keys/filer/bind", r#"["selectMask","Ctrl+Shift+Q"]"#).unwrap();
     server.req("POST", "/keys/filer/view", "key").unwrap();
     server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
-    assert!(keys().contains(r#"["Ctrl+Shift+Q",["SelectMask"]]"#), "対象キー行: {}", keys());
+    assert!(keys().contains(r#"["Ctrl+Shift+Q",["selectMask"]]"#), "対象キー行: {}", keys());
     server.req("POST", "/keys/filer/select/0", "").unwrap();
 
-    // その機能（label 0＝SelectMask）のピッカーへ。中止すると不変。
+    // その機能（label 0＝selectMask）のピッカーへ。中止すると不変。
     server.req("POST", "/keys/filer/pick/0", "").unwrap();
     assert!(keys().contains(r#""picking":true"#), "ピックモードに入る: {}", keys());
-    // ピッカーはジャンル順に並ぶ（カーソル移動ジャンルが先頭＝CursorUp が最初）。
+    // ピッカーはジャンル順に並ぶ（カーソル移動ジャンルが先頭＝cursorUp が最初）。
     assert!(
-        keys().contains(r#""rows":[["CursorUp",[]]"#),
-        "機能ピッカーはジャンル順（先頭 CursorUp）: {}",
+        keys().contains(r#""rows":[["cursorUp",[]]"#),
+        "機能ピッカーはジャンル順（先頭 cursorUp）: {}",
         keys()
     );
     server.req("POST", "/keys/filer/pickcancel", "").unwrap();
@@ -2064,21 +2064,21 @@ fn settings_key_editor_inline_function_picker_changes_binding() {
     // 中止後（検索クリア・キー順へ復帰）も割り当ては不変。
     server.req("POST", "/keys/filer/view", "key").unwrap();
     server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
-    assert!(keys().contains(r#"["Ctrl+Shift+Q",["SelectMask"]]"#), "中止で不変: {}", keys());
+    assert!(keys().contains(r#"["Ctrl+Shift+Q",["selectMask"]]"#), "中止で不変: {}", keys());
 
-    // 再びピッカーへ入り、検索で MakeDirectory に絞って確定＝定義が差し替わる。
+    // 再びピッカーへ入り、検索で makeDirectory に絞って確定＝定義が差し替わる。
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/pick/0", "").unwrap();
-    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
-    assert!(keys().contains(r#"["MakeDirectory",[]]"#), "ピッカーに機能が並ぶ: {}", keys());
+    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    assert!(keys().contains(r#"["makeDirectory",[]]"#), "ピッカーに機能が並ぶ: {}", keys());
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/pickcommit", "").unwrap();
 
-    // 確定後（キー順・検索クリア）：Ctrl+Shift+Q は MakeDirectory に、SelectMask からは外れる。
+    // 確定後（キー順・検索クリア）：Ctrl+Shift+Q は makeDirectory に、selectMask からは外れる。
     server.req("POST", "/keys/filer/view", "key").unwrap();
     server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
     let s = keys();
-    assert!(s.contains(r#"["Ctrl+Shift+Q",["MakeDirectory"]]"#), "機能が差し替わる: {s}");
+    assert!(s.contains(r#"["Ctrl+Shift+Q",["makeDirectory"]]"#), "機能が差し替わる: {s}");
 
     server.req("POST", "/modal/command/cancel", "").expect("cancel");
     poll(&server, "/state/modal", |b| b.trim() == "null");
@@ -2089,7 +2089,7 @@ fn settings_key_editor_inline_function_picker_changes_binding() {
 #[test]
 fn settings_key_editor_scrolls_long_list() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
@@ -2122,7 +2122,7 @@ fn settings_key_editor_scrolls_long_list() {
 #[test]
 fn settings_key_editor_add_empty_key_def_then_assign() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
     server.req("POST", "/keys/filer/view", "key").unwrap();
@@ -2132,18 +2132,18 @@ fn settings_key_editor_add_empty_key_def_then_assign() {
     server.req("POST", "/keys/filer/search", "Ctrl+Shift+Z").unwrap();
     assert!(keys().contains(r#"["Ctrl+Shift+Z",[]]"#), "空キー定義の行: {}", keys());
 
-    // その行を選び、機能ピッカーで MakeDirectory を割り当てる。
+    // その行を選び、機能ピッカーで makeDirectory を割り当てる。
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/pick/0", "").unwrap();
-    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/pickcommit", "").unwrap();
 
-    // 割り当て後：Ctrl+Shift+Z → MakeDirectory（空キー定義が解消）。
+    // 割り当て後：Ctrl+Shift+Z → makeDirectory（空キー定義が解消）。
     server.req("POST", "/keys/filer/view", "key").unwrap();
     server.req("POST", "/keys/filer/search", "Ctrl+Shift+Z").unwrap();
     assert!(
-        keys().contains(r#"["Ctrl+Shift+Z",["MakeDirectory"]]"#),
+        keys().contains(r#"["Ctrl+Shift+Z",["makeDirectory"]]"#),
         "空キー定義に機能が付く: {}",
         keys()
     );
@@ -2157,7 +2157,7 @@ fn settings_key_editor_add_empty_key_def_then_assign() {
 #[test]
 fn settings_key_editor_search_filters_by_name_and_key() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
     // 行数＝JSON 配列 `[...]` の個数（rows の各行が `["Cmd",[...]]`）。`],[` の数＋1。
@@ -2168,7 +2168,7 @@ fn settings_key_editor_search_filters_by_name_and_key() {
     assert!(full_n > 40, "既定は Filer 全コマンドが並ぶ: {full_n}");
     assert!(full.contains(r#""query":"""#), "初期クエリは空: {full}");
 
-    // 機能名で絞り込む："copy" は Copy/ClipCopy/ViewerCopy… を含み、MakeDirectory は除外。
+    // 機能名で絞り込む："copy" は copy/clipCopy/viewerCopy… を含み、makeDirectory は除外。
     assert_eq!(
         server.req("POST", "/keys/filer/search", "copy").unwrap().0,
         200,
@@ -2176,24 +2176,24 @@ fn settings_key_editor_search_filters_by_name_and_key() {
     );
     let s = keys();
     assert!(s.contains(r#""query":"copy""#), "クエリが反映される: {s}");
-    assert!(s.contains(r#"["Copy",["C"]]"#), "Copy が残る: {s}");
-    assert!(s.contains("ClipCopy"), "ClipCopy が残る: {s}");
-    assert!(!s.contains("MakeDirectory"), "無関係な機能は消える: {s}");
+    assert!(s.contains(r#"["copy",["C"]]"#), "copy が残る: {s}");
+    assert!(s.contains("clipCopy"), "clipCopy が残る: {s}");
+    assert!(!s.contains("makeDirectory"), "無関係な機能は消える: {s}");
     let copy_n = count(&s);
     assert!(copy_n > 0 && copy_n < full_n, "件数が減る: {copy_n} < {full_n}");
 
-    // 日本語の表示名でも絞り込める："コピー" は Copy（表示名「コピー」）/ClipCopy
-    //（「クリップボードにコピー」）に一致し、MakeDirectory（「フォルダ作成」）は除外。
+    // 日本語の表示名でも絞り込める："コピー" は copy（表示名「コピー」）/clipCopy
+    //（「クリップボードにコピー」）に一致し、makeDirectory（「フォルダ作成」）は除外。
     server.req("POST", "/keys/filer/search", "コピー").unwrap();
     let s = keys();
-    assert!(s.contains(r#"["Copy",["C"]]"#), "表示名検索で Copy が残る: {s}");
-    assert!(s.contains("ClipCopy"), "表示名検索で ClipCopy が残る: {s}");
-    assert!(!s.contains("MakeDirectory"), "表示名検索で無関係な機能は消える: {s}");
+    assert!(s.contains(r#"["copy",["C"]]"#), "表示名検索で copy が残る: {s}");
+    assert!(s.contains("clipCopy"), "表示名検索で clipCopy が残る: {s}");
+    assert!(!s.contains("makeDirectory"), "表示名検索で無関係な機能は消える: {s}");
 
-    // キーで絞り込む：既定 K は MakeDirectory のみ（大小無視なので chord "K" に一致）。
+    // キーで絞り込む：既定 K は makeDirectory のみ（大小無視なので chord "K" に一致）。
     server.req("POST", "/keys/filer/search", "K").unwrap();
     let s = keys();
-    assert!(s.contains("MakeDirectory"), "K を持つ MakeDirectory が出る: {s}");
+    assert!(s.contains("makeDirectory"), "K を持つ makeDirectory が出る: {s}");
 
     // 空クエリで全件へ戻る。
     server.req("POST", "/keys/filer/search", "").unwrap();
@@ -2201,8 +2201,8 @@ fn settings_key_editor_search_filters_by_name_and_key() {
     assert_eq!(count(&s), full_n, "空クエリで全件に戻る: {s}");
     assert!(s.contains(r#""query":"""#), "クエリが空に戻る");
 
-    // 絞り込みは config を変えない（割り当ては不変）＝Copy=C のまま。
-    assert!(keys().contains(r#"["Copy",["C"]]"#), "割り当ては検索で変わらない");
+    // 絞り込みは config を変えない（割り当ては不変）＝copy=C のまま。
+    assert!(keys().contains(r#"["copy",["C"]]"#), "割り当ては検索で変わらない");
 
     server.req("POST", "/modal/command/cancel", "").expect("cancel");
     poll(&server, "/state/modal", |b| b.trim() == "null");
@@ -2213,35 +2213,35 @@ fn settings_key_editor_search_filters_by_name_and_key() {
 #[test]
 fn settings_key_editor_toggles_command_and_key_views() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // 既定は機能順：行は (機能, [キー…])。MakeDirectory=K。
+    // 既定は機能順：行は (機能, [キー…])。makeDirectory=K。
     let s = keys();
     assert!(s.contains(r#""mode":"command""#), "初期は機能順: {s}");
-    assert!(s.contains(r#"["MakeDirectory",["K"]]"#), "機能順 MakeDirectory=K: {s}");
+    assert!(s.contains(r#"["makeDirectory",["K"]]"#), "機能順 makeDirectory=K: {s}");
 
-    // キー順へ切替：行は (キー, [機能])。K→MakeDirectory。
+    // キー順へ切替：行は (キー, [機能])。K→makeDirectory。
     assert_eq!(server.req("POST", "/keys/filer/view", "key").unwrap().0, 200, "view 切替 ok");
     let s = keys();
     assert!(s.contains(r#""mode":"key""#), "キー順になる: {s}");
-    assert!(s.contains(r#"["K",["MakeDirectory"]]"#), "キー順 K→MakeDirectory: {s}");
+    assert!(s.contains(r#"["K",["makeDirectory"]]"#), "キー順 K→makeDirectory: {s}");
 
     // キー順でも検索が効く（キー・機能名どちらにも一致）。
-    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
-    assert!(keys().contains(r#"["K",["MakeDirectory"]]"#), "キー順で機能名検索が効く");
+    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    assert!(keys().contains(r#"["K",["makeDirectory"]]"#), "キー順で機能名検索が効く");
     server.req("POST", "/keys/filer/search", "").unwrap();
 
     // 機能順へ戻して、同じ機能に 2 キーを割り当てる（1 キー=1 行なので 2 行に割れる）。
     server.req("POST", "/keys/filer/view", "command").unwrap();
-    server.req("POST", "/keys/filer/bind", r#"["SelectMask","Ctrl+Shift+M"]"#).unwrap();
-    server.req("POST", "/keys/filer/bind", r#"["SelectMask","Ctrl+Shift+N"]"#).unwrap();
+    server.req("POST", "/keys/filer/bind", r#"["selectMask","Ctrl+Shift+M"]"#).unwrap();
+    server.req("POST", "/keys/filer/bind", r#"["selectMask","Ctrl+Shift+N"]"#).unwrap();
     let s = keys();
     assert!(
-        s.contains(r#"["SelectMask",["Ctrl+Shift+M"]]"#)
-            && s.contains(r#"["SelectMask",["Ctrl+Shift+N"]]"#),
-        "SelectMask が 2 行に割れる: {s}"
+        s.contains(r#"["selectMask",["Ctrl+Shift+M"]]"#)
+            && s.contains(r#"["selectMask",["Ctrl+Shift+N"]]"#),
+        "selectMask が 2 行に割れる: {s}"
     );
 
     // キー順で Ctrl+Shift+M の行だけを選び、削除＝その 1 キーだけ外れる。
@@ -2250,17 +2250,17 @@ fn settings_key_editor_toggles_command_and_key_views() {
     let s = keys();
     // 絞り込みで M の行だけ（N の行は出ない）。rows 配列を厳密に見る（status 文言の巻き込みを避ける）。
     assert!(
-        s.contains(r#""rows":[["Ctrl+Shift+M",["SelectMask"]]]"#),
+        s.contains(r#""rows":[["Ctrl+Shift+M",["selectMask"]]]"#),
         "M の行だけが出る: {s}"
     );
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/unbind", "").unwrap();
 
-    // 機能順へ戻すと、SelectMask は N だけ残る（M だけが外れた）。
+    // 機能順へ戻すと、selectMask は N だけ残る（M だけが外れた）。
     server.req("POST", "/keys/filer/search", "").unwrap();
     server.req("POST", "/keys/filer/view", "command").unwrap();
     assert!(
-        keys().contains(r#"["SelectMask",["Ctrl+Shift+N"]]"#),
+        keys().contains(r#"["selectMask",["Ctrl+Shift+N"]]"#),
         "M だけ外れ N が残る: {}",
         keys()
     );
@@ -2274,7 +2274,7 @@ fn settings_key_editor_toggles_command_and_key_views() {
 #[test]
 fn modal_resize_endpoint_changes_client_size() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
 
     // /snapshot/modal は PrintWindow でクライアント領域を撮るので、PNG の IHDR 幅高が
@@ -2307,7 +2307,7 @@ fn modal_resize_endpoint_changes_client_size() {
 #[test]
 fn keybind_selector_is_resizable() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/KeyBindsDialog", "").expect("KeyBindsDialog");
+    server.req("POST", "/command/keyBindsDialog", "").expect("keyBindsDialog");
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"list\""), "リスト選択モーダルが開くはず: {modal}");
 
@@ -2339,7 +2339,7 @@ fn dialog_remembers_last_size() {
         )
     };
 
-    server.req("POST", "/command/KeyBindsDialog", "").expect("open1");
+    server.req("POST", "/command/keyBindsDialog", "").expect("open1");
     wait_modal(&server);
     let (w0, h0) = client_dims(server.port);
 
@@ -2349,7 +2349,7 @@ fn dialog_remembers_last_size() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 
     // 再オープンは記憶した小さいサイズで開く（既定より小さく・要求700近傍）。
-    server.req("POST", "/command/KeyBindsDialog", "").expect("open2");
+    server.req("POST", "/command/keyBindsDialog", "").expect("open2");
     wait_modal(&server);
     let (w1, h1) = client_dims(server.port);
     assert!(w1 < w0 && h1 < h0, "記憶サイズで開くはず: {w0}x{h0} -> {w1}x{h1}");
@@ -2364,7 +2364,7 @@ fn dialog_remembers_last_size() {
 #[test]
 fn drive_dialog_is_resizable() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/ChangeDriveDialog", "").expect("ChangeDriveDialog");
+    server.req("POST", "/command/changeDriveDialog", "").expect("changeDriveDialog");
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"drive\""), "ドライブ選択が開くはず: {modal}");
 
@@ -2383,7 +2383,7 @@ fn drive_dialog_is_resizable() {
 #[test]
 fn task_manager_is_resizable() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/OpenTaskManager", "").expect("OpenTaskManager");
+    server.req("POST", "/command/openTaskManager", "").expect("openTaskManager");
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"tasks\""), "タスクマネージャが開くはず: {modal}");
 
@@ -2403,7 +2403,7 @@ fn task_manager_is_resizable() {
 fn task_manager_dialog_opens_observes_and_closes() {
     let server = Server::start(&["a.txt"], "");
 
-    server.req("POST", "/command/OpenTaskManager", "").unwrap();
+    server.req("POST", "/command/openTaskManager", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"tasks\""), "タスクマネージャが開くはず: {modal}");
     assert!(modal.contains("\"headers\":[\"タスク\""), "列ヘッダが見えるはず: {modal}");
@@ -2429,9 +2429,9 @@ fn task_manager_dialog_opens_observes_and_closes() {
 fn image_viewer_display_modes_switch_by_keys() {
     let server = Server::start(&["pic.png"], "");
 
-    // 左 items は [.., pic.png]。CursorDown×1 で pic.png にカーソルを置いて開く。
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/ViewFile", "").expect("ViewFile");
+    // 左 items は [.., pic.png]。cursorDown×1 で pic.png にカーソルを置いて開く。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/viewFile", "").expect("viewFile");
     poll(&server, "/state/active_view", |b| b.trim().trim_matches('"') == "media");
 
     let mode = |s: &Server| {
@@ -2464,18 +2464,18 @@ fn image_viewer_display_modes_switch_by_keys() {
 #[test]
 fn text_viewer_search_finds_all_occurrences_and_navigates() {
     let server = Server::start(&["doc.txt"], "");
-    // 既定の placeholder を、複数一致を含む内容で上書きする（ViewFile は表示時に読み直す）。
+    // 既定の placeholder を、複数一致を含む内容で上書きする（viewFile は表示時に読み直す）。
     std::fs::write(server.base.join("sbx").join("doc.txt"), "foo bar foo\nbaz\nFOO end\n").unwrap();
 
     // doc.txt にカーソルを置いてテキストビューアで開く。
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/ViewFile", "").expect("ViewFile");
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/viewFile", "").expect("viewFile");
     poll(&server, "/state/active_view", |b| b.trim().trim_matches('"') == "text");
     // 一度撮影してレイアウト＋描画を走らせ、表示行を実幅で確定させる（検索は表示行を走査する）。
     req_bytes(server.port, "GET", "/snapshot").expect("warmup snapshot");
 
     // インライン検索バーを開いて "foo" を打ち込む（インクリメンタル検索が即時に走る）。
-    server.req("POST", "/command/ViewerSearchDialog", "").expect("open search");
+    server.req("POST", "/command/viewerSearchDialog", "").expect("open search");
     poll(&server, "/state/viewer/search_open", |b| b.trim() == "true");
     server.req("POST", "/view/search", "foo").expect("type foo");
 
@@ -2518,7 +2518,7 @@ fn text_viewer_search_finds_all_occurrences_and_navigates() {
     assert_eq!(count2.trim(), "3", "Enter 確定後も検索語は残る");
 
     // 再度開いて Esc で閉じても、検索語とハイライトは残る（開始位置へ戻るだけ）。
-    server.req("POST", "/command/ViewerSearchDialog", "").expect("reopen search");
+    server.req("POST", "/command/viewerSearchDialog", "").expect("reopen search");
     poll(&server, "/state/viewer/search_open", |b| b.trim() == "true");
     server.req("POST", "/view/search/key/esc", "").expect("esc");
     poll(&server, "/state/viewer/search_open", |b| b.trim() == "false");
@@ -2540,14 +2540,14 @@ fn text_viewer_search_options_toggle_matches() {
         "foo Foo FOO foobar\nfo fooo\n",
     )
     .unwrap();
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/ViewFile", "").expect("ViewFile");
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/viewFile", "").expect("viewFile");
     poll(&server, "/state/active_view", |b| b.trim().trim_matches('"') == "text");
     req_bytes(server.port, "GET", "/snapshot").expect("warmup snapshot");
 
     let count = |s: &Server| s.req("GET", "/state/viewer/match_count", "").expect("count").1.trim().to_string();
 
-    server.req("POST", "/command/ViewerSearchDialog", "").expect("open");
+    server.req("POST", "/command/viewerSearchDialog", "").expect("open");
     poll(&server, "/state/viewer/search_open", |b| b.trim() == "true");
 
     // 既定（大小無視・部分一致）：foo, Foo, FOO, foobar の foo, fooo の foo ＝ 5。
@@ -2591,8 +2591,8 @@ fn text_viewer_search_options_toggle_matches() {
 fn text_viewer_search_history_records_on_enter() {
     let server = Server::start(&["doc.txt"], "");
     std::fs::write(server.base.join("sbx").join("doc.txt"), "foo bar baz qux\n").unwrap();
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/ViewFile", "").expect("ViewFile");
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/viewFile", "").expect("viewFile");
     poll(&server, "/state/active_view", |b| b.trim().trim_matches('"') == "text");
     req_bytes(server.port, "GET", "/snapshot").expect("warmup snapshot");
 
@@ -2636,11 +2636,11 @@ fn text_viewer_search_history_records_on_enter() {
 fn text_viewer_search_mnemonic_toggles_options() {
     let server = Server::start(&["doc.txt"], "");
     std::fs::write(server.base.join("sbx").join("doc.txt"), "foo bar\n").unwrap();
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/ViewFile", "").expect("ViewFile");
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/viewFile", "").expect("viewFile");
     poll(&server, "/state/active_view", |b| b.trim().trim_matches('"') == "text");
     req_bytes(server.port, "GET", "/snapshot").expect("warmup snapshot");
-    server.req("POST", "/command/ViewerSearchDialog", "").expect("open");
+    server.req("POST", "/command/viewerSearchDialog", "").expect("open");
     poll(&server, "/state/viewer/search_open", |b| b.trim() == "true");
 
     // 既定はケース無視 ON（case_sensitive=false）。ニーモニック c で反転＝大小区別 ON。
@@ -2654,19 +2654,19 @@ fn text_viewer_search_mnemonic_toggles_options() {
 }
 
 /// ニーモニックと同じ Alt+キーがユーザーのビューアキーバインドに割り当て済みなら、ユーザー側を
-/// 優先する（トグルせずそのコマンドを実行）。ここでは Alt+C を ViewerClose に割り当てて確認。
+/// 優先する（トグルせずそのコマンドを実行）。ここでは Alt+C を viewerClose に割り当てて確認。
 #[test]
 fn text_viewer_search_mnemonic_yields_to_user_keybind() {
-    let server = Server::start(&["doc.txt"], "[keybinds_textviewer]\n\"Alt+C\" = \"ViewerClose\"\n");
+    let server = Server::start(&["doc.txt"], "[keybinds_textviewer]\n\"Alt+C\" = \"viewerClose\"\n");
     std::fs::write(server.base.join("sbx").join("doc.txt"), "foo bar\n").unwrap();
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    server.req("POST", "/command/ViewFile", "").expect("ViewFile");
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/viewFile", "").expect("viewFile");
     poll(&server, "/state/active_view", |b| b.trim().trim_matches('"') == "text");
     req_bytes(server.port, "GET", "/snapshot").expect("warmup snapshot");
-    server.req("POST", "/command/ViewerSearchDialog", "").expect("open");
+    server.req("POST", "/command/viewerSearchDialog", "").expect("open");
     poll(&server, "/state/viewer/search_open", |b| b.trim() == "true");
 
-    // Alt+C は被っているのでユーザーバインド（ViewerClose）が走る＝ビューアが閉じる。
+    // Alt+C は被っているのでユーザーバインド（viewerClose）が走る＝ビューアが閉じる。
     server.req("POST", "/view/search/mnemonic/c", "").expect("mnemonic c");
     poll(&server, "/state/active_view", |b| b.trim().trim_matches('"') == "none");
 }
@@ -2724,11 +2724,11 @@ fn completion_popup_lists_members_and_inserts_on_accept() {
         &[("00.ts", r#"rerics.registerCommand("myCmd", () => {});"#)],
     );
     poll(&server, "/script/members", |b| b.contains("myCmd"));
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     server.req("POST", "/settings/nav/5", "").expect("nav");
-    // 組込コマンド行（MakeDirectory）を選んで、補完つき「引数」モーダルを開く（応答先返し）。
-    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    // 組込コマンド行（makeDirectory）を選んで、補完つき「引数」モーダルを開く（応答先返し）。
+    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/openarg", "").unwrap();
 
@@ -2750,10 +2750,10 @@ fn completion_popup_lists_members_and_inserts_on_accept() {
 #[test]
 fn completion_keyboard_navigation_and_ctrl_space() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     server.req("POST", "/settings/nav/5", "").unwrap();
-    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/openarg", "").unwrap();
     let comp = || server.req("GET", "/completion", "").unwrap().1;
@@ -2791,10 +2791,10 @@ fn completion_keyboard_navigation_and_ctrl_space() {
 #[test]
 fn completion_uses_text_up_to_caret() {
     let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     server.req("POST", "/settings/nav/5", "").unwrap();
-    server.req("POST", "/keys/filer/search", "MakeDirectory").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/openarg", "").unwrap();
 
@@ -2896,10 +2896,10 @@ fn script_select_opens_list_and_returns_index() {
 #[test]
 fn script_active_pane_reads_items_selection_and_cursor() {
     let server = Server::start_with_scripts(&["a.txt", "b.txt", "c.txt"], &[]);
-    // 左 items は [.., a.txt, b.txt, c.txt]。CursorDown×1 で a.txt → MarkToggle で
+    // 左 items は [.., a.txt, b.txt, c.txt]。cursorDown×1 で a.txt → markToggle で
     // a.txt を選択しカーソルは b.txt（index 2）へ。
-    server.req("POST", "/command/CursorDown", "").expect("down");
-    server.req("POST", "/command/MarkToggle", "").expect("mark");
+    server.req("POST", "/command/cursorDown", "").expect("down");
+    server.req("POST", "/command/markToggle", "").expect("mark");
 
     server
         .req(
@@ -2991,7 +2991,7 @@ fn script_command_invokes_builtin_and_throws_on_unknown() {
 
     // 内蔵コマンドを実行＝カーソルが 1 へ進む。
     server
-        .req("POST", "/script/eval", r#"rerics.command("CursorDown");"#)
+        .req("POST", "/script/eval", r#"rerics.command("cursorDown");"#)
         .expect("command eval");
     let c1 = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
     assert_eq!(c1.trim(), "1", "rerics.command should run the builtin: {c1}");
@@ -3029,9 +3029,9 @@ fn script_events_fire_on_command_and_navigation() {
     poll(&server, "/script/commands", |b| b.contains("ready"));
 
     // 在席コマンド：executeCommand は出るが changeDirectory は出ない（移動でないため）。
-    server.req("POST", "/command/CursorDown", "").unwrap();
-    let log = poll(&server, "/state/log", |b| b.contains("EV cmd:CursorDown"));
-    assert!(log.contains("EV cmd:CursorDown"), "executeCommand should fire: {log}");
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    let log = poll(&server, "/state/log", |b| b.contains("EV cmd:cursorDown"));
+    assert!(log.contains("EV cmd:cursorDown"), "executeCommand should fire: {log}");
     assert_eq!(
         count_substr(&log, "EV cd:"),
         0,
@@ -3039,12 +3039,12 @@ fn script_events_fire_on_command_and_navigation() {
     );
 
     // 親へ移動：移動なので changeDirectory も発火する。
-    server.req("POST", "/command/ToParent", "").unwrap();
+    server.req("POST", "/command/toParent", "").unwrap();
     let log2 = poll(&server, "/state/log", |b| b.contains("EV cd:"));
     assert!(log2.contains("EV cd:"), "navigation should fire changeDirectory: {log2}");
     assert!(
-        log2.contains("EV cmd:ToParent"),
-        "ToParent should also fire executeCommand: {log2}"
+        log2.contains("EV cmd:toParent"),
+        "toParent should also fire executeCommand: {log2}"
     );
 }
 
@@ -3054,11 +3054,11 @@ fn script_events_fire_on_command_and_navigation() {
 fn script_async_copy_awaits_worker_completion() {
     let server = Server::start_with_scripts(&["a.txt", "b.txt"], &[]);
     // 右ペインを親へ移し、左=sbx／右=親 にする（src≠dst で同名衝突を避ける）。
-    server.req("POST", "/command/FocusRight", "").unwrap();
-    server.req("POST", "/command/ToParent", "").unwrap();
+    server.req("POST", "/command/focusRight", "").unwrap();
+    server.req("POST", "/command/toParent", "").unwrap();
     let parent = server.req("GET", "/state/panes/right/location", "").unwrap().1;
     assert!(!parent.contains("sbx"), "right pane should be the parent: {parent}");
-    server.req("POST", "/command/FocusLeft", "").unwrap();
+    server.req("POST", "/command/focusLeft", "").unwrap();
 
     // 左で a.txt を選択して await copy → 親へコピーされ、完了後にログが出る。
     server
@@ -3088,9 +3088,9 @@ fn script_async_copy_awaits_worker_completion() {
 #[test]
 fn script_async_op_job_is_cancelable() {
     let server = Server::start_with_scripts(&["a.txt", "b.txt"], &[]);
-    server.req("POST", "/command/FocusRight", "").unwrap();
-    server.req("POST", "/command/ToParent", "").unwrap();
-    server.req("POST", "/command/FocusLeft", "").unwrap();
+    server.req("POST", "/command/focusRight", "").unwrap();
+    server.req("POST", "/command/toParent", "").unwrap();
+    server.req("POST", "/command/focusLeft", "").unwrap();
 
     server
         .req(
@@ -3143,9 +3143,9 @@ fn script_async_delete_awaits_completion() {
 fn script_async_copy_explicit_items_and_dest() {
     let server = Server::start_with_scripts(&["a.txt", "b.txt"], &[]);
     // 右ペインを親へ（行き先）。左＝sbx のファイルをフルパスで渡す。
-    server.req("POST", "/command/FocusRight", "").unwrap();
-    server.req("POST", "/command/ToParent", "").unwrap();
-    server.req("POST", "/command/FocusLeft", "").unwrap();
+    server.req("POST", "/command/focusRight", "").unwrap();
+    server.req("POST", "/command/toParent", "").unwrap();
+    server.req("POST", "/command/focusLeft", "").unwrap();
 
     server
         .req(
@@ -3175,9 +3175,9 @@ fn script_async_copy_explicit_items_and_dest() {
 fn script_async_copy_reports_progress() {
     let server = Server::start_with_scripts(&["a.txt", "b.txt"], &[]);
     // 右ペインを親へ（src≠dst）。
-    server.req("POST", "/command/FocusRight", "").unwrap();
-    server.req("POST", "/command/ToParent", "").unwrap();
-    server.req("POST", "/command/FocusLeft", "").unwrap();
+    server.req("POST", "/command/focusRight", "").unwrap();
+    server.req("POST", "/command/toParent", "").unwrap();
+    server.req("POST", "/command/focusLeft", "").unwrap();
 
     server
         .req(
@@ -3202,34 +3202,34 @@ fn script_async_copy_reports_progress() {
     );
 }
 
-/// Quit は「賢いクローズ」：タブが複数あれば現タブを閉じ、最後の 1 枚ならアプリを終了する。
+/// quit は「賢いクローズ」：タブが複数あれば現タブを閉じ、最後の 1 枚ならアプリを終了する。
 /// ここでは複数タブ時に現タブが閉じてアプリが生き続けること（＝強制終了でない）を検証する。
 #[test]
 fn quit_closes_tab_when_multiple_keeps_app_alive() {
     let server = Server::start(&["a.txt"], "");
     let count = || server.req("GET", "/state/tabs/count", "").expect("count").1;
     assert_eq!(count().trim(), "1", "初期は 1 タブ");
-    server.req("POST", "/command/NewFiler", "").expect("NewFiler");
-    assert_eq!(count().trim(), "2", "NewFiler で 2 タブ");
-    // タブが複数あるので Quit は現タブを閉じるだけ（アプリは終了しない）。
-    server.req("POST", "/command/Quit", "").expect("Quit");
-    assert_eq!(count().trim(), "1", "Quit で 1 タブに減る");
+    server.req("POST", "/command/newFiler", "").expect("newFiler");
+    assert_eq!(count().trim(), "2", "newFiler で 2 タブ");
+    // タブが複数あるので quit は現タブを閉じるだけ（アプリは終了しない）。
+    server.req("POST", "/command/quit", "").expect("quit");
+    assert_eq!(count().trim(), "1", "quit で 1 タブに減る");
     assert!(server.req("GET", "/state", "").is_some(), "アプリは終了していない");
 }
 
-/// キーバインド経路：`Eval("code")` コマンドが `exec` からエンジンへ流れ、コードが評価される。
-/// `/command/Eval` は実際のキー押下と同じ `exec` を通るので、これでキー→コード評価の配線を検証する。
+/// キーバインド経路：`eval("code")` コマンドが `exec` からエンジンへ流れ、コードが評価される。
+/// `/command/eval` は実際のキー押下と同じ `exec` を通るので、これでキー→コード評価の配線を検証する。
 #[test]
 fn eval_command_dispatches_code_to_engine() {
     let server = Server::start_with_scripts(&["a.txt"], &[]);
     server
-        .req("POST", "/command/Eval", r#"["rerics.log(\"cmd-eval-marker-7\");"]"#)
-        .expect("Eval");
+        .req("POST", "/command/eval", r#"["rerics.log(\"cmd-eval-marker-7\");"]"#)
+        .expect("eval");
     let log = poll(&server, "/state/log", |b| b.contains("cmd-eval-marker-7"));
-    assert!(log.contains("cmd-eval-marker-7"), "Eval コマンドがコードを評価して記録するはず: {log}");
+    assert!(log.contains("cmd-eval-marker-7"), "eval コマンドがコードを評価して記録するはず: {log}");
 }
 
-/// 値返し Eval：最後の式の値が文字列で返る。undefined/null は空、Promise は解決を待つ。
+/// 値返し eval：最後の式の値が文字列で返る。undefined/null は空、Promise は解決を待つ。
 /// （HostApi を呼ぶ式は同期評価ではデッドロックするので 第1弾 では純粋な式のみ＝後段で非同期化）。
 #[test]
 fn eval_value_returns_last_expression() {
@@ -3270,7 +3270,7 @@ fn run_executes_process_and_returns_result() {
     assert!(log.contains("rerics-run-9"), "run は stdout を返すはず: {log}");
 }
 
-/// キーバインド経路：`Script("name")` コマンドが `exec` からエンジンへ流れ、登録コマンドを実行する。
+/// キーバインド経路：`script("name")` コマンドが `exec` からエンジンへ流れ、登録コマンドを実行する。
 /// 登録コマンドがアクティブペインを移動させ、UI に反映されることで配線を検証する。
 #[test]
 fn script_command_invokes_registered_command() {
@@ -3284,11 +3284,11 @@ fn script_command_invokes_registered_command() {
     let loc0 = server.req("GET", "/state/panes/left/location", "").unwrap().1;
     assert!(loc0.contains("sbx"), "サンドボックスから開始するはず: {loc0}");
 
-    server.req("POST", "/command/Script", r#"["goUp"]"#).expect("Script");
+    server.req("POST", "/command/script", r#"["goUp"]"#).expect("script");
     let loc1 = poll(&server, "/state/panes/left/location", |b| !b.contains("sbx"));
     assert!(
         !loc1.contains("sbx"),
-        "Script コマンドが登録コマンドを実行してペインが移動するはず: {loc1}"
+        "script コマンドが登録コマンドを実行してペインが移動するはず: {loc1}"
     );
 }
 
@@ -3300,7 +3300,7 @@ fn expr_arg_evaluates_async_and_runs_command() {
     std::fs::create_dir_all(server.base.join("sbx").join("sub")).unwrap();
     // 引数の式は現在地を読んで "/sub" を足す＝HostApi（currentDir）を式中から呼ぶ非同期評価。
     server
-        .req("POST", "/command/ChangeDirectory", r#"["=r.currentDir() + \"/sub\""]"#)
+        .req("POST", "/command/changeDirectory", r#"["=r.currentDir() + \"/sub\""]"#)
         .expect("cd");
     let loc = poll(&server, "/state/panes/left/location", |b| b.contains("sub"));
     assert!(loc.contains("sub"), "式の値でサブフォルダへ移動するはず: {loc}");
@@ -3315,7 +3315,7 @@ fn expr_arg_with_modal_does_not_deadlock() {
     std::fs::create_dir_all(&target).unwrap();
     // 式が prompt を開く。コマンドは即返り、モーダルを debug 駆動してパスを返す。
     server
-        .req("POST", "/command/ChangeDirectory", r#"["=r.prompt(\"dir?\")"]"#)
+        .req("POST", "/command/changeDirectory", r#"["=r.prompt(\"dir?\")"]"#)
         .expect("cd");
     wait_modal(&server);
     server.req("POST", "/modal/text", &target.display().to_string()).expect("text");
@@ -3331,11 +3331,11 @@ fn expr_arg_modal_cancel_aborts_silently() {
     let server = Server::start(&["a.txt"], "");
     // 基準点を sbx から動かしておく（移動しないことを確かめるため）。
     let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
-    server.req("POST", "/command/ToParent", "").unwrap();
+    server.req("POST", "/command/toParent", "").unwrap();
     let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx);
     // 式が prompt を開く→Esc でキャンセル→式は空→中止＝場所は変わらない。
     server
-        .req("POST", "/command/ChangeDirectory", r#"["=r.prompt(\"dir?\")"]"#)
+        .req("POST", "/command/changeDirectory", r#"["=r.prompt(\"dir?\")"]"#)
         .unwrap();
     wait_modal(&server);
     server.req("POST", "/modal/key/esc", "").unwrap();
@@ -3372,7 +3372,7 @@ fn script_command_metadata_surfaces_in_listing() {
     );
 }
 
-/// コマンドパレットは登録済みスクリプトコマンドも候補に出し、確定で `Script("name")` トークンを
+/// コマンドパレットは登録済みスクリプトコマンドも候補に出し、確定で `script("name")` トークンを
 /// 挿入する（表示はラベル＋「（スクリプト）」）。
 #[test]
 fn command_direct_lists_registered_script_commands() {
@@ -3384,7 +3384,7 @@ fn command_direct_lists_registered_script_commands() {
         )],
     );
     poll(&server, "/script/members", |b| b.contains("organize"));
-    server.req("POST", "/command/CommandDirect", "").expect("CommandDirect");
+    server.req("POST", "/command/commandDirect", "").expect("commandDirect");
     wait_modal(&server);
 
     // ラベル「整理する」で引け、候補に「整理する（スクリプト）」が出る。
@@ -3392,15 +3392,15 @@ fn command_direct_lists_registered_script_commands() {
     let c = poll(&server, "/completion", |b| b.contains("整理する（スクリプト）"));
     assert!(c.contains("整理する（スクリプト）"), "スクリプトコマンドが候補に出る: {c}");
 
-    // 先頭候補を確定＝入力欄に Script("organize") トークンが入る。
+    // 先頭候補を確定＝入力欄に script("organize") トークンが入る。
     server.req("POST", "/completion/accept/0", "").unwrap();
-    let c2 = poll(&server, "/completion", |b| b.contains(r#"Script(\"organize\")"#));
-    assert!(c2.contains(r#"Script(\"organize\")"#), "確定で Script トークンが挿入される: {c2}");
+    let c2 = poll(&server, "/completion", |b| b.contains(r#"script(\"organize\")"#));
+    assert!(c2.contains(r#"script(\"organize\")"#), "確定で script トークンが挿入される: {c2}");
 
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
 
-/// コマンドパレット（CommandDirect）：補完は和名でも内部名でも引け、確定した文字列を
+/// コマンドパレット（commandDirect）：補完は和名でも内部名でも引け、確定した文字列を
 /// `Invocation` として解釈し、キー押下と同じ経路で実行する。解釈できない文字列はログに出す。
 #[test]
 fn command_direct_runs_typed_command() {
@@ -3412,27 +3412,27 @@ fn command_direct_runs_typed_command() {
     );
 
     // パレットを開く（MaybeModal＝応答先返しで開く）。和名「下へ」で候補が引ける。
-    server.req("POST", "/command/CommandDirect", "").expect("CommandDirect");
+    server.req("POST", "/command/commandDirect", "").expect("commandDirect");
     wait_modal(&server);
     server.req("POST", "/completion/keystrokes", "下へ").unwrap();
-    let c = poll(&server, "/completion", |b| b.contains("CursorDown"));
+    let c = poll(&server, "/completion", |b| b.contains("cursorDown"));
     assert!(
-        c.contains("カーソルを下へ (CursorDown)"),
+        c.contains("カーソルを下へ (cursorDown)"),
         "和名でコマンド名補完が引ける: {c}"
     );
 
-    // 本文を内部名 CursorDown にして OK＝実行され、カーソルが 1 へ動く。
-    server.req("POST", "/completion/type", "CursorDown").unwrap();
+    // 本文を内部名 cursorDown にして OK＝実行され、カーソルが 1 へ動く。
+    server.req("POST", "/completion/type", "cursorDown").unwrap();
     server.req("POST", "/modal/command/ok", "").unwrap();
     poll(&server, "/state/modal", |b| b.trim() == "null");
     assert_eq!(
         server.req("GET", "/state/panes/left/cursor", "").unwrap().1.trim(),
         "1",
-        "パレットで CursorDown を実行するとカーソルが 1 へ動く"
+        "パレットで cursorDown を実行するとカーソルが 1 へ動く"
     );
 
     // 解釈できない文字列は実行されずログに警告が出る（カーソルは動かない）。
-    server.req("POST", "/command/CommandDirect", "").expect("CommandDirect2");
+    server.req("POST", "/command/commandDirect", "").expect("CommandDirect2");
     wait_modal(&server);
     server.req("POST", "/completion/type", "ぜんぜん違う文字列").unwrap();
     server.req("POST", "/modal/command/ok", "").unwrap();
@@ -3458,43 +3458,43 @@ fn named_menu_resolves_and_dispatches() {
 [[menus]]
 name = "test"
 items = [
-  { label = "下へ(&D)", command = "CursorDown" },
+  { label = "下へ(&D)", command = "cursorDown" },
   { separator = true },
-  { label = "サブ(&S)", command = 'Menu("sub")' },
+  { label = "サブ(&S)", command = 'menu("sub")' },
 ]
 
 [[menus]]
 name = "sub"
 items = [
-  { label = "先頭へ", command = "CursorTop" },
+  { label = "先頭へ", command = "cursorTop" },
 ]
 "#;
     let server = Server::start(&["a.txt", "b.txt", "c.txt"], config);
 
     // 解決済みの項目木：コマンド・セパレータ・参照式サブメニューが出る。
     let tree = server.req("GET", "/menu/test", "").unwrap().1;
-    assert!(tree.contains("\"command\":\"CursorDown\""), "コマンド項目: {tree}");
+    assert!(tree.contains("\"command\":\"cursorDown\""), "コマンド項目: {tree}");
     assert!(tree.contains("\"sep\":true"), "セパレータ: {tree}");
-    assert!(tree.contains("\"command\":\"CursorTop\""), "サブメニューが展開される: {tree}");
+    assert!(tree.contains("\"command\":\"cursorTop\""), "サブメニューが展開される: {tree}");
     // サブメニュー内の項目にも深さ優先で葉インデックスが振られる。
     assert!(tree.contains("\"leaf\":1"), "サブメニューの葉も採番される: {tree}");
 
-    // 葉 0（CursorDown）を選ぶとカーソルが 1 へ動く。
+    // 葉 0（cursorDown）を選ぶとカーソルが 1 へ動く。
     server.req("POST", "/menu/test/select/0", "").unwrap();
     let c = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
-    assert_eq!(c.trim(), "1", "葉0=CursorDown でカーソルが 1 へ");
+    assert_eq!(c.trim(), "1", "葉0=cursorDown でカーソルが 1 へ");
 
-    // 葉 1（サブメニュー内の CursorTop）を選ぶとカーソルが 0 へ戻る＝サブメニュー項目も実行できる。
+    // 葉 1（サブメニュー内の cursorTop）を選ぶとカーソルが 0 へ戻る＝サブメニュー項目も実行できる。
     server.req("POST", "/menu/test/select/1", "").unwrap();
     let c = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "0");
-    assert_eq!(c.trim(), "0", "葉1=サブメニューの CursorTop でカーソルが 0 へ");
+    assert_eq!(c.trim(), "0", "葉1=サブメニューの cursorTop でカーソルが 0 へ");
 
     // 未定義メニューは null。
     let unknown = server.req("GET", "/menu/nope", "").unwrap().1;
     assert_eq!(unknown.trim(), "null", "未定義メニューは null: {unknown}");
 }
 
-/// スクリプトが `registerMenu` で登録した名前付きメニューも `Menu("名前")` の解決対象になる
+/// スクリプトが `registerMenu` で登録した名前付きメニューも `menu("名前")` の解決対象になる
 /// （config 定義と同じレジストリへマージされる）。`/menu/<name>` で出て `select` で実行できる。
 #[test]
 fn named_menu_includes_script_registered() {
@@ -3503,25 +3503,25 @@ fn named_menu_includes_script_registered() {
         &[(
             "00.ts",
             r#"rerics.registerMenu("scripted", [
-                { label: "末尾へ", command: "CursorEnd" },
-                { label: "先頭へ", command: "CursorTop" },
+                { label: "末尾へ", command: "cursorEnd" },
+                { label: "先頭へ", command: "cursorTop" },
             ]);"#,
         )],
     );
 
     let tree = server.req("GET", "/menu/scripted", "").unwrap().1;
-    assert!(tree.contains("\"command\":\"CursorEnd\""), "登録メニューが解決される: {tree}");
-    assert!(tree.contains("\"command\":\"CursorTop\""), "2 項目目も出る: {tree}");
+    assert!(tree.contains("\"command\":\"cursorEnd\""), "登録メニューが解決される: {tree}");
+    assert!(tree.contains("\"command\":\"cursorTop\""), "2 項目目も出る: {tree}");
 
-    // 葉 0（CursorEnd）でカーソルが末尾へ動く。
+    // 葉 0（cursorEnd）でカーソルが末尾へ動く。
     server.req("POST", "/menu/scripted/select/0", "").unwrap();
     let moved = poll(&server, "/state/panes/left/cursor", |b| b.trim() != "0");
-    assert_ne!(moved.trim(), "0", "CursorEnd で末尾へ動く");
+    assert_ne!(moved.trim(), "0", "cursorEnd で末尾へ動く");
 
-    // 葉 1（CursorTop）でカーソルが先頭へ戻る。
+    // 葉 1（cursorTop）でカーソルが先頭へ戻る。
     server.req("POST", "/menu/scripted/select/1", "").unwrap();
     let top = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "0");
-    assert_eq!(top.trim(), "0", "CursorTop で先頭へ戻る");
+    assert_eq!(top.trim(), "0", "cursorTop で先頭へ戻る");
 }
 
 /// 設定の「メニュー」ページでメニューの追加/選択/改名/並べ替え/削除を駆動できる。標準
@@ -3532,14 +3532,14 @@ fn menu_editor_drives_menu_crud() {
     let config = r#"
 [[menus]]
 name = "alpha"
-items = [ { label = "コピー", command = "Copy" } ]
+items = [ { label = "コピー", command = "copy" } ]
 
 [[menus]]
 name = "beta"
 items = []
 "#;
     let server = Server::start(&["a.txt"], config);
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     // 設定が開いてメニュー編集フックが登録されるまで待つ。
     let s0 = poll(&server, "/menu-editor", |b| b.contains("\"name\":\"alpha\""));
     assert!(s0.contains("\"name\":\"beta\""), "初期状態に config の2メニュー: {s0}");
@@ -3571,10 +3571,10 @@ fn menu_editor_persists_to_config_on_ok() {
     let config = r#"
 [[menus]]
 name = "alpha"
-items = [ { label = "コピー", command = "Copy" } ]
+items = [ { label = "コピー", command = "copy" } ]
 "#;
     let server = Server::start(&["a.txt"], config);
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     poll(&server, "/menu-editor", |b| b.contains("\"name\":\"alpha\""));
 
     // メニューを足して OK で確定（ライブ反映＋config.toml へ保存）。
@@ -3611,7 +3611,7 @@ name = "beta"
 items = []
 "#;
     let server = Server::start(&["a.txt"], config);
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     poll(&server, "/menu-editor", |b| b.contains("\"name\":\"alpha\""));
 
     // 同名 alpha を足すと alpha (2)。
@@ -3632,10 +3632,10 @@ fn menu_editor_drives_item_crud() {
     let config = r#"
 [[menus]]
 name = "alpha"
-items = [ { label = "コピー", command = "Copy" } ]
+items = [ { label = "コピー", command = "copy" } ]
 "#;
     let server = Server::start(&["a.txt"], config);
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     poll(&server, "/menu-editor", |b| b.contains("\"name\":\"alpha\""));
 
     // 左メニューを選ぶ（項目操作は選択中メニューに対して行う）。
@@ -3686,36 +3686,36 @@ fn menu_editor_command_picker_inserts_token() {
     let config = r#"
 [[menus]]
 name = "alpha"
-items = [ { label = "コピー", command = "Copy" } ]
+items = [ { label = "コピー", command = "copy" } ]
 "#;
     let server = Server::start(&["a.txt"], config);
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     poll(&server, "/menu-editor", |b| b.contains("\"name\":\"alpha\""));
 
     // メニュー・項目を選ぶと、その項目のコマンドが下書き欄へ載る。
     server.req("POST", "/menu-editor/select/0", "").unwrap();
     let s = server.req("POST", "/menu-editor/item-select/0", "").unwrap().1;
-    assert!(s.contains("\"command\":\"Copy\""), "選択項目が下書き欄へ: {s}");
+    assert!(s.contains("\"command\":\"copy\""), "選択項目が下書き欄へ: {s}");
 
     // ピッカーを開く（respond-first）。最前面モーダルがリスト選択（機能の選択）になる。
     let r = server.req("POST", "/menu-editor/item-pick", "").unwrap().1;
     assert!(r.contains("modal_opening"), "respond-first: {r}");
     let st = poll(&server, "/state", |b| b.contains("機能の選択"));
 
-    // モーダルの行から Delete の行を見つけて選び、OK で確定する。
+    // モーダルの行から delete の行を見つけて選び、OK で確定する。
     let v: serde_json::Value = serde_json::from_str(&st).unwrap();
     let items = v["modal"]["items"].as_array().expect("modal items");
     let idx = items
         .iter()
-        .position(|x| x.as_str().unwrap_or("").contains("（Delete）"))
-        .expect("Delete の行がある");
+        .position(|x| x.as_str().unwrap_or("").contains("（delete）"))
+        .expect("delete の行がある");
     server.req("POST", &format!("/modal/select/{idx}"), "").unwrap();
     server.req("POST", "/modal/command/ok", "").unwrap();
 
-    // ピッカーが閉じたらコマンド下書き欄が Delete に置き換わる。メニュー項目自体は OK 前なので
-    // まだ Copy のまま（欄への挿入だけ）。
-    let s = poll(&server, "/menu-editor", |b| b.contains("\"command\":\"Delete\""));
-    assert!(s.contains("\"command\":\"Copy\""), "項目はまだ Copy のまま: {s}");
+    // ピッカーが閉じたらコマンド下書き欄が delete に置き換わる。メニュー項目自体は OK 前なので
+    // まだ copy のまま（欄への挿入だけ）。
+    let s = poll(&server, "/menu-editor", |b| b.contains("\"command\":\"delete\""));
+    assert!(s.contains("\"command\":\"copy\""), "項目はまだ copy のまま: {s}");
 }
 
 /// 機能ピッカー（多数行のリスト選択モーダル）に `/modal/wheel/<delta>` でホイールを送ると、
@@ -3726,10 +3726,10 @@ fn modal_wheel_scrolls_list() {
     let config = r#"
 [[menus]]
 name = "alpha"
-items = [ { label = "コピー", command = "Copy" } ]
+items = [ { label = "コピー", command = "copy" } ]
 "#;
     let server = Server::start(&["a.txt"], config);
-    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
     poll(&server, "/menu-editor", |b| b.contains("\"name\":\"alpha\""));
     server.req("POST", "/menu-editor/select/0", "").unwrap();
     server.req("POST", "/menu-editor/item-pick", "").unwrap();
@@ -3754,7 +3754,7 @@ items = [ { label = "コピー", command = "Copy" } ]
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
 
-/// メニュー項目に `Script("名前", 引数...)` を書くと、選んだとき登録スクリプトが引数ごと
+/// メニュー項目に `script("名前", 引数...)` を書くと、選んだとき登録スクリプトが引数ごと
 /// 実行される（原作のスクリプト連携メニューを移植する経路・引数転送つき）。
 #[test]
 fn menu_script_token_runs_registered_script_with_args() {
@@ -3764,7 +3764,7 @@ fn menu_script_token_runs_registered_script_with_args() {
             "00.ts",
             r#"
             rerics.registerCommand("ping", (msg) => rerics.log("PONG:" + msg));
-            rerics.registerMenu("fns", [{ label: "ピング", command: 'Script("ping", "hi")' }]);
+            rerics.registerMenu("fns", [{ label: "ピング", command: 'script("ping", "hi")' }]);
             "#,
         )],
     );
@@ -3772,5 +3772,5 @@ fn menu_script_token_runs_registered_script_with_args() {
     // 項目を選ぶと登録スクリプトが引数つきで走る（ログに出る）。
     server.req("POST", "/menu/fns/select/0", "").unwrap();
     let log = poll(&server, "/state/log/lines", |b| b.contains("PONG:hi"));
-    assert!(log.contains("PONG:hi"), "Script 経由でスクリプトが引数つきで実行される: {log}");
+    assert!(log.contains("PONG:hi"), "script 経由でスクリプトが引数つきで実行される: {log}");
 }

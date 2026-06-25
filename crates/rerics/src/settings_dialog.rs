@@ -2281,7 +2281,7 @@ type MenuItemOp = Rc<dyn Fn(&str, &str, bool)>;
 
 /// 機能ピッカー（モーダル）の表示行と、各行に対応するコマンドトークン（並列）。キー編集器と
 /// 同じ `command_genre` 順に並べ、ジャンル見出し付きで見せる。選んだ行のトークンをコマンド欄へ
-/// 挿入する（引数や `Script(...)`/`Menu(...)` 参照は欄で手書きする前提なので base のみ）。
+/// 挿入する（引数や `script(...)`/`menu(...)` 参照は欄で手書きする前提なので base のみ）。
 fn command_picker_rows() -> (Vec<String>, Vec<String>) {
     let mut cmds: Vec<Command> = Command::all().collect();
     cmds.sort_by_key(|c| crate::key_editor::command_genre(*c).0);
@@ -2309,7 +2309,7 @@ fn build_menu_item(label: &str, command: &str, sep: bool) -> MenuItem {
 }
 
 /// 「メニュー」ページ。左にメニュー名一覧、右に選択メニューの項目（ラベル／コマンド）を出す
-/// マスターディテール。`Menu("名前")` で開く名前付きメニュー（`shared.cfg.menus`）を編集する。
+/// マスターディテール。`menu("名前")` で開く名前付きメニュー（`shared.cfg.menus`）を編集する。
 /// 左の名前欄＋ボタンでメニューの追加/改名/削除/並べ替え。項目の編集は後続増分。
 #[derive(Clone)]
 struct MenusPane {

@@ -347,7 +347,7 @@ pub struct Config {
     pub keybinds_imageviewer: BTreeMap<String, String>,
     /// 登録ディレクトリ（ジャンプ先）。
     pub bookmarks: Vec<Bookmark>,
-    /// 名前付きメニュー定義（`Menu("名前")` で開く）。
+    /// 名前付きメニュー定義（`menu("名前")` で開く）。
     pub menus: Vec<crate::menu::MenuDef>,
     /// Edit コマンドで開く外部エディタ（実行ファイル名 or パス）。
     pub editor: String,
@@ -768,7 +768,7 @@ mod tests {
         let path = std::env::temp_dir().join("rerics_cfg_partial.toml");
         std::fs::write(
             &path,
-            "[colors.dark]\ncursor = \"#ff0000\"\n\n[keybinds]\n\"Ctrl+T\" = \"Reload\"\n",
+            "[colors.dark]\ncursor = \"#ff0000\"\n\n[keybinds]\n\"Ctrl+T\" = \"reload\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(&path);
@@ -776,8 +776,8 @@ mod tests {
         assert_eq!(cfg.colors.dark.cursor, crate::Rgb::new(0xff, 0, 0));
         assert_eq!(cfg.colors.dark.background, Config::default().colors.dark.background);
         assert_eq!(cfg.colors.light, Config::default().colors.light);
-        assert_eq!(cfg.keybinds.get("Ctrl+T").map(String::as_str), Some("Reload"));
-        assert_eq!(cfg.keybinds.get("Down").map(String::as_str), Some("CursorDown"));
+        assert_eq!(cfg.keybinds.get("Ctrl+T").map(String::as_str), Some("reload"));
+        assert_eq!(cfg.keybinds.get("Down").map(String::as_str), Some("cursorDown"));
         let _ = std::fs::remove_file(&path);
     }
 

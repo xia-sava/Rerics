@@ -105,8 +105,8 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         | RenameSequenceDialog | SendToRecycled | CreateShortcut | ClipPaste => {
             DebugCmdClass::ModalWrite
         }
-        // View/ViewFile は暗号化書庫でパスワード入力モーダルを開き得る（書込みではない）。
-        // View はディレクトリ/書庫へ潜る場合もあるが、いずれも非破壊。
+        // view/viewFile は暗号化書庫でパスワード入力モーダルを開き得る（書込みではない）。
+        // view はディレクトリ/書庫へ潜る場合もあるが、いずれも非破壊。
         View | ViewFile => DebugCmdClass::MaybeModal,
         // 履歴ダイアログは読取モーダル（リスト選択）を開く（書込みではない）。
         PathHistoryDialog => DebugCmdClass::MaybeModal,
@@ -811,7 +811,7 @@ impl MainWindow {
     fn exec(&self, is_left: bool, inv: &Invocation) -> w::AnyResult<()> {
         let cmd = inv.command;
         let view = self.view(is_left);
-        // 書庫の読込中はキー入力を抑止し、Esc（ClearAll）と「親へ戻る」（ToParent・既定 BS）を
+        // 書庫の読込中はキー入力を抑止し、Esc（clearAll）と「親へ戻る」（toParent・既定 BS）を
         // 展開中止に割り当てる。デカい書庫にうっかり潜った時、咄嗟の「出る」操作で抜けられる。
         if view.is_loading() {
             if matches!(cmd, Command::ClearAll | Command::ToParent) {
@@ -858,7 +858,7 @@ impl MainWindow {
             .filter(|c| c.available_in(rerics_core::CommandContext::Filer))
             .map(|c| (format!("{} ({})", c.display_name(), c.as_token()), c.as_token().to_string()))
             .collect();
-        // 登録済みスクリプトコマンドも候補に出す（挿入は `Script("name")` トークン）。
+        // 登録済みスクリプトコマンドも候補に出す（挿入は `script("name")` トークン）。
         for sc in self.script_list_commands() {
             let label = sc.label.unwrap_or_else(|| sc.name.clone());
             let token = Invocation::new(Command::Script, vec![sc.name]).to_token_string();

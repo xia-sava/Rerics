@@ -226,7 +226,7 @@ impl MainWindow {
         Ok(())
     }
 
-    /// 指定パスへ移動する（引数版 `ChangeDirectory("path")`）。空や移動失敗はログのみ。
+    /// 指定パスへ移動する（引数版 `changeDirectory("path")`）。空や移動失敗はログのみ。
     /// `target` は解決済みのパス（式 `=r.folderDialog()` 等は呼び出し側で評価される）。
     pub(crate) fn change_directory(&self, is_left: bool, target: Option<&str>) -> w::AnyResult<()> {
         let Some(input) = target.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -265,7 +265,7 @@ impl MainWindow {
         Ok(())
     }
 
-    /// `ChangeDirectory` の失敗をログ＋エラーダイアログで報せる（原作 `NotExistsDirectory` /
+    /// `changeDirectory` の失敗をログ＋エラーダイアログで報せる（原作 `NotExistsDirectory` /
     /// `ChangeDirectoryError` 相当）。存在しない場合と、それ以外（権限不足等）で文言を分ける。
     fn report_change_directory_error(&self, err: &std::io::Error) {
         let msg = change_directory_error_message(err);
@@ -325,7 +325,7 @@ impl MainWindow {
         self.go_to_drive(is_left, &next)
     }
 
-    /// アクティブペインを指定ドライブへ移す（引数版 `ChangeDrive("C:")`）。
+    /// アクティブペインを指定ドライブへ移す（引数版 `changeDrive("C:")`）。
     /// 引数は `C` / `C:` / `C:\` のいずれでも可。空や不正は何もしない。
     pub(crate) fn change_drive_to(&self, is_left: bool, drive: Option<&str>) -> w::AnyResult<()> {
         let Some(d) = drive.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -854,7 +854,7 @@ impl MainWindow {
 
 /// `roots` を `delta`（+1/-1）方向に巡回し、`cur` 以外で最初に `ready` を満たす index を返す。
 /// 他に対象が無ければ（全て未了・ドライブが1つだけ等）None。
-/// `ChangeDirectory` 失敗時のダイアログ文言（原作 `NotExistsDirectory` / `ChangeDirectoryError`）。
+/// `changeDirectory` 失敗時のダイアログ文言（原作 `NotExistsDirectory` / `ChangeDirectoryError`）。
 /// 移動先が存在しないなら専用文、それ以外（権限不足・読込エラー等）は原因付きで報せる。
 fn change_directory_error_message(err: &std::io::Error) -> String {
     if err.kind() == std::io::ErrorKind::NotFound {

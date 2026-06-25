@@ -1,10 +1,10 @@
-//! 名前付きメニューの定義と解決。原作の `Menu("名前")` 相当。
+//! 名前付きメニューの定義と解決。原作の `menu("名前")` 相当。
 //!
 //! メニューは「ラベル＋コマンド呼び出し」の並びをデータで持ち、名前で引いてポップアップとして
 //! 開く。定義元は config の `[[menus]]` とスクリプトの `registerMenu` の2系統で、どちらも
 //! [`MenuRegistry`] へ集約する（同名は後勝ち）。
 //!
-//! 項目のコマンドが `Menu("他名")` のときは参照式サブメニューとして展開する。展開は
+//! 項目のコマンドが `menu("他名")` のときは参照式サブメニューとして展開する。展開は
 //! [`MenuRegistry::resolve`] が担い、循環参照は掲示のみの無効項目に落として無限再帰を防ぐ。
 //! 解決結果（[`ResolvedItem`] の木）は UI 非依存なので、GUI 側はこれをポップアップへ素直に
 //! 変換するだけでよい。
@@ -15,10 +15,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::input::{Command, Invocation};
 
-/// 名前付きメニュー1つ分の定義。`name` で参照し、`Menu("name")` で開く。
+/// 名前付きメニュー1つ分の定義。`name` で参照し、`menu("name")` で開く。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MenuDef {
-    /// メニュー名（`Menu("name")` の引数で参照する一意名）。
+    /// メニュー名（`menu("name")` の引数で参照する一意名）。
     pub name: String,
     /// 項目の並び（上から順に表示）。
     #[serde(default)]
@@ -27,7 +27,7 @@ pub struct MenuDef {
 
 /// メニュー項目1つ。ラベル＋実行するコマンド、またはセパレータ。
 ///
-/// `command` が `Menu("他名")` のときは参照式サブメニューになる（`label` がサブメニュー見出し）。
+/// `command` が `menu("他名")` のときは参照式サブメニューになる（`label` がサブメニュー見出し）。
 /// `separator` が true の項目は区切り線で、`label`/`command` は無視する。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MenuItem {
@@ -128,7 +128,7 @@ impl MenuRegistry {
                 reason: format!("コマンドとして解釈できません: {}", item.command),
             };
         };
-        // `Menu("他名")` は参照式サブメニューとして展開する。
+        // `menu("他名")` は参照式サブメニューとして展開する。
         if inv.command == Command::Menu {
             let target = inv.args.first().map(String::as_str).unwrap_or("");
             if target.is_empty() {
@@ -171,9 +171,9 @@ mod tests {
         let reg = MenuRegistry::from_defs([menu(
             "編集",
             vec![
-                MenuItem::entry("コピー(&C)", "Copy"),
+                MenuItem::entry("コピー(&C)", "copy"),
                 MenuItem::separator(),
-                MenuItem::entry("移動(&M)", "Move"),
+                MenuItem::entry("移動(&M)", "move"),
             ],
         )]);
         let items = reg.resolve("編集").unwrap();
@@ -192,8 +192,8 @@ mod tests {
     #[test]
     fn submenu_is_expanded_by_reference() {
         let reg = MenuRegistry::from_defs([
-            menu("親", vec![MenuItem::entry("子を開く", "Menu(\"子\")")]),
-            menu("子", vec![MenuItem::entry("削除", "Delete")]),
+            menu("親", vec![MenuItem::entry("子を開く", "menu(\"子\")")]),
+            menu("子", vec![MenuItem::entry("削除", "delete")]),
         ]);
         let items = reg.resolve("親").unwrap();
         match &items[0] {
@@ -209,8 +209,8 @@ mod tests {
     #[test]
     fn cyclic_reference_becomes_invalid() {
         let reg = MenuRegistry::from_defs([
-            menu("A", vec![MenuItem::entry("Bへ", "Menu(\"B\")")]),
-            menu("B", vec![MenuItem::entry("Aへ", "Menu(\"A\")")]),
+            menu("A", vec![MenuItem::entry("Bへ", "menu(\"B\")")]),
+            menu("B", vec![MenuItem::entry("Aへ", "menu(\"A\")")]),
         ]);
         let items = reg.resolve("A").unwrap();
         // A → B まで展開し、B の中の「Aへ」が循環で無効化される。
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn missing_reference_is_invalid() {
-        let reg = MenuRegistry::from_defs([menu("親", vec![MenuItem::entry("無い子", "Menu(\"無い\")")])]);
+        let reg = MenuRegistry::from_defs([menu("親", vec![MenuItem::entry("無い子", "menu(\"無い\")")])]);
         let items = reg.resolve("親").unwrap();
         assert!(matches!(&items[0], ResolvedItem::Invalid { reason, .. } if reason.contains("見つかりません")));
     }
@@ -237,8 +237,8 @@ mod tests {
     #[test]
     fn later_definition_wins() {
         let mut reg = MenuRegistry::new();
-        reg.insert(menu("M", vec![MenuItem::entry("旧", "Copy")]));
-        reg.insert(menu("M", vec![MenuItem::entry("新", "Move")]));
+        reg.insert(menu("M", vec![MenuItem::entry("旧", "copy")]));
+        reg.insert(menu("M", vec![MenuItem::entry("新", "move")]));
         let items = reg.resolve("M").unwrap();
         assert_eq!(items.len(), 1);
         assert!(matches!(&items[0], ResolvedItem::Command { invocation, .. } if invocation.command == Command::Move));

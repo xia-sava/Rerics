@@ -202,7 +202,7 @@ fn decimal1_grouped(v: f64) -> String {
 }
 
 impl SortType {
-    /// リテラル引数（`Sort("name")` 等）からソート種別を解釈する。大小無視。
+    /// リテラル引数（`sort("name")` 等）からソート種別を解釈する。大小無視。
     /// バリアント名のほか、よく使う別名（size/date/ext 等）も受理する。
     pub fn from_token(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {

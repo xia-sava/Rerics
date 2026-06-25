@@ -125,8 +125,8 @@ fn push_scripty_rows(
     }
 }
 
-/// 実呼び出しの表示文字列（機能順の中央カラム）。`Script`/`Eval` はラッパを剥がして中身
-/// （スクリプト名・コード）だけを、組込はトークン＋引数（`ChangeDirectory("D:")`・`Copy`）を見せる。
+/// 実呼び出しの表示文字列（機能順の中央カラム）。`script`/`eval` はラッパを剥がして中身
+/// （スクリプト名・コード）だけを、組込はトークン＋引数（`changeDirectory("D:")`・`copy`）を見せる。
 fn call_display(value: &str) -> String {
     match Invocation::parse(value) {
         Some(inv) => match inv.command {
@@ -137,7 +137,7 @@ fn call_display(value: &str) -> String {
     }
 }
 
-/// 生 invocation が `Script("name")` ならその登録名を返す（メタ参照のキー）。それ以外は `None`。
+/// 生 invocation が `script("name")` ならその登録名を返す（メタ参照のキー）。それ以外は `None`。
 fn script_name_of(value: &str) -> Option<String> {
     Invocation::parse(value).and_then(|inv| {
         (inv.command == Command::Script).then(|| inv.args.into_iter().next()).flatten()
@@ -257,7 +257,7 @@ struct KeyEditorInner {
     /// 「コードを割り当て」で書かれた、まだキーへ結んでいない `Eval` のコード。スクリプトジャンルに
     /// 未割当（－）行として並べ、通常のキャプチャで割り当てる。
     pending_eval: RefCell<Vec<String>>,
-    /// 「引数」で組込コマンドへ付けた、まだキーへ結んでいない呼び出し（`ChangeDirectory("=式")` 等）。
+    /// 「引数」で組込コマンドへ付けた、まだキーへ結んでいない呼び出し（`changeDirectory("=式")` 等）。
     /// 当該コマンドの未割当（－）行として並べ、通常のキャプチャで割り当てる。
     pending_args: RefCell<Vec<String>>,
     /// 直近の操作結果（観測・状態表示用）。
@@ -859,7 +859,7 @@ impl KeyEditor {
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
-    /// 生 invocation の機能名（機能順の左カラム・キー順の機能カラム）。`Script("name")` は登録
+    /// 生 invocation の機能名（機能順の左カラム・キー順の機能カラム）。`script("name")` は登録
     /// メタの `label` があればそれ、無ければコマンド既定の表示名（「スクリプト実行」等）。未知値は生値。
     fn value_label(&self, value: &str) -> String {
         if let Some(name) = script_name_of(value)
@@ -1476,7 +1476,7 @@ impl KeyEditor {
     }
 
     /// 「コードを割り当て」：複文モーダルでコードを書かせ、スクリプトジャンルへ未割当（－）の
-    /// `Eval(code)` 行を作る。機能順・検索解除でその行へ選択＋スクロールし、あとは通常のキー登録へ。
+    /// `eval(code)` 行を作る。機能順・検索解除でその行へ選択＋スクロールし、あとは通常のキー登録へ。
     fn add_code_row(&self) {
         if self.inner.picking.borrow().is_some() || self.inner.capturing.get() {
             return;
@@ -1630,7 +1630,7 @@ impl KeyEditor {
                 return true;
             }
         }
-        // `pending_eval` はコード文字列を持つので、`Eval("code")` の中身で照合する。
+        // `pending_eval` はコード文字列を持つので、`eval("code")` の中身で照合する。
         if let Some(code) = Invocation::parse(value)
             .filter(|i| i.command == Command::Eval)
             .and_then(|i| i.args.into_iter().next())
