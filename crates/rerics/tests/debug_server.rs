@@ -3830,11 +3830,13 @@ fn command_meta_endpoint_reports_args_examples_and_contexts() {
         "sort の種別に name が出る"
     );
 
-    // 引数なしコマンドは args 空・summary は表示名流用。
+    // 引数なしコマンドは args 空・display は短い機能名・summary は詳しい説明文。
     let copy: serde_json::Value =
         serde_json::from_str(&server.req("GET", "/meta/copy", "").unwrap().1).unwrap();
     assert_eq!(copy["args"].as_array().unwrap().len(), 0);
-    assert_eq!(copy["summary"], "コピー");
+    assert_eq!(copy["display"], "コピー");
+    let summary = copy["summary"].as_str().unwrap();
+    assert!(summary.contains("コピー") && summary.len() > "コピー".len(), "詳しい説明: {summary}");
 
     // 別名トークンも解決する（CD → changeDirectory）。
     let cd: serde_json::Value =

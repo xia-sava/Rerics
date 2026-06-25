@@ -280,13 +280,6 @@ pub struct CommandMeta {
     pub examples: &'static [&'static str],
 }
 
-impl CommandMeta {
-    /// 引数なし・説明は表示名流用の既定メタ。
-    fn trivial(command: Command) -> CommandMeta {
-        CommandMeta { summary: command.display_name(), args: &[], examples: &[] }
-    }
-}
-
 /// 「選択しながら移動」の名前付きオプション（カーソル移動コマンド共通）。
 const SELECT_OPT: &[ArgSpec] = &[ArgSpec {
     name: "options",
@@ -313,129 +306,129 @@ const CURSOR_MOVE_OPT: &[ArgSpec] = &[ArgSpec {
 
 impl Command {
     /// コマンドと「設定トークン名・表示名（日本語）」の対応表（変換の単一の出どころ）。
-    const ALL: &'static [(Command, &'static str, &'static str)] = {
+    const ALL: &'static [(Command, &'static str, &'static str, &'static str)] = {
         use Command::*;
         &[
-            (CursorUp, "cursorUp", "カーソルを上へ"),
-            (CursorDown, "cursorDown", "カーソルを下へ"),
-            (CursorTop, "cursorTop", "先頭行へ移動"),
-            (CursorEnd, "cursorEnd", "最終行へ移動"),
-            (CursorPageUp, "cursorPageUp", "1ページ上へ"),
-            (CursorPageDown, "cursorPageDown", "1ページ下へ"),
-            (SetCursorPosition, "setCursorPosition", "指定位置へカーソル移動"),
-            (EnterDir, "enterDir", "開く（ディレクトリ・書庫へ）"),
-            (View, "view", "ビューアで表示"),
-            (ToParent, "toParent", "親ディレクトリへ移動"),
-            (ToRoot, "toRoot", "ルートディレクトリへ移動"),
-            (HistoryBack, "historyBack", "履歴を1つ戻る"),
-            (HistoryForward, "historyForward", "履歴を1つ進める"),
-            (PathHistoryDialog, "pathHistoryDialog", "ディレクトリ履歴"),
-            (ChangeDirectory, "changeDirectory", "ディレクトリの変更"),
-            (ChangeDirectoryDialog, "changeDirectoryDialog", "ディレクトリ変更ダイアログ"),
-            (ChangeDrive, "changeDrive", "ドライブの変更"),
-            (ChangeDriveDialog, "changeDriveDialog", "ドライブリスト"),
-            (JumpDialog, "jumpDialog", "登録ディレクトリ"),
-            (PathRegisterDialog, "pathRegisterDialog", "登録ディレクトリに追加"),
-            (IncrementalSearchDialog, "incrementalSearchDialog", "インクリメンタルサーチ"),
-            (DirectoryInformation, "directoryInformation", "ディレクトリの容量計算"),
-            (RenameSequenceDialog, "renameSequenceDialog", "連番リネーム"),
-            (FocusLeft, "focusLeft", "左パスへ移動"),
-            (FocusRight, "focusRight", "右パスへ移動"),
-            (MarkToggle, "markToggle", "選択／解除（カーソル位置）"),
-            (SelectAll, "selectAll", "すべて選択"),
-            (ClearAll, "clearAll", "すべて選択解除"),
-            (ReverseAll, "reverseAll", "すべて選択反転"),
-            (SelectAllFile, "selectAllFile", "ファイルのみ選択"),
-            (ReverseAllFile, "reverseAllFile", "ファイルのみ選択反転"),
-            (Reload, "reload", "最新の情報に更新"),
-            (SortByName, "sortByName", "名前順で並べ替え"),
-            (SortByExtension, "sortByExtension", "拡張子順で並べ替え"),
-            (SortBySize, "sortBySize", "サイズ順で並べ替え"),
-            (SortByDate, "sortByDate", "日付順で並べ替え"),
-            (Sort, "sort", "並べ替え方法の指定"),
-            (SortDialog, "sortDialog", "ソート設定"),
-            (SortReverseToggle, "sortReverseToggle", "昇順／降順を反転"),
-            (PageNext, "pageNext", "次のタブへ"),
-            (PagePrevious, "pagePrevious", "前のタブへ"),
-            (NewFiler, "newFiler", "新しいタブ"),
-            (Exit, "exit", "タブを閉じる"),
-            (MakeDirectory, "makeDirectory", "ディレクトリの作成"),
-            (Copy, "copy", "コピー"),
-            (Move, "move", "移動"),
-            (SwapPath, "swapPath", "左右のパスを入れ替え"),
-            (OppositeToCurrent, "oppositeToCurrent", "反対側をカレントと同じに"),
-            (CurrentToOpposite, "currentToOpposite", "カレントを反対側と同じに"),
-            (Rename, "rename", "名前の変更"),
-            (Delete, "delete", "削除"),
-            (SendToRecycled, "sendToRecycled", "ごみ箱へ送る"),
-            (CreateShortcut, "createShortcut", "ショートカットの作成"),
-            (ClipCopy, "clipCopy", "クリップボードにコピー"),
-            (ClipCut, "clipCut", "クリップボードに切り取り"),
-            (ClipPaste, "clipPaste", "クリップボードから貼り付け"),
-            (CreateFileDialog, "createFileDialog", "新規ファイルの作成"),
-            (ViewFile, "viewFile", "ビューアで開く"),
-            (Edit, "edit", "エディタで開く"),
-            (PropertyDialog, "propertyDialog", "プロパティの表示"),
-            (Compress, "compress", "圧縮"),
-            (Extract, "extract", "解凍"),
-            (NextDrive, "nextDrive", "次のドライブへ"),
-            (PreviousDrive, "previousDrive", "前のドライブへ"),
-            (PathMask, "pathMask", "パスマスク"),
-            (SelectMask, "selectMask", "マスクで選択"),
-            (OpenTaskManager, "openTaskManager", "タスクマネージャ"),
-            (OpenSettings, "openSettings", "設定を開く"),
-            (KeyBindsDialog, "keyBindsDialog", "キーバインドリスト"),
-            (CommandDirect, "commandDirect", "任意のコマンドを実行"),
-            (Menu, "menu", "名前付きメニューを開く"),
-            (CopyLog, "copyLog", "ログをコピー"),
-            (ClearLog, "clearLog", "ログクリア"),
-            (MaximizeLeft, "maximizeLeft", "左リストを最大化"),
-            (MaximizeRight, "maximizeRight", "右リストを最大化"),
-            (MaximizeLeftForce, "maximizeLeftForce", "左リストを最大化（強制）"),
-            (MaximizeRightForce, "maximizeRightForce", "右リストを最大化（強制）"),
-            (BorderLeft, "borderLeft", "境界線を左へ"),
-            (BorderRight, "borderRight", "境界線を右へ"),
-            (BorderReset, "borderReset", "境界線を定位置へ"),
-            (CursorOpposite, "cursorOpposite", "反対側パスへ移動"),
-            (SelectFile, "selectFile", "ファイルを選択（カーソル位置）"),
-            (Refresh, "refresh", "表示を更新"),
-            (Nop, "nop", "無効コマンド"),
-            (MaximizeCurrent, "maximizeCurrent", "現在のリストを最大化"),
-            (MaximizeWindow, "maximizeWindow", "ウィンドウの最大化"),
-            (MinimizeWindow, "minimizeWindow", "ウィンドウの最小化"),
-            (End, "end", "アプリケーションの終了"),
-            (Restart, "restart", "再起動"),
-            (Quit, "quit", "閉じる（最後ならアプリ終了）"),
-            (ViewerClose, "viewerClose", "ビューアを閉じる"),
-            (ViewerScrollUp, "viewerScrollUp", "1行上へ"),
-            (ViewerScrollDown, "viewerScrollDown", "1行下へ"),
-            (ViewerPageUp, "viewerPageUp", "1ページ上へ"),
-            (ViewerPageDown, "viewerPageDown", "1ページ下へ"),
-            (ViewerScrollTop, "viewerScrollTop", "先頭行へ移動"),
-            (ViewerScrollBottom, "viewerScrollBottom", "最終行へ移動"),
-            (ViewerSearchDialog, "viewerSearchDialog", "検索"),
-            (ViewerFindNext, "viewerFindNext", "次を検索"),
-            (ViewerFindPrevious, "viewerFindPrevious", "前を検索"),
-            (ViewerSelectAll, "viewerSelectAll", "すべて選択"),
-            (ViewerToggleMode, "viewerToggleMode", "バイナリ／テキスト切替"),
-            (ViewerChangeEncoding, "viewerChangeEncoding", "文字コードを切替"),
-            (ViewerCopy, "viewerCopy", "選択範囲をコピー"),
-            (ViewerContextMenu, "viewerContextMenu", "コンテキストメニュー"),
-            (ImageNext, "imageNext", "次の画像"),
-            (ImagePrevious, "imagePrevious", "前の画像"),
-            (ImageZoomIn, "imageZoomIn", "拡大"),
-            (ImageZoomOut, "imageZoomOut", "縮小"),
-            (ImageFitWindow, "imageFitWindow", "画面に合わせて縮小"),
-            (ImageActualSize, "imageActualSize", "等倍表示"),
-            (ImageFitWidth, "imageFitWidth", "横幅に合わせる"),
-            (ImageFitHeight, "imageFitHeight", "縦幅に合わせる"),
-            (ImageFitLarge, "imageFitLarge", "なるべく大きく表示"),
-            (ImageRotateRight, "imageRotateRight", "右回転"),
-            (ImageRotateLeft, "imageRotateLeft", "左回転"),
-            (ImageFlipHorizontal, "imageFlipHorizontal", "左右反転"),
-            (ImageFlipVertical, "imageFlipVertical", "上下反転"),
-            (ImageCopy, "imageCopy", "クリップボードにコピー"),
-            (MediaTogglePlay, "mediaTogglePlay", "再生／一時停止"),
+            (CursorUp, "cursorUp", "カーソルを上へ", "カーソルを 1 つ上の項目へ移動する"),
+            (CursorDown, "cursorDown", "カーソルを下へ", "カーソルを 1 つ下の項目へ移動する"),
+            (CursorTop, "cursorTop", "先頭行へ移動", "先頭の項目へカーソルを移動する"),
+            (CursorEnd, "cursorEnd", "最終行へ移動", "末尾の項目へカーソルを移動する"),
+            (CursorPageUp, "cursorPageUp", "1ページ上へ", "1 ページ分カーソルを上へ移動する"),
+            (CursorPageDown, "cursorPageDown", "1ページ下へ", "1 ページ分カーソルを下へ移動する"),
+            (SetCursorPosition, "setCursorPosition", "指定位置へカーソル移動", "指定した名前の項目へカーソルを移動する"),
+            (EnterDir, "enterDir", "開く（ディレクトリ・書庫へ）", "カーソル位置のディレクトリや書庫を開いて中へ入る"),
+            (View, "view", "ビューアで表示", "カーソル位置のファイルを内蔵ビューアで表示する"),
+            (ToParent, "toParent", "親ディレクトリへ移動", "1 つ上の親ディレクトリへ移動する"),
+            (ToRoot, "toRoot", "ルートディレクトリへ移動", "現在のドライブのルートへ移動する"),
+            (HistoryBack, "historyBack", "履歴を1つ戻る", "ディレクトリ移動履歴を 1 つ前へ戻る"),
+            (HistoryForward, "historyForward", "履歴を1つ進める", "ディレクトリ移動履歴を 1 つ先へ進める"),
+            (PathHistoryDialog, "pathHistoryDialog", "ディレクトリ履歴", "ディレクトリ移動履歴の一覧を開き選んだ場所へ移動する"),
+            (ChangeDirectory, "changeDirectory", "ディレクトリの変更", "指定したパスへディレクトリを移動する"),
+            (ChangeDirectoryDialog, "changeDirectoryDialog", "ディレクトリ変更ダイアログ", "移動先パスを入力するダイアログを開く"),
+            (ChangeDrive, "changeDrive", "ドライブの変更", "指定したドライブへ移動する"),
+            (ChangeDriveDialog, "changeDriveDialog", "ドライブリスト", "ドライブの一覧を開き選んだドライブへ移動する"),
+            (JumpDialog, "jumpDialog", "登録ディレクトリ", "登録済みディレクトリの一覧を開き選んだ場所へ移動する"),
+            (PathRegisterDialog, "pathRegisterDialog", "登録ディレクトリに追加", "現在のディレクトリを登録ディレクトリへ追加する"),
+            (IncrementalSearchDialog, "incrementalSearchDialog", "インクリメンタルサーチ", "入力に合わせて項目を絞り込むインクリメンタルサーチを開く"),
+            (DirectoryInformation, "directoryInformation", "ディレクトリの容量計算", "選択したディレクトリの合計サイズを計算して表示する"),
+            (RenameSequenceDialog, "renameSequenceDialog", "連番リネーム", "選択した項目を連番で一括リネームするダイアログを開く"),
+            (FocusLeft, "focusLeft", "左パスへ移動", "左ペインへフォーカスを移す（設定により親へ移動）"),
+            (FocusRight, "focusRight", "右パスへ移動", "右ペインへフォーカスを移す（設定により親へ移動）"),
+            (MarkToggle, "markToggle", "選択／解除（カーソル位置）", "カーソル位置の項目の選択状態を反転する"),
+            (SelectAll, "selectAll", "すべて選択", "ディレクトリも含めすべての項目を選択する"),
+            (ClearAll, "clearAll", "すべて選択解除", "すべての項目の選択を解除する"),
+            (ReverseAll, "reverseAll", "すべて選択反転", "すべての項目の選択状態を反転する"),
+            (SelectAllFile, "selectAllFile", "ファイルのみ選択", "ファイルだけをすべて選択する（ディレクトリは除く）"),
+            (ReverseAllFile, "reverseAllFile", "ファイルのみ選択反転", "ファイルだけの選択状態を反転する（ディレクトリは除く）"),
+            (Reload, "reload", "最新の情報に更新", "両ペインのファイル一覧を読み直して最新にする"),
+            (SortByName, "sortByName", "名前順で並べ替え", "ファイル名順で並べ替える"),
+            (SortByExtension, "sortByExtension", "拡張子順で並べ替え", "拡張子順で並べ替える"),
+            (SortBySize, "sortBySize", "サイズ順で並べ替え", "ファイルサイズ順で並べ替える"),
+            (SortByDate, "sortByDate", "日付順で並べ替え", "更新日時順で並べ替える"),
+            (Sort, "sort", "並べ替え方法の指定", "指定した種別で並べ替える"),
+            (SortDialog, "sortDialog", "ソート設定", "並べ替えの方法を選ぶダイアログを開く"),
+            (SortReverseToggle, "sortReverseToggle", "昇順／降順を反転", "現在の並べ替えの昇順・降順を反転する"),
+            (PageNext, "pageNext", "次のタブへ", "次のタブへ切り替える"),
+            (PagePrevious, "pagePrevious", "前のタブへ", "前のタブへ切り替える"),
+            (NewFiler, "newFiler", "新しいタブ", "新しいタブを開く"),
+            (Exit, "exit", "タブを閉じる", "現在のタブを閉じる"),
+            (MakeDirectory, "makeDirectory", "ディレクトリの作成", "新しいディレクトリを作成する"),
+            (Copy, "copy", "コピー", "選択した項目を反対側のパスへコピーする"),
+            (Move, "move", "移動", "選択した項目を反対側のパスへ移動する"),
+            (SwapPath, "swapPath", "左右のパスを入れ替え", "左右ペインの表示ディレクトリを入れ替える"),
+            (OppositeToCurrent, "oppositeToCurrent", "反対側をカレントと同じに", "反対側ペインを現在のディレクトリと同じ場所にする"),
+            (CurrentToOpposite, "currentToOpposite", "カレントを反対側と同じに", "現在のペインを反対側と同じ場所にする"),
+            (Rename, "rename", "名前の変更", "カーソル位置の項目の名前を変更する"),
+            (Delete, "delete", "削除", "選択した項目を完全に削除する"),
+            (SendToRecycled, "sendToRecycled", "ごみ箱へ送る", "選択した項目をごみ箱へ送る"),
+            (CreateShortcut, "createShortcut", "ショートカットの作成", "選択した項目のショートカットを作成する"),
+            (ClipCopy, "clipCopy", "クリップボードにコピー", "選択した項目をクリップボードへコピーする"),
+            (ClipCut, "clipCut", "クリップボードに切り取り", "選択した項目をクリップボードへ切り取る"),
+            (ClipPaste, "clipPaste", "クリップボードから貼り付け", "クリップボードの項目を現在のディレクトリへ貼り付ける"),
+            (CreateFileDialog, "createFileDialog", "新規ファイルの作成", "新しい空ファイルを作成するダイアログを開く"),
+            (ViewFile, "viewFile", "ビューアで開く", "カーソル位置のファイルを内蔵ビューアで開く"),
+            (Edit, "edit", "エディタで開く", "カーソル位置のファイルを外部エディタで開く"),
+            (PropertyDialog, "propertyDialog", "プロパティの表示", "カーソル位置の項目のプロパティを表示する"),
+            (Compress, "compress", "圧縮", "選択した項目を書庫に圧縮する"),
+            (Extract, "extract", "解凍", "選択した書庫を解凍する"),
+            (NextDrive, "nextDrive", "次のドライブへ", "次のドライブへ切り替える"),
+            (PreviousDrive, "previousDrive", "前のドライブへ", "前のドライブへ切り替える"),
+            (PathMask, "pathMask", "パスマスク", "表示する項目をマスクで絞り込む"),
+            (SelectMask, "selectMask", "マスクで選択", "マスクに一致する項目をまとめて選択する"),
+            (OpenTaskManager, "openTaskManager", "タスクマネージャ", "実行中のファイル操作を一覧するタスクマネージャを開く"),
+            (OpenSettings, "openSettings", "設定を開く", "設定ダイアログを開く"),
+            (KeyBindsDialog, "keyBindsDialog", "キーバインドリスト", "現在のキー割り当ての一覧を表示する"),
+            (CommandDirect, "commandDirect", "任意のコマンドを実行", "コマンドを入力して直接実行するダイアログを開く"),
+            (Menu, "menu", "名前付きメニューを開く", "指定した名前のメニューを開く"),
+            (CopyLog, "copyLog", "ログをコピー", "ログの内容をクリップボードへコピーする"),
+            (ClearLog, "clearLog", "ログクリア", "ログの内容を消去する"),
+            (MaximizeLeft, "maximizeLeft", "左リストを最大化", "左ペインを広げて最大化する"),
+            (MaximizeRight, "maximizeRight", "右リストを最大化", "右ペインを広げて最大化する"),
+            (MaximizeLeftForce, "maximizeLeftForce", "左リストを最大化（強制）", "左ペインを全幅まで最大化する"),
+            (MaximizeRightForce, "maximizeRightForce", "右リストを最大化（強制）", "右ペインを全幅まで最大化する"),
+            (BorderLeft, "borderLeft", "境界線を左へ", "左右ペインの境界を左へ動かす"),
+            (BorderRight, "borderRight", "境界線を右へ", "左右ペインの境界を右へ動かす"),
+            (BorderReset, "borderReset", "境界線を定位置へ", "左右ペインの境界を中央の定位置へ戻す"),
+            (CursorOpposite, "cursorOpposite", "反対側パスへ移動", "反対側ペインへフォーカスを移す"),
+            (SelectFile, "selectFile", "ファイルを選択（カーソル位置）", "カーソル位置のファイルを選択する"),
+            (Refresh, "refresh", "表示を更新", "表示を再描画する"),
+            (Nop, "nop", "無効コマンド", "何もしない（キー割り当ての無効化に使う）"),
+            (MaximizeCurrent, "maximizeCurrent", "現在のリストを最大化", "現在のペインを最大化する"),
+            (MaximizeWindow, "maximizeWindow", "ウィンドウの最大化", "ウィンドウを最大化する"),
+            (MinimizeWindow, "minimizeWindow", "ウィンドウの最小化", "ウィンドウを最小化する"),
+            (End, "end", "アプリケーションの終了", "アプリケーションを終了する"),
+            (Restart, "restart", "再起動", "アプリケーションを再起動する"),
+            (Quit, "quit", "閉じる（最後ならアプリ終了）", "タブを閉じる（最後のタブならアプリを終了する）"),
+            (ViewerClose, "viewerClose", "ビューアを閉じる", "ビューアを閉じてファイル一覧へ戻る"),
+            (ViewerScrollUp, "viewerScrollUp", "1行上へ", "ビューアを 1 行上へスクロールする"),
+            (ViewerScrollDown, "viewerScrollDown", "1行下へ", "ビューアを 1 行下へスクロールする"),
+            (ViewerPageUp, "viewerPageUp", "1ページ上へ", "ビューアを 1 ページ上へスクロールする"),
+            (ViewerPageDown, "viewerPageDown", "1ページ下へ", "ビューアを 1 ページ下へスクロールする"),
+            (ViewerScrollTop, "viewerScrollTop", "先頭行へ移動", "ビューアを先頭へスクロールする"),
+            (ViewerScrollBottom, "viewerScrollBottom", "最終行へ移動", "ビューアを末尾へスクロールする"),
+            (ViewerSearchDialog, "viewerSearchDialog", "検索", "ビューア内を検索するダイアログを開く"),
+            (ViewerFindNext, "viewerFindNext", "次を検索", "次の検索一致へ移動する"),
+            (ViewerFindPrevious, "viewerFindPrevious", "前を検索", "前の検索一致へ移動する"),
+            (ViewerSelectAll, "viewerSelectAll", "すべて選択", "ビューアの全文を選択する"),
+            (ViewerToggleMode, "viewerToggleMode", "バイナリ／テキスト切替", "ビューアのテキスト表示とバイナリ表示を切り替える"),
+            (ViewerChangeEncoding, "viewerChangeEncoding", "文字コードを切替", "ビューアの文字コードを切り替える"),
+            (ViewerCopy, "viewerCopy", "選択範囲をコピー", "ビューアの選択範囲をクリップボードへコピーする"),
+            (ViewerContextMenu, "viewerContextMenu", "コンテキストメニュー", "ビューアのコンテキストメニューを開く"),
+            (ImageNext, "imageNext", "次の画像", "次の画像へ送る"),
+            (ImagePrevious, "imagePrevious", "前の画像", "前の画像へ戻る"),
+            (ImageZoomIn, "imageZoomIn", "拡大", "画像を拡大する"),
+            (ImageZoomOut, "imageZoomOut", "縮小", "画像を縮小する"),
+            (ImageFitWindow, "imageFitWindow", "画面に合わせて縮小", "画像を画面に収まるよう縮小して表示する"),
+            (ImageActualSize, "imageActualSize", "等倍表示", "画像を実寸（等倍）で表示する"),
+            (ImageFitWidth, "imageFitWidth", "横幅に合わせる", "画像を画面の横幅に合わせて表示する"),
+            (ImageFitHeight, "imageFitHeight", "縦幅に合わせる", "画像を画面の縦幅に合わせて表示する"),
+            (ImageFitLarge, "imageFitLarge", "なるべく大きく表示", "画像を画面いっぱいになるべく大きく表示する"),
+            (ImageRotateRight, "imageRotateRight", "右回転", "画像を右へ 90 度回転する"),
+            (ImageRotateLeft, "imageRotateLeft", "左回転", "画像を左へ 90 度回転する"),
+            (ImageFlipHorizontal, "imageFlipHorizontal", "左右反転", "画像を左右に反転する"),
+            (ImageFlipVertical, "imageFlipVertical", "上下反転", "画像を上下に反転する"),
+            (ImageCopy, "imageCopy", "クリップボードにコピー", "表示中の画像をクリップボードへコピーする"),
+            (MediaTogglePlay, "mediaTogglePlay", "再生／一時停止", "動画・音声の再生と一時停止を切り替える"),
         ]
     };
 
@@ -443,17 +436,26 @@ impl Command {
     pub fn as_token(self) -> &'static str {
         Self::ALL
             .iter()
-            .find(|(c, _, _)| *c == self)
-            .map(|(_, s, _)| *s)
+            .find(|(c, _, _, _)| *c == self)
+            .map(|(_, s, _, _)| *s)
             .unwrap_or("")
     }
 
-    /// 表示名（日本語）を返す。UI でユーザに見せる親しみやすい名前。
+    /// 表示名（日本語）を返す。UI でユーザに見せる短い機能名。
     pub fn display_name(self) -> &'static str {
         Self::ALL
             .iter()
-            .find(|(c, _, _)| *c == self)
-            .map(|(_, _, l)| *l)
+            .find(|(c, _, _, _)| *c == self)
+            .map(|(_, _, l, _)| *l)
+            .unwrap_or("")
+    }
+
+    /// 1 行の説明文（ダイアログ案内・HTML リファレンス用）。表示名より詳しく効果を述べる。
+    pub fn summary(self) -> &'static str {
+        Self::ALL
+            .iter()
+            .find(|(c, _, _, _)| *c == self)
+            .map(|(_, _, _, s)| *s)
             .unwrap_or("")
     }
 
@@ -461,8 +463,8 @@ impl Command {
     pub fn from_token(s: &str) -> Option<Command> {
         Self::ALL
             .iter()
-            .find(|(_, t, _)| *t == s)
-            .map(|(c, _, _)| *c)
+            .find(|(_, t, _, _)| *t == s)
+            .map(|(c, _, _, _)| *c)
             .or_else(|| Self::alias_token(s))
     }
 
@@ -480,7 +482,7 @@ impl Command {
 
     /// 全コマンドを列挙する（設定 UI 用）。
     pub fn all() -> impl Iterator<Item = Command> {
-        Self::ALL.iter().map(|(c, _, _)| *c)
+        Self::ALL.iter().map(|(c, _, _, _)| *c)
     }
 
     /// このコマンドが有効な文脈を返す。設定 UI はこれでページごとに候補を絞る。
@@ -507,43 +509,44 @@ impl Command {
         self.contexts().contains(&ctx)
     }
 
-    /// コマンドのメタデータ（説明・引数仕様・使用例）。引数を取るコマンドだけ個別に
-    /// 整備し、それ以外は表示名を流用した [`CommandMeta::trivial`] を返す。
+    /// コマンドのメタデータ（説明・引数仕様・使用例）。`summary` は [`Command::ALL`] を単一
+    /// ソースとして引き、引数を取るコマンドだけ引数仕様・使用例を個別に整備する。
     pub fn meta(self) -> CommandMeta {
         use Command::*;
+        let summary = self.summary();
         match self {
             CursorUp => CommandMeta {
-                summary: "カーソルを 1 つ上へ移動する",
+                summary,
                 args: SELECT_OPT,
                 examples: &["cursorUp()", "cursorUp({select:true})"],
             },
             CursorDown => CommandMeta {
-                summary: "カーソルを 1 つ下へ移動する",
+                summary,
                 args: SELECT_OPT,
                 examples: &["cursorDown()", "cursorDown({select:true})"],
             },
             CursorTop => CommandMeta {
-                summary: "先頭行へカーソルを移動する",
+                summary,
                 args: SELECT_OPT,
                 examples: &["cursorTop()", "cursorTop({select:true})"],
             },
             CursorEnd => CommandMeta {
-                summary: "最終行へカーソルを移動する",
+                summary,
                 args: SELECT_OPT,
                 examples: &["cursorEnd()", "cursorEnd({select:true})"],
             },
             CursorPageUp => CommandMeta {
-                summary: "1 ページ上へカーソルを移動する",
+                summary,
                 args: SELECT_OPT,
                 examples: &["cursorPageUp()", "cursorPageUp({select:true})"],
             },
             CursorPageDown => CommandMeta {
-                summary: "1 ページ下へカーソルを移動する",
+                summary,
                 args: SELECT_OPT,
                 examples: &["cursorPageDown()", "cursorPageDown({select:true})"],
             },
             SetCursorPosition => CommandMeta {
-                summary: "指定した名前の項目へカーソルを移動する",
+                summary,
                 args: &[ArgSpec {
                     name: "name",
                     ty: ArgType::Str,
@@ -553,17 +556,17 @@ impl Command {
                 examples: &[r#"setCursorPosition("readme.txt")"#],
             },
             MarkToggle => CommandMeta {
-                summary: "カーソル位置の選択／解除を切り替える",
+                summary,
                 args: CURSOR_MOVE_OPT,
                 examples: &["markToggle()", "markToggle({cursorMove:-1})"],
             },
             SelectFile => CommandMeta {
-                summary: "カーソル位置のファイルを選択する",
+                summary,
                 args: CURSOR_MOVE_OPT,
                 examples: &["selectFile()", "selectFile({cursorMove:1})"],
             },
             View => CommandMeta {
-                summary: "内蔵ビューアで表示する",
+                summary,
                 args: &[ArgSpec {
                     name: "path",
                     ty: ArgType::Path,
@@ -573,7 +576,7 @@ impl Command {
                 examples: &["view()", r#"view("C:\\note.txt")"#],
             },
             ChangeDirectory => CommandMeta {
-                summary: "指定パスへディレクトリを移動する",
+                summary,
                 args: &[ArgSpec {
                     name: "path",
                     ty: ArgType::Path,
@@ -583,7 +586,7 @@ impl Command {
                 examples: &[r#"changeDirectory("C:\\work")"#],
             },
             ChangeDrive => CommandMeta {
-                summary: "指定ドライブへ移動する",
+                summary,
                 args: &[ArgSpec {
                     name: "drive",
                     ty: ArgType::Str,
@@ -593,7 +596,7 @@ impl Command {
                 examples: &[r#"changeDrive("D:")"#],
             },
             Menu => CommandMeta {
-                summary: "名前付きメニューを開く",
+                summary,
                 args: &[ArgSpec {
                     name: "name",
                     ty: ArgType::Str,
@@ -603,7 +606,7 @@ impl Command {
                 examples: &[r#"menu("ファイル操作")"#],
             },
             Sort => CommandMeta {
-                summary: "指定した方法で並べ替える",
+                summary,
                 args: &[ArgSpec {
                     name: "by",
                     ty: ArgType::Enum(&[
@@ -619,7 +622,7 @@ impl Command {
                 }],
                 examples: &[r#"sort("name")"#, r#"sort("size")"#],
             },
-            _ => CommandMeta::trivial(self),
+            _ => CommandMeta { summary, args: &[], examples: &[] },
         }
     }
 }
@@ -1303,12 +1306,22 @@ mod tests {
     }
 
     #[test]
-    fn meta_trivial_for_argless_command() {
-        // 引数を取らないコマンドは表示名流用・引数空。
+    fn meta_argless_command_has_summary_no_args() {
+        // 引数を取らないコマンドは引数・例が空でも summary は ALL から引いた説明文を持つ。
         let m = Command::Copy.meta();
-        assert_eq!(m.summary, Command::Copy.display_name());
+        assert_eq!(m.summary, Command::Copy.summary());
+        assert!(!m.summary.is_empty());
+        assert_ne!(m.summary, Command::Copy.display_name(), "summary は表示名より詳しい");
         assert!(m.args.is_empty());
         assert!(m.examples.is_empty());
+    }
+
+    #[test]
+    fn every_command_has_summary() {
+        // 全コマンドが空でない説明文を持つ（ALL の 4 列目の埋め忘れ検出）。
+        for cmd in Command::all() {
+            assert!(!cmd.summary().is_empty(), "{cmd:?} の summary が空");
+        }
     }
 
     #[test]
