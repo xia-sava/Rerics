@@ -1638,18 +1638,21 @@ impl Args {
         self.0.get(i).and_then(|v| v.as_str())
     }
 
-    /// カーソル移動コマンドの引数が「選択しながら移動」を表すか（select/true/1・大小無視）。
-    fn is_select(&self) -> bool {
-        self.str(0).is_some_and(|a| {
-            matches!(a.trim().to_ascii_lowercase().as_str(), "select" | "true" | "1")
-        })
+    /// 末尾に乗った名前付きオプション（`{ select: true }` 形の Object）を返す。
+    fn opts(&self) -> Option<&serde_json::Map<String, serde_json::Value>> {
+        self.0.last().and_then(|v| v.as_object())
     }
 
-    /// マーク操作（反転・選択）後のカーソル移動量。引数があればその整数、
+    /// カーソル移動コマンドの引数が「選択しながら移動」を表すか（`{ select: true }`）。
+    fn is_select(&self) -> bool {
+        self.opts().and_then(|o| o.get("select")).and_then(serde_json::Value::as_bool).unwrap_or(false)
+    }
+
+    /// マーク操作（反転・選択）後のカーソル移動量。`{ cursorMove: n }` があればその整数、
     /// 無ければ `down_after_select` に従い 1（下）か 0（移動なし）。
     fn move_delta(&self, down_after_select: bool) -> isize {
-        if let Some(v) = self.str(0).and_then(|a| a.trim().parse::<isize>().ok()) {
-            return v;
+        if let Some(n) = self.opts().and_then(|o| o.get("cursorMove")).and_then(serde_json::Value::as_i64) {
+            return n as isize;
         }
         if down_after_select { 1 } else { 0 }
     }

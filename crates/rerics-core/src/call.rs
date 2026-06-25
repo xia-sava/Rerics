@@ -24,16 +24,38 @@ impl Call {
         parse_builtin(src).unwrap_or_else(|| Call::Script { source: src.to_owned() })
     }
 
-    /// 式文字列へ戻す（表示・観測用）。`Builtin` は `name(args)`（引数は JSON 表現）、
+    /// 式文字列へ戻す（表示・観測用）。`Builtin` は `name(args)`（引数は式表現）、
     /// `Script` はソースそのまま。
     pub fn to_expr(&self) -> String {
         match self {
             Call::Builtin { command, args } => {
-                let parts: Vec<String> = args.iter().map(|v| v.to_string()).collect();
+                let parts: Vec<String> = args.iter().map(value_to_expr).collect();
                 format!("{}({})", command.as_token(), parts.join(", "))
             }
             Call::Script { source } => source.clone(),
         }
+    }
+}
+
+/// JSON 値を機能欄の式表記へ整形する。オブジェクトのキーは識別子ならクォートを外し
+/// （`{select:true}`）、入力した名前付きオプションの見た目をそのまま保つ。
+fn value_to_expr(v: &Value) -> String {
+    match v {
+        Value::Object(map) => {
+            let parts: Vec<String> = map
+                .iter()
+                .map(|(k, val)| {
+                    let key = if is_ident(k) { k.clone() } else { format!("{:?}", k) };
+                    format!("{key}:{}", value_to_expr(val))
+                })
+                .collect();
+            format!("{{{}}}", parts.join(", "))
+        }
+        Value::Array(items) => {
+            let parts: Vec<String> = items.iter().map(value_to_expr).collect();
+            format!("[{}]", parts.join(", "))
+        }
+        other => other.to_string(),
     }
 }
 
@@ -71,17 +93,75 @@ fn is_ident(s: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
-/// 引数部（括弧の中身）を JSON 互換リテラルの並びとして読む。空なら空配列、読めなければ `None`。
-/// 単引用符やキー無しオブジェクトなど JSON でないリテラルは今は読めず `None`＝エンジンへ送る。
+/// 引数部（括弧の中身）をリテラルの並びとして読む。空なら空配列、読めなければ `None`。
+/// 名前付きオプションの裸キー（`{select:true}`）は JSON へ寄せてから読む。単引用符など
+/// 他の非 JSON 構文は今は読めず `None`＝エンジンへ送る。
 fn parse_args(inside: &str) -> Option<Vec<Value>> {
     let trimmed = inside.trim();
     if trimmed.is_empty() {
         return Some(Vec::new());
     }
-    match serde_json::from_str(&format!("[{trimmed}]")).ok()? {
+    let normalized = normalize_object_keys(trimmed);
+    match serde_json::from_str(&format!("[{normalized}]")).ok()? {
         Value::Array(items) => Some(items),
         _ => None,
     }
+}
+
+/// JS オブジェクトリテラルの裸キー（`{ select: true }`）を JSON 互換（`{"select":true}`）へ
+/// 寄せる。文字列リテラルの中身は触らない。`:` の直前にある識別子だけをキーとみなして
+/// クォートする。単引用符など他の非 JSON 構文には手を出さない（読めなければ呼び出し側が
+/// `Script` 扱いにする）。
+fn normalize_object_keys(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '"' {
+            out.push(c);
+            while let Some(d) = chars.next() {
+                out.push(d);
+                if d == '\\' {
+                    if let Some(e) = chars.next() {
+                        out.push(e);
+                    }
+                } else if d == '"' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if c.is_ascii_alphabetic() || c == '_' || c == '$' {
+            let mut ident = String::from(c);
+            while let Some(&d) = chars.peek() {
+                if d.is_ascii_alphanumeric() || d == '_' || d == '$' {
+                    ident.push(d);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            let mut ws = String::new();
+            while let Some(&d) = chars.peek() {
+                if d.is_whitespace() {
+                    ws.push(d);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            if chars.peek() == Some(&':') {
+                out.push('"');
+                out.push_str(&ident);
+                out.push('"');
+            } else {
+                out.push_str(&ident);
+            }
+            out.push_str(&ws);
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -146,8 +226,41 @@ mod tests {
 
     #[test]
     fn non_json_literal_goes_to_script() {
-        // 単引用符やキー無しオブジェクトは今は JSON として読めない＝エンジンへ（後で対応）。
+        // 単引用符は今は JSON として読めない＝エンジンへ（後で対応）。
         assert_eq!(script("copy('single')"), "copy('single')");
-        assert_eq!(script("cursorDown({ select: true })"), "cursorDown({ select: true })");
+    }
+
+    #[test]
+    fn named_option_object_parses_as_builtin() {
+        // 裸キーのオブジェクトリテラル＝名前付きオプションは fast-path の組込呼び出しに残す。
+        assert_eq!(
+            builtin("cursorDown({ select: true })"),
+            (Command::CursorDown, vec![json!({ "select": true })])
+        );
+        assert_eq!(
+            builtin("markToggle({cursorMove:-1})"),
+            (Command::MarkToggle, vec![json!({ "cursorMove": -1 })])
+        );
+    }
+
+    #[test]
+    fn named_option_roundtrips_through_to_expr() {
+        // to_expr はキーのクォートを外し、再パースで同じ Call に戻る（裸キーの見た目を保つ）。
+        let expr = Call::Builtin {
+            command: Command::CursorDown,
+            args: vec![json!({ "select": true })],
+        }
+        .to_expr();
+        assert_eq!(expr, "cursorDown({select:true})");
+        assert_eq!(builtin(&expr), (Command::CursorDown, vec![json!({ "select": true })]));
+    }
+
+    #[test]
+    fn colon_inside_string_is_not_treated_as_key() {
+        // 文字列リテラル中の識別子＋`:` をキーと誤認しない。
+        assert_eq!(
+            builtin(r#"changeDirectory("C:\\tmp")"#),
+            (Command::ChangeDirectory, vec![json!("C:\\tmp")])
+        );
     }
 }

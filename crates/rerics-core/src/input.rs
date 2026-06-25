@@ -699,9 +699,9 @@ impl Default for KeyMap {
             (vk::PRIOR, CursorPageUp),
             (vk::NEXT, CursorPageDown),
         ] {
-            m.bind_inv(
+            m.bind_expr(
                 KeyChord::new(vk, false, true, false),
-                Invocation::new(cmd, vec!["select".into()]),
+                &format!("{}({{select:true}})", cmd.as_token()),
             );
         }
         // 侵入・親・ルート・履歴・フォーカス。
@@ -725,9 +725,9 @@ impl Default for KeyMap {
         // 選択。
         m.bind(KeyChord::key(vk::SPACE), MarkToggle);
         // Shift+Space＝反転＋カーソル上移動。
-        m.bind_inv(
+        m.bind_expr(
             KeyChord::new(vk::SPACE, false, true, false),
-            Invocation::new(MarkToggle, vec!["-1".into()]),
+            "markToggle({cursorMove:-1})",
         );
         m.bind(KeyChord::key(vk::A), ReverseAllFile);
         m.bind(KeyChord::new(vk::A, false, true, false), ReverseAll);
@@ -1079,7 +1079,7 @@ mod tests {
 
     #[test]
     fn default_binds_shift_select_move() {
-        // Shift＋上下/PageUp/Down＝選択しながら移動（CursorXxx("select")）。
+        // Shift＋上下/PageUp/Down＝選択しながら移動（cursorXxx({select:true})）。
         let m = KeyMap::default();
         for (vk, cmd) in [
             (vk::UP, Command::CursorUp),
@@ -1090,14 +1090,14 @@ mod tests {
             assert!(matches!(
                 m.resolve_call(&KeyChord::new(vk, false, true, false)),
                 Some(Call::Builtin { command, args })
-                    if command == cmd && args == vec![serde_json::json!("select")]
+                    if command == cmd && args == vec![serde_json::json!({ "select": true })]
             ));
         }
-        // Shift+Space＝反転＋上移動（markToggle("-1")）。
+        // Shift+Space＝反転＋上移動（markToggle({cursorMove:-1})）。
         assert!(matches!(
             m.resolve_call(&KeyChord::new(vk::SPACE, false, true, false)),
             Some(Call::Builtin { command, args })
-                if command == Command::MarkToggle && args == vec![serde_json::json!("-1")]
+                if command == Command::MarkToggle && args == vec![serde_json::json!({ "cursorMove": -1 })]
         ));
     }
 
