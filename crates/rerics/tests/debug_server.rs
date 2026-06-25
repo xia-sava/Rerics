@@ -3759,11 +3759,12 @@ items = [ { label = "コピー", command = "copy" } ]
     assert!(s.contains("\"label\":\"切り取り\"") && s.contains("\"separator\":true"), "他は残る: {s}");
 }
 
-/// 設定の「メニュー」ページのコマンド欄から機能ピッカー（モーダル）を開き、選んだ機能の
-/// トークンがコマンド欄へ入る。ピッカーは閉じるまでブロックするので item-pick は respond-first。
-/// ネストモーダルは既存の `/modal/*`（list_box が配線済み）で観測・駆動する。
+/// 設定の「メニュー」ページのコマンド欄を、補完つきコードエディタ（code_box）で編集する。
+/// 編集モーダルは閉じるまでブロックするので item-pick は respond-first。組込メンバの補完
+/// （引数ヒント＋説明）が出る＝キー編集と同じ統一形。式を打って OK するとコマンド下書き欄へ
+/// 書き戻る。ネストモーダルは既存の `/modal/*`・`/completion/*` で観測・駆動する。
 #[test]
-fn menu_editor_command_picker_inserts_token() {
+fn menu_editor_command_editor_writes_expr() {
     let config = r#"
 [[menus]]
 name = "alpha"
@@ -3778,43 +3779,33 @@ items = [ { label = "コピー", command = "copy" } ]
     let s = server.req("POST", "/menu-editor/item-select/0", "").unwrap().1;
     assert!(s.contains("\"command\":\"copy\""), "選択項目が下書き欄へ: {s}");
 
-    // ピッカーを開く（respond-first）。最前面モーダルがリスト選択（機能の選択）になる。
+    // コードエディタを開く（respond-first）。最前面モーダルが補完つきコード入力になる。
     let r = server.req("POST", "/menu-editor/item-pick", "").unwrap().1;
     assert!(r.contains("modal_opening"), "respond-first: {r}");
-    let st = poll(&server, "/state", |b| b.contains("機能の選択"));
+    poll(&server, "/state", |b| b.contains("コードを割り当て"));
 
-    // モーダルの行から delete の行を見つけて選び、OK で確定する。
-    let v: serde_json::Value = serde_json::from_str(&st).unwrap();
-    let items = v["modal"]["items"].as_array().expect("modal items");
-    let idx = items
-        .iter()
-        .position(|x| x.as_str().unwrap_or("").contains("（delete）"))
-        .expect("delete の行がある");
-    server.req("POST", &format!("/modal/select/{idx}"), "").unwrap();
+    // 組込メンバがメニュー欄の補完にも引数ヒント＋説明つきで出る（機能欄＝コードの統一）。
+    server.req("POST", "/modal/text", "").unwrap();
+    server.req("POST", "/completion/keystrokes", "=r.cursorDow").unwrap();
+    let c = poll(&server, "/completion", |b| b.contains("cursorDown"));
+    assert!(c.contains("{select?}"), "メニュー欄でも組込の引数ヒントが出る: {c}");
+
+    // 式を打って OK＝コマンド下書き欄へ書き戻る。メニュー項目自体は OK 前なのでまだ copy のまま。
+    server.req("POST", "/modal/text", "delete()").unwrap();
     server.req("POST", "/modal/command/ok", "").unwrap();
-
-    // ピッカーが閉じたらコマンド下書き欄が delete に置き換わる。メニュー項目自体は OK 前なので
-    // まだ copy のまま（欄への挿入だけ）。
-    let s = poll(&server, "/menu-editor", |b| b.contains("\"command\":\"delete\""));
+    let s = poll(&server, "/menu-editor", |b| b.contains("\"command\":\"delete()\""));
     assert!(s.contains("\"command\":\"copy\""), "項目はまだ copy のまま: {s}");
 }
 
-/// 機能ピッカー（多数行のリスト選択モーダル）に `/modal/wheel/<delta>` でホイールを送ると、
-/// 先頭表示行（`/state` の `modal.top`）が動く。`WS_VSCROLL` 付きリストのネイティブスクロールを
-/// headless で駆動・観測する経路。
+/// 多数行のリスト選択モーダルに `/modal/wheel/<delta>` でホイールを送ると、先頭表示行
+/// （`/state` の `modal.top`）が動く。`WS_VSCROLL` 付きリストのネイティブスクロールを headless で
+/// 駆動・観測する経路。題材は「キー割り当て」一覧（keyBindsDialog＝既定で多数行の list_box）。
 #[test]
 fn modal_wheel_scrolls_list() {
-    let config = r#"
-[[menus]]
-name = "alpha"
-items = [ { label = "コピー", command = "copy" } ]
-"#;
-    let server = Server::start(&["a.txt"], config);
-    server.req("POST", "/command/openSettings", "").expect("openSettings");
-    poll(&server, "/menu-editor", |b| b.contains("\"name\":\"alpha\""));
-    server.req("POST", "/menu-editor/select/0", "").unwrap();
-    server.req("POST", "/menu-editor/item-pick", "").unwrap();
-    poll(&server, "/state", |b| b.contains("機能の選択"));
+    let server = Server::start(&["a.txt"], "");
+    // 多数行の list_box（現在のキー割り当て一覧）を開く（respond-first）。
+    server.req("POST", "/command/keyBindsDialog", "").unwrap();
+    poll(&server, "/state", |b| b.contains("キー割り当て"));
 
     let top = |s: &Server| -> u64 {
         let st = s.req("GET", "/state", "").unwrap().1;

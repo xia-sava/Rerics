@@ -1431,19 +1431,9 @@ impl KeyEditor {
             return;
         };
         // 補完メンバに、登録スクリプト関数の 1 行説明を添える（組込はメタデータから引かれる）。
-        let members: Vec<crate::dialog::CompletionMember> = self
-            .inner
-            .members
-            .iter()
-            .map(|name| crate::dialog::CompletionMember {
-                name: name.clone(),
-                script_summary: self
-                    .inner
-                    .script_meta
-                    .get(name)
-                    .and_then(|sc| sc.summary.clone()),
-            })
-            .collect();
+        let members = crate::dialog::completion_members(&self.inner.members, |name| {
+            self.inner.script_meta.get(name).and_then(|sc| sc.summary.clone())
+        });
         let result = crate::dialog::code_box(
             &self.list,
             "機能欄の式を編集（組込はそのまま呼べる・r. でホスト API・複文可）",

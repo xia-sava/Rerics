@@ -21,7 +21,7 @@ mod rename;
 mod list;
 pub use message::message_box;
 pub use input::{
-    CompletionMember, code_box, command_box, input_box, input_box_full, input_box_select,
+    code_box, command_box, completion_members, input_box, input_box_full, input_box_select,
 };
 #[cfg(feature = "debug-server")]
 pub use input::completion_probe;

@@ -238,6 +238,22 @@ pub struct CompletionMember {
     pub script_summary: Option<String>,
 }
 
+/// `members`（`r.` で呼べる名前）と、名前→登録スクリプト関数の 1 行説明を引く関数から、
+/// `code_box` に渡す補完メンバ列を組む。キー編集とメニュー編集で共用する（組込はメタデータから
+/// 説明が引かれるので `script_summary` は登録スクリプト関数だけに付く）。
+pub fn completion_members(
+    members: &[String],
+    script_summary: impl Fn(&str) -> Option<String>,
+) -> Vec<CompletionMember> {
+    members
+        .iter()
+        .map(|name| CompletionMember {
+            name: name.clone(),
+            script_summary: script_summary(name),
+        })
+        .collect()
+}
+
 /// 組込コマンドのメタデータから、補完候補に添える 1 行ヒント（引数シグネチャ＋説明）を作る。
 fn meta_hint(cmd: rerics_core::Command) -> String {
     let m = cmd.meta();

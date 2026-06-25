@@ -11,7 +11,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rerics_core::{
-    Bookmark, Colors, Column, ColumnKind, Command, Config, FileOpSettings, IconSize, Layout,
+    Bookmark, Colors, Column, ColumnKind, Config, FileOpSettings, IconSize, Layout,
     MenuDef, MenuItem, Rgb, ResolvedTheme, SizeFormat, SortType, Theme, WheelAction,
 };
 use winsafe::{self as w, co, gui, msg::lb, prelude::*};
@@ -2279,23 +2279,6 @@ fn menu_item_columns(it: &MenuItem) -> [String; 2] {
 /// メニュー項目を編集欄の内容（ラベル／コマンド／セパレータ）で操作するクロージャ。
 type MenuItemOp = Rc<dyn Fn(&str, &str, bool)>;
 
-/// 機能ピッカー（モーダル）の表示行と、各行に対応するコマンドトークン（並列）。キー編集器と
-/// 同じ `command_genre` 順に並べ、ジャンル見出し付きで見せる。選んだ行のトークンをコマンド欄へ
-/// 挿入する（引数や `script(...)`/`menu(...)` 参照は欄で手書きする前提なので base のみ）。
-fn command_picker_rows() -> (Vec<String>, Vec<String>) {
-    let mut cmds: Vec<Command> = Command::all().collect();
-    cmds.sort_by_key(|c| crate::key_editor::command_genre(*c).0);
-    let rows = cmds
-        .iter()
-        .map(|c| {
-            let genre = crate::key_editor::command_genre(*c).1;
-            format!("〔{}〕{}（{}）", genre, c.display_name(), c.as_token())
-        })
-        .collect();
-    let tokens = cmds.iter().map(|c| c.as_token().to_string()).collect();
-    (rows, tokens)
-}
-
 /// 編集欄の内容から項目を1つ作る。セパレータ時はラベル/コマンドを無視し区切り線にする。
 /// それ以外でラベルが空なら既定名で埋める。
 fn build_menu_item(label: &str, command: &str, sep: bool) -> MenuItem {
@@ -2320,7 +2303,13 @@ struct MenusPane {
 }
 
 impl MenusPane {
-    fn new(parent: &gui::WindowControl, shared: &Rc<Shared>, wnd: &gui::WindowModal) -> Self {
+    fn new(
+        parent: &gui::WindowControl,
+        shared: &Rc<Shared>,
+        wnd: &gui::WindowModal,
+        scripts: Vec<crate::script::ScriptCommand>,
+        members: Vec<String>,
+    ) -> Self {
         label(parent, "メニュー（Menu(\"名前\") で開く）。選ぶと右に項目が出る。", 8, 8, 520);
         let menu_list = gui::ListView::<()>::new(
             parent,
@@ -2386,7 +2375,7 @@ impl MenusPane {
                 ..Default::default()
             },
         );
-        let pick_btn = button(parent, "選択(&P)", 696, 459, 72);
+        let pick_btn = button(parent, "コードを編集(&P)", 696, 459, 72);
         let sep_check = gui::CheckBox::new(
             parent,
             gui::CheckBoxOpts {
@@ -2673,20 +2662,30 @@ impl MenusPane {
             }
         });
 
-        // コマンド欄から機能ピッカー（モーダル）を開き、選んだトークンを欄へ挿入する。現在欄の
-        // トークンに一致する行を初期選択にする。ボタンと debug フックの両方から呼ぶ。
+        // コマンド欄の式をコードエディタ（補完つき）で編集する。現在の欄内容を初期値に開き、OK の
+        // 文字列を欄へ書き戻す。キー編集の「式を編集」と同じ `code_box` を流用＝組込もスクリプトも
+        // 同じ補完（引数ヒント＋説明）で編集できる。ボタンと debug フックの両方から呼ぶ。
+        let script_summaries: std::collections::HashMap<String, String> = scripts
+            .iter()
+            .filter_map(|c| c.summary.clone().map(|s| (c.name.clone(), s)))
+            .collect();
         let pick_command: Rc<dyn Fn()> = Rc::new({
             let wnd = wnd.clone();
             let command_edit = command_edit.clone();
+            let members = members.clone();
+            let script_summaries = script_summaries.clone();
             move || {
-                let (rows, tokens) = command_picker_rows();
                 let current = command_edit.text().unwrap_or_default();
-                let initial = tokens.iter().position(|t| t.as_str() == current.trim()).unwrap_or(0);
-                if let Some(idx) =
-                    crate::dialog::list_box(&wnd, "機能の選択", "menupick", &rows, initial)
-                    && let Some(tok) = tokens.get(idx)
-                {
-                    let _ = command_edit.set_text(tok);
+                let comp = crate::dialog::completion_members(&members, |name| {
+                    script_summaries.get(name).cloned()
+                });
+                if let Some(expr) = crate::dialog::code_box(
+                    &wnd,
+                    "メニュー項目の式を編集（組込はそのまま呼べる・r. でホスト API・複文可）",
+                    current.trim(),
+                    &comp,
+                ) {
+                    let _ = command_edit.set_text(expr.trim());
                 }
             }
         });
@@ -3309,7 +3308,7 @@ pub fn show(
     build_list(&pane_list, &shared);
     let columns_editor = ColumnsEditor::new(&pane_list, &shared);
     let registered = RegisteredPane::new(&pane_registered, &shared);
-    let menus_pane = MenusPane::new(&pane_menus, &shared, &wnd);
+    let menus_pane = MenusPane::new(&pane_menus, &shared, &wnd, scripts.clone(), members.clone());
     let keys = KeyEditor::new(&pane_keys, &shared, KeyCategory::Filer, scripts, members.clone());
     let keys_text =
         KeyEditor::new(&pane_keys_text, &shared, KeyCategory::TextViewer, Vec::new(), members.clone());

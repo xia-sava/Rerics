@@ -270,7 +270,7 @@ pub mod modal_registry {
         pub delete_item: Box<dyn Fn()>,
         /// 選択中の項目を delta（-1/+1）方向へ並べ替える。
         pub move_item: Box<dyn Fn(i32)>,
-        /// 項目コマンドの機能ピッカー（モーダル）を開く。閉じるまでブロックする。
+        /// 項目コマンドの式エディタ（補完つき code_box モーダル）を開く。閉じるまでブロックする。
         pub pick_command: Box<dyn Fn()>,
     }
 
