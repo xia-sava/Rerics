@@ -11,7 +11,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rerics_core::{
-    Bookmark, Colors, Column, ColumnKind, Config, FileOpSettings, IconSize, Layout, Rgb,
+    Bookmark, Colors, Column, ColumnKind, Config, FileOpSettings, IconSize, Layout, MenuItem, Rgb,
     ResolvedTheme, SizeFormat, SortType, Theme, WheelAction,
 };
 use winsafe::{self as w, co, gui, msg::lb, prelude::*};
@@ -954,6 +954,7 @@ const NAV_ROWS: &[NavRow] = &[
     NavRow::Page { label: "ビューア", pane: 6 },
     NavRow::Header("登録"),
     NavRow::Page { label: "登録ディレクトリ", pane: 4 },
+    NavRow::Page { label: "メニュー", pane: 13 },
     NavRow::Header("キー"),
     NavRow::Page { label: "ファイラー", pane: 5 },
     NavRow::Page { label: "テキストビューア", pane: 10 },
@@ -2266,6 +2267,112 @@ fn leaf_label(path: &str) -> String {
         .unwrap_or_else(|| path.to_owned())
 }
 
+/// 項目1つを一覧の2列（ラベル／コマンド）へ整形する。セパレータは区切り線として見せる。
+fn menu_item_columns(it: &MenuItem) -> [String; 2] {
+    if it.separator {
+        ["──────────".to_string(), String::new()]
+    } else {
+        [it.label.clone(), it.command.clone()]
+    }
+}
+
+/// 「メニュー」ページ。左にメニュー名一覧、右に選択メニューの項目（ラベル／コマンド）を出す
+/// マスターディテール。`Menu("名前")` で開く名前付きメニュー（`shared.cfg.menus`）を編集する。
+/// 増分1は表示のみ（追加/削除/並べ替え・コマンド選択は後続増分）。
+#[derive(Clone)]
+struct MenusPane {
+    shared: Rc<Shared>,
+    menu_list: gui::ListView<()>,
+    item_list: gui::ListView<()>,
+    /// 左で選択中のメニュー index（= `cfg.menus` の index）。
+    selected_menu: Rc<Cell<Option<usize>>>,
+}
+
+impl MenusPane {
+    fn new(parent: &gui::WindowControl, shared: &Rc<Shared>) -> Self {
+        label(parent, "メニュー（Menu(\"名前\") で開く）。選ぶと右に項目が出る。", 8, 8, 520);
+        let menu_list = gui::ListView::<()>::new(
+            parent,
+            gui::ListViewOpts {
+                position: gui::dpi(8, 30),
+                size: gui::dpi(240, 400),
+                control_style: co::LVS::REPORT
+                    | co::LVS::NOSORTHEADER
+                    | co::LVS::SHOWSELALWAYS
+                    | co::LVS::SINGLESEL,
+                control_ex_style: co::LVS_EX::FULLROWSELECT,
+                ..Default::default()
+            },
+        );
+        let item_list = gui::ListView::<()>::new(
+            parent,
+            gui::ListViewOpts {
+                position: gui::dpi(258, 30),
+                size: gui::dpi(510, 400),
+                control_style: co::LVS::REPORT
+                    | co::LVS::NOSORTHEADER
+                    | co::LVS::SHOWSELALWAYS
+                    | co::LVS::SINGLESEL,
+                control_ex_style: co::LVS_EX::FULLROWSELECT,
+                ..Default::default()
+            },
+        );
+
+        let selected_menu: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+
+        // 右の項目一覧を、指定メニューの items から組み直す。
+        let rebuild_items: Rc<dyn Fn(Option<usize>)> = Rc::new({
+            let item_list = item_list.clone();
+            let shared = shared.clone();
+            move |menu_idx| {
+                let _ = item_list.items().delete_all();
+                if let Some(mi) = menu_idx {
+                    let cfg = shared.cfg.borrow();
+                    if let Some(menu) = cfg.menus.get(mi) {
+                        for it in &menu.items {
+                            let _ = item_list.items().add(&menu_item_columns(it), None, ());
+                        }
+                    }
+                }
+            }
+        });
+
+        // 左の選択が変わったら、その index を覚えて右を組み直す。
+        {
+            let menu_list2 = menu_list.clone();
+            let selected_menu = selected_menu.clone();
+            let rebuild_items = rebuild_items.clone();
+            menu_list.on().lvn_item_changed(move |_| {
+                let sel = menu_list2.items().iter().position(|it| it.is_selected());
+                selected_menu.set(sel);
+                rebuild_items(sel);
+                Ok(())
+            });
+        }
+
+        Self {
+            shared: shared.clone(),
+            menu_list,
+            item_list,
+            selected_menu,
+        }
+    }
+
+    /// 窓生成後に列を作り（生成前の add は無効化されるため）、左のメニュー名一覧を `cfg.menus`
+    /// から組み直す。右の項目一覧は空に戻す。ページ表示時（`on_create`）に呼ぶ。
+    fn populate(&self) {
+        let _ = self.menu_list.cols().add("メニュー", gui::dpi_x(224));
+        let _ = self.item_list.cols().add("ラベル", gui::dpi_x(220));
+        let _ = self.item_list.cols().add("コマンド", gui::dpi_x(270));
+        let _ = self.menu_list.items().delete_all();
+        let _ = self.item_list.items().delete_all();
+        self.selected_menu.set(None);
+        for m in self.shared.cfg.borrow().menus.iter() {
+            let _ = self.menu_list.items().add(std::slice::from_ref(&m.name), None, ());
+        }
+    }
+}
+
 /// 「登録ディレクトリ」ページ。一覧（ショートカット/名前/場所）＋下部の入力欄でインライン編集
 /// （追加/更新/削除/並べ替え/フォルダ参照）。編集は即 `shared.cfg.bookmarks` へ反映する。
 #[derive(Clone)]
@@ -2608,6 +2715,7 @@ pub fn show(
     let pane_keys_text = make_pane(&wnd, pane_pos, pane_wide); // 10
     let pane_keys_image = make_pane(&wnd, pane_pos, pane_wide); // 11
     let pane_fileops = make_pane(&wnd, pane_pos, pane_wide); // 12
+    let pane_menus = make_pane(&wnd, pane_pos, pane_wide); // 13
     let panes = vec![
         pane_appearance.clone(),
         pane_colors.clone(),
@@ -2622,6 +2730,7 @@ pub fn show(
         pane_keys_text.clone(),
         pane_keys_image.clone(),
         pane_fileops.clone(),
+        pane_menus.clone(),
     ];
 
     // 右カラム：プレビュー（外観カテゴリ選択中だけ表示）。表示テーマは「配色テーマ」に追従する
@@ -2650,6 +2759,7 @@ pub fn show(
     build_list(&pane_list, &shared);
     let columns_editor = ColumnsEditor::new(&pane_list, &shared);
     let registered = RegisteredPane::new(&pane_registered, &shared);
+    let menus_pane = MenusPane::new(&pane_menus, &shared);
     let keys = KeyEditor::new(&pane_keys, &shared, KeyCategory::Filer, scripts, members.clone());
     let keys_text =
         KeyEditor::new(&pane_keys_text, &shared, KeyCategory::TextViewer, Vec::new(), members.clone());
@@ -2737,6 +2847,7 @@ pub fn show(
         let keys_text = keys_text.clone();
         let keys_image = keys_image.clone();
         let registered = registered.clone();
+        let menus_pane = menus_pane.clone();
         let columns_editor = columns_editor.clone();
         arm.on_create(move |_| {
             // 初期表示：先頭ページ（pane 0）を出し、ナビへフォーカスを与える。
@@ -2746,6 +2857,7 @@ pub fn show(
             }
             nav.hwnd().SetFocus();
             registered.populate();
+            menus_pane.populate();
             keys.populate();
             keys_text.populate();
             keys_image.populate();
@@ -2854,7 +2966,7 @@ pub fn show(
     // 閉じたらキー編集フックを捨てる（破棄済みウィンドウを debug 経路が触らないように）。
     #[cfg(feature = "debug-server")]
     crate::debug_server::modal_registry::clear_key_editors();
-    let _ = (nav, panes, keys, keys_text, keys_image, registered, ok, cancel, apply, preview_label, preview, viewer_preview);
+    let _ = (nav, panes, keys, keys_text, keys_image, registered, menus_pane, ok, cancel, apply, preview_label, preview, viewer_preview);
 }
 
 #[cfg(test)]
