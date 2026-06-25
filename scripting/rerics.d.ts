@@ -160,7 +160,7 @@ declare const rerics: {
    * rerics.activePane().apply((d) => {
    *   for (const it of d.items) if (it.ext === "tmp") it.selected = true;
    * });
-   * rerics.command("Delete");   // 選んだ .tmp を削除（開始まで・完了は待たない）
+   * rerics.command("delete");   // 選んだ .tmp を削除（開始まで・完了は待たない）
    * ```
    */
   command(name: string, ...args: string[]): void;
@@ -185,7 +185,7 @@ declare const rerics: {
    *
    * ```ts
    * rerics.on("changeDirectory", (dir) => {
-   *   if (dir.endsWith("photos")) rerics.command("SortByDate");
+   *   if (dir.endsWith("photos")) rerics.command("sortByDate");
    * });
    * ```
    */

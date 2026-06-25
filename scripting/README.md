@@ -86,7 +86,7 @@ rerics.activePane().apply((d) => {
 rerics.activePane().apply((d) => {
   for (const it of d.items) if (it.ext === "tmp") it.selected = true;
 });
-rerics.command("Delete");  // 選んだ .tmp を削除（確認は本体設定に従う）
+rerics.command("delete");  // 選んだ .tmp を削除（確認は本体設定に従う）
 ```
 
 `rerics.command()` でワーカーを起動する操作（コピー/移動/削除など）は「開始」まで戻り、
@@ -147,7 +147,7 @@ await rerics.copy({
 
 ```ts
 rerics.on("changeDirectory", (dir) => {
-  if (dir.endsWith("photos")) rerics.command("SortByDate");
+  if (dir.endsWith("photos")) rerics.command("sortByDate");
 });
 ```
 

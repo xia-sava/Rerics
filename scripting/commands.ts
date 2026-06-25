@@ -114,7 +114,7 @@ rerics.registerCommand("cleanTemp", () => {
     rerics.log("一時ファイルはありません");
     return;
   }
-  rerics.command("Delete"); // 確認ダイアログは本体側の設定に従う
+  rerics.command("delete"); // 確認ダイアログは本体側の設定に従う
 });
 
 // イベントの例：ディレクトリ移動を購読し、ログへ出す（changeDirectory）。
