@@ -341,6 +341,9 @@ pub enum Request {
     ScriptCommands,
     /// `GET /script/members`：`r.` で呼べるメンバー名の一覧（補完候補・JSON 文字列配列・昇順）。
     ScriptMembers,
+    /// `GET /meta/<token>`：組込コマンドのメタデータ（説明・引数仕様・使用例・有効文脈）を JSON で返す。
+    /// 未知のトークンは 404。
+    Meta { token: String },
     /// `POST /script/invoke/<name>`：登録済みスクリプトコマンドを名前で実行する（投げっぱなし）。
     ScriptInvoke { name: String },
     /// `POST /script/eval`：body の TS/JS ソースをスクリプトエンジンで評価する（投げっぱなし）。
@@ -522,6 +525,8 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::ScriptCommands)
             } else if path == "/script/members" {
                 Some(Request::ScriptMembers)
+            } else if let Some(token) = path.strip_prefix("/meta/") {
+                Some(Request::Meta { token: token.trim_end_matches('/').to_string() })
             } else if path == "/completion" {
                 Some(Request::CompletionState)
             } else if path == "/menu-editor" {

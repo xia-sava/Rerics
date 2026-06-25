@@ -226,6 +226,91 @@ pub enum CommandContext {
     ImageViewer,
 }
 
+/// 引数の型。機能欄に書けるリテラル引数と名前付きオプションを説明する語彙。
+/// ダイアログ案内・補完・HTML リファレンスの単一ソースとして使う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArgType {
+    /// 任意の文字列。
+    Str,
+    /// パス文字列。
+    Path,
+    /// 整数。
+    Int,
+    /// 真偽値。
+    Bool,
+    /// 決められた語のいずれか（`sort` の種別など）。
+    Enum(&'static [&'static str]),
+    /// 末尾に乗る名前付きオプションの Object（`{ select: true }`）。
+    Options(&'static [OptSpec]),
+}
+
+/// 位置引数 1 つの仕様。実行時は位置で解決するが、説明・補完のために名前を持つ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArgSpec {
+    /// 引数名（説明・補完用）。
+    pub name: &'static str,
+    /// 型。
+    pub ty: ArgType,
+    /// 省略可能か。
+    pub required: bool,
+    /// 1 行説明。
+    pub doc: &'static str,
+}
+
+/// 名前付きオプション 1 つの仕様（[`ArgType::Options`] の要素）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OptSpec {
+    /// オプション名（Object のキー）。
+    pub name: &'static str,
+    /// 型（スカラのみ）。
+    pub ty: ArgType,
+    /// 1 行説明。
+    pub doc: &'static str,
+}
+
+/// コマンド 1 つのメタデータ。token・表示名・有効文脈は [`Command::ALL`]／[`Command::contexts`]
+/// 側の単一ソースを引き、ここでは説明・引数仕様・使用例だけを足す（②で育てるフィールド群）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandMeta {
+    /// 1 行説明（未整備のコマンドは表示名を流用＝[`CommandMeta::trivial`]）。
+    pub summary: &'static str,
+    /// 位置引数の仕様（先頭から順）。名前付きオプションは末尾要素に [`ArgType::Options`] で乗る。
+    pub args: &'static [ArgSpec],
+    /// 使用例（機能欄に書ける式）。
+    pub examples: &'static [&'static str],
+}
+
+impl CommandMeta {
+    /// 引数なし・説明は表示名流用の既定メタ。
+    fn trivial(command: Command) -> CommandMeta {
+        CommandMeta { summary: command.display_name(), args: &[], examples: &[] }
+    }
+}
+
+/// 「選択しながら移動」の名前付きオプション（カーソル移動コマンド共通）。
+const SELECT_OPT: &[ArgSpec] = &[ArgSpec {
+    name: "options",
+    ty: ArgType::Options(&[OptSpec {
+        name: "select",
+        ty: ArgType::Bool,
+        doc: "アンカーから現在位置までを選択しながら移動する",
+    }]),
+    required: false,
+    doc: "移動の名前付きオプション",
+}];
+
+/// 「操作後にカーソルを動かす量」の名前付きオプション（マーク／選択コマンド共通）。
+const CURSOR_MOVE_OPT: &[ArgSpec] = &[ArgSpec {
+    name: "options",
+    ty: ArgType::Options(&[OptSpec {
+        name: "cursorMove",
+        ty: ArgType::Int,
+        doc: "操作後にカーソルを動かす量（既定は設定の down_after_select に従う）",
+    }]),
+    required: false,
+    doc: "操作後の名前付きオプション",
+}];
+
 impl Command {
     /// コマンドと「設定トークン名・表示名（日本語）」の対応表（変換の単一の出どころ）。
     const ALL: &'static [(Command, &'static str, &'static str)] = {
@@ -420,6 +505,122 @@ impl Command {
     /// このコマンドが指定文脈で有効か。
     pub fn available_in(self, ctx: CommandContext) -> bool {
         self.contexts().contains(&ctx)
+    }
+
+    /// コマンドのメタデータ（説明・引数仕様・使用例）。引数を取るコマンドだけ個別に
+    /// 整備し、それ以外は表示名を流用した [`CommandMeta::trivial`] を返す。
+    pub fn meta(self) -> CommandMeta {
+        use Command::*;
+        match self {
+            CursorUp => CommandMeta {
+                summary: "カーソルを 1 つ上へ移動する",
+                args: SELECT_OPT,
+                examples: &["cursorUp()", "cursorUp({select:true})"],
+            },
+            CursorDown => CommandMeta {
+                summary: "カーソルを 1 つ下へ移動する",
+                args: SELECT_OPT,
+                examples: &["cursorDown()", "cursorDown({select:true})"],
+            },
+            CursorTop => CommandMeta {
+                summary: "先頭行へカーソルを移動する",
+                args: SELECT_OPT,
+                examples: &["cursorTop()", "cursorTop({select:true})"],
+            },
+            CursorEnd => CommandMeta {
+                summary: "最終行へカーソルを移動する",
+                args: SELECT_OPT,
+                examples: &["cursorEnd()", "cursorEnd({select:true})"],
+            },
+            CursorPageUp => CommandMeta {
+                summary: "1 ページ上へカーソルを移動する",
+                args: SELECT_OPT,
+                examples: &["cursorPageUp()", "cursorPageUp({select:true})"],
+            },
+            CursorPageDown => CommandMeta {
+                summary: "1 ページ下へカーソルを移動する",
+                args: SELECT_OPT,
+                examples: &["cursorPageDown()", "cursorPageDown({select:true})"],
+            },
+            SetCursorPosition => CommandMeta {
+                summary: "指定した名前の項目へカーソルを移動する",
+                args: &[ArgSpec {
+                    name: "name",
+                    ty: ArgType::Str,
+                    required: true,
+                    doc: "移動先の項目名",
+                }],
+                examples: &[r#"setCursorPosition("readme.txt")"#],
+            },
+            MarkToggle => CommandMeta {
+                summary: "カーソル位置の選択／解除を切り替える",
+                args: CURSOR_MOVE_OPT,
+                examples: &["markToggle()", "markToggle({cursorMove:-1})"],
+            },
+            SelectFile => CommandMeta {
+                summary: "カーソル位置のファイルを選択する",
+                args: CURSOR_MOVE_OPT,
+                examples: &["selectFile()", "selectFile({cursorMove:1})"],
+            },
+            View => CommandMeta {
+                summary: "内蔵ビューアで表示する",
+                args: &[ArgSpec {
+                    name: "path",
+                    ty: ArgType::Path,
+                    required: false,
+                    doc: "表示するファイル（省略時はカーソル位置）",
+                }],
+                examples: &["view()", r#"view("C:\\note.txt")"#],
+            },
+            ChangeDirectory => CommandMeta {
+                summary: "指定パスへディレクトリを移動する",
+                args: &[ArgSpec {
+                    name: "path",
+                    ty: ArgType::Path,
+                    required: true,
+                    doc: "移動先ディレクトリ",
+                }],
+                examples: &[r#"changeDirectory("C:\\work")"#],
+            },
+            ChangeDrive => CommandMeta {
+                summary: "指定ドライブへ移動する",
+                args: &[ArgSpec {
+                    name: "drive",
+                    ty: ArgType::Str,
+                    required: true,
+                    doc: r#"ドライブ（"D:" など）"#,
+                }],
+                examples: &[r#"changeDrive("D:")"#],
+            },
+            Menu => CommandMeta {
+                summary: "名前付きメニューを開く",
+                args: &[ArgSpec {
+                    name: "name",
+                    ty: ArgType::Str,
+                    required: true,
+                    doc: "開くメニューの名前",
+                }],
+                examples: &[r#"menu("ファイル操作")"#],
+            },
+            Sort => CommandMeta {
+                summary: "指定した方法で並べ替える",
+                args: &[ArgSpec {
+                    name: "by",
+                    ty: ArgType::Enum(&[
+                        "name",
+                        "extension",
+                        "size",
+                        "date",
+                        "createtime",
+                        "attribute",
+                    ]),
+                    required: true,
+                    doc: "並べ替えの種別",
+                }],
+                examples: &[r#"sort("name")"#, r#"sort("size")"#],
+            },
+            _ => CommandMeta::trivial(self),
+        }
     }
 }
 
@@ -1099,6 +1300,56 @@ mod tests {
             Some(Call::Builtin { command, args })
                 if command == Command::MarkToggle && args == vec![serde_json::json!({ "cursorMove": -1 })]
         ));
+    }
+
+    #[test]
+    fn meta_trivial_for_argless_command() {
+        // 引数を取らないコマンドは表示名流用・引数空。
+        let m = Command::Copy.meta();
+        assert_eq!(m.summary, Command::Copy.display_name());
+        assert!(m.args.is_empty());
+        assert!(m.examples.is_empty());
+    }
+
+    #[test]
+    fn meta_describes_named_option() {
+        // カーソル移動は末尾 Object の select オプションを持つ。
+        let args = Command::CursorDown.meta().args;
+        assert_eq!(args.len(), 1);
+        match args[0].ty {
+            ArgType::Options(opts) => {
+                assert_eq!(opts.len(), 1);
+                assert_eq!(opts[0].name, "select");
+                assert_eq!(opts[0].ty, ArgType::Bool);
+            }
+            other => panic!("Options のはずが {other:?}"),
+        }
+        assert!(!args[0].required);
+    }
+
+    #[test]
+    fn meta_sort_has_enum_arg() {
+        let args = Command::Sort.meta().args;
+        assert!(matches!(args[0].ty, ArgType::Enum(vs) if vs.contains(&"name") && vs.contains(&"size")));
+        assert!(args[0].required);
+    }
+
+    #[test]
+    fn meta_examples_parse_to_their_command() {
+        // すべての使用例は、そのコマンドのリテラル引数呼び出し（Builtin）として読めること。
+        for cmd in Command::all() {
+            for ex in cmd.meta().examples {
+                match Call::parse(ex) {
+                    Call::Builtin { command, .. } => assert_eq!(
+                        command, cmd,
+                        "{ex} は {cmd:?} の例だが {command:?} にパースされた"
+                    ),
+                    Call::Script { source } => {
+                        panic!("{cmd:?} の例 {source} が Builtin に簡約できない")
+                    }
+                }
+            }
+        }
     }
 
     #[test]

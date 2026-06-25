@@ -41,7 +41,10 @@ pub use file_list::{
     sequence_rename,
 };
 pub use call::Call;
-pub use input::{Command, CommandContext, Invocation, KeyChord, KeyMap, vk};
+pub use input::{
+    ArgSpec, ArgType, Command, CommandContext, CommandMeta, Invocation, KeyChord, KeyMap, OptSpec,
+    vk,
+};
 pub use menu::{MenuDef, MenuItem, MenuRegistry, ResolvedItem};
 pub use naming::unique_name;
 pub use log::{LogLevel, LogLine, LogState};

@@ -119,6 +119,13 @@ impl MainWindow {
                     let json = serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_string());
                     let _ = tx.send(debug_server::Response::Json(json));
                 }
+                debug_server::Request::Meta { token } => {
+                    let r = match rerics_core::Command::from_token(&token) {
+                        Some(cmd) => debug_server::Response::Json(command_meta_json(cmd).to_string()),
+                        None => debug_server::Response::NotFound,
+                    };
+                    let _ = tx.send(r);
+                }
                 debug_server::Request::MenuEditorState => {
                     let v = debug_server::modal_registry::with_menu_editor(|h| (h.read)())
                         .unwrap_or_else(|| "null".to_string());
@@ -1461,6 +1468,66 @@ impl MainWindow {
             Some(Err(e)) => debug_server::Response::BadRequest(e),
             None => debug_server::Response::NotFound,
         }
+    }
+}
+
+/// 組込コマンドのメタデータを `GET /meta/<token>` の応答 JSON へ変換する。
+#[cfg(feature = "debug-server")]
+fn command_meta_json(cmd: rerics_core::Command) -> serde_json::Value {
+    use serde_json::json;
+    let m = cmd.meta();
+    let contexts: Vec<&str> = cmd.contexts().iter().map(|c| context_token(*c)).collect();
+    let args: Vec<serde_json::Value> = m
+        .args
+        .iter()
+        .map(|a| {
+            json!({
+                "name": a.name,
+                "required": a.required,
+                "doc": a.doc,
+                "type": arg_type_json(a.ty),
+            })
+        })
+        .collect();
+    json!({
+        "token": cmd.as_token(),
+        "display": cmd.display_name(),
+        "summary": m.summary,
+        "contexts": contexts,
+        "args": args,
+        "examples": m.examples,
+    })
+}
+
+/// [`rerics_core::ArgType`] を JSON へ。型名は文字列、列挙・オプションは内訳を添える。
+#[cfg(feature = "debug-server")]
+fn arg_type_json(ty: rerics_core::ArgType) -> serde_json::Value {
+    use rerics_core::ArgType::*;
+    use serde_json::json;
+    match ty {
+        Str => json!({ "kind": "str" }),
+        Path => json!({ "kind": "path" }),
+        Int => json!({ "kind": "int" }),
+        Bool => json!({ "kind": "bool" }),
+        Enum(values) => json!({ "kind": "enum", "values": values }),
+        Options(opts) => {
+            let options: Vec<serde_json::Value> = opts
+                .iter()
+                .map(|o| json!({ "name": o.name, "doc": o.doc, "type": arg_type_json(o.ty) }))
+                .collect();
+            json!({ "kind": "options", "options": options })
+        }
+    }
+}
+
+/// [`rerics_core::CommandContext`] の観測用トークン。
+#[cfg(feature = "debug-server")]
+fn context_token(ctx: rerics_core::CommandContext) -> &'static str {
+    use rerics_core::CommandContext::*;
+    match ctx {
+        Filer => "filer",
+        TextViewer => "text",
+        ImageViewer => "image",
     }
 }
 

@@ -3793,3 +3793,58 @@ fn menu_script_token_runs_registered_script_with_args() {
     let log = poll(&server, "/state/log/lines", |b| b.contains("PONG:hi"));
     assert!(log.contains("PONG:hi"), "script 経由でスクリプトが引数つきで実行される: {log}");
 }
+
+/// GET /meta/<token> は組込コマンドのメタデータ（説明・引数仕様・例・有効文脈）を返す。未知は 404。
+#[test]
+fn command_meta_endpoint_reports_args_examples_and_contexts() {
+    let server = Server::start(&["a.txt"], "");
+
+    // 引数を取るコマンド：cursorDown は select オプションと例を持つ。
+    let (st, body) = server.req("GET", "/meta/cursorDown", "").expect("meta");
+    assert_eq!(st, 200, "既知トークンは 200");
+    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(v["token"], "cursorDown");
+    assert_eq!(v["contexts"][0], "filer");
+    assert_eq!(v["args"][0]["type"]["kind"], "options");
+    assert_eq!(v["args"][0]["type"]["options"][0]["name"], "select");
+    assert_eq!(v["args"][0]["type"]["options"][0]["type"]["kind"], "bool");
+    assert!(
+        v["examples"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e == "cursorDown({select:true})"),
+        "select の例が出る: {body}"
+    );
+
+    // enum 引数：sort。
+    let sort: serde_json::Value =
+        serde_json::from_str(&server.req("GET", "/meta/sort", "").unwrap().1).unwrap();
+    assert_eq!(sort["args"][0]["type"]["kind"], "enum");
+    assert!(
+        sort["args"][0]["type"]["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x == "name"),
+        "sort の種別に name が出る"
+    );
+
+    // 引数なしコマンドは args 空・summary は表示名流用。
+    let copy: serde_json::Value =
+        serde_json::from_str(&server.req("GET", "/meta/copy", "").unwrap().1).unwrap();
+    assert_eq!(copy["args"].as_array().unwrap().len(), 0);
+    assert_eq!(copy["summary"], "コピー");
+
+    // 別名トークンも解決する（CD → changeDirectory）。
+    let cd: serde_json::Value =
+        serde_json::from_str(&server.req("GET", "/meta/CD", "").unwrap().1).unwrap();
+    assert_eq!(cd["token"], "changeDirectory");
+
+    // 未知トークンは 404。
+    assert_eq!(
+        server.req("GET", "/meta/noSuchCommand", "").unwrap().0,
+        404,
+        "未知トークンは 404"
+    );
+}
