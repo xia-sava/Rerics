@@ -2783,6 +2783,40 @@ fn completion_annotates_builtin_members_with_meta() {
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
 
+/// 式エディタは式の複雑さで 1 行／複数行モードを畳む。単一行の式はコンパクト（`multiline:false`）で
+/// 開き、「複数行」トグル（モーダル唯一のチェックボックス＝`/modal/check`）で展開・再畳みできる。
+/// モードは `/completion` の `multiline` で観測する。
+#[test]
+fn code_editor_folds_between_single_and_multi_line() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
+    wait_modal(&server);
+    server.req("POST", "/settings/nav/5", "").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/openexpr", "").unwrap();
+
+    let mode = |s: &str| {
+        serde_json::from_str::<serde_json::Value>(s).unwrap()["multiline"].as_bool().unwrap()
+    };
+
+    // 単一行の式（makeDirectory()）はコンパクト（1 行）で開く。
+    let c = poll(&server, "/completion", |b| b.contains("multiline"));
+    assert!(!mode(&c), "単一行式はコンパクトで開く: {c}");
+
+    // 「複数行」トグルで展開＝multiline:true。
+    server.req("POST", "/modal/check", "").unwrap();
+    let c2 = poll(&server, "/completion", |b| b.contains("\"multiline\":true"));
+    assert!(mode(&c2), "トグルで複数行へ展開: {c2}");
+
+    // もう一度トグルでコンパクトへ戻る。
+    server.req("POST", "/modal/check", "").unwrap();
+    let c3 = poll(&server, "/completion", |b| b.contains("\"multiline\":false"));
+    assert!(!mode(&c3), "再トグルで 1 行へ畳む: {c3}");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
 /// 式エディタの `r.` 補完は、登録スクリプト関数にも `registerCommand` の summary を添える
 /// （組込メタと同じインタフェース＝組込／スクリプトを区別せず説明が出る）。
 #[test]

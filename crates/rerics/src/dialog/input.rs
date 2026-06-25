@@ -486,6 +486,13 @@ fn install_completion(arm: &ModalArm, edit: &gui::Edit, cand: &gui::ListBox, com
     let _ = do_insert;
 }
 
+/// 式エディタの可変寸法（DPI 換算前）を返す。`(入力欄の高さ, 候補欄の上端 y, 候補欄の高さ)`。
+/// compact＝1 行入力＋広い候補欄（コマンドを探しやすい）／expanded＝複数行入力＋下に候補欄
+/// （凝った処理を書きやすい）。入力欄の左上・幅は両モード共通なので持たない。
+fn code_box_geometry(expanded: bool) -> (i32, i32, i32) {
+    if expanded { (150, 194, 150) } else { (24, 70, 274) }
+}
+
 pub fn code_box(
     parent: &impl GuiParent,
     message: &str,
@@ -494,12 +501,28 @@ pub fn code_box(
 ) -> Option<String> {
     let (wnd, arm) = modal_window("コードを割り当て", 480, 400);
 
+    // 種の式が複数行を含めば展開モード、単一行ならコンパクトモードで開く（凝った式だけ広く使う）。
+    let multiline_init = value.contains('\n');
+    let (edit_h0, cand_y0, cand_h0) = code_box_geometry(multiline_init);
+
     let _label = gui::Label::new(
         &wnd,
         gui::LabelOpts {
             text: message,
             position: gui::dpi(16, 14),
-            size: gui::dpi(448, 18),
+            size: gui::dpi(348, 18),
+            ..Default::default()
+        },
+    );
+
+    // 1 行／複数行モードの手動トグル。種の式に応じた初期状態で開き、押すと入力欄と候補欄を畳む。
+    let mode = gui::CheckBox::new(
+        &wnd,
+        gui::CheckBoxOpts {
+            text: "複数行(&M)",
+            position: gui::dpi(372, 12),
+            size: gui::dpi(92, 20),
+            check_state: if multiline_init { co::BST::CHECKED } else { co::BST::UNCHECKED },
             ..Default::default()
         },
     );
@@ -520,7 +543,7 @@ pub fn code_box(
                 | co::WS::VSCROLL,
             position: gui::dpi(16, 38),
             width: gui::dpi_x(448),
-            height: gui::dpi_y(150),
+            height: gui::dpi_y(edit_h0),
             ..Default::default()
         },
     );
@@ -530,12 +553,37 @@ pub fn code_box(
     let cand = gui::ListBox::new(
         &wnd,
         gui::ListBoxOpts {
-            position: gui::dpi(16, 194),
-            size: gui::dpi(448, 150),
+            position: gui::dpi(16, cand_y0),
+            size: gui::dpi(448, cand_h0),
             window_style: co::WS::CHILD | co::WS::BORDER | co::WS::VSCROLL,
             ..Default::default()
         },
     );
+
+    // 「複数行」トグル＝チェック状態に合わせて入力欄と候補欄を畳む／広げる（コントロール再生成なし）。
+    let expanded = Rc::new(Cell::new(multiline_init));
+    {
+        let edit = edit.clone();
+        let cand = cand.clone();
+        let mode_h = mode.clone();
+        let expanded = expanded.clone();
+        mode.on().bn_clicked(move || {
+            let exp = mode_h.is_checked();
+            expanded.set(exp);
+            let (eh, cy, ch) = code_box_geometry(exp);
+            let _ = edit.hwnd().MoveWindow(
+                winsafe::POINT { x: gui::dpi_x(16), y: gui::dpi_y(38) },
+                winsafe::SIZE { cx: gui::dpi_x(448), cy: gui::dpi_y(eh) },
+                true,
+            );
+            let _ = cand.hwnd().MoveWindow(
+                winsafe::POINT { x: gui::dpi_x(16), y: gui::dpi_y(cy) },
+                winsafe::SIZE { cx: gui::dpi_x(448), cy: gui::dpi_y(ch) },
+                true,
+            );
+            Ok(())
+        });
+    }
 
     let ok = gui::Button::new(
         &wnd,
@@ -619,11 +667,18 @@ pub fn code_box(
     });
     install_completion(&arm, &edit, &cand, complete);
 
+    // headless 観測：現在のモード（1 行／複数行）を読めるようにする。
+    #[cfg(feature = "debug-server")]
+    {
+        let expanded = expanded.clone();
+        completion_probe::set_multiline(Box::new(move || expanded.get()));
+    }
+
     let _ = wnd.show_modal(parent);
     keyhook::pop();
     #[cfg(feature = "debug-server")]
     completion_probe::clear();
-    let _ = (cancel, cand);
+    let _ = (cancel, cand, mode, expanded);
     result.borrow().clone()
 }
 
@@ -788,6 +843,8 @@ pub mod completion_probe {
 
     thread_local! {
         static PROBE: RefCell<Option<Probe>> = const { RefCell::new(None) };
+        /// 式エディタ（`code_box`）の現在モード読み取り。入力欄系（`input_box` 等）は付けない。
+        static MULTILINE: RefCell<Option<Box<dyn Fn() -> bool>>> = const { RefCell::new(None) };
     }
 
     pub fn set(p: Probe) {
@@ -795,6 +852,15 @@ pub mod completion_probe {
     }
     pub fn clear() {
         PROBE.with(|s| *s.borrow_mut() = None);
+        MULTILINE.with(|s| *s.borrow_mut() = None);
+    }
+    /// `code_box` が現在モード（複数行なら true）を読む関数を登録する。
+    pub fn set_multiline(f: Box<dyn Fn() -> bool>) {
+        MULTILINE.with(|s| *s.borrow_mut() = Some(f));
+    }
+    /// 式エディタが複数行モードか（式エディタが開いていなければ None）。
+    pub fn multiline() -> Option<bool> {
+        MULTILINE.with(|s| s.borrow().as_ref().map(|f| f()))
     }
     /// 本文を `s` にして補完を更新する（入力の模擬）。開いていれば `true`。
     pub fn type_text(s: &str) -> bool {
