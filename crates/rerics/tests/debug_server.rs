@@ -3217,6 +3217,21 @@ fn quit_closes_tab_when_multiple_keeps_app_alive() {
     assert!(server.req("GET", "/state", "").is_some(), "アプリは終了していない");
 }
 
+/// 組込コマンドが `r.<token>()` の名前付き関数として呼べる（bootstrap が動的生成）。
+/// スクリプトから `r.cursorDown()` でカーソルが動く＝命令ブリッジ経由で内蔵コマンドへ届く。
+#[test]
+fn script_builtin_command_callable_as_r_method() {
+    let server = Server::start_with_scripts(&["a.txt", "b.txt", "c.txt"], &[]);
+    assert_eq!(
+        server.req("GET", "/state/panes/left/cursor", "").unwrap().1.trim(),
+        "0",
+        "初期カーソルは 0"
+    );
+    server.req("POST", "/script/eval", "r.cursorDown();").expect("eval");
+    let c = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+    assert_eq!(c.trim(), "1", "r.cursorDown() で内蔵コマンドが走りカーソルが 1 へ");
+}
+
 /// キーバインド経路：`eval("code")` コマンドが `exec` からエンジンへ流れ、コードが評価される。
 /// `/command/eval` は実際のキー押下と同じ `exec` を通るので、これでキー→コード評価の配線を検証する。
 #[test]

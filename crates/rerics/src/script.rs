@@ -263,6 +263,14 @@ fn op_command(
         .map_err(deno_error::JsErrorBox::generic)
 }
 
+/// 組込コマンドのトークン名一覧。bootstrap がこれを回して `r.<token>()` の名前付き関数を
+/// 動的生成する（Rust 側に個別 op を 127 本書かずに済ませる）。
+#[op2]
+#[serde]
+fn op_builtin_commands() -> Vec<String> {
+    rerics_core::Command::all().map(|c| c.as_token().to_owned()).collect()
+}
+
 /// ディレクトリ一覧の1エントリ（スクリプトへ渡す情報）。JS 側では camelCase で見える。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -444,6 +452,7 @@ extension!(
         op_set_selected,
         op_apply_selection,
         op_command,
+        op_builtin_commands,
         op_op_start,
         op_op_next,
         op_op_cancel,
@@ -630,6 +639,15 @@ const BOOTSTRAP: &str = r#"
   globalThis.r = globalThis.rerics;
   // 組込メンバー名の集合（この時点の rerics のキー）。登録コマンドの公開時に衝突判定へ使う。
   const builtinMembers = new Set(Object.keys(rerics));
+  // 組込コマンドを r.<token>() の名前付き関数として生やす（今は戻り値を捨てる）。host API と
+  // 同名（copy/move/delete 等）は host API を優先して上書きしない。生やした名前も組込メンバー
+  // 扱いにして、同名の登録スクリプト関数が後から上書きするのを防ぐ。
+  for (const token of ops.op_builtin_commands()) {
+    if (!builtinMembers.has(token)) {
+      rerics[token] = (...args) => rerics.command(token, ...args);
+      builtinMembers.add(token);
+    }
+  }
   // ファイラー本体の出来事を登録ハンドラへ配る。1 つが投げても残りは続行する。
   globalThis.__fireEvent = (event, arg) => {
     const list = eventHandlers.get(String(event));
@@ -1499,6 +1517,25 @@ mod tests {
         );
         // 失敗コマンドは JS の例外になり、catch でメッセージを拾える。
         assert_eq!(*host.logs.borrow(), vec!["caught:boom: Boom".to_string()]);
+    }
+
+    #[test]
+    fn builtin_commands_exposed_as_r_methods() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:r-builtin",
+            r#"r.cursorDown(); r.setCursorPosition("a.txt");"#.to_string(),
+        )
+        .unwrap();
+        // 組込コマンドが r.<token>() で呼べ、引数も command ブリッジへ届く。
+        assert_eq!(
+            *host.commands.borrow(),
+            vec![
+                ("cursorDown".to_string(), vec![]),
+                ("setCursorPosition".to_string(), vec!["a.txt".to_string()]),
+            ]
+        );
     }
 
     #[test]
