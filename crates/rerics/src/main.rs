@@ -813,7 +813,10 @@ impl MainWindow {
         match cmd {
             Command::Script => {
                 if let Some(name) = inv.args.first() {
-                    self.script_send(script_host::EngineCmd::Invoke(name.clone()));
+                    self.script_send(script_host::EngineCmd::Invoke {
+                        name: name.clone(),
+                        args: inv.args[1..].to_vec(),
+                    });
                 }
                 return Ok(());
             }

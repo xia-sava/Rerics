@@ -3523,3 +3523,31 @@ fn named_menu_includes_script_registered() {
     let top = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "0");
     assert_eq!(top.trim(), "0", "CursorTop で先頭へ戻る");
 }
+
+/// 原作 `Func_Xxx` トークンをメニューに書くと `Script("Xxx")` へ読み替わり、同名スクリプトを
+/// 登録すればそのまま実行される（原作メニューを原作トークンのまま移植できる future-proof 経路）。
+#[test]
+fn menu_func_token_runs_registered_script() {
+    let server = Server::start_with_scripts(
+        &["a.txt"],
+        &[(
+            "00.ts",
+            r#"
+            rerics.registerCommand("ping", (msg) => rerics.log("PONG:" + msg));
+            rerics.registerMenu("fns", [{ label: "ピング", command: 'Func_ping("hi")' }]);
+            "#,
+        )],
+    );
+
+    // Func_ping("hi") は Script("ping", "hi") に読み替わって項目に出る。
+    let tree = server.req("GET", "/menu/fns", "").unwrap().1;
+    assert!(
+        tree.contains("Script(\\\"ping\\\""),
+        "Func_ トークンが Script 呼び出しへ読み替わる: {tree}"
+    );
+
+    // 項目を選ぶと登録スクリプトが引数つきで走る（ログに出る）。
+    server.req("POST", "/menu/fns/select/0", "").unwrap();
+    let log = poll(&server, "/state/log/lines", |b| b.contains("PONG:hi"));
+    assert!(log.contains("PONG:hi"), "Func_ 経由でスクリプトが引数つきで実行される: {log}");
+}

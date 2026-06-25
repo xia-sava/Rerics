@@ -133,8 +133,8 @@ struct PendingDispatch {
 /// エンドポイントだけなので、その構成以外では当該バリアントが未使用＝dead_code を許容する。
 #[cfg_attr(not(feature = "debug-server"), allow(dead_code))]
 pub enum EngineCmd {
-    /// 登録済みコマンドを名前で実行する（投げっぱなし）。
-    Invoke(String),
+    /// 登録済みコマンドを名前で実行する（投げっぱなし）。`args` はコールバックへ転送する。
+    Invoke { name: String, args: Vec<String> },
     /// TS/JS ソースを評価する（投げっぱなし）。
     Eval(String),
     /// TS/JS コードを評価し、最後の式の値を文字列で返す（同期取得）。`undefined`/`null` は空文字。
@@ -428,8 +428,8 @@ pub fn spawn_engine(
         }
         while let Ok(cmd) = cmd_rx.recv() {
             match cmd {
-                EngineCmd::Invoke(name) => {
-                    if let Err(e) = engine.invoke_command(&name) {
+                EngineCmd::Invoke { name, args } => {
+                    if let Err(e) = engine.invoke_command(&name, &args) {
                         host.log(&format!("コマンド実行エラー [{name}]: {e}"));
                     }
                 }
