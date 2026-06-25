@@ -139,6 +139,17 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
     }
 }
 
+/// メッセージキューに溜まっている文字メッセージ（WM_CHAR/WM_SYSCHAR）を捨てる。キー押下で
+/// ポップアップメニューを開く直前に呼び、押下キーの文字がメニューのアクセスキー入力として
+/// 食われてビープが鳴るのを防ぐ。
+fn flush_pending_chars() {
+    let mut msg: w::MSG = unsafe { std::mem::zeroed() };
+    while w::PeekMessage(&mut msg, None, co::WM::CHAR.raw(), co::WM::CHAR.raw(), co::PM::REMOVE) {}
+    while w::PeekMessage(&mut msg, None, co::WM::SYSCHAR.raw(), co::WM::SYSCHAR.raw(), co::PM::REMOVE)
+    {
+    }
+}
+
 /// 解決済みメニュー項目列からポップアップ `HMENU` を再帰的に組む。実行項目には 1 始まりの
 /// ID を採番し、`dispatch` に同順で [`Invocation`] を積む（選択 ID → `dispatch[ID-1]`）。
 /// サブメニューは入れ子の `HMENU`、無効項目はグレーアウト掲示、セパレータは区切り線。
@@ -905,6 +916,9 @@ impl MainWindow {
         let menu = build_resolved_menu(&items, &mut dispatch)?;
         let owner = self.view(is_left).hwnd();
         let pt = self.view(is_left).menu_anchor();
+        // キーで開いた直後はそのキーの WM_CHAR がキューに残り、TrackPopupMenu のモーダル
+        // ループがそれをアクセスキー入力として食う→不一致でビープが鳴る。先に捨てる。
+        flush_pending_chars();
         let _ = owner.SetForegroundWindow();
         let chosen = menu.TrackPopupMenu(
             co::TPM::RETURNCMD | co::TPM::LEFTALIGN | co::TPM::TOPALIGN,
