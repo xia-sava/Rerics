@@ -5,6 +5,7 @@ default_sort = "FileName"
 reverse_sort_date = false
 progress_delay_ms = 1000
 bookmarks = []
+menus = []
 editor = "notepad.exe"
 
 [font]

@@ -10,6 +10,7 @@ mod highlight;
 mod input;
 mod log;
 mod media;
+mod menu;
 pub mod messages;
 mod operation;
 mod spinner;
@@ -38,6 +39,7 @@ pub use file_list::{
     sequence_rename,
 };
 pub use input::{Command, CommandContext, Invocation, KeyChord, KeyMap, vk};
+pub use menu::{MenuDef, MenuItem, MenuRegistry, ResolvedItem};
 pub use log::{LogLevel, LogLine, LogState};
 pub use media::{
     AnimatedImage, Frame, FrameSource, MediaKind, Placement, StillImage, clamp_pan,

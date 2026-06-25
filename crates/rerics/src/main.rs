@@ -56,8 +56,8 @@ use tab_bar::TabBar;
 use task::{TaskEntry, WorkerEvent};
 use viewer::ViewerView;
 use rerics_core::{
-    Command, Config, FileListState, Invocation, KeyChord, KeyMap, Location, Pane, SortType,
-    WindowState,
+    Command, Config, FileListState, Invocation, KeyChord, KeyMap, Location, MenuRegistry, Pane,
+    ResolvedItem, SortType, WindowState,
 };
 use winsafe::{self as w, co, gui, prelude::*};
 
@@ -137,6 +137,44 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         OpenTaskManager => DebugCmdClass::MaybeModal,
         _ => DebugCmdClass::NonModal,
     }
+}
+
+/// 解決済みメニュー項目列からポップアップ `HMENU` を再帰的に組む。実行項目には 1 始まりの
+/// ID を採番し、`dispatch` に同順で [`Invocation`] を積む（選択 ID → `dispatch[ID-1]`）。
+/// サブメニューは入れ子の `HMENU`、無効項目はグレーアウト掲示、セパレータは区切り線。
+fn build_resolved_menu(
+    items: &[ResolvedItem],
+    dispatch: &mut Vec<Invocation>,
+) -> w::SysResult<w::HMENU> {
+    let menu = w::HMENU::CreatePopupMenu()?;
+    for item in items {
+        match item {
+            ResolvedItem::Separator => {
+                menu.AppendMenu(co::MF::SEPARATOR, w::IdMenu::None, w::BmpPtrStr::None)?;
+            }
+            ResolvedItem::Command { label, invocation } => {
+                dispatch.push(invocation.clone());
+                let id = dispatch.len() as u16;
+                menu.AppendMenu(co::MF::STRING, w::IdMenu::Id(id), w::BmpPtrStr::from_str(label))?;
+            }
+            ResolvedItem::Submenu { label, items } => {
+                let sub = build_resolved_menu(items, dispatch)?;
+                menu.AppendMenu(
+                    co::MF::POPUP,
+                    w::IdMenu::Menu(&sub),
+                    w::BmpPtrStr::from_str(label),
+                )?;
+            }
+            ResolvedItem::Invalid { label, .. } => {
+                menu.AppendMenu(
+                    co::MF::STRING | co::MF::GRAYED,
+                    w::IdMenu::None,
+                    w::BmpPtrStr::from_str(label),
+                )?;
+            }
+        }
+    }
+    Ok(menu)
 }
 
 fn main() {
@@ -830,6 +868,50 @@ impl MainWindow {
         }
     }
 
+    /// config の `[[menus]]` から名前付きメニューのレジストリを組む（同名は後勝ち）。
+    fn menu_registry(&self) -> MenuRegistry {
+        let mut reg = MenuRegistry::new();
+        for def in &self.config.borrow().menus {
+            reg.insert(def.clone());
+        }
+        reg
+    }
+
+    /// 名前付きメニュー（原作 `Menu("名前")`）を開く。レジストリで名前を解決し、参照式
+    /// サブメニューを展開したポップアップをカーソル行へ出す。選んだ項目の [`Invocation`] を
+    /// キー押下と同じ `exec` 経路へ流す。名前が無い/未定義ならログに出す。headless（debug）
+    /// では駆動できないネイティブポップアップを出さず解決のみ行う（観測は `/menu/*` 経由）。
+    fn open_named_menu(&self, is_left: bool, name: &str) -> w::AnyResult<()> {
+        if name.is_empty() {
+            self.log.warn("Menu に開くメニュー名がありません");
+            return Ok(());
+        }
+        let Some(items) = self.menu_registry().resolve(name) else {
+            self.log.warn(&format!("メニューが見つかりません: {name}"));
+            return Ok(());
+        };
+        #[cfg(feature = "debug-server")]
+        if self.debug.headless {
+            return Ok(());
+        }
+        let mut dispatch: Vec<Invocation> = Vec::new();
+        let menu = build_resolved_menu(&items, &mut dispatch)?;
+        let owner = self.view(is_left).hwnd();
+        let pt = self.view(is_left).menu_anchor();
+        let _ = owner.SetForegroundWindow();
+        let chosen = menu.TrackPopupMenu(
+            co::TPM::RETURNCMD | co::TPM::LEFTALIGN | co::TPM::TOPALIGN,
+            pt,
+            owner,
+        )?;
+        if let Some(id) = chosen
+            && let Some(inv) = dispatch.get(id as usize - 1)
+        {
+            self.exec(is_left, &inv.clone())?;
+        }
+        Ok(())
+    }
+
     /// 解決済み引数でコマンド本体を実行する（引数解決のあとの同期処理＝コマンドアーム群を集約）。
     /// 引数解決は `exec` 側で済ませる（現状はマクロ展開・将来は式評価）。文脈外のビューア専用
     /// コマンドは何もしない。
@@ -933,6 +1015,10 @@ impl MainWindow {
             }
             Command::CommandDirect => {
                 self.command_direct(is_left)?;
+                return Ok(());
+            }
+            Command::Menu => {
+                self.open_named_menu(is_left, args.first().map(String::as_str).unwrap_or(""))?;
                 return Ok(());
             }
             Command::DirectoryInformation => {

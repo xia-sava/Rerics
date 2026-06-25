@@ -182,8 +182,8 @@ fn command_genre(cmd: Command) -> (u8, &'static str) {
         MakeDirectory | Copy | Move | Rename | RenameSequenceDialog | Delete | SendToRecycled
         | CreateShortcut | ClipCopy | ClipCut | ClipPaste | CreateFile | Edit | PropertyDialog
         | Compress | Extract => (6, "ファイル操作"),
-        OpenTaskManager | OpenSettings | KeyBindsDialog | CommandDirect | CopyLog | ClearLog | Nop
-        | End | Restart | Quit | MaximizeWindow | MinimizeWindow => (7, "アプリ・その他"),
+        OpenTaskManager | OpenSettings | KeyBindsDialog | CommandDirect | Menu | CopyLog | ClearLog
+        | Nop | End | Restart | Quit | MaximizeWindow | MinimizeWindow => (7, "アプリ・その他"),
         Script | Eval => (14, "スクリプト"),
         ViewerScrollUp | ViewerScrollDown | ViewerPageUp | ViewerPageDown | ViewerScrollTop
         | ViewerScrollBottom => (8, "スクロール"),

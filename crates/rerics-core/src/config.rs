@@ -347,6 +347,8 @@ pub struct Config {
     pub keybinds_imageviewer: BTreeMap<String, String>,
     /// 登録ディレクトリ（ジャンプ先）。
     pub bookmarks: Vec<Bookmark>,
+    /// 名前付きメニュー定義（`Menu("名前")` で開く）。
+    pub menus: Vec<crate::menu::MenuDef>,
     /// Edit コマンドで開く外部エディタ（実行ファイル名 or パス）。
     pub editor: String,
     /// カーソル位置記憶の設定。
@@ -381,6 +383,7 @@ impl Default for Config {
             keybinds_textviewer: KeyMap::default_textviewer().to_string_map(),
             keybinds_imageviewer: KeyMap::default_imageviewer().to_string_map(),
             bookmarks: Vec::new(),
+            menus: Vec::new(),
             editor: "notepad.exe".to_owned(),
             cursor: CursorSettings::default(),
             image: ImageSettings::default(),
