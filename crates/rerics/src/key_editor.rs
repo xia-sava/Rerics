@@ -6,7 +6,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
-use rerics_core::{Command, CommandContext, Invocation, KeyChord, KeyMap};
+use rerics_core::{Call, Command, CommandContext, KeyChord, KeyMap};
 use winsafe::{self as w, co, gui, prelude::*};
 
 use crate::script::ScriptCommand;
@@ -58,12 +58,11 @@ impl KeyCategory {
     }
 }
 
-/// 機能順の 1 行＝1 つのキー割り当て（chord → 呼び出し）。割り当ての無いコマンドは
-/// `chord: None` の 1 行で出す（そこへキャプチャして割当）。同コマンドの複数キー・引数違いは別行に割れる。
+/// 機能順の 1 行＝1 つの機能欄の式と、その割り当てキー。割り当ての無い機能は
+/// `chord: None` の 1 行で出す（そこへキャプチャして割当）。同じ機能の複数キー・引数違いは別行に割れる。
 struct BindRow {
-    command: Command,
-    /// 実呼び出しの生 invocation 値（未割当行は bare コマンドのトークン）。
-    value: String,
+    /// 機能欄の式（`cursorDown()`・`copy("a")`・`organize()`・`{ コード }`）。未割当行も式を持つ。
+    expr: String,
     /// 割り当てキー（未割当なら `None`）。
     chord: Option<String>,
     /// この chord に複数機能がある（衝突）。
@@ -71,7 +70,7 @@ struct BindRow {
 }
 
 /// キー順の 1 行＝1 chord と、それを定義している全機能（2 つ以上＝衝突）。`labels` は機能トークン
-/// （命令の同一判定・debug 観測用）、`values` は生 invocation（機能名／実呼び出しカラムの描画用）。
+/// （命令の同一判定・debug 観測用）、`values` は機能欄の式（機能名／実呼び出しカラムの描画用）。
 /// 両者は同じ並びで対応する。
 struct KeyChordRow {
     chord: String,
@@ -89,59 +88,30 @@ enum DisplayLine {
     Row(usize),
 }
 
-/// 割り当て値の表示ラベル。既知コマンドは正規トークン名、未知（`Func_*` 等）は生値のまま。
-fn binding_label(value: &str) -> String {
-    Invocation::parse(value)
-        .map(|i| i.command.as_token().to_string())
-        .unwrap_or_else(|| value.trim().to_string())
-}
-
-/// Script/Eval の行を「項目（スクリプト名／コード）順」に並べて `rows` へ足す。各項目はバインド
-/// 済みなら chord 順の行、未割当なら `chord: None` の 1 行。割り当て有無で位置が動かないよう、
-/// バインド済み・未割当を分けずにここで一括に作る。`binds` は当該コマンドの (chord, 生値, 衝突) 群。
-fn push_scripty_rows(
-    rows: &mut Vec<BindRow>,
-    command: Command,
-    items: &BTreeSet<String>,
-    binds: &[(String, String, bool)],
-) {
-    for item in items {
-        let value = Invocation::new(command, vec![item.clone()]).to_token_string();
-        let mut mine: Vec<&(String, String, bool)> =
-            binds.iter().filter(|(_, v, _)| *v == value).collect();
-        mine.sort_by(|a, b| a.0.cmp(&b.0));
-        if mine.is_empty() {
-            rows.push(BindRow { command, value, chord: None, conflicted: false });
-        } else {
-            for (chord, v, conflicted) in mine {
-                rows.push(BindRow {
-                    command,
-                    value: v.clone(),
-                    chord: Some(chord.clone()),
-                    conflicted: *conflicted,
-                });
-            }
-        }
+/// 行を識別する機能トークン（命令の同一判定・debug 観測用）。組込呼び出しはコマンドトークン
+/// （`copy`・`jumpDialog`）、`name()` 形のスクリプト呼び出しはその名前、それ以外（コード・複文）は
+/// 式ソースそのまま。
+fn row_token(expr: &str) -> String {
+    match Call::parse(expr) {
+        Call::Builtin { command, .. } => command.as_token().to_string(),
+        Call::Script { source } => script_call_name(&source).unwrap_or(source),
     }
 }
 
-/// 実呼び出しの表示文字列（機能順の中央カラム）。`script`/`eval` はラッパを剥がして中身
-/// （スクリプト名・コード）だけを、組込はトークン＋引数（`changeDirectory("D:")`・`copy`）を見せる。
-fn call_display(value: &str) -> String {
-    match Invocation::parse(value) {
-        Some(inv) => match inv.command {
-            Command::Script | Command::Eval => inv.args.first().cloned().unwrap_or_default(),
-            _ => inv.to_token_string(),
-        },
-        None => value.trim().to_string(),
-    }
+/// 実呼び出しの表示文字列（機能順の中央カラム）。組込はトークン＋引数（`changeDirectory("D:")`）、
+/// スクリプト・コードは式ソースそのまま。
+fn call_display(expr: &str) -> String {
+    Call::parse(expr).to_expr()
 }
 
-/// 生 invocation が `script("name")` ならその登録名を返す（メタ参照のキー）。それ以外は `None`。
-fn script_name_of(value: &str) -> Option<String> {
-    Invocation::parse(value).and_then(|inv| {
-        (inv.command == Command::Script).then(|| inv.args.into_iter().next()).flatten()
-    })
+/// 式が `name()`（引数なしの裸呼び出し）ならその名前を返す。登録スクリプトの引き当てに使う。
+/// 引数つき・コード・複文は `None`。
+fn script_call_name(expr: &str) -> Option<String> {
+    let body = expr.trim().strip_prefix("rerics.").or_else(|| expr.trim().strip_prefix("r.")).unwrap_or(expr.trim());
+    let name = body.strip_suffix("()")?.trim();
+    let mut chars = name.chars();
+    let first_ok = matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$');
+    (first_ok && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')).then(|| name.to_string())
 }
 
 /// ジャンル名 → 並び順。組込ジャンル名に一致すればその順、未知（独自）なら「スクリプト」と同じ
@@ -254,12 +224,9 @@ struct KeyEditorInner {
     capturing_remap: Cell<bool>,
     /// キャプチャがキー順の「空キー定義の新規作成」か（`true`）。打鍵を pending へ入れる。
     capturing_newdef: Cell<bool>,
-    /// 「コードを割り当て」で書かれた、まだキーへ結んでいない `Eval` のコード。スクリプトジャンルに
+    /// 「式を編集」で書かれたが、まだキーへ結んでいない式（`copy("=式")`・`{ コード }`・登録外の呼び出し）。
     /// 未割当（－）行として並べ、通常のキャプチャで割り当てる。
-    pending_eval: RefCell<Vec<String>>,
-    /// 「引数」で組込コマンドへ付けた、まだキーへ結んでいない呼び出し（`changeDirectory("=式")` 等）。
-    /// 当該コマンドの未割当（－）行として並べ、通常のキャプチャで割り当てる。
-    pending_args: RefCell<Vec<String>>,
+    pending_exprs: RefCell<Vec<String>>,
     /// 直近の操作結果（観測・状態表示用）。
     status: RefCell<String>,
 }
@@ -276,8 +243,8 @@ pub(crate) struct KeyEditor {
     btn_a: gui::Button,
     btn_b: gui::Button,
     btn_c: gui::Button,
-    /// 「引数」ボタン。選択行が組込コマンドのときだけ有効（Script/Eval・キー順では無効）。
-    btn_arg: gui::Button,
+    /// 「式を編集」ボタン。機能順で行を選んでいるときだけ有効（キー順では無効）。
+    btn_edit: gui::Button,
     /// 上部ヒント（モードで文面を差し替える）。
     hint: gui::Label,
     inner: Rc<KeyEditorInner>,
@@ -378,29 +345,19 @@ impl KeyEditor {
                 ..Default::default()
             },
         );
-        // 選択中の組込コマンド行へ引数（式）を付ける（モーダル→打鍵で割り当て）。選択行の属性編集。
-        let btn_arg = gui::Button::new(
+        // 選択中の行の機能欄の式を編集する（モーダル→打鍵で割り当て）。組込呼び出しの引数付け・
+        // 登録スクリプトの呼び替え・コード（複文）の記述まで、機能欄はすべてこの 1 つで編集する。
+        let btn_edit = gui::Button::new(
             parent,
             gui::ButtonOpts {
-                text: "引数を編集(&A)",
+                text: "式を編集(&E)",
                 position: gui::dpi(470, 454),
                 width: gui::dpi_x(130),
                 height: gui::dpi_y(28),
                 ..Default::default()
             },
         );
-        // 段2＝選択に依らない操作。左に「コード定義コマンドを追加」（新しい Eval 行を作る）、
-        // 右端にキーマップ全体のリセット（破壊力が強いのでラベルを明示的にしておく）。
-        let btn_code = gui::Button::new(
-            parent,
-            gui::ButtonOpts {
-                text: "コード定義コマンドを追加(&E)",
-                position: gui::dpi(16, 490),
-                width: gui::dpi_x(210),
-                height: gui::dpi_y(28),
-                ..Default::default()
-            },
-        );
+        // 段2＝選択に依らない操作。右端にキーマップ全体のリセット（破壊力が強いのでラベルを明示する）。
         let reset = gui::Button::new(
             parent,
             gui::ButtonOpts {
@@ -418,7 +375,7 @@ impl KeyEditor {
             btn_a: btn_a.clone(),
             btn_b: btn_b.clone(),
             btn_c: btn_c.clone(),
-            btn_arg: btn_arg.clone(),
+            btn_edit: btn_edit.clone(),
             hint,
             inner: Rc::new(KeyEditorInner {
                 shared: shared.clone(),
@@ -440,8 +397,7 @@ impl KeyEditor {
                 capturing: Cell::new(false),
                 capturing_remap: Cell::new(false),
                 capturing_newdef: Cell::new(false),
-                pending_eval: RefCell::new(Vec::new()),
-                pending_args: RefCell::new(Vec::new()),
+                pending_exprs: RefCell::new(Vec::new()),
                 status: RefCell::new(String::new()),
             }),
         };
@@ -501,15 +457,8 @@ impl KeyEditor {
         }
         {
             let this = me.clone();
-            btn_code.on().bn_clicked(move || {
-                this.add_code_row();
-                Ok(())
-            });
-        }
-        {
-            let this = me.clone();
-            btn_arg.on().bn_clicked(move || {
-                this.edit_arg_row();
+            btn_edit.on().bn_clicked(move || {
+                this.edit_expr_row();
                 Ok(())
             });
         }
@@ -535,23 +484,21 @@ impl KeyEditor {
         let _ = self.btn_c.hwnd().SetWindowText(c);
     }
 
-    /// 「引数を編集」ボタンの表示と有効/無効を状態に合わせる。引数は機能順専用（キー順の 1 行は
-    /// 複数機能を持ちうるので「どの機能の引数か」が一意に定まらない）。そのためキー順ではボタン自体を
-    /// 隠し、機能順では組込コマンド行を選んでいるときだけ有効にする（Script/Eval 行・ピック中・
-    /// 見出し/未選択ではグレーアウト）。
-    fn update_arg_button(&self) {
-        // 窓未作成（構築途中）の間は触らない＝既定の有効のまま。先頭行は組込なので初期表示も妥当。
-        if self.btn_arg.hwnd().ptr().is_null() {
+    /// 「式を編集」ボタンの表示と有効/無効を状態に合わせる。式編集は機能順専用（キー順の 1 行は
+    /// 複数機能を持ちうるので「どの機能の式か」が一意に定まらない）。そのためキー順ではボタン自体を
+    /// 隠し、機能順では行を選んでいるときだけ有効にする（ピック中・見出し/未選択ではグレーアウト）。
+    fn update_edit_button(&self) {
+        // 窓未作成（構築途中）の間は触らない＝既定の有効のまま。
+        if self.btn_edit.hwnd().ptr().is_null() {
             return;
         }
         if self.inner.view_mode.get() == KeyView::ByKey {
-            self.btn_arg.hwnd().ShowWindow(co::SW::HIDE);
+            self.btn_edit.hwnd().ShowWindow(co::SW::HIDE);
             return;
         }
-        self.btn_arg.hwnd().ShowWindow(co::SW::SHOW);
-        let enabled = self.inner.picking.borrow().is_none()
-            && matches!(self.selected_bind(), Some((c, _, _)) if !matches!(c, Command::Script | Command::Eval));
-        self.btn_arg.hwnd().EnableWindow(enabled);
+        self.btn_edit.hwnd().ShowWindow(co::SW::SHOW);
+        let enabled = self.inner.picking.borrow().is_none() && self.selected_bind().is_some();
+        self.btn_edit.hwnd().EnableWindow(enabled);
     }
 
     /// 上部ヒントの文面を現モードに合わせて更新する。ピッカー中は中止方法をここに明示する。
@@ -605,7 +552,7 @@ impl KeyEditor {
                     view.iter()
                         .map(|&ri| {
                             let r = &all[ri];
-                            (r.command.as_token().to_string(), r.chord.iter().cloned().collect())
+                            (row_token(&r.expr), r.chord.iter().cloned().collect())
                         })
                         .collect()
                 };
@@ -648,13 +595,13 @@ impl KeyEditor {
                             .position(|&ri| krows[ri].labels.iter().any(|l| Command::from_token(l) == Some(cmd)))
                     } else {
                         let rows = this.inner.rows.borrow();
-                        view.iter().position(|&ri| rows[ri].command == cmd)
+                        view.iter().position(|&ri| row_token(&rows[ri].expr) == command)
                     }
                 };
                 if let Some(di) = pos {
                     this.inner.sel.set(di);
                 }
-                this.assign(Invocation::bare(cmd).to_token_string(), ch);
+                this.assign(format!("{}()", cmd.as_token()), ch);
                 Ok(())
             }) as Box<dyn Fn(&str, &str) -> Result<(), String>>
         };
@@ -686,39 +633,30 @@ impl KeyEditor {
                 Ok(())
             }) as Box<dyn Fn(&str) -> Result<(), String>>
         };
-        // 選択行へ打鍵を割り当てる（begin_capture→キー押下と同じ＝行の生 value を束ねる）。
-        // 引数つき組込・Script・Eval 行を割り当てるのに使う（`bind` は bare 機能のみ）。
+        // 選択行へ打鍵を割り当てる（begin_capture→キー押下と同じ＝行の式を束ねる）。
+        // 引数つき呼び出し・スクリプト・コード行を割り当てるのに使う（`bind` は bare 機能のみ）。
         let capture = {
             let this = self.clone();
             Box::new(move |chord: &str| {
                 let ch = KeyChord::parse(chord)
                     .ok_or_else(|| format!("unknown chord: {chord}"))?;
-                let Some((_, value, _)) = this.selected_bind() else {
+                let Some((expr, _)) = this.selected_bind() else {
                     return Err("no row selected".to_string());
                 };
-                this.assign(value, ch);
+                this.assign(expr, ch);
                 Ok(())
             }) as crate::debug_server::modal_registry::ChordFn
         };
-        // コードを未割当 Eval 行として追加する（「コードを割り当て」モーダル OK と同じ＝モーダル抜き）。
+        // 選択中の行の機能欄の式を差し替える（「式を編集」モーダル OK と同じ＝モーダル抜き）。
         // 割り当ては通常どおり行を選んで capture する。
-        let add_code = {
+        let set_expr = {
             let this = self.clone();
-            Box::new(move |code: &str| this.add_code(code)) as Box<dyn Fn(&str)>
+            Box::new(move |expr: &str| this.apply_expr(expr)) as Box<dyn Fn(&str)>
         };
-        // 選択中の組込コマンド行へ引数を付ける（「引数」モーダル OK と同じ＝モーダル抜き）。
-        let set_arg = {
+        // 実際の「式を編集」モーダル（補完つき）を開く＝補完 UI を headless で観測・駆動するため。
+        let open_expr = {
             let this = self.clone();
-            Box::new(move |arg: &str| this.apply_arg(arg)) as Box<dyn Fn(&str)>
-        };
-        // 実際の「引数」「コード」モーダル（補完つき）を開く＝補完 UI を headless で観測・駆動するため。
-        let open_arg = {
-            let this = self.clone();
-            Box::new(move || this.edit_arg_row()) as Box<dyn Fn()>
-        };
-        let open_code = {
-            let this = self.clone();
-            Box::new(move || this.add_code_row()) as Box<dyn Fn()>
+            Box::new(move || this.edit_expr_row()) as Box<dyn Fn()>
         };
         let pick = {
             let this = self.clone();
@@ -757,10 +695,8 @@ impl KeyEditor {
                 set_view,
                 rebind,
                 capture,
-                add_code,
-                set_arg,
-                open_arg,
-                open_code,
+                set_expr,
+                open_expr,
                 pick,
                 pick_commit,
                 pick_cancel,
@@ -821,7 +757,7 @@ impl KeyEditor {
                 let labels: Vec<String> = vals
                     .iter()
                     .filter(|v| !v.trim().is_empty())
-                    .map(|v| binding_label(v))
+                    .map(|v| row_token(v))
                     .collect();
                 (labels.len() > 1).then(|| (chord.clone(), labels))
             })
@@ -859,38 +795,52 @@ impl KeyEditor {
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
-    /// 生 invocation の機能名（機能順の左カラム・キー順の機能カラム）。`script("name")` は登録
-    /// メタの `label` があればそれ、無ければコマンド既定の表示名（「スクリプト実行」等）。未知値は生値。
-    fn value_label(&self, value: &str) -> String {
-        if let Some(name) = script_name_of(value)
-            && let Some(label) = self.inner.script_meta.get(&name).and_then(|m| m.label.as_ref())
-        {
-            return label.clone();
+    /// 機能欄の式の機能名（機能順の左カラム・キー順の機能カラム）。`name()` 形の登録スクリプトは
+    /// メタの `label` があればそれ、無ければ名前。組込はコマンドの表示名、コード・複文は式ソース。
+    fn value_label(&self, expr: &str) -> String {
+        if let Some(name) = script_call_name(expr) {
+            if let Some(label) = self.inner.script_meta.get(&name).and_then(|m| m.label.as_ref()) {
+                return label.clone();
+            }
+            if matches!(Call::parse(expr), Call::Script { .. }) {
+                return name;
+            }
         }
-        match Invocation::parse(value) {
-            Some(inv) => inv.command.display_name().to_string(),
-            None => value.trim().to_string(),
+        match Call::parse(expr) {
+            Call::Builtin { command, .. } => command.display_name().to_string(),
+            Call::Script { source } => source,
         }
     }
 
-    /// 機能順の行が属するジャンル（並び順キー・見出し名）。`Script` 行で登録メタに `genre` が
-    /// あればそれを使い（独自グループに分けられる）、無ければコマンド由来のジャンル。
+    /// 機能順の行が属するジャンル（並び順キー・見出し名）。登録スクリプト行でメタに `genre` が
+    /// あればそれを使い（独自グループに分けられる）、組込はコマンド由来、その他コードは「スクリプト」。
     fn row_genre(&self, row: &BindRow) -> (u8, String) {
-        if row.command == Command::Script
-            && let Some(name) = script_name_of(&row.value)
-            && let Some(genre) = self.inner.script_meta.get(&name).and_then(|m| m.genre.as_ref())
-        {
-            return (genre_order(genre), genre.clone());
+        self.expr_genre(&row.expr)
+    }
+
+    /// 機能欄の式が属するジャンル（並び順キー・見出し名）。
+    fn expr_genre(&self, expr: &str) -> (u8, String) {
+        match Call::parse(expr) {
+            Call::Builtin { command, .. } => {
+                let (o, g) = command_genre(command);
+                (o, g.to_string())
+            }
+            Call::Script { source } => {
+                if let Some(name) = script_call_name(&source)
+                    && let Some(genre) = self.inner.script_meta.get(&name).and_then(|m| m.genre.as_ref())
+                {
+                    return (genre_order(genre), genre.clone());
+                }
+                (14, "スクリプト".to_string())
+            }
         }
-        let (o, g) = command_genre(row.command);
-        (o, g.to_string())
     }
 
     /// 下書きから機能順 `rows`（1 バインド＝1 行）・キー順 `key_rows` を組み直す。
-    /// 未割当コマンドは `chord: None` の 1 行で出す。文脈外でも既にバインドのある機能（Script/Eval 等）は行にする。
+    /// 未割当の機能は `chord: None` の 1 行で出す。式は組込呼び出し・登録スクリプト・コードの別なく扱う。
     fn rebuild_rows(&self) {
-        // 機能 → そのコマンドのバインド群（(chord, 生値, 衝突)）。
-        let mut by_cmd: HashMap<Command, Vec<(String, String, bool)>> = HashMap::new();
+        // 機能欄の式 → そのバインド群（(chord, 衝突)）。
+        let mut binds_by_expr: HashMap<String, Vec<(String, bool)>> = HashMap::new();
         let mut key_rows: Vec<KeyChordRow> = Vec::new();
         {
             let draft = self.inner.draft.borrow();
@@ -901,16 +851,11 @@ impl KeyEditor {
                     continue;
                 }
                 let conflicted = nonempty.len() > 1;
-                let labels: Vec<String> = nonempty.iter().map(|v| binding_label(v)).collect();
+                let labels: Vec<String> = nonempty.iter().map(|v| row_token(v)).collect();
                 let values: Vec<String> = nonempty.iter().map(|v| (*v).clone()).collect();
                 key_rows.push(KeyChordRow { chord: chord.clone(), labels, values });
                 for v in &nonempty {
-                    if let Some(inv) = Invocation::parse(v) {
-                        by_cmd
-                            .entry(inv.command)
-                            .or_default()
-                            .push((chord.clone(), (*v).clone(), conflicted));
-                    }
+                    binds_by_expr.entry((*v).clone()).or_default().push((chord.clone(), conflicted));
                 }
             }
         }
@@ -928,76 +873,86 @@ impl KeyEditor {
                 }
             }
         }
-        let ctx = self.inner.category.context();
-        // 表示する機能＝文脈内の全機能 ＋ 文脈外でもバインドのある機能（Script/Eval 等）。
-        let mut cmds: Vec<Command> = Command::all().filter(|c| c.available_in(ctx)).collect();
-        // Script/Eval は下のスクリプトブロックで一括に並べるので、ここでは扱わない。
-        let mut extra: Vec<Command> = by_cmd
-            .keys()
-            .copied()
-            .filter(|c| !c.available_in(ctx) && !matches!(c, Command::Script | Command::Eval))
-            .collect();
-        extra.sort_by_key(|c| c.as_token());
-        cmds.extend(extra);
-        // 「引数」で付けた未割当の引数つき呼び出しを、コマンド別に分ける（未割当行として並べる）。
-        let mut pending_by_cmd: HashMap<Command, Vec<String>> = HashMap::new();
-        for v in self.inner.pending_args.borrow().iter() {
-            if let Some(inv) = Invocation::parse(v) {
-                pending_by_cmd.entry(inv.command).or_default().push(v.clone());
+        // 式を「組込コマンド別」と「スクリプト・コード」へ仕分ける。組込はコマンドごとに固めて並べ、
+        // スクリプト・コードは名前/ソート順で固定して並べる（割り当てても位置が動かない）。
+        let mut bound_by_cmd: HashMap<Command, Vec<(String, String, bool)>> = HashMap::new();
+        let mut pend_by_cmd: HashMap<Command, Vec<String>> = HashMap::new();
+        let mut script_set: BTreeSet<String> = BTreeSet::new();
+        for (expr, binds) in &binds_by_expr {
+            match Call::parse(expr) {
+                Call::Builtin { command, .. } => {
+                    let slot = bound_by_cmd.entry(command).or_default();
+                    for (chord, conflicted) in binds {
+                        slot.push((chord.clone(), expr.clone(), *conflicted));
+                    }
+                }
+                Call::Script { .. } => {
+                    script_set.insert(expr.clone());
+                }
             }
         }
+        for v in self.inner.pending_exprs.borrow().iter() {
+            match Call::parse(v) {
+                Call::Builtin { command, .. } => pend_by_cmd.entry(command).or_default().push(v.clone()),
+                Call::Script { .. } => {
+                    script_set.insert(v.clone());
+                }
+            }
+        }
+        // 登録スクリプトは `name()` 形で（バインドが無くても）常に出す。
+        for name in self.inner.script_meta.keys() {
+            script_set.insert(format!("{name}()"));
+        }
+        let ctx = self.inner.category.context();
+        // 表示する機能＝文脈内の全組込 ＋ 文脈外でもバインドのある組込。
+        let mut cmds: Vec<Command> = Command::all().filter(|c| c.available_in(ctx)).collect();
+        let mut extra: Vec<Command> =
+            bound_by_cmd.keys().copied().filter(|c| !c.available_in(ctx)).collect();
+        extra.sort_by_key(|c| c.as_token());
+        cmds.extend(extra);
         let mut rows: Vec<BindRow> = Vec::new();
         for command in cmds {
-            let pend = pending_by_cmd.remove(&command).unwrap_or_default();
-            match by_cmd.remove(&command) {
+            let pend = pend_by_cmd.remove(&command).unwrap_or_default();
+            match bound_by_cmd.remove(&command) {
                 Some(mut binds) => {
                     binds.sort_by(|a, b| a.0.cmp(&b.0));
                     let bound: std::collections::HashSet<String> =
-                        binds.iter().map(|(_, v, _)| v.clone()).collect();
-                    for (chord, value, conflicted) in binds {
-                        rows.push(BindRow { command, value, chord: Some(chord), conflicted });
+                        binds.iter().map(|(_, e, _)| e.clone()).collect();
+                    for (chord, expr, conflicted) in binds {
+                        rows.push(BindRow { expr, chord: Some(chord), conflicted });
                     }
-                    // バインド済みと重複しない引数つき呼び出しは未割当行として残す。
+                    // バインド済みと重複しない引数つき式は未割当行として残す。
                     for v in pend {
                         if !bound.contains(&v) {
-                            rows.push(BindRow { command, value: v, chord: None, conflicted: false });
+                            rows.push(BindRow { expr: v, chord: None, conflicted: false });
                         }
                     }
                 }
-                // 未割当＝bare コマンドの空行（そこへキャプチャして割り当てる）＋引数つき未割当行。
+                // 未割当＝bare 呼び出しの空行（そこへキャプチャして割り当てる）＋引数つき未割当行。
                 None => {
                     rows.push(BindRow {
-                        command,
-                        value: Invocation::bare(command).to_token_string(),
+                        expr: format!("{}()", command.as_token()),
                         chord: None,
                         conflicted: false,
                     });
                     for v in pend {
-                        rows.push(BindRow { command, value: v, chord: None, conflicted: false });
+                        rows.push(BindRow { expr: v, chord: None, conflicted: false });
                     }
                 }
             }
         }
-        // 「スクリプト」ジャンル：登録スクリプトと「コードを割り当て」のコードを、バインド状態に
-        // 依らず名前/コード順で並べる（割り当てても行が動かないようにするためここで一括に作る）。
-        {
-            let script_binds = by_cmd.remove(&Command::Script).unwrap_or_default();
-            let mut names: BTreeSet<String> = self.inner.script_meta.keys().cloned().collect();
-            for (_, v, _) in &script_binds {
-                if let Some(name) = Invocation::parse(v).and_then(|i| i.args.into_iter().next()) {
-                    names.insert(name);
+        // スクリプト・コード行：登録スクリプト＋バインド/pending のコードを、名前/ソート順に固定で並べる。
+        for expr in script_set {
+            match binds_by_expr.get(&expr) {
+                Some(binds) => {
+                    let mut binds = binds.clone();
+                    binds.sort_by(|a, b| a.0.cmp(&b.0));
+                    for (chord, conflicted) in binds {
+                        rows.push(BindRow { expr: expr.clone(), chord: Some(chord), conflicted });
+                    }
                 }
+                None => rows.push(BindRow { expr, chord: None, conflicted: false }),
             }
-            push_scripty_rows(&mut rows, Command::Script, &names, &script_binds);
-
-            let eval_binds = by_cmd.remove(&Command::Eval).unwrap_or_default();
-            let mut codes: BTreeSet<String> = self.inner.pending_eval.borrow().iter().cloned().collect();
-            for (_, v, _) in &eval_binds {
-                if let Some(code) = Invocation::parse(v).and_then(|i| i.args.into_iter().next()) {
-                    codes.insert(code);
-                }
-            }
-            push_scripty_rows(&mut rows, Command::Eval, &codes, &eval_binds);
         }
         key_rows.sort_by(|a, b| a.chord.cmp(&b.chord));
         *self.inner.rows.borrow_mut() = rows;
@@ -1032,7 +987,7 @@ impl KeyEditor {
                 self.inner.sel.set(n - 1);
             }
             self.update_scrollbar();
-            self.update_arg_button();
+            self.update_edit_button();
             return;
         }
         let mut view: Vec<usize> = match self.inner.view_mode.get() {
@@ -1044,11 +999,10 @@ impl KeyEditor {
                 .enumerate()
                 .filter(|(_, r)| {
                     q.is_empty()
-                        || r.command.as_token().to_lowercase().contains(&q)
-                        || r.command.display_name().to_lowercase().contains(&q)
-                        || self.value_label(&r.value).to_lowercase().contains(&q)
+                        || row_token(&r.expr).to_lowercase().contains(&q)
+                        || self.value_label(&r.expr).to_lowercase().contains(&q)
                         || r.chord.as_ref().is_some_and(|c| c.to_lowercase().contains(&q))
-                        || call_display(&r.value).to_lowercase().contains(&q)
+                        || call_display(&r.expr).to_lowercase().contains(&q)
                 })
                 .map(|(i, _)| i)
                 .collect(),
@@ -1083,7 +1037,7 @@ impl KeyEditor {
             self.inner.sel.set(n - 1);
         }
         self.update_scrollbar();
-        self.update_arg_button();
+        self.update_edit_button();
     }
 
     /// 検索クエリを適用して表示を絞り込む（`config` は変更しない）。同じ値なら何もしない。
@@ -1120,18 +1074,13 @@ impl KeyEditor {
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
-    /// 選択行のコマンド（機能順＝その行の機能／キー順＝その chord を定義する先頭の既知機能）。
-    fn selected_command(&self) -> Option<Command> {
-        let ri = *self.inner.view.borrow().get(self.inner.sel.get())?;
-        match self.inner.view_mode.get() {
-            KeyView::ByCommand => self.inner.rows.borrow().get(ri).map(|r| r.command),
-            KeyView::ByKey => self
-                .inner
-                .key_rows
-                .borrow()
-                .get(ri)
-                .and_then(|r| r.labels.iter().find_map(|l| Command::from_token(l))),
+    /// 機能順で選択行の式（キー順・範囲外は `None`）。
+    fn selected_expr(&self) -> Option<String> {
+        if self.inner.view_mode.get() != KeyView::ByCommand {
+            return None;
         }
+        let ri = *self.inner.view.borrow().get(self.inner.sel.get())?;
+        self.inner.rows.borrow().get(ri).map(|r| r.expr.clone())
     }
 
     /// キー順で選択中の chord（機能順では `None`）。
@@ -1143,15 +1092,15 @@ impl KeyEditor {
         self.inner.key_rows.borrow().get(ri).map(|r| r.chord.clone())
     }
 
-    /// 機能順で選択行のバインド（機能・生値・キー）。キー順・範囲外は `None`。
-    fn selected_bind(&self) -> Option<(Command, String, Option<String>)> {
+    /// 機能順で選択行のバインド（式・キー）。キー順・範囲外は `None`。
+    fn selected_bind(&self) -> Option<(String, Option<String>)> {
         if self.inner.view_mode.get() != KeyView::ByCommand {
             return None;
         }
         let ri = *self.inner.view.borrow().get(self.inner.sel.get())?;
         let rows = self.inner.rows.borrow();
         let r = rows.get(ri)?;
-        Some((r.command, r.value.clone(), r.chord.clone()))
+        Some((r.expr.clone(), r.chord.clone()))
     }
 
     /// 機能順リストの表示行（ジャンル見出しをデータ行の間に挟む）。`top` はこの単位で進む。
@@ -1240,7 +1189,7 @@ impl KeyEditor {
         let old_label = if old_value.is_empty() {
             "－".to_string()
         } else {
-            label_display(&binding_label(&old_value))
+            label_display(&row_token(&old_value))
         };
         let ctx = self.inner.category.context();
         // ジャンル順に固める（同ジャンル内は元の列挙順）。見出しは描画時に境界で出す。
@@ -1276,7 +1225,7 @@ impl KeyEditor {
             .get(self.inner.sel.get())
             .and_then(|&i| self.inner.pick_rows.borrow().get(i).copied());
         if let Some(cmd) = new_cmd {
-            let new_val = Invocation::bare(cmd).to_token_string();
+            let new_val = format!("{}()", cmd.as_token());
             {
                 let mut draft = self.inner.draft.borrow_mut();
                 let vals = draft.entry(pick.chord.clone()).or_default();
@@ -1284,7 +1233,7 @@ impl KeyEditor {
                 if !pick.old_value.is_empty() {
                     vals.retain(|v| *v != pick.old_value);
                 }
-                if !vals.iter().any(|v| Invocation::parse(v).map(|i| i.command) == Some(cmd)) {
+                if !vals.iter().any(|v| matches!(Call::parse(v), Call::Builtin { command, .. } if command == cmd)) {
                     vals.push(new_val);
                 }
             }
@@ -1322,7 +1271,7 @@ impl KeyEditor {
         if self.inner.picking.borrow().is_some() {
             return;
         }
-        if !matches!(self.selected_bind(), Some((_, _, Some(_)))) {
+        if !matches!(self.selected_bind(), Some((_, Some(_)))) {
             return;
         }
         self.inner.capturing.set(true);
@@ -1332,9 +1281,9 @@ impl KeyEditor {
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
-    /// 選択行のキーを、その呼び出しのまま新しいキーへ移し替える（旧キーから当該値を外す）。
+    /// 選択行のキーを、その式のまま新しいキーへ移し替える（旧キーから当該式を外す）。
     fn remap(&self, new: KeyChord) {
-        let Some((command, value, Some(old))) = self.selected_bind() else {
+        let Some((expr, Some(old))) = self.selected_bind() else {
             return;
         };
         let Some(new_tok) = new.to_token() else {
@@ -1348,38 +1297,36 @@ impl KeyEditor {
         {
             let mut draft = self.inner.draft.borrow_mut();
             if let Some(vals) = draft.get_mut(&old) {
-                vals.retain(|v| *v != value);
+                vals.retain(|v| *v != expr);
             }
             let e = draft.entry(new_tok.clone()).or_default();
             e.retain(|v| !v.trim().is_empty());
-            if !e.contains(&value) {
-                e.push(value.clone());
+            if !e.contains(&expr) {
+                e.push(expr.clone());
             }
         }
         *self.inner.status.borrow_mut() =
-            format!("{} を {} から {} に変更しました", command.display_name(), old, new_tok);
+            format!("{} を {} から {} に変更しました", self.value_label(&expr), old, new_tok);
         self.rebuild_rows();
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
-    /// `value`（生 invocation）を chord へ割り当てる。**既存の割り当ては消さず追記する**＝同じ
-    /// chord に別の呼び出しがあれば衝突になる（マークして OK/適用で解決を促す）。
-    fn assign(&self, value: String, chord: KeyChord) {
+    /// `expr`（機能欄の式）を chord へ割り当てる。**既存の割り当ては消さず追記する**＝同じ
+    /// chord に別の式があれば衝突になる（マークして OK/適用で解決を促す）。
+    fn assign(&self, expr: String, chord: KeyChord) {
         let Some(tok) = chord.to_token() else {
             *self.inner.status.borrow_mut() = "未対応のキーです".to_string();
             return;
         };
-        let label = Invocation::parse(&value)
-            .map(|i| i.command.display_name().to_string())
-            .unwrap_or_else(|| value.clone());
+        let label = self.value_label(&expr);
         let conflict = {
             let mut draft = self.inner.draft.borrow_mut();
             let e = draft.entry(tok.clone()).or_default();
             // 空 unbind マーカーは取り除く（今バインドし直すので）。
             e.retain(|v| !v.trim().is_empty());
-            // 同じ呼び出しが既にこの chord にあるなら追記しない。
-            if !e.contains(&value) {
-                e.push(value);
+            // 同じ式が既にこの chord にあるなら追記しない。
+            if !e.contains(&expr) {
+                e.push(expr);
             }
             e.len() > 1
         };
@@ -1400,21 +1347,21 @@ impl KeyEditor {
         }
         let status = match self.inner.view_mode.get() {
             KeyView::ByCommand => {
-                let Some((command, value, chord)) = self.selected_bind() else {
+                let Some((expr, chord)) = self.selected_bind() else {
                     return;
                 };
                 match chord {
-                    // 選択行のキーからその呼び出しだけ取り除く（同キーの他機能＝衝突分は残す）。
+                    // 選択行のキーからその式だけ取り除く（同キーの他機能＝衝突分は残す）。
                     Some(chord) => {
                         if let Some(vals) = self.inner.draft.borrow_mut().get_mut(&chord) {
-                            vals.retain(|v| *v != value);
+                            vals.retain(|v| *v != expr);
                         }
-                        format!("{} から {} を解除しました", chord, command.display_name())
+                        format!("{} から {} を解除しました", chord, self.value_label(&expr))
                     }
-                    // 未割当行：「引数」「コード」で作った定義なら消す。素の bare 行は消せない。
+                    // 未割当行：「式を編集」で作った式なら消す。素の bare 行は消せない。
                     None => {
-                        if self.remove_pending(&value) {
-                            format!("{} の未割当の定義を削除しました", command.display_name())
+                        if self.remove_pending(&expr) {
+                            format!("{} の未割当の定義を削除しました", self.value_label(&expr))
                         } else {
                             *self.inner.status.borrow_mut() = "割り当てがありません".to_string();
                             return;
@@ -1466,7 +1413,7 @@ impl KeyEditor {
 
     /// キャプチャ開始（次の打鍵を選択行へ割り当てる）。リストへフォーカスを移す。
     fn begin_capture(&self) {
-        if self.inner.picking.borrow().is_some() || self.selected_command().is_none() {
+        if self.inner.picking.borrow().is_some() || self.selected_expr().is_none() {
             return;
         }
         self.inner.capturing.set(true);
@@ -1475,135 +1422,68 @@ impl KeyEditor {
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
-    /// 「コードを割り当て」：複文モーダルでコードを書かせ、スクリプトジャンルへ未割当（－）の
-    /// `eval(code)` 行を作る。機能順・検索解除でその行へ選択＋スクロールし、あとは通常のキー登録へ。
-    fn add_code_row(&self) {
+    /// 「式を編集」：選択中の行の機能欄の式を、現在の式を prefill したモーダルで編集させ、`apply_expr`
+    /// で行へ反映する。組込呼び出しの引数付け・スクリプトの呼び替え・コード（複文）まで全部ここで扱う。
+    fn edit_expr_row(&self) {
         if self.inner.picking.borrow().is_some() || self.inner.capturing.get() {
             return;
         }
+        let Some((expr, _)) = self.selected_bind() else {
+            return;
+        };
         let result = crate::dialog::code_box(
             &self.list,
-            "キーに束ねるコードを入力（r. でホスト API・複文可）",
-            "",
+            "機能欄の式を編集（組込はそのまま呼べる・r. でホスト API・複文可）",
+            &expr,
             &self.inner.members,
         );
         // 子コントロールを親にしたモーダルの後始末で list の無効化やフォーカス喪失が残ることが
         // あるので、OK/キャンセルに依らず有効化＋フォーカスを戻す（戻さないとホイールが効かない）。
         self.hwnd().EnableWindow(true);
         self.hwnd().SetFocus();
-        let Some(code) = result else {
+        let Some(new_expr) = result else {
             return;
         };
-        self.add_code(&code);
+        self.apply_expr(&new_expr);
     }
 
-    /// コードを未割当 `Eval` 行として追加し、機能順・検索解除でその行へ選択＋スクロールする。
-    /// 空コードは何もしない。「コードを割り当て」モーダルと debug の両方から使う。
-    fn add_code(&self, code: &str) {
-        let code = code.trim().to_string();
-        if code.is_empty() {
-            return;
-        }
-        {
-            let mut pe = self.inner.pending_eval.borrow_mut();
-            if !pe.contains(&code) {
-                pe.push(code.clone());
-            }
-        }
-        // 機能順・検索解除で新しい行が必ず見えるようにしてから作り直す。
-        self.inner.view_mode.set(KeyView::ByCommand);
-        self.toggle[0].select(true);
-        self.toggle[1].select(false);
-        *self.inner.query.borrow_mut() = String::new();
-        let _ = self.search.set_text("");
-        self.relabel_buttons();
-        self.update_hint();
-        self.rebuild_rows();
-        // 追加した Eval 行を選択＋スクロールして、そのままキー登録できる状態にする。
-        let value = Invocation::new(Command::Eval, vec![code]).to_token_string();
-        self.select_value_row(&value);
-        *self.inner.status.borrow_mut() =
-            "コードを追加しました。「キー定義を追加」で割り当ててください".to_string();
-        let _ = self.hwnd().InvalidateRect(None, false);
-    }
-
-    /// 「引数」：選択中の組込コマンド行へ式（または文字列）の引数を付ける。現在の引数を prefill した
-    /// モーダルで編集させ、`apply_arg` で行へ反映する。Script/Eval 行・未選択時は何もしない。
-    fn edit_arg_row(&self) {
-        if self.inner.picking.borrow().is_some() || self.inner.capturing.get() {
-            return;
-        }
-        let Some((command, value, _)) = self.selected_bind() else {
+    /// 選択中の行の式を `new_expr` へ反映する。バインド済み行はその場でそのキーの式を差し替え、
+    /// 未割当行は新しい式を未割当（－）行として出し、通常のキャプチャで割り当てる。「式を編集」
+    /// モーダル OK と debug の両方から使う。空・無変更は何もしない。
+    fn apply_expr(&self, new_expr: &str) {
+        let Some((old_expr, chord)) = self.selected_bind() else {
             return;
         };
-        if matches!(command, Command::Script | Command::Eval) {
-            *self.inner.status.borrow_mut() =
-                "引数は組込コマンドの行で付けてください（スクリプト/コードは「コード」へ）".to_string();
-            let _ = self.hwnd().InvalidateRect(None, false);
-            return;
-        }
-        let cur = Invocation::parse(&value)
-            .and_then(|i| i.args.into_iter().next())
-            .unwrap_or_default();
-        let result = crate::dialog::code_box(
-            &self.list,
-            "引数を入力（先頭 = で式・r. でホスト API・空でリテラルなし）",
-            &cur,
-            &self.inner.members,
-        );
-        // 子コントロールを親にしたモーダルの後始末で list の無効化やフォーカス喪失が残ることが
-        // あるので、OK/キャンセルに依らず有効化＋フォーカスを戻す（戻さないとホイールが効かない）。
-        self.hwnd().EnableWindow(true);
-        self.hwnd().SetFocus();
-        let Some(arg) = result else {
-            return;
-        };
-        self.apply_arg(&arg);
-    }
-
-    /// 選択中の組込コマンド行へ引数 `arg` を反映する。バインド済み行はその場で呼び出しを差し替え、
-    /// 未割当行は `pending_args` に積んで未割当（－）行として出し、通常のキャプチャで割り当てる。
-    /// 「引数」モーダル OK と debug の両方から使う。空引数は引数なし（bare）の呼び出しにする。
-    fn apply_arg(&self, arg: &str) {
-        let Some((command, value, chord)) = self.selected_bind() else {
-            return;
-        };
-        if matches!(command, Command::Script | Command::Eval) {
-            return;
-        }
-        let arg = arg.trim();
-        let new_value = if arg.is_empty() {
-            Invocation::bare(command).to_token_string()
-        } else {
-            Invocation::new(command, vec![arg.to_string()]).to_token_string()
-        };
-        if new_value == value {
+        let new_expr = new_expr.trim().to_string();
+        if new_expr.is_empty() || new_expr == old_expr {
             return;
         }
         match chord {
-            // バインド済み＝そのキーの呼び出しを新しい引数つき呼び出しへ差し替える。
+            // バインド済み＝そのキーの式を新しい式へ差し替える。
             Some(ch) => {
                 let mut draft = self.inner.draft.borrow_mut();
                 if let Some(vals) = draft.get_mut(&ch) {
                     for v in vals.iter_mut() {
-                        if *v == value {
-                            *v = new_value.clone();
+                        if *v == old_expr {
+                            *v = new_expr.clone();
                         }
                     }
                 }
                 drop(draft);
                 *self.inner.status.borrow_mut() =
-                    format!("{} の引数を変更しました（{}）", command.display_name(), ch);
+                    format!("{} の式を変更しました（{}）", self.value_label(&new_expr), ch);
             }
-            // 未割当＝引数つき呼び出しを未割当行として用意し、あとはキャプチャで割り当てる。
+            // 未割当＝新しい式を未割当行として用意し、あとはキャプチャで割り当てる。素の bare 呼び出し
+            // （組込/登録スクリプトの `name()`）は常に一覧へ出るので pending には積まない。
             None => {
-                let mut pa = self.inner.pending_args.borrow_mut();
-                if !pa.contains(&new_value) {
-                    pa.push(new_value.clone());
+                if !self.is_seeded_bare(&new_expr) {
+                    let mut pe = self.inner.pending_exprs.borrow_mut();
+                    if !pe.contains(&new_expr) {
+                        pe.push(new_expr.clone());
+                    }
                 }
-                drop(pa);
                 *self.inner.status.borrow_mut() =
-                    "引数つきの行を追加しました。「キー定義を追加」で割り当ててください".to_string();
+                    "式を追加しました。「キー定義を追加」で割り当ててください".to_string();
             }
         }
         self.inner.view_mode.set(KeyView::ByCommand);
@@ -1614,41 +1494,36 @@ impl KeyEditor {
         self.relabel_buttons();
         self.update_hint();
         self.rebuild_rows();
-        self.select_value_row(&new_value);
+        self.select_value_row(&new_expr);
         let _ = self.hwnd().InvalidateRect(None, false);
     }
 
-    /// 未割当行の生 invocation を pending リストから取り除く。「引数」で作った引数つき呼び出し
-    /// （`pending_args`）か「コード」のコード（`pending_eval`）由来なら `true`。素の bare コマンド行は
-    /// pending に無いので `false`（消す対象ではない＝コマンド自体は常に一覧へ出す）。
-    fn remove_pending(&self, value: &str) -> bool {
-        {
-            let mut pa = self.inner.pending_args.borrow_mut();
-            let n = pa.len();
-            pa.retain(|v| v != value);
-            if pa.len() != n {
-                return true;
+    /// 式が、一覧へ常に出る素の bare 呼び出し（組込コマンド・登録スクリプトの `name()`）か。
+    /// これに当たる式は pending へ積まずとも行が出るので、未割当の重複行を作らないための判定。
+    fn is_seeded_bare(&self, expr: &str) -> bool {
+        match script_call_name(expr) {
+            Some(name) => {
+                Command::from_token(&name).is_some() || self.inner.script_meta.contains_key(&name)
             }
+            None => false,
         }
-        // `pending_eval` はコード文字列を持つので、`eval("code")` の中身で照合する。
-        if let Some(code) = Invocation::parse(value)
-            .filter(|i| i.command == Command::Eval)
-            .and_then(|i| i.args.into_iter().next())
-        {
-            let mut pe = self.inner.pending_eval.borrow_mut();
-            let n = pe.len();
-            pe.retain(|c| *c != code);
-            return pe.len() != n;
-        }
-        false
     }
 
-    /// 機能順で `value`（生 invocation）の行を選択し、見える位置までスクロールする。
-    fn select_value_row(&self, value: &str) {
+    /// 未割当行の式を pending リストから取り除く。「式を編集」で作った未割当の式由来なら `true`。
+    /// 素の bare 呼び出し（組込/登録スクリプト）は pending に無いので `false`（常に一覧へ出る）。
+    fn remove_pending(&self, expr: &str) -> bool {
+        let mut pe = self.inner.pending_exprs.borrow_mut();
+        let n = pe.len();
+        pe.retain(|v| v != expr);
+        pe.len() != n
+    }
+
+    /// 機能順で `expr` の行を選択し、見える位置までスクロールする。
+    fn select_value_row(&self, expr: &str) {
         let pos = {
             let view = self.inner.view.borrow();
             let rows = self.inner.rows.borrow();
-            view.iter().position(|&ri| rows.get(ri).is_some_and(|r| r.value == value))
+            view.iter().position(|&ri| rows.get(ri).is_some_and(|r| r.expr == expr))
         };
         if let Some(p) = pos {
             self.inner.sel.set(p);
@@ -1756,7 +1631,7 @@ impl KeyEditor {
         }
         self.inner.top.set(top);
         self.update_scrollbar();
-        self.update_arg_button();
+        self.update_edit_button();
     }
 
     /// 直近の操作結果メッセージ（「中止しました」等）を消す。次の操作で残骸を残さないため、
@@ -1853,12 +1728,12 @@ impl KeyEditor {
                 KeyView::ByCommand => match this.selected_bind() {
                     // キー有り＝そのキーを「変更」キャプチャへ。キー無し＝新規キャプチャへ
                     //（キー順で空キー定義「－」をダブルクリックするのと対称）。
-                    Some((_, _, Some(_))) => {
+                    Some((_, Some(_))) => {
                         this.ensure_visible();
                         this.begin_remap();
                         return Ok(());
                     }
-                    Some((_, _, None)) => {
+                    Some((_, None)) => {
                         this.ensure_visible();
                         this.begin_capture();
                         return Ok(());
@@ -1954,8 +1829,8 @@ impl KeyEditor {
                 self.finish_newdef(chord);
             } else if self.inner.capturing_remap.replace(false) {
                 self.remap(chord);
-            } else if let Some((_, value, _)) = self.selected_bind() {
-                self.assign(value, chord);
+            } else if let Some((expr, _)) = self.selected_bind() {
+                self.assign(expr, chord);
             }
             return;
         }
@@ -2136,8 +2011,8 @@ impl KeyEditor {
                             } else {
                                 dc.SetTextColor(text_col)?;
                             }
-                            dc.TextOut(name_x, ty, &self.value_label(&r.value))?;
-                            dc.TextOut(call_x, ty, &call_display(&r.value))?;
+                            dc.TextOut(name_x, ty, &self.value_label(&r.expr))?;
+                            dc.TextOut(call_x, ty, &call_display(&r.expr))?;
                             if selected && capturing {
                                 dc.TextOut(keycol_x, ty, prompt)?;
                             } else if let Some(c) = &r.chord {

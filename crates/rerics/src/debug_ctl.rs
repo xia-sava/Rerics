@@ -191,30 +191,18 @@ impl MainWindow {
                 debug_server::Request::KeysCapture { category, chord } => {
                     let _ = tx.send(self.debug_keys_op(&category, |h| (h.capture)(&chord)));
                 }
-                debug_server::Request::KeysAddCode { category, code } => {
+                debug_server::Request::KeysSetExpr { category, expr } => {
                     let _ = tx.send(self.debug_keys_op(&category, |h| {
-                        (h.add_code)(&code);
+                        (h.set_expr)(&expr);
                         Ok(())
                     }));
                 }
-                debug_server::Request::KeysSetArg { category, arg } => {
-                    let _ = tx.send(self.debug_keys_op(&category, |h| {
-                        (h.set_arg)(&arg);
-                        Ok(())
-                    }));
-                }
-                debug_server::Request::KeysOpenArg { category } => {
+                debug_server::Request::KeysOpenExpr { category } => {
                     // モーダルは閉じるまでブロックするので、開く前に応答を返す（/completion/* を捌けるように）。
                     let _ = tx.send(debug_server::Response::Json(
                         "{\"modal_opening\":true}".to_string(),
                     ));
-                    debug_server::modal_registry::with_key_editor(&category, |h| (h.open_arg)());
-                }
-                debug_server::Request::KeysOpenCode { category } => {
-                    let _ = tx.send(debug_server::Response::Json(
-                        "{\"modal_opening\":true}".to_string(),
-                    ));
-                    debug_server::modal_registry::with_key_editor(&category, |h| (h.open_code)());
+                    debug_server::modal_registry::with_key_editor(&category, |h| (h.open_expr)());
                 }
                 debug_server::Request::CompletionType { text } => {
                     let ok = crate::dialog::completion_probe::type_text(&text);

@@ -1638,7 +1638,10 @@ fn settings_key_editor_script_rows_keep_position_when_bound() {
     // script 系に絞ると aaaScript・zzzScript が名前順（aaa が先・zzz が後）に並ぶ。
     server.req("POST", "/keys/filer/search", "script").unwrap();
     let before = keys();
-    assert!(before.contains(r#""rows":[["script",[]],["script",[]]]"#), "未割当 2 行: {before}");
+    assert!(
+        before.contains(r#""rows":[["aaaScript",[]],["zzzScript",[]]]"#),
+        "未割当 2 行: {before}"
+    );
 
     // 2 番目（zzzScript）へキーを割り当てても、行は 2 番目のまま動かない。
     server.req("POST", "/keys/filer/select/1", "").unwrap();
@@ -1646,7 +1649,7 @@ fn settings_key_editor_script_rows_keep_position_when_bound() {
     server.req("POST", "/keys/filer/search", "script").unwrap();
     let after = keys();
     assert!(
-        after.contains(r#""rows":[["script",[]],["script",["Ctrl+Alt+Z"]]]"#),
+        after.contains(r#""rows":[["aaaScript",[]],["zzzScript",["Ctrl+Alt+Z"]]]"#),
         "zzz は割り当て後も 2 番目に居座る（aaa が先・zzz が後）: {after}"
     );
 
@@ -1909,17 +1912,17 @@ fn settings_key_editor_binds_registered_script() {
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // 登録スクリプトが未割当行（script・キー無し）として出る。実呼び出し=名前で絞れる。
+    // 登録スクリプトが未割当行（myScript・キー無し）として出る。名前で絞れる。
     server.req("POST", "/keys/filer/search", "myScript").unwrap();
-    assert!(keys().contains(r#"["script",[]]"#), "未割当の Script 行が出る: {}", keys());
+    assert!(keys().contains(r#"["myScript",[]]"#), "未割当のスクリプト行が出る: {}", keys());
 
-    // 行を選んでキャプチャ＝script("myScript") が Ctrl+Alt+S に割り当たる。
+    // 行を選んでキャプチャ＝myScript() が Ctrl+Alt+S に割り当たる。
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/capture", "Ctrl+Alt+S").unwrap();
     server.req("POST", "/keys/filer/search", "myScript").unwrap();
     assert!(
-        keys().contains(r#"["script",["Ctrl+Alt+S"]]"#),
-        "script が Ctrl+Alt+S に割り当たる: {}",
+        keys().contains(r#"["myScript",["Ctrl+Alt+S"]]"#),
+        "myScript が Ctrl+Alt+S に割り当たる: {}",
         keys()
     );
 
@@ -1927,27 +1930,30 @@ fn settings_key_editor_binds_registered_script() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
-/// 「コードを割り当て」＝コードを追加すると未割当（－）の `eval` 行がスクリプトジャンルに生え、
-/// 通常どおりその行を選んでキャプチャするとキーへ結ばれる。実呼び出しカラムはラッパを剥がしたコード。
+/// 「式を編集」で行の式をコード（複文・ホスト API 呼び）へ書き替えると、コードの未割当（－）行が
+/// 生え、通常どおりその行を選んでキャプチャするとキーへ結ばれる。式そのものが機能名・実呼び出しになる。
 #[test]
-fn settings_key_editor_binds_eval_code() {
+fn settings_key_editor_binds_code() {
     let server = Server::start(&["a.txt"], "");
     server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // コードを追加＝未割当の eval 行が生える（前後スペースは trim される）。
-    server.req("POST", "/keys/filer/code", "  r.log(42)  ").unwrap();
+    // 未割当の行（selectMask）を選んで式をコードへ書き替える＝コードの未割当行が生える
+    //（前後スペースは trim される）。bare の selectMask 行は残る。
+    server.req("POST", "/keys/filer/search", "selectMask").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/expr", "  r.log(42)  ").unwrap();
     server.req("POST", "/keys/filer/search", "r.log").unwrap();
-    assert!(keys().contains(r#"["eval",[]]"#), "未割当の Eval 行が生える: {}", keys());
+    assert!(keys().contains(r#"["r.log(42)",[]]"#), "未割当のコード行が生える: {}", keys());
 
-    // その行を選んでキャプチャ＝eval("r.log(42)") が Ctrl+Alt+G に割り当たる。
+    // その行を選んでキャプチャ＝r.log(42) が Ctrl+Alt+G に割り当たる。
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/capture", "Ctrl+Alt+G").unwrap();
     server.req("POST", "/keys/filer/search", "r.log").unwrap();
     assert!(
-        keys().contains(r#"["eval",["Ctrl+Alt+G"]]"#),
-        "eval が Ctrl+Alt+G に割り当たる: {}",
+        keys().contains(r#"["r.log(42)",["Ctrl+Alt+G"]]"#),
+        "コードが Ctrl+Alt+G に割り当たる: {}",
         keys()
     );
 
@@ -1955,7 +1961,7 @@ fn settings_key_editor_binds_eval_code() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
-/// 「引数」＝バインド済みの組込コマンド行で引数の式を編集すると、そのキーの呼び出しがその場で
+/// 「式を編集」＝バインド済みの組込コマンド行で式を書き替えると、そのキーの呼び出しがその場で
 /// 差し替わる。既定 J の `jumpDialog()` に式引数を付け、OK で config.toml に残る。
 #[test]
 fn settings_key_editor_edits_bound_command_arg() {
@@ -1969,21 +1975,21 @@ fn settings_key_editor_edits_bound_command_arg() {
     assert!(keys().contains(r#"["jumpDialog",["J"]]"#), "J の jumpDialog 行: {}", keys());
     server.req("POST", "/keys/filer/select/0", "").unwrap();
 
-    // 引数を式へ差し替える（バインド済み＝そのキーの呼び出しをその場で置換）。
-    server.req("POST", "/keys/filer/arg", "=r.currentDir()").unwrap();
+    // 式をリテラル引数つきへ差し替える（バインド済み＝そのキーの呼び出しをその場で置換）。
+    server.req("POST", "/keys/filer/expr", r#"jumpDialog("D:")"#).unwrap();
 
     // OK で確定＝config.toml の J が新しい式へ更新される。
     server.req("POST", "/modal/command/ok", "").expect("ok");
     poll(&server, "/state/modal", |b| b.trim() == "null");
     let cfg = std::fs::read_to_string(server.base.join("data").join("config.toml")).unwrap();
     assert!(
-        cfg.contains(r#"jumpDialog("=r.currentDir()")"#),
+        cfg.contains(r#"jumpDialog("D:")"#),
         "J の引数が式へ差し替わって保存される: {cfg}"
     );
 }
 
-/// 「引数」＝未割当の組込コマンド行へ引数の式を付けると、引数つきの未割当（－）行が生え、その行を
-/// キャプチャしてキーへ結べる。OK で `selectMask("=式")` が当該キーに残る。
+/// 「式を編集」＝未割当の組込コマンド行へ引数つきの式を付けると、引数つきの未割当（－）行が生え、
+/// その行をキャプチャしてキーへ結べる。OK で `selectMask("=式")` が当該キーに残る。
 #[test]
 fn settings_key_editor_attaches_arg_to_unbound_command() {
     let server = Server::start(&["a.txt"], "");
@@ -1996,9 +2002,9 @@ fn settings_key_editor_attaches_arg_to_unbound_command() {
     assert!(keys().contains(r#"["selectMask",[]]"#), "未割当の selectMask 行: {}", keys());
     server.req("POST", "/keys/filer/select/0", "").unwrap();
 
-    // 引数を付ける＝引数つきの未割当行が生え、その行が選択される（apply_arg が選択する）。
-    server.req("POST", "/keys/filer/arg", "=r.cursorName()").unwrap();
-    // 選択中のその行をキャプチャ＝selectMask("=r.cursorName()") が Ctrl+Alt+J に割り当たる。
+    // 引数つきの式へ書き替える＝引数つきの未割当行が生え、その行が選択される（apply_expr が選択する）。
+    server.req("POST", "/keys/filer/expr", r#"selectMask("*.txt")"#).unwrap();
+    // 選択中のその行をキャプチャ＝selectMask("*.txt") が Ctrl+Alt+J に割り当たる。
     server.req("POST", "/keys/filer/capture", "Ctrl+Alt+J").unwrap();
 
     // OK で確定＝config.toml の Ctrl+Alt+J に引数つき呼び出しが残る。
@@ -2006,12 +2012,12 @@ fn settings_key_editor_attaches_arg_to_unbound_command() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
     let cfg = std::fs::read_to_string(server.base.join("data").join("config.toml")).unwrap();
     assert!(
-        cfg.contains(r#"selectMask("=r.cursorName()")"#),
+        cfg.contains(r#"selectMask("*.txt")"#),
         "引数つき呼び出しがキーに割り当たって保存される: {cfg}"
     );
 }
 
-/// 「引数」で作った未割当の引数つき行は、「キー定義を削除」でその定義ごと消せる（bare 行は残る）。
+/// 「式を編集」で作った未割当の引数つき行は、「キー定義を削除」でその定義ごと消せる（bare 行は残る）。
 #[test]
 fn settings_key_editor_deletes_unbound_arg_definition() {
     let server = Server::start(&["a.txt"], "");
@@ -2020,10 +2026,10 @@ fn settings_key_editor_deletes_unbound_arg_definition() {
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
     let count = || keys().matches(r#"["selectMask",[]]"#).count();
 
-    // 未バインドの selectMask（bare 行）を選んで引数を付ける＝引数つきの未割当行が増える。
+    // 未バインドの selectMask（bare 行）を選んで引数つきの式へ書き替える＝引数つきの未割当行が増える。
     server.req("POST", "/keys/filer/search", "selectMask").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
-    server.req("POST", "/keys/filer/arg", "=r.cursorName()").unwrap();
+    server.req("POST", "/keys/filer/expr", r#"selectMask("*.txt")"#).unwrap();
     server.req("POST", "/keys/filer/search", "selectMask").unwrap();
     assert_eq!(count(), 2, "bare と引数つきで selectMask 行が2つ: {}", keys());
 
@@ -2727,10 +2733,12 @@ fn completion_popup_lists_members_and_inserts_on_accept() {
     server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     server.req("POST", "/settings/nav/5", "").expect("nav");
-    // 組込コマンド行（makeDirectory）を選んで、補完つき「引数」モーダルを開く（応答先返し）。
+    // 組込コマンド行（makeDirectory）を選んで、補完つき「式を編集」モーダルを開く（応答先返し）。
     server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
-    server.req("POST", "/keys/filer/openarg", "").unwrap();
+    server.req("POST", "/keys/filer/openexpr", "").unwrap();
+    // prefill（makeDirectory()）を一旦空にしてから打鍵する。
+    server.req("POST", "/modal/text", "").unwrap();
 
     // `=r.my` と実キー入力（WM_CHAR＝EN_CHANGE 経路）すると、登録コマンド myCmd が候補に出る。
     server.req("POST", "/completion/keystrokes", "=r.my").unwrap();
@@ -2755,7 +2763,8 @@ fn completion_keyboard_navigation_and_ctrl_space() {
     server.req("POST", "/settings/nav/5", "").unwrap();
     server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
-    server.req("POST", "/keys/filer/openarg", "").unwrap();
+    server.req("POST", "/keys/filer/openexpr", "").unwrap();
+    server.req("POST", "/modal/text", "").unwrap();
     let comp = || server.req("GET", "/completion", "").unwrap().1;
 
     // `=r.o` で候補（on/open/openDialog/oppositePane）が出て、先頭が選択されている。
@@ -2796,7 +2805,8 @@ fn completion_uses_text_up_to_caret() {
     server.req("POST", "/settings/nav/5", "").unwrap();
     server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
-    server.req("POST", "/keys/filer/openarg", "").unwrap();
+    server.req("POST", "/keys/filer/openexpr", "").unwrap();
+    server.req("POST", "/modal/text", "").unwrap();
 
     // `=r.co` の末尾＝候補は co 前方一致（command/confirm/copy）。currentDir は含まれない。
     server.req("POST", "/completion/keystrokes", "=r.co").unwrap();

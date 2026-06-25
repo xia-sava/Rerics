@@ -181,16 +181,12 @@ pub mod modal_registry {
         pub set_view: Box<dyn Fn(bool)>,
         /// 選択行のキーを、その呼び出しのまま新しいキー（chord トークン）へ移し替える。未知キーは Err。
         pub rebind: ChordFn,
-        /// 選択行へ打鍵を割り当てる（行の生 value を束ねる）。引数つき組込・Script・Eval 行用。未知キーは Err。
+        /// 選択行へ打鍵を割り当てる（行の式を束ねる）。引数つき呼び出し・スクリプト・コード行用。未知キーは Err。
         pub capture: ChordFn,
-        /// コードを未割当 `Eval` 行として追加する（割り当ては行を選んで capture する）。
-        pub add_code: Box<dyn Fn(&str)>,
-        /// 選択中の組込コマンド行へ引数を付ける（割り当ては行を選んで capture する）。
-        pub set_arg: Box<dyn Fn(&str)>,
-        /// 実際の「引数」モーダル（補完つき）を開く（補完 UI の観測・駆動用・閉じるまでブロックする）。
-        pub open_arg: Box<dyn Fn()>,
-        /// 実際の「コード」モーダル（補完つき）を開く（補完 UI の観測・駆動用・閉じるまでブロックする）。
-        pub open_code: Box<dyn Fn()>,
+        /// 選択中の行の機能欄の式を差し替える（割り当ては行を選んで capture する）。
+        pub set_expr: Box<dyn Fn(&str)>,
+        /// 実際の「式を編集」モーダル（補完つき）を開く（補完 UI の観測・駆動用・閉じるまでブロックする）。
+        pub open_expr: Box<dyn Fn()>,
         /// キー順で選択行の li 番目の機能を差し替えるピックモードへ入る（インライン機能ピッカー）。
         pub pick: Box<dyn Fn(usize)>,
         /// ピックモードで選択中の機能を確定する。
@@ -367,16 +363,12 @@ pub enum Request {
     KeysSetView { category: String, by_key: bool },
     /// `POST /keys/<category>/rebind`：選択行のキーを body のキーへ移し替える（変更）。
     KeysRebind { category: String, chord: String },
-    /// `POST /keys/<category>/capture`：選択行へ body のキーを割り当てる（行の呼び出しを束ねる）。
+    /// `POST /keys/<category>/capture`：選択行へ body のキーを割り当てる（行の式を束ねる）。
     KeysCapture { category: String, chord: String },
-    /// `POST /keys/<category>/code`：body のコードを未割当 `Eval` 行として追加する（割り当ては capture で）。
-    KeysAddCode { category: String, code: String },
-    /// `POST /keys/<category>/arg`：選択中の組込コマンド行へ body の引数を付ける（割り当ては capture で）。
-    KeysSetArg { category: String, arg: String },
-    /// `POST /keys/<category>/openarg`：実際の「引数」モーダル（補完つき）を開く（補完 UI の観測用）。
-    KeysOpenArg { category: String },
-    /// `POST /keys/<category>/opencode`：実際の「コード」モーダル（補完つき）を開く（補完 UI の観測用）。
-    KeysOpenCode { category: String },
+    /// `POST /keys/<category>/expr`：選択中の行の機能欄の式を body の式へ差し替える（割り当ては capture で）。
+    KeysSetExpr { category: String, expr: String },
+    /// `POST /keys/<category>/openexpr`：実際の「式を編集」モーダル（補完つき）を開く（補完 UI の観測用）。
+    KeysOpenExpr { category: String },
     /// `POST /completion/type`：開いている補完つき入力欄へ body を打ち込む（入力模擬・補完更新）。
     CompletionType { text: String },
     /// `POST /completion/keystrokes`：body の各文字を WM_CHAR で 1 文字ずつ実入力する（EN_CHANGE 経路）。
@@ -715,18 +707,12 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                     let mut chord = String::new();
                     let _ = std::io::Read::read_to_string(req.as_reader(), &mut chord);
                     Some(Request::KeysCapture { category: cat.to_string(), chord: chord.trim().to_string() })
-                } else if let Some(cat) = rest.strip_suffix("/code") {
-                    let mut code = String::new();
-                    let _ = std::io::Read::read_to_string(req.as_reader(), &mut code);
-                    Some(Request::KeysAddCode { category: cat.to_string(), code })
-                } else if let Some(cat) = rest.strip_suffix("/arg") {
-                    let mut arg = String::new();
-                    let _ = std::io::Read::read_to_string(req.as_reader(), &mut arg);
-                    Some(Request::KeysSetArg { category: cat.to_string(), arg })
-                } else if let Some(cat) = rest.strip_suffix("/openarg") {
-                    Some(Request::KeysOpenArg { category: cat.to_string() })
-                } else if let Some(cat) = rest.strip_suffix("/opencode") {
-                    Some(Request::KeysOpenCode { category: cat.to_string() })
+                } else if let Some(cat) = rest.strip_suffix("/openexpr") {
+                    Some(Request::KeysOpenExpr { category: cat.to_string() })
+                } else if let Some(cat) = rest.strip_suffix("/expr") {
+                    let mut expr = String::new();
+                    let _ = std::io::Read::read_to_string(req.as_reader(), &mut expr);
+                    Some(Request::KeysSetExpr { category: cat.to_string(), expr })
                 } else if let Some(cat) = rest.strip_suffix("/view") {
                     let mut body = String::new();
                     let _ = std::io::Read::read_to_string(req.as_reader(), &mut body);
