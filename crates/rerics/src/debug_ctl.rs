@@ -459,6 +459,25 @@ impl MainWindow {
                         (h.move_menu)(d);
                     }
                 }
+                "item-select" => {
+                    if let Ok(i) = arg.parse::<usize>() {
+                        (h.select_item)(i);
+                    }
+                }
+                "item-add" => {
+                    let (l, c, s) = parse_item_body(body);
+                    (h.add_item)(&l, &c, s);
+                }
+                "item-update" => {
+                    let (l, c, s) = parse_item_body(body);
+                    (h.update_item)(&l, &c, s);
+                }
+                "item-delete" => (h.delete_item)(),
+                "item-move" => {
+                    if let Ok(d) = arg.parse::<i32>() {
+                        (h.move_item)(d);
+                    }
+                }
                 _ => return Err(format!("unknown menu-editor op: {op}")),
             }
             Ok(())
@@ -1418,4 +1437,14 @@ fn flatten_menu_leaves(items: &[ResolvedItem], out: &mut Vec<Invocation>) {
             _ => {}
         }
     }
+}
+
+/// メニュー編集の項目操作 body（`{label,command,separator}` JSON）を分解する。欠けは既定値。
+#[cfg(feature = "debug-server")]
+fn parse_item_body(body: &str) -> (String, String, bool) {
+    let v: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
+    let label = v.get("label").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let command = v.get("command").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let separator = v.get("separator").and_then(|x| x.as_bool()).unwrap_or(false);
+    (label, command, separator)
 }

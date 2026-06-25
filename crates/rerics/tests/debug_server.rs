@@ -3564,6 +3564,59 @@ items = []
     assert!(s.contains("\"name\":\"alpha\"") && s.contains("\"name\":\"beta\""), "他は残る: {s}");
 }
 
+/// 設定の「メニュー」ページで、選択中メニューの項目（ラベル/コマンド/セパレータ）を
+/// 追加/選択/更新/並べ替え/削除できる。項目操作 body は `{label,command,separator}` JSON。
+#[test]
+fn menu_editor_drives_item_crud() {
+    let config = r#"
+[[menus]]
+name = "alpha"
+items = [ { label = "コピー", command = "Copy" } ]
+"#;
+    let server = Server::start(&["a.txt"], config);
+    server.req("POST", "/command/OpenSettings", "").expect("OpenSettings");
+    poll(&server, "/menu-editor", |b| b.contains("\"name\":\"alpha\""));
+
+    // 左メニューを選ぶ（項目操作は選択中メニューに対して行う）。
+    let s = server.req("POST", "/menu-editor/select/0", "").unwrap().1;
+    assert!(s.contains("\"selected_menu\":0"), "メニュー選択: {s}");
+    assert!(s.contains("\"selected_item\":null"), "項目は未選択: {s}");
+
+    // 項目追加：末尾に付き、それが選択される。
+    let s = server
+        .req("POST", "/menu-editor/item-add", r#"{"label":"切り取り","command":"Cut"}"#)
+        .unwrap()
+        .1;
+    assert!(s.contains("\"label\":\"切り取り\"") && s.contains("\"command\":\"Cut\""), "追加: {s}");
+    assert!(s.contains("\"selected_item\":1"), "追加分が選択される: {s}");
+
+    // セパレータ追加：区切り線が末尾に付く。
+    let s = server.req("POST", "/menu-editor/item-add", r#"{"separator":true}"#).unwrap().1;
+    assert!(s.contains("\"separator\":true"), "セパレータ追加: {s}");
+    assert!(s.contains("\"selected_item\":2"), "セパレータが選択される: {s}");
+
+    // 項目選択：先頭（コピー）を選び直す。
+    let s = server.req("POST", "/menu-editor/item-select/0", "").unwrap().1;
+    assert!(s.contains("\"selected_item\":0"), "先頭を選択: {s}");
+
+    // 項目更新：選択中（コピー）を別コマンドへ。
+    let s = server
+        .req("POST", "/menu-editor/item-update", r#"{"label":"複製","command":"Duplicate"}"#)
+        .unwrap()
+        .1;
+    assert!(s.contains("\"label\":\"複製\"") && s.contains("\"command\":\"Duplicate\""), "更新: {s}");
+    assert!(!s.contains("\"label\":\"コピー\""), "旧ラベルは消える: {s}");
+
+    // 並べ替え：下へ動かすと index 1 へ。
+    let s = server.req("POST", "/menu-editor/item-move/1", "").unwrap().1;
+    assert!(s.contains("\"selected_item\":1"), "下へ移動で index 1: {s}");
+
+    // 項目削除：選択中（複製）が消える。
+    let s = server.req("POST", "/menu-editor/item-delete", "").unwrap().1;
+    assert!(!s.contains("\"label\":\"複製\""), "削除された: {s}");
+    assert!(s.contains("\"label\":\"切り取り\"") && s.contains("\"separator\":true"), "他は残る: {s}");
+}
+
 /// メニュー項目に `Script("名前", 引数...)` を書くと、選んだとき登録スクリプトが引数ごと
 /// 実行される（原作のスクリプト連携メニューを移植する経路・引数転送つき）。
 #[test]

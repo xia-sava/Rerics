@@ -247,6 +247,9 @@ pub mod modal_registry {
         })
     }
 
+    /// メニュー項目を編集欄の内容（ラベル／コマンド／セパレータ）で操作するフック。
+    pub type ItemOpHook = Box<dyn Fn(&str, &str, bool)>;
+
     /// メニュー編集ページを UI スレッドで読み書きするフック（設定ダイアログに1つ）。
     pub struct MenuEditorHooks {
         /// 現在の編集状態を JSON 文字列で返す（menus／selected_menu／selected_item）。
@@ -261,6 +264,16 @@ pub mod modal_registry {
         pub delete_menu: Box<dyn Fn()>,
         /// 選択中のメニューを delta（-1/+1）方向へ並べ替える。
         pub move_menu: Box<dyn Fn(i32)>,
+        /// 右の項目 idx を選ぶ（左メニュー未選択・範囲外は何もしない）。
+        pub select_item: Box<dyn Fn(usize)>,
+        /// 選択中メニューへ項目を末尾追加する（ラベル／コマンド／セパレータ）。
+        pub add_item: ItemOpHook,
+        /// 選択中の項目を更新する（未選択は無視）。
+        pub update_item: ItemOpHook,
+        /// 選択中の項目を削除する。
+        pub delete_item: Box<dyn Fn()>,
+        /// 選択中の項目を delta（-1/+1）方向へ並べ替える。
+        pub move_item: Box<dyn Fn(i32)>,
     }
 
     thread_local! {

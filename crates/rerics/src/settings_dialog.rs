@@ -2276,6 +2276,21 @@ fn menu_item_columns(it: &MenuItem) -> [String; 2] {
     }
 }
 
+/// メニュー項目を編集欄の内容（ラベル／コマンド／セパレータ）で操作するクロージャ。
+type MenuItemOp = Rc<dyn Fn(&str, &str, bool)>;
+
+/// 編集欄の内容から項目を1つ作る。セパレータ時はラベル/コマンドを無視し区切り線にする。
+/// それ以外でラベルが空なら既定名で埋める。
+fn build_menu_item(label: &str, command: &str, sep: bool) -> MenuItem {
+    if sep {
+        MenuItem::separator()
+    } else {
+        let label = label.trim();
+        let label = if label.is_empty() { "項目" } else { label };
+        MenuItem::entry(label, command.trim())
+    }
+}
+
 /// 「メニュー」ページ。左にメニュー名一覧、右に選択メニューの項目（ラベル／コマンド）を出す
 /// マスターディテール。`Menu("名前")` で開く名前付きメニュー（`shared.cfg.menus`）を編集する。
 /// 左の名前欄＋ボタンでメニューの追加/改名/削除/並べ替え。項目の編集は後続増分。
@@ -2333,15 +2348,81 @@ impl MenusPane {
         let up = button(parent, "↑", 8, 518, 74);
         let down = button(parent, "↓", 86, 518, 74);
 
-        let selected_menu: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        // 右ペイン下部：選択中メニューの項目を編集する欄とボタン。
+        label(parent, "ラベル", 258, 440, 250);
+        let label_edit = gui::Edit::new(
+            parent,
+            gui::EditOpts {
+                position: gui::dpi(258, 460),
+                width: gui::dpi_x(250),
+                height: gui::dpi_y(22),
+                ..Default::default()
+            },
+        );
+        label(parent, "コマンド", 514, 440, 254);
+        let command_edit = gui::Edit::new(
+            parent,
+            gui::EditOpts {
+                position: gui::dpi(514, 460),
+                width: gui::dpi_x(254),
+                height: gui::dpi_y(22),
+                ..Default::default()
+            },
+        );
+        let sep_check = gui::CheckBox::new(
+            parent,
+            gui::CheckBoxOpts {
+                text: "セパレータ(&S)",
+                position: gui::dpi(258, 490),
+                size: gui::dpi(150, 22),
+                ..Default::default()
+            },
+        );
+        let item_add = button(parent, "項目追加(&A)", 258, 518, 90);
+        let item_update = button(parent, "更新(&U)", 352, 518, 74);
+        let item_del = button(parent, "項目削除(&X)", 430, 518, 90);
+        let item_up = button(parent, "↑", 524, 518, 40);
+        let item_down = button(parent, "↓", 568, 518, 40);
 
-        // 右の項目一覧を、指定メニューの items から組み直す。
+        let selected_menu: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let selected_item: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+
+        // 選択中の項目を覚え、ラベル/コマンド/セパレータの編集欄へ反映する。None で欄を空に戻す。
+        let show_item: Rc<dyn Fn(Option<usize>)> = Rc::new({
+            let shared = shared.clone();
+            let selected_menu = selected_menu.clone();
+            let selected_item = selected_item.clone();
+            let label_edit = label_edit.clone();
+            let command_edit = command_edit.clone();
+            let sep_check = sep_check.clone();
+            move |item_sel| {
+                selected_item.set(item_sel);
+                let (label, command, sep) = item_sel
+                    .and_then(|ii| {
+                        let cfg = shared.cfg.borrow();
+                        cfg.menus
+                            .get(selected_menu.get()?)?
+                            .items
+                            .get(ii)
+                            .map(|it| (it.label.clone(), it.command.clone(), it.separator))
+                    })
+                    .unwrap_or_default();
+                let _ = label_edit.set_text(&label);
+                let _ = command_edit.set_text(&command);
+                sep_check.set_check(sep);
+            }
+        });
+
+        // 右の項目一覧を、選択中メニューの items から組み直す。引数は選び直す項目 index（None で
+        // 何も選ばず欄を空に）。
         let rebuild_items: Rc<dyn Fn(Option<usize>)> = Rc::new({
             let item_list = item_list.clone();
             let shared = shared.clone();
-            move |menu_idx| {
+            let selected_menu = selected_menu.clone();
+            let show_item = show_item.clone();
+            move |item_sel| {
                 let _ = item_list.items().delete_all();
-                if let Some(mi) = menu_idx {
+                if let Some(mi) = selected_menu.get() {
                     let cfg = shared.cfg.borrow();
                     if let Some(menu) = cfg.menus.get(mi) {
                         for it in &menu.items {
@@ -2349,6 +2430,13 @@ impl MenusPane {
                         }
                     }
                 }
+                if let Some(ii) = item_sel
+                    && let Some(it) = item_list.items().iter().nth(ii)
+                {
+                    let _ = it.select(true);
+                    let _ = it.focus();
+                }
+                show_item(item_sel);
             }
         });
 
@@ -2370,7 +2458,7 @@ impl MenusPane {
                     let _ = it.focus();
                 }
                 selected_menu.set(sel);
-                rebuild_items(sel);
+                rebuild_items(None);
             }
         });
 
@@ -2389,7 +2477,18 @@ impl MenusPane {
                     let _ = ne.set_text(&m.name);
                 }
                 selected_menu.set(sel);
-                rebuild_items(sel);
+                rebuild_items(None);
+                Ok(())
+            });
+        }
+
+        // 右の項目選択が変わったら、その index を覚えて編集欄へ反映する。
+        {
+            let item_list2 = item_list.clone();
+            let show_item = show_item.clone();
+            item_list.on().lvn_item_changed(move |_| {
+                let sel = item_list2.items().iter().position(|it| it.is_selected());
+                show_item(sel);
                 Ok(())
             });
         }
@@ -2462,6 +2561,86 @@ impl MenusPane {
             }
         });
 
+        // 項目操作も同様にクロージャへ抽出し、ボタンと debug フックの両方から呼ぶ。
+        let do_item_add: MenuItemOp = Rc::new({
+            let shared = shared.clone();
+            let selected_menu = selected_menu.clone();
+            let rebuild_items = rebuild_items.clone();
+            move |label: &str, command: &str, sep: bool| {
+                let Some(mi) = selected_menu.get() else { return };
+                let new_idx = {
+                    let mut cfg = shared.cfg.borrow_mut();
+                    let Some(menu) = cfg.menus.get_mut(mi) else { return };
+                    menu.items.push(build_menu_item(label, command, sep));
+                    menu.items.len() - 1
+                };
+                rebuild_items(Some(new_idx));
+            }
+        });
+        let do_item_update: MenuItemOp = Rc::new({
+            let shared = shared.clone();
+            let selected_menu = selected_menu.clone();
+            let selected_item = selected_item.clone();
+            let rebuild_items = rebuild_items.clone();
+            move |label: &str, command: &str, sep: bool| {
+                let Some(mi) = selected_menu.get() else { return };
+                let Some(ii) = selected_item.get() else { return };
+                {
+                    let mut cfg = shared.cfg.borrow_mut();
+                    let Some(item) = cfg.menus.get_mut(mi).and_then(|m| m.items.get_mut(ii)) else {
+                        return;
+                    };
+                    *item = build_menu_item(label, command, sep);
+                }
+                rebuild_items(Some(ii));
+            }
+        });
+        let do_item_delete: Rc<dyn Fn()> = Rc::new({
+            let shared = shared.clone();
+            let selected_menu = selected_menu.clone();
+            let selected_item = selected_item.clone();
+            let rebuild_items = rebuild_items.clone();
+            move || {
+                let Some(mi) = selected_menu.get() else { return };
+                let Some(ii) = selected_item.get() else { return };
+                let next = {
+                    let mut cfg = shared.cfg.borrow_mut();
+                    let Some(menu) = cfg.menus.get_mut(mi) else { return };
+                    if ii < menu.items.len() {
+                        menu.items.remove(ii);
+                    }
+                    if menu.items.is_empty() {
+                        None
+                    } else {
+                        Some(ii.saturating_sub(1).min(menu.items.len() - 1))
+                    }
+                };
+                rebuild_items(next);
+            }
+        });
+        let do_item_move: Rc<dyn Fn(i32)> = Rc::new({
+            let shared = shared.clone();
+            let selected_menu = selected_menu.clone();
+            let selected_item = selected_item.clone();
+            let rebuild_items = rebuild_items.clone();
+            move |delta: i32| {
+                let Some(mi) = selected_menu.get() else { return };
+                let Some(ii) = selected_item.get() else { return };
+                let j = {
+                    let mut cfg = shared.cfg.borrow_mut();
+                    let Some(menu) = cfg.menus.get_mut(mi) else { return };
+                    let j = ii as i32 + delta;
+                    if j < 0 || j as usize >= menu.items.len() {
+                        return;
+                    }
+                    let j = j as usize;
+                    menu.items.swap(ii, j);
+                    j
+                };
+                rebuild_items(Some(j));
+            }
+        });
+
         // ボタンは名前欄の内容を使って操作を呼ぶ。
         {
             let f = do_add.clone();
@@ -2501,6 +2680,49 @@ impl MenusPane {
             });
         }
 
+        // 項目ボタンはラベル/コマンド欄とセパレータチェックの内容で操作を呼ぶ。
+        {
+            let f = do_item_add.clone();
+            let le = label_edit.clone();
+            let ce = command_edit.clone();
+            let sc = sep_check.clone();
+            item_add.on().bn_clicked(move || {
+                f(&le.text().unwrap_or_default(), &ce.text().unwrap_or_default(), sc.is_checked());
+                Ok(())
+            });
+        }
+        {
+            let f = do_item_update.clone();
+            let le = label_edit.clone();
+            let ce = command_edit.clone();
+            let sc = sep_check.clone();
+            item_update.on().bn_clicked(move || {
+                f(&le.text().unwrap_or_default(), &ce.text().unwrap_or_default(), sc.is_checked());
+                Ok(())
+            });
+        }
+        {
+            let f = do_item_delete.clone();
+            item_del.on().bn_clicked(move || {
+                f();
+                Ok(())
+            });
+        }
+        {
+            let f = do_item_move.clone();
+            item_up.on().bn_clicked(move || {
+                f(-1);
+                Ok(())
+            });
+        }
+        {
+            let f = do_item_move.clone();
+            item_down.on().bn_clicked(move || {
+                f(1);
+                Ok(())
+            });
+        }
+
         // debug-server：標準コントロールは generic な `/modal/*` で叩けないので、操作フックを
         // 登録して `/menu-editor/*` から駆動・観測できるようにする。
         #[cfg(feature = "debug-server")]
@@ -2524,12 +2746,28 @@ impl MenusPane {
                         let _ = ne.set_text(&m.name);
                     }
                     selected_menu.set(Some(idx));
-                    rebuild_items(Some(idx));
+                    rebuild_items(None);
+                }
+            });
+            // 範囲内の項目を選び直す（左メニュー未選択や範囲外は何もしない）。
+            let do_item_select: Rc<dyn Fn(usize)> = Rc::new({
+                let shared = shared.clone();
+                let selected_menu = selected_menu.clone();
+                let rebuild_items = rebuild_items.clone();
+                move |idx: usize| {
+                    let in_range = selected_menu
+                        .get()
+                        .and_then(|mi| shared.cfg.borrow().menus.get(mi).map(|m| idx < m.items.len()))
+                        .unwrap_or(false);
+                    if in_range {
+                        rebuild_items(Some(idx));
+                    }
                 }
             });
             let read: Box<dyn Fn() -> String> = Box::new({
                 let shared = shared.clone();
                 let selected_menu = selected_menu.clone();
+                let selected_item = selected_item.clone();
                 move || {
                     let cfg = shared.cfg.borrow();
                     let menus: Vec<_> = cfg
@@ -2553,6 +2791,7 @@ impl MenusPane {
                     serde_json::json!({
                         "menus": menus,
                         "selected_menu": selected_menu.get(),
+                        "selected_item": selected_item.get(),
                     })
                     .to_string()
                 }
@@ -2577,6 +2816,26 @@ impl MenusPane {
                 }),
                 move_menu: Box::new({
                     let f = do_move.clone();
+                    move |d| f(d)
+                }),
+                select_item: Box::new({
+                    let f = do_item_select;
+                    move |i| f(i)
+                }),
+                add_item: Box::new({
+                    let f = do_item_add.clone();
+                    move |l, c, s| f(l, c, s)
+                }),
+                update_item: Box::new({
+                    let f = do_item_update.clone();
+                    move |l, c, s| f(l, c, s)
+                }),
+                delete_item: Box::new({
+                    let f = do_item_delete.clone();
+                    move || f()
+                }),
+                move_item: Box::new({
+                    let f = do_item_move.clone();
                     move |d| f(d)
                 }),
             });
