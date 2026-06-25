@@ -455,26 +455,17 @@ impl Invocation {
     /// 引数はダブルクォート区切り・`\"`/`\\` エスケープ可。解釈できなければ `None`。
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim();
-        let (head, args) = match s.find('(') {
-            None => (s, Vec::new()),
+        match s.find('(') {
+            None => Some(Self::bare(Command::from_token(s)?)),
             Some(open) => {
                 if !s.ends_with(')') {
                     return None;
                 }
-                (s[..open].trim(), parse_arg_list(&s[open + 1..s.len() - 1])?)
+                let command = Command::from_token(s[..open].trim())?;
+                let args = parse_arg_list(&s[open + 1..s.len() - 1])?;
+                Some(Self { command, args })
             }
-        };
-        // 原作の `Func_Xxx(...)` はスクリプト関数呼び出し＝Rerics の `Script("Xxx", ...)` に
-        // 読み替える（登録名 Xxx へ引数ごと転送）。移植したメニューが原作トークンのまま書けて、
-        // 同名スクリプトを登録すればそのまま動く。
-        if let Some(name) = head.strip_prefix("Func_") {
-            let mut script_args = Vec::with_capacity(args.len() + 1);
-            script_args.push(name.to_owned());
-            script_args.extend(args);
-            return Some(Self { command: Command::Script, args: script_args });
         }
-        let command = Command::from_token(head)?;
-        Some(Self { command, args })
     }
 
     /// 設定トークンへ変換する。引数なしは `Name`（＝従来表記・後方互換）、ありは `Name("a", "b")`。
@@ -1372,22 +1363,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn func_prefix_maps_to_script_call() {
-        // 原作 `Func_Xxx` はスクリプト呼び出し Script("Xxx") に読み替える。
-        assert_eq!(
-            Invocation::parse("Func_RandomChoice"),
-            Some(Invocation::new(Command::Script, vec!["RandomChoice".into()]))
-        );
-        // 引数つき（ダブルクォート区切り）は Script("Xxx", 引数...) として転送する。
-        assert_eq!(
-            Invocation::parse(r#"Func_SelectToMark("-1")"#),
-            Some(Invocation::new(Command::Script, vec!["SelectToMark".into(), "-1".into()]))
-        );
-        // 空引数の括弧も可。
-        assert_eq!(
-            Invocation::parse("Func_WinMerge()"),
-            Some(Invocation::new(Command::Script, vec!["WinMerge".into()]))
-        );
-    }
 }
