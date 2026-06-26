@@ -84,6 +84,8 @@ struct Inner {
     auto_adjust: Cell<bool>,
     /// 現在表示中の実FSディレクトリ（per-file アイコン取得用。書庫内など実体が無ければ None）。
     dir: RefCell<Option<PathBuf>>,
+    /// 切り詰めセルの全文を出す hover ツールチップ部品（生成後に設定）。
+    cell_tip: RefCell<Option<crate::winutil::CellTooltip>>,
 }
 
 /// ファイル一覧コントロール。
@@ -138,6 +140,7 @@ impl FileListView {
             size_format: Cell::new(cfg.size_format),
             auto_adjust: Cell::new(cfg.auto_adjust_columns),
             dir: RefCell::new(None),
+            cell_tip: RefCell::new(None),
         });
         let me = Self { wnd, inner };
         me.setup_events();
@@ -516,6 +519,25 @@ impl FileListView {
             this.on_l_button_dbl_clk(p.coords)?;
             Ok(())
         });
+
+        // 切り詰めセルの全文を hover で見せる共通部品。on_mouse_move は既存ハンドラ（列リサイズ等）の
+        // 末尾から呼ぶので、ここでは leave/timer だけ配線して部品を保持する。
+        let cttip = {
+            let this = self.clone();
+            crate::winutil::CellTooltip::new(move |pt| this.cell_tooltip_at(pt))
+        };
+        *self.inner.cell_tip.borrow_mut() = Some(cttip.clone());
+        let tip = cttip.clone();
+        let this = self.clone();
+        self.wnd.on().wm_timer(crate::winutil::CellTooltip::TIMER_ID, move || {
+            tip.on_timer(this.hwnd());
+            Ok(())
+        });
+        let this = self.clone();
+        self.wnd.on().wm_mouse_leave(move || {
+            cttip.on_mouse_leave(this.hwnd());
+            Ok(())
+        });
     }
 
     /// スクロールバーの (バー左端x, トラック上端y, トラック高, thumb上端y, thumb高) を返す。
@@ -759,7 +781,88 @@ impl FileListView {
                 }
                 self.refresh()?;
             }
+        if let Some(tip) = self.inner.cell_tip.borrow().clone() {
+            tip.on_mouse_move(self.hwnd(), pt);
+        }
         Ok(())
+    }
+
+    /// マウス位置（クライアント座標）→ 切り詰めで全文が見えていないセルの (矩形, 全文)。それ以外は
+    /// `None`。hover ツールチップの resolver＝描画（`paint_to`）と同じ列左端・左マージン・名前列の
+    /// アイコン幅・フォントで実測して切り詰めを判定する。
+    fn cell_tooltip_at(&self, pt: w::POINT) -> Option<(w::RECT, String)> {
+        let hh = self.header_height();
+        let ih = self.item_height();
+        if pt.y < hh || ih <= 0 {
+            return None;
+        }
+        let s = self.inner.state.borrow();
+        let row = s.scroll_top + ((pt.y - hh) / ih) as usize;
+        if row >= s.count() {
+            return None;
+        }
+        let mut left = 0i32;
+        let mut hit = None;
+        for (ci, col) in s.columns.iter().enumerate() {
+            let right = left + gui::dpi_x(col.width);
+            if pt.x >= left && pt.x < right {
+                hit = Some((ci, left, right));
+                break;
+            }
+            left = right;
+        }
+        let (ci, left, right) = hit?;
+        let kind = s.columns[ci].kind;
+        let text = s.cell_text(&s.items[row], kind, self.inner.size_format.get());
+        if text.is_empty() {
+            return None;
+        }
+        let Ok(dc) = self.hwnd().GetDC() else { return None };
+        let Ok(font) = self.create_font() else { return None };
+        let Ok(_sel) = dc.SelectObject(&*font) else { return None };
+        let mut text_left = left + Self::text_margin(&dc);
+        if matches!(kind, ColumnKind::FileName | ColumnKind::FileBaseName) && self.icons_visible() {
+            text_left += self.icon_px() + gui::dpi_x(2);
+        }
+        let avail = right - text_left;
+        let truncated = avail <= 0 || dc.GetTextExtentPoint32(&text).map(|z| z.cx).unwrap_or(0) > avail;
+        if !truncated {
+            return None;
+        }
+        let y = hh + ((row - s.scroll_top) as i32) * ih;
+        Some((w::RECT { left, top: y, right, bottom: y + ih }, text))
+    }
+
+    /// 指定セル（`row`＝行・`col`＝列）の中心のクライアント座標（debug 駆動用）。表示範囲外は `None`。
+    #[cfg(feature = "debug-server")]
+    fn cell_point(&self, row: usize, col: usize) -> Option<w::POINT> {
+        let s = self.inner.state.borrow();
+        if col >= s.columns.len() || row < s.scroll_top || row >= s.count() {
+            return None;
+        }
+        let vi = row - s.scroll_top;
+        if vi >= self.page_rows() {
+            return None;
+        }
+        let left: i32 = (0..col).map(|c| gui::dpi_x(s.columns[c].width)).sum();
+        let right = left + gui::dpi_x(s.columns[col].width);
+        let y = self.header_height() + vi as i32 * self.item_height() + self.item_height() / 2;
+        Some(w::POINT::with((left + right) / 2, y))
+    }
+
+    /// 指定セルが切り詰められていれば全文を返す（debug 観測用）。切り詰め無しは `None`。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn cell_tooltip(&self, row: usize, col: usize) -> Option<String> {
+        let pt = self.cell_point(row, col)?;
+        self.cell_tooltip_at(pt).map(|(_, text)| text)
+    }
+
+    /// 指定セルへ実際に hover した表示経路を駆動し (生成成功, 表示状態, 全文) を返す（debug 観測用）。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn cell_hover(&self, row: usize, col: usize) -> Option<(bool, bool, String)> {
+        let pt = self.cell_point(row, col)?;
+        let tip = self.inner.cell_tip.borrow().clone()?;
+        Some(tip.probe(self.hwnd(), pt))
     }
 
     fn on_l_button_dbl_clk(&self, pt: w::POINT) -> w::AnyResult<()> {

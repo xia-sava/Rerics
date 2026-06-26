@@ -2220,6 +2220,28 @@ fn settings_key_editor_command_view_shows_tooltip() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// ファイル一覧でも同じ部品で、列幅に収まらない長いセルの全文を hover 表示する（全文取得と
+/// 実表示経路の両方）。列の自動調整を切って名前列を固定幅にし、長い名前を確実に切り詰めさせる。
+#[test]
+fn file_list_truncated_cell_shows_tooltip() {
+    let long = "this_is_an_extremely_long_file_name_that_will_not_fit_in_the_name_column_aaaa.txt";
+    let server = Server::start(&[long], "auto_adjust_columns = false\n");
+
+    // 左ペイン row 1（row 0 は「..」）の名前列（col 0）が切り詰め＝全文が返る。
+    let (code, body) = server.req("GET", "/list/left/tooltip/1/0", "").expect("tooltip");
+    assert_eq!(code, 200, "tooltip 200: {body}");
+    assert!(body.contains("extremely_long_file_name"), "全文が返る: {body}");
+
+    // 実 hover でツールチップ窓が作られて表示状態になる。
+    let body = server.req("GET", "/list/left/hover/1/0", "").expect("hover").1;
+    assert!(body.contains(r#""created":true"#), "ツールチップ窓が作られる: {body}");
+    assert!(body.contains(r#""visible":true"#), "表示状態になる: {body}");
+
+    // サイズ列など短いセルは切り詰め無し＝出さない。
+    let body = server.req("GET", "/list/left/hover/1/2", "").expect("hover size").1;
+    assert!(body.contains(r#""visible":false"#), "短いセルは表示しない: {body}");
+}
+
 /// 長い一覧をスクロールできる（先頭行が動く・選択は不変・範囲外はクランプ）。ホイール／
 /// スクロールバーと同じ scroll 経路を headless から叩く。
 #[test]

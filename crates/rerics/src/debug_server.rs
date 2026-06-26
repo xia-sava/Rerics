@@ -412,6 +412,12 @@ pub enum Request {
     /// `GET /keys/<category>/hover/<row>/<col>`：現在のビューの指定セルへ実際に hover した表示経路を
     /// 駆動し `{"created":bool,"visible":bool,"text":…}` を返す（ツールチップ生成成否・WS_VISIBLE・全文）。
     KeysHover { category: String, row: usize, col: usize },
+    /// `GET /list/<left|right>/tooltip/<row>/<col>`：ファイル一覧の指定セルが切り詰められていれば全文を
+    /// `{"text":…}` で返す（切り詰め無しは空文字）。
+    ListTooltip { is_left: bool, row: usize, col: usize },
+    /// `GET /list/<left|right>/hover/<row>/<col>`：ファイル一覧の指定セルへ実際に hover した表示経路を
+    /// 駆動し `{"created":bool,"visible":bool,"text":…}` を返す。
+    ListHover { is_left: bool, row: usize, col: usize },
     /// `POST /settings/nav/<pane>`：設定ダイアログの左ナビを pane 番号のページへ切り替える。
     SettingsNav { pane: usize },
     /// `GET /menu-editor`：メニュー編集ページの現在状態（JSON）。未オープンは null。
@@ -554,6 +560,34 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::MenuEditorState)
             } else if let Some(name) = path.strip_prefix("/menu/") {
                 Some(Request::Menu { name: name.trim_end_matches('/').to_string() })
+            } else if let Some(rest) = path.strip_prefix("/list/") {
+                let rest = rest.trim_end_matches('/');
+                let cell = |pos: &str| {
+                    let mut parts = pos.split('/');
+                    let row = parts.next().and_then(|s| s.parse::<usize>().ok())?;
+                    let col = parts.next().and_then(|s| s.parse::<usize>().ok())?;
+                    Some((row, col))
+                };
+                let pane = |p: &str| match p {
+                    "left" => Some(true),
+                    "right" => Some(false),
+                    _ => None,
+                };
+                if let Some((p, pos)) = rest.split_once("/tooltip/") {
+                    pane(p).zip(cell(pos)).map(|(is_left, (row, col))| Request::ListTooltip {
+                        is_left,
+                        row,
+                        col,
+                    })
+                } else {
+                    rest.split_once("/hover/").and_then(|(p, pos)| {
+                        pane(p).zip(cell(pos)).map(|(is_left, (row, col))| Request::ListHover {
+                            is_left,
+                            row,
+                            col,
+                        })
+                    })
+                }
             } else if let Some(rest) = path.strip_prefix("/keys/") {
                 let rest = rest.trim_end_matches('/');
                 let cell = |pos: &str| {

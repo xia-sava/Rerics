@@ -202,6 +202,26 @@ impl MainWindow {
                     };
                     let _ = tx.send(resp);
                 }
+                debug_server::Request::ListTooltip { is_left, row, col } => {
+                    let text = self.view(is_left).cell_tooltip(row, col).unwrap_or_default();
+                    let _ = tx.send(debug_server::Response::Json(
+                        serde_json::json!({ "text": text }).to_string(),
+                    ));
+                }
+                debug_server::Request::ListHover { is_left, row, col } => {
+                    let resp = match self.view(is_left).cell_hover(row, col) {
+                        Some((created, visible, text)) => debug_server::Response::Json(
+                            serde_json::json!({
+                                "created": created,
+                                "visible": visible,
+                                "text": text,
+                            })
+                            .to_string(),
+                        ),
+                        None => debug_server::Response::Json("null".to_string()),
+                    };
+                    let _ = tx.send(resp);
+                }
                 debug_server::Request::KeysSelect { category, index } => {
                     let _ = tx.send(self.debug_keys_op(&category, |h| {
                         (h.select)(index);
