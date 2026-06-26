@@ -509,6 +509,7 @@ fn relayout_code_box(
     cand: &winsafe::HWND,
     ok: &winsafe::HWND,
     cancel: &winsafe::HWND,
+    insert: &winsafe::HWND,
     cw: i32,
     ch: i32,
     expanded: bool,
@@ -526,8 +527,9 @@ fn relayout_code_box(
     let _ = label.MoveWindow(P { x: m, y: gui::dpi_y(14) }, S { cx: label_w, cy: gui::dpi_y(18) }, true);
     let _ = mode.MoveWindow(P { x: cw - m - cbw, y: gui::dpi_y(12) }, S { cx: cbw, cy: gui::dpi_y(20) }, true);
 
-    // 下端：キャンセル＝最右、OK＝その左。
+    // 下端：左に「機能を挿入」、右にキャンセル＝最右・OK＝その左。
     let btn_y = (ch - gui::dpi_y(16) - btn_h).max(edit_top);
+    let _ = insert.MoveWindow(P { x: m, y: btn_y }, S { cx: gui::dpi_x(120), cy: btn_h }, true);
     let (ok_w, cancel_w) = (gui::dpi_x(80), gui::dpi_x(86));
     let cancel_x = (cw - m - cancel_w).max(0);
     let _ = cancel.MoveWindow(P { x: cancel_x, y: btn_y }, S { cx: cancel_w, cy: btn_h }, true);
@@ -551,6 +553,25 @@ fn relayout_code_box(
     };
     let _ = edit.MoveWindow(P { x: m, y: edit_top }, S { cx: content_w, cy: edit_h }, true);
     let _ = cand.MoveWindow(P { x: m, y: cand_y }, S { cx: content_w, cy: cand_h }, true);
+}
+
+/// 「機能を挿入」一覧の (表示行, 挿入名) を `members`（`r.` で呼べる名前）から組む。組込はジャンル順、
+/// その他（スクリプト・host API）は末尾の「スクリプト・API」へまとめる。挿入は `r.<name>()` 形にする。
+fn insert_browser_rows(members: &[CompletionMember]) -> (Vec<String>, Vec<String>) {
+    let mut items: Vec<(u8, String, String)> = members
+        .iter()
+        .map(|m| match rerics_core::Command::from_token(&m.name) {
+            Some(cmd) => {
+                let (gi, gn) = crate::key_editor::command_genre(cmd);
+                (gi, format!("〔{gn}〕{}（{}）", cmd.display_name(), m.name), m.name.clone())
+            }
+            None => (u8::MAX, format!("〔スクリプト・API〕{}", m.name), m.name.clone()),
+        })
+        .collect();
+    items.sort_by_key(|t| t.0);
+    let rows = items.iter().map(|(_, d, _)| d.clone()).collect();
+    let names = items.into_iter().map(|(_, _, n)| n).collect();
+    (rows, names)
 }
 
 pub fn code_box(
@@ -649,13 +670,32 @@ pub fn code_box(
             ..Default::default()
         },
     );
+    // ジャンル別の機能一覧から `r.名前()` を挿入する（名前をうろ覚えのとき用・補完の代替）。
+    let insert = gui::Button::new(
+        &wnd,
+        gui::ButtonOpts {
+            text: "機能を挿入(&F)",
+            ctrl_id: 100,
+            position: gui::dpi(16, 356),
+            width: gui::dpi_x(120),
+            height: gui::dpi_y(26),
+            ..Default::default()
+        },
+    );
 
     // 子コントロールを現在のクライアントサイズとモードに合わせて配置し直す共有処理。リサイズと
     // 「複数行」トグルの両方から呼ぶ。
     let relayout: Rc<dyn Fn(bool)> = {
         let wnd = wnd.clone();
-        let (label, mode, edit, cand, ok, cancel) =
-            (label.clone(), mode.clone(), edit.clone(), cand.clone(), ok.clone(), cancel.clone());
+        let (label, mode, edit, cand, ok, cancel, insert) = (
+            label.clone(),
+            mode.clone(),
+            edit.clone(),
+            cand.clone(),
+            ok.clone(),
+            cancel.clone(),
+            insert.clone(),
+        );
         Rc::new(move |expanded: bool| {
             if let Ok(rc) = wnd.hwnd().GetClientRect() {
                 relayout_code_box(
@@ -665,6 +705,7 @@ pub fn code_box(
                     cand.hwnd(),
                     ok.hwnd(),
                     cancel.hwnd(),
+                    insert.hwnd(),
                     rc.right,
                     rc.bottom,
                     expanded,
@@ -702,7 +743,11 @@ pub fn code_box(
         "コードを割り当て",
         message,
         true,
-        vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
+        vec![
+            ("OK".to_string(), 1u16),
+            ("キャンセル".to_string(), 2u16),
+            ("機能を挿入".to_string(), 100u16),
+        ],
     );
     {
         let result = result.clone();
@@ -718,6 +763,22 @@ pub fn code_box(
         let wnd2 = wnd.clone();
         cancel.on().bn_clicked(move || {
             wnd2.close();
+            Ok(())
+        });
+    }
+    // 「機能を挿入」＝ジャンル別一覧（モーダル）から選んだ機能を `r.名前()` でカレットへ挿入する。
+    {
+        let edit = edit.clone();
+        let wnd2 = wnd.clone();
+        let rows_names = insert_browser_rows(members);
+        insert.on().bn_clicked(move || {
+            let (rows, names) = &rows_names;
+            if let Some(idx) = list_box(&wnd2, "機能を挿入", "funcinsert", rows, 0)
+                && let Some(name) = names.get(idx)
+            {
+                edit.hwnd().SetFocus();
+                edit.replace_selection(&format!("r.{name}()"));
+            }
             Ok(())
         });
     }
@@ -763,7 +824,7 @@ pub fn code_box(
     keyhook::pop();
     #[cfg(feature = "debug-server")]
     completion_probe::clear();
-    let _ = (cancel, cand, mode, expanded);
+    let _ = (cancel, cand, mode, expanded, insert);
     result.borrow().clone()
 }
 
@@ -979,7 +1040,28 @@ pub mod completion_probe {
 
 #[cfg(test)]
 mod tests {
-    use super::{completion_candidates, completion_prefix};
+    use super::{CompletionMember, completion_candidates, completion_prefix, insert_browser_rows};
+
+    #[test]
+    fn insert_browser_groups_builtins_by_genre_and_others_last() {
+        let members = vec![
+            CompletionMember { name: "copy".to_string(), script_summary: None },
+            CompletionMember { name: "cursorDown".to_string(), script_summary: None },
+            CompletionMember { name: "organize".to_string(), script_summary: Some("x".to_string()) },
+        ];
+        let (rows, names) = insert_browser_rows(&members);
+        let pos = |n: &str| names.iter().position(|x| x == n).expect("name");
+        // カーソル移動ジャンル(0) は ファイル操作ジャンル(6) より前。
+        assert!(pos("cursorDown") < pos("copy"), "組込はジャンル順: {names:?}");
+        // 組込でない（スクリプト・host API）は末尾へ。
+        assert!(pos("copy") < pos("organize"), "その他は末尾: {names:?}");
+        assert!(rows[pos("organize")].contains("スクリプト・API"), "その他の見出し: {rows:?}");
+        // 組込行は 和名＋トークンを見せる。
+        assert!(
+            rows[pos("copy")].contains("コピー") && rows[pos("copy")].contains("（copy）"),
+            "組込行の表示: {rows:?}"
+        );
+    }
 
     #[test]
     fn prefix_detects_r_member_access() {

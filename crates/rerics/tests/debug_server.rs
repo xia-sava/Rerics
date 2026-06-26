@@ -2878,6 +2878,40 @@ fn code_editor_folds_between_single_and_multi_line() {
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
 
+/// 式エディタ（code_box）の「機能を挿入」（ctrl_id 100）はジャンル別の機能一覧を開き、選んだ機能を
+/// `r.名前()` でカレットへ挿入する（名前うろ覚えのブラウズ入力＝インラインピッカーの代替）。
+#[test]
+fn code_editor_inserts_function_by_genre_browse() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
+    wait_modal(&server);
+    server.req("POST", "/settings/nav/5", "").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/openexpr", "").unwrap();
+    poll(&server, "/state", |b| b.contains("コードを割り当て"));
+    server.req("POST", "/modal/text", "").unwrap();
+
+    // 「機能を挿入」を押す（PostMessage＝respond-first）と、ジャンル別一覧モーダルが開く。
+    server.req("POST", "/modal/command/100", "").unwrap();
+    let st = poll(&server, "/state", |b| b.contains("機能を挿入"));
+
+    // 一覧から delete の行を選んで OK＝code_box の本文へ r.delete() が挿入される。
+    let v: serde_json::Value = serde_json::from_str(&st).unwrap();
+    let items = v["modal"]["items"].as_array().expect("modal items");
+    let idx = items
+        .iter()
+        .position(|x| x.as_str().unwrap_or("").contains("（delete）"))
+        .expect("delete の行がある");
+    server.req("POST", &format!("/modal/select/{idx}"), "").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+
+    let c = poll(&server, "/completion", |b| b.contains("r.delete()"));
+    assert!(c.contains("r.delete()"), "ジャンル挿入で r.delete() が本文へ入る: {c}");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
 /// 式エディタ（code_box）はサイズ可変。リサイズしても再レイアウトがクラッシュせず、撮影でき、
 /// 補完も動く（リサイズ後の候補欄で候補が出る）。
 #[test]
