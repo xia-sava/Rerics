@@ -418,6 +418,11 @@ pub enum Request {
     /// `GET /list/<left|right>/hover/<row>/<col>`：ファイル一覧の指定セルへ実際に hover した表示経路を
     /// 駆動し `{"created":bool,"visible":bool,"text":…}` を返す。
     ListHover { is_left: bool, row: usize, col: usize },
+    /// `GET /log/tooltip/<row>`：ログの指定行が切り詰められていれば全文を `{"text":…}` で返す。
+    LogTooltip { row: usize },
+    /// `GET /log/hover/<row>`：ログの指定行へ実際に hover した表示経路を駆動し
+    /// `{"created":bool,"visible":bool,"text":…}` を返す。
+    LogHover { row: usize },
     /// `POST /settings/nav/<pane>`：設定ダイアログの左ナビを pane 番号のページへ切り替える。
     SettingsNav { pane: usize },
     /// `GET /menu-editor`：メニュー編集ページの現在状態（JSON）。未オープンは null。
@@ -560,6 +565,10 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::MenuEditorState)
             } else if let Some(name) = path.strip_prefix("/menu/") {
                 Some(Request::Menu { name: name.trim_end_matches('/').to_string() })
+            } else if let Some(row) = path.strip_prefix("/log/tooltip/") {
+                row.trim_end_matches('/').parse::<usize>().ok().map(|row| Request::LogTooltip { row })
+            } else if let Some(row) = path.strip_prefix("/log/hover/") {
+                row.trim_end_matches('/').parse::<usize>().ok().map(|row| Request::LogHover { row })
             } else if let Some(rest) = path.strip_prefix("/list/") {
                 let rest = rest.trim_end_matches('/');
                 let cell = |pos: &str| {

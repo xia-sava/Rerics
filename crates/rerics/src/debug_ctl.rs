@@ -222,6 +222,26 @@ impl MainWindow {
                     };
                     let _ = tx.send(resp);
                 }
+                debug_server::Request::LogTooltip { row } => {
+                    let text = self.log.cell_tooltip(row).unwrap_or_default();
+                    let _ = tx.send(debug_server::Response::Json(
+                        serde_json::json!({ "text": text }).to_string(),
+                    ));
+                }
+                debug_server::Request::LogHover { row } => {
+                    let resp = match self.log.cell_hover(row) {
+                        Some((created, visible, text)) => debug_server::Response::Json(
+                            serde_json::json!({
+                                "created": created,
+                                "visible": visible,
+                                "text": text,
+                            })
+                            .to_string(),
+                        ),
+                        None => debug_server::Response::Json("null".to_string()),
+                    };
+                    let _ = tx.send(resp);
+                }
                 debug_server::Request::KeysSelect { category, index } => {
                     let _ = tx.send(self.debug_keys_op(&category, |h| {
                         (h.select)(index);

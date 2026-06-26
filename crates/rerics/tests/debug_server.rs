@@ -2242,6 +2242,32 @@ fn file_list_truncated_cell_shows_tooltip() {
     assert!(body.contains(r#""visible":false"#), "短いセルは表示しない: {body}");
 }
 
+/// ログウィンドウでも同じ部品で、幅に収まらない行の全文を hover 表示する。窓を細くして
+/// ログ幅を狭め、作成ログ行が確実に切り詰められるようにする。
+#[test]
+fn log_view_truncated_line_shows_tooltip() {
+    let cfg = "[window]\nfixed_size = true\nwidth = 360\nheight = 400\n";
+    let server = Server::start_writable_cfg(&["a.txt"], cfg);
+    // ログを空にしてから 1 行だけ作る＝作成ログが row 0 に来る。
+    server.req("POST", "/command/clearLog", "").unwrap();
+    server.req("POST", "/command/makeDirectory", "").unwrap();
+    wait_modal(&server);
+    let long = "a_directory_with_a_fairly_long_name_for_logging_xx";
+    server.req("POST", "/modal/text", long).unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    poll(&server, "/state/log", |b| b.contains("CreateDirectory"));
+
+    // 細い窓ではログ行が切り詰め＝全文（作成名込み）が返る。
+    let (code, body) = server.req("GET", "/log/tooltip/0", "").expect("tooltip");
+    assert_eq!(code, 200, "tooltip 200: {body}");
+    assert!(body.contains("a_directory_with_a_fairly_long_name"), "全文が返る: {body}");
+
+    // 実 hover でツールチップ窓が作られて表示状態になる。
+    let body = server.req("GET", "/log/hover/0", "").expect("hover").1;
+    assert!(body.contains(r#""created":true"#), "ツールチップ窓が作られる: {body}");
+    assert!(body.contains(r#""visible":true"#), "表示状態になる: {body}");
+}
+
 /// 長い一覧をスクロールできる（先頭行が動く・選択は不変・範囲外はクランプ）。ホイール／
 /// スクロールバーと同じ scroll 経路を headless から叩く。
 #[test]

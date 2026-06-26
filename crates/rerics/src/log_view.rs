@@ -19,6 +19,8 @@ struct Inner {
     line_height: Cell<i32>,
     /// スクロールバー thumb ドラッグ中の、掴んだ位置の thumb 上端からのオフセット。
     sb_drag: Cell<Option<i32>>,
+    /// 切り詰め行の全文を出す hover ツールチップ部品（生成後に設定）。
+    cell_tip: RefCell<Option<crate::winutil::CellTooltip>>,
 }
 
 /// 下部ログウィンドウコントロール。
@@ -54,6 +56,7 @@ impl LogView {
             scrollbar_width: Cell::new(cfg.layout.scrollbar_width),
             line_height: Cell::new(gui::dpi_y(cfg.font.size + 2)),
             sb_drag: Cell::new(None),
+            cell_tip: RefCell::new(None),
         });
         let me = Self { wnd, inner };
         me.setup_events();
@@ -300,6 +303,25 @@ impl LogView {
             this.on_mouse_move(p.coords)?;
             Ok(())
         });
+
+        // 切り詰めログ行の全文を hover で見せる共通部品。on_mouse_move 末尾から呼ぶので、ここでは
+        // leave/timer だけ配線して部品を保持する。
+        let cttip = {
+            let this = self.clone();
+            crate::winutil::CellTooltip::new(move |pt| this.cell_tooltip_at(pt))
+        };
+        *self.inner.cell_tip.borrow_mut() = Some(cttip.clone());
+        let tip = cttip.clone();
+        let this = self.clone();
+        self.wnd.on().wm_timer(crate::winutil::CellTooltip::TIMER_ID, move || {
+            tip.on_timer(this.hwnd());
+            Ok(())
+        });
+        let this = self.clone();
+        self.wnd.on().wm_mouse_leave(move || {
+            cttip.on_mouse_leave(this.hwnd());
+            Ok(())
+        });
     }
 
     fn on_l_button_down(&self, pt: w::POINT) -> w::AnyResult<()> {
@@ -338,7 +360,78 @@ impl LogView {
                 self.refresh()?;
             }
         }
+        if let Some(tip) = self.inner.cell_tip.borrow().clone() {
+            tip.on_mouse_move(self.hwnd(), pt);
+        }
         Ok(())
+    }
+
+    /// マウス位置（クライアント座標）→ 切り詰めで全文が見えていない行の (矩形, 全文)。それ以外は
+    /// `None`。hover ツールチップの resolver＝描画（`paint_to`）と同じ左端 4px・右端・フォント
+    /// （Info/Error は太字）で実測して切り詰めを判定する。
+    fn cell_tooltip_at(&self, pt: w::POINT) -> Option<(w::RECT, String)> {
+        if pt.y < 1 {
+            return None;
+        }
+        let lh = self.inner.line_height.get().max(1);
+        let rc = self.hwnd().GetClientRect().ok()?;
+        let (cw, ch) = (rc.right, rc.bottom);
+        let text_right = match self.scrollbar_geom(cw, ch) {
+            Some((bar_x, ..)) => bar_x - 2,
+            None => cw - 4,
+        };
+        let s = self.inner.state.borrow();
+        let vi = ((pt.y - 1) / lh) as usize;
+        let i = s.scroll_top + vi;
+        if i >= s.count() {
+            return None;
+        }
+        let line = &s.lines[i];
+        if line.text.is_empty() {
+            return None;
+        }
+        let bold = matches!(line.level, LogLevel::Info | LogLevel::Error);
+        let Ok(dc) = self.hwnd().GetDC() else { return None };
+        let Ok(font) = self.create_font(bold) else { return None };
+        let Ok(_sel) = dc.SelectObject(&*font) else { return None };
+        let avail = text_right - 4;
+        let truncated = avail <= 0 || dc.GetTextExtentPoint32(&line.text).map(|z| z.cx).unwrap_or(0) > avail;
+        if !truncated {
+            return None;
+        }
+        let y = 1 + vi as i32 * lh;
+        Some((w::RECT { left: 0, top: y, right: text_right, bottom: y + lh }, line.text.clone()))
+    }
+
+    /// 指定行の中心のクライアント座標（debug 駆動用）。表示範囲外は `None`。
+    #[cfg(feature = "debug-server")]
+    fn cell_point(&self, row: usize) -> Option<w::POINT> {
+        let s = self.inner.state.borrow();
+        if row < s.scroll_top || row >= s.count() {
+            return None;
+        }
+        let lh = self.inner.line_height.get().max(1);
+        let ch = self.hwnd().GetClientRect().ok()?.bottom;
+        let y = 1 + (row - s.scroll_top) as i32 * lh + lh / 2;
+        if y >= ch {
+            return None;
+        }
+        Some(w::POINT::with(8, y))
+    }
+
+    /// 指定行が切り詰められていれば全文を返す（debug 観測用）。切り詰め無しは `None`。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn cell_tooltip(&self, row: usize) -> Option<String> {
+        let pt = self.cell_point(row)?;
+        self.cell_tooltip_at(pt).map(|(_, text)| text)
+    }
+
+    /// 指定行へ実際に hover した表示経路を駆動し (生成成功, 表示状態, 全文) を返す（debug 観測用）。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn cell_hover(&self, row: usize) -> Option<(bool, bool, String)> {
+        let pt = self.cell_point(row)?;
+        let tip = self.inner.cell_tip.borrow().clone()?;
+        Some(tip.probe(self.hwnd(), pt))
     }
 
     fn on_paint(&self) -> w::AnyResult<()> {
