@@ -225,8 +225,6 @@ pub mod modal_registry {
         KEY_EDITORS.with(|e| e.borrow_mut().clear());
         SETTINGS_NAV.with(|n| *n.borrow_mut() = None);
         MENU_EDITOR.with(|m| *m.borrow_mut() = None);
-        #[cfg(feature = "debug-server")]
-        crate::winutil::clear_hover_registry();
     }
 
     thread_local! {

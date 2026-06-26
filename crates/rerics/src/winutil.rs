@@ -197,33 +197,46 @@ struct HoverState {
     tracking: bool,
 }
 
-/// 自前描画リスト `list` に「セルの全文を hover で見せる」ツールチップを取り付ける。
+/// 自前描画リストへ「切り詰めセルの全文を hover で見せる」ツールチップを足す再利用部品。
 ///
-/// 再利用できる骨格部分（`WM_MOUSEMOVE`/`WM_MOUSELEAVE`/遅延タイマー／表示・消去）はここに持ち、
-/// リスト固有なのは `resolver` だけ＝マウス位置（クライアント座標）を受け取り、**切り詰めで全文が
-/// 見えていないセルなら (セル矩形, 全文)** を、それ以外（切り詰め無し・セル外）なら `None` を返す。
-/// 矩形は同一セル判定とアンカー算出に使う。`list` 生成後（イベント登録が効くうち）に一度呼ぶ。
-pub fn attach_cell_tooltip<F>(list: &gui::WindowControl, resolver: F)
-where
-    F: Fn(w::POINT) -> Option<(w::RECT, String)> + 'static,
-{
-    let state = Rc::new(RefCell::new(HoverState {
-        tip: None,
-        shown: None,
-        pending: None,
-        tracking: false,
-    }));
-    let resolver: Rc<dyn Fn(w::POINT) -> Option<(w::RECT, String)>> = Rc::new(resolver);
+/// 骨格（遅延タイマー／表示・消去・`WM_MOUSELEAVE` 追跡）はここに持ち、リスト固有なのは
+/// `resolver` だけ＝マウス位置（クライアント座標）→ **切り詰めで全文が見えていないセルなら
+/// (セル矩形, 全文)**、それ以外（切り詰め無し・セル外）なら `None`。矩形は同一セル判定に使う。
+///
+/// winsafe は同一メッセージにつき最後に登録したハンドラしか呼ばないので、骨格側で
+/// `WM_MOUSEMOVE` 等を登録すると既存ハンドラを潰してしまう。そこで**メッセージ登録はせず**、
+/// ホストが自分の `wm_mouse_move`/`wm_mouse_leave`/`wm_timer(`[`Self::TIMER_ID`]`)` から
+/// [`Self::on_mouse_move`]／[`Self::on_mouse_leave`]／[`Self::on_timer`] を呼ぶ。`Clone` は
+/// 内部状態（`Rc`）を共有する＝ハンドラとデバッグフックで同じ実体を使える。
+#[derive(Clone)]
+pub struct CellTooltip {
+    state: Rc<RefCell<HoverState>>,
+    resolver: Rc<dyn Fn(w::POINT) -> Option<(w::RECT, String)>>,
+}
 
-    #[cfg(feature = "debug-server")]
-    register_hover(list.clone(), state.clone(), resolver.clone());
+impl CellTooltip {
+    /// ホストが `wm_timer` を登録するときに使うタイマー id。
+    pub const TIMER_ID: usize = HOVER_TIMER_ID;
 
-    let st = state.clone();
-    let res = resolver.clone();
-    let wnd = list.clone();
-    list.on().wm_mouse_move(move |p| {
-        let hwnd = wnd.hwnd();
-        let mut s = st.borrow_mut();
+    pub fn new<F>(resolver: F) -> Self
+    where
+        F: Fn(w::POINT) -> Option<(w::RECT, String)> + 'static,
+    {
+        Self {
+            state: Rc::new(RefCell::new(HoverState {
+                tip: None,
+                shown: None,
+                pending: None,
+                tracking: false,
+            })),
+            resolver: Rc::new(resolver),
+        }
+    }
+
+    /// ホストの `WM_MOUSEMOVE` から呼ぶ。切り詰めセルへ入ったら遅延表示を仕込み、別セル／セル外へ
+    /// 動いたら出し直し・消去する。`WM_MOUSELEAVE` 追跡もここで貼る。
+    pub fn on_mouse_move(&self, hwnd: &w::HWND, pt: w::POINT) {
+        let mut s = self.state.borrow_mut();
         if !s.tracking {
             let mut tme = w::TRACKMOUSEEVENT::default();
             tme.dwFlags = co::TME::LEAVE;
@@ -232,7 +245,7 @@ where
                 s.tracking = true;
             }
         }
-        match res(p.coords) {
+        match (self.resolver)(pt) {
             None => hover_clear(&mut s, hwnd),
             Some((rect, _)) if s.shown == Some(rect) => {}
             Some((rect, _)) if s.pending.as_ref().is_some_and(|(r, ..)| *r == rect) => {}
@@ -242,22 +255,17 @@ where
                 {
                     tip.hide();
                 }
-                let anchor = hwnd
-                    .ClientToScreen(w::POINT::with(rect.left, rect.bottom))
-                    .unwrap_or(w::POINT::with(rect.left, rect.bottom));
+                let anchor = hwnd.ClientToScreen(pt).unwrap_or(pt);
                 s.pending = Some((rect, text, anchor));
                 let _ = hwnd.SetTimer(HOVER_TIMER_ID, HOVER_DELAY_MS, None);
             }
         }
-        Ok(())
-    });
+    }
 
-    let st = state.clone();
-    let wnd = list.clone();
-    list.on().wm_timer(HOVER_TIMER_ID, move || {
-        let hwnd = wnd.hwnd();
+    /// ホストの `wm_timer(`[`Self::TIMER_ID`]`)` から呼ぶ。仕込んだセルの全文を表示する。
+    pub fn on_timer(&self, hwnd: &w::HWND) {
         let _ = hwnd.KillTimer(HOVER_TIMER_ID);
-        let mut s = st.borrow_mut();
+        let mut s = self.state.borrow_mut();
         if let Some((rect, text, anchor)) = s.pending.take() {
             if s.tip.is_none() {
                 s.tip = Tooltip::new(hwnd);
@@ -267,17 +275,39 @@ where
                 s.shown = Some(rect);
             }
         }
-        Ok(())
-    });
+    }
 
-    let st = state.clone();
-    let wnd = list.clone();
-    list.on().wm_mouse_leave(move || {
-        let mut s = st.borrow_mut();
+    /// ホストの `WM_MOUSELEAVE` から呼ぶ。表示中／待機中のツールチップを消す。
+    pub fn on_mouse_leave(&self, hwnd: &w::HWND) {
+        let mut s = self.state.borrow_mut();
         s.tracking = false;
-        hover_clear(&mut s, wnd.hwnd());
-        Ok(())
-    });
+        hover_clear(&mut s, hwnd);
+    }
+
+    /// `pt` へ実際に hover した表示経路（resolver→生成→表示）を即時に駆動して観測する（500ms 待たず）。
+    /// 戻り値＝(ツールチップ生成成功, 表示状態, 全文)。切り詰めセルでなければ消去して `(_, false, "")`。
+    #[cfg(feature = "debug-server")]
+    pub fn probe(&self, hwnd: &w::HWND, pt: w::POINT) -> (bool, bool, String) {
+        let mut s = self.state.borrow_mut();
+        match (self.resolver)(pt) {
+            None => {
+                hover_clear(&mut s, hwnd);
+                (s.tip.is_some(), false, String::new())
+            }
+            Some((rect, text)) => {
+                if s.tip.is_none() {
+                    s.tip = Tooltip::new(hwnd);
+                }
+                let anchor = hwnd.ClientToScreen(pt).unwrap_or(pt);
+                let visible = s.tip.as_ref().is_some_and(|tip| {
+                    tip.show(&text, anchor);
+                    tip.is_visible()
+                });
+                s.shown = Some(rect);
+                (s.tip.is_some(), visible, text)
+            }
+        }
+    }
 }
 
 /// 表示中／表示待ちのツールチップを消し、タイマーも止める。
@@ -290,67 +320,4 @@ fn hover_clear(s: &mut HoverState, hwnd: &w::HWND) {
     {
         tip.hide();
     }
-}
-
-// 取り付けた hover を debug-server から駆動・観測するための登録簿。実際の hover 経路
-//（resolver→ツールチップ生成→表示）を headless で検証できるようにする（表示は視覚要素なので、
-// 生成成否と `WS_VISIBLE` で確かめる）。
-#[cfg(feature = "debug-server")]
-struct HoverEntry {
-    wnd: gui::WindowControl,
-    state: Rc<RefCell<HoverState>>,
-    resolver: Rc<dyn Fn(w::POINT) -> Option<(w::RECT, String)>>,
-}
-
-#[cfg(feature = "debug-server")]
-thread_local! {
-    static HOVER_REG: RefCell<Vec<HoverEntry>> = const { RefCell::new(Vec::new()) };
-}
-
-#[cfg(feature = "debug-server")]
-fn register_hover(
-    wnd: gui::WindowControl,
-    state: Rc<RefCell<HoverState>>,
-    resolver: Rc<dyn Fn(w::POINT) -> Option<(w::RECT, String)>>,
-) {
-    HOVER_REG.with(|r| r.borrow_mut().push(HoverEntry { wnd, state, resolver }));
-}
-
-/// hover 登録簿を空にする（設定ダイアログを開く直前に呼ぶ＝再オープンで貯まらないように）。
-/// 子ウィンドウは親生成まで未作成（hwnd が未確定）なので、生死では掃除できず開くたびに全消去する。
-#[cfg(feature = "debug-server")]
-pub fn clear_hover_registry() {
-    HOVER_REG.with(|r| r.borrow_mut().clear());
-}
-
-/// `list` に取り付けた hover を、マウス位置 `pt`（クライアント座標）で**実際の表示経路ごと**
-/// 駆動する（500ms タイマーは待たず即表示）。戻り値＝(ツールチップ生成成功, 表示状態, 全文)。
-/// 切り詰めセルでなければ消去して `(_, false, "")`。未登録（その list に hover 無し）は `None`。
-#[cfg(feature = "debug-server")]
-pub fn force_hover_probe(list: &w::HWND, pt: w::POINT) -> Option<(bool, bool, String)> {
-    HOVER_REG.with(|r| {
-        let reg = r.borrow();
-        let entry = reg.iter().find(|e| e.wnd.hwnd().ptr() == list.ptr())?;
-        let mut s = entry.state.borrow_mut();
-        match (entry.resolver)(pt) {
-            None => {
-                hover_clear(&mut s, list);
-                Some((s.tip.is_some(), false, String::new()))
-            }
-            Some((rect, text)) => {
-                if s.tip.is_none() {
-                    s.tip = Tooltip::new(list);
-                }
-                let anchor = list
-                    .ClientToScreen(w::POINT::with(rect.left, rect.bottom))
-                    .unwrap_or(w::POINT::with(rect.left, rect.bottom));
-                let visible = s.tip.as_ref().is_some_and(|tip| {
-                    tip.show(&text, anchor);
-                    tip.is_visible()
-                });
-                s.shown = Some(rect);
-                Some((s.tip.is_some(), visible, text))
-            }
-        }
-    })
 }

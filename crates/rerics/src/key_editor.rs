@@ -234,6 +234,8 @@ struct KeyEditorInner {
     pending_exprs: RefCell<Vec<String>>,
     /// 直近の操作結果（観測・状態表示用）。
     status: RefCell<String>,
+    /// 切り詰めセルの全文を出す hover ツールチップ部品（生成後に設定）。ハンドラとデバッグフックで共有。
+    cell_tip: RefCell<Option<crate::winutil::CellTooltip>>,
 }
 
 /// 「キー」ページ（割り当ての対話編集・自前描画）。機能順にコマンドを並べ、行を選んで
@@ -405,6 +407,7 @@ impl KeyEditor {
                 capturing_newdef: Cell::new(false),
                 pending_exprs: RefCell::new(Vec::new()),
                 status: RefCell::new(String::new()),
+                cell_tip: RefCell::new(None),
             }),
         };
         me.load_draft();
@@ -1885,8 +1888,30 @@ impl KeyEditor {
         });
 
         // 切り詰められたセルに hover で全文を出す（機能順・キー順）。当たり判定は描画と同じ列境界を使う。
+        // winsafe は同一メッセージにつき最後のハンドラしか呼ばないので、骨格は自分で登録せず、
+        // ここで各メッセージから部品のフックを呼ぶ。
+        let cttip = {
+            let this = self.clone();
+            crate::winutil::CellTooltip::new(move |pt| this.cell_at(pt))
+        };
+        *self.inner.cell_tip.borrow_mut() = Some(cttip.clone());
+        let tip = cttip.clone();
         let this = self.clone();
-        crate::winutil::attach_cell_tooltip(&self.list, move |pt| this.cell_at(pt));
+        self.list.on().wm_mouse_move(move |p| {
+            tip.on_mouse_move(this.hwnd(), p.coords);
+            Ok(())
+        });
+        let tip = cttip.clone();
+        let this = self.clone();
+        self.list.on().wm_timer(crate::winutil::CellTooltip::TIMER_ID, move || {
+            tip.on_timer(this.hwnd());
+            Ok(())
+        });
+        let this = self.clone();
+        self.list.on().wm_mouse_leave(move || {
+            cttip.on_mouse_leave(this.hwnd());
+            Ok(())
+        });
     }
 
     /// キー入力処理。キャプチャ中は打鍵を chord 化して割り当て（中止はクリック＝ESC も
@@ -2113,7 +2138,8 @@ impl KeyEditor {
     #[cfg(feature = "debug-server")]
     fn cell_hover(&self, vp: usize, col: usize) -> Option<(bool, bool, String)> {
         let pt = self.cell_point(vp, col)?;
-        crate::winutil::force_hover_probe(self.hwnd(), pt)
+        let tip = self.inner.cell_tip.borrow().clone()?;
+        Some(tip.probe(self.hwnd(), pt))
     }
 
     /// 指定セルが切り詰められていれば全文を返す（debug 観測用）。切り詰め無しは `None`。
