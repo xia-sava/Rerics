@@ -145,8 +145,6 @@ pub mod modal_registry {
         pub top: usize,
         /// キャプチャ待ちか。
         pub capturing: bool,
-        /// 機能ピッカー（インライン）中か。`true` の間は `rows` が機能一覧になる。
-        pub picking: bool,
         /// 直近の操作結果メッセージ。
         pub status: String,
         /// 現在の検索クエリ（空なら全件）。
@@ -190,12 +188,6 @@ pub mod modal_registry {
         pub set_expr: Box<dyn Fn(&str)>,
         /// 実際の「式を編集」モーダル（補完つき）を開く（補完 UI の観測・駆動用・閉じるまでブロックする）。
         pub open_expr: Box<dyn Fn()>,
-        /// キー順で選択行の li 番目の機能を差し替えるピックモードへ入る（インライン機能ピッカー）。
-        pub pick: Box<dyn Fn(usize)>,
-        /// ピックモードで選択中の機能を確定する。
-        pub pick_commit: Box<dyn Fn()>,
-        /// ピックモードを中止する。
-        pub pick_cancel: Box<dyn Fn()>,
         /// 表示先頭行を指定位置へ（ホイール／スクロールバーと同じ経路・範囲外はクランプ）。
         pub scroll: Box<dyn Fn(i32)>,
         /// キー順で空キー定義（機能未割当・－表示）を作る。未知キーは Err。
@@ -396,12 +388,6 @@ pub enum Request {
     CompletionState,
     /// `POST /completion/accept/<idx>`：開いている補完つき入力欄の idx 番目の候補を確定する。
     CompletionAccept { idx: u32 },
-    /// `POST /keys/<category>/pick/<labelIndex>`：キー順で選択行の機能ピッカーへ入る。
-    KeysPick { category: String, label: usize },
-    /// `POST /keys/<category>/pickcommit`：ピックで選択中の機能を確定する。
-    KeysPickCommit { category: String },
-    /// `POST /keys/<category>/pickcancel`：ピックを中止する。
-    KeysPickCancel { category: String },
     /// `POST /keys/<category>/scroll/<top>`：表示先頭行を top へ（範囲外はクランプ）。
     KeysScroll { category: String, top: i32 },
     /// `POST /keys/<category>/addkeydef`：キー順で body のキーの空キー定義（機能未割当）を作る。
@@ -746,15 +732,6 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                     idx.parse::<usize>().ok().map(|index| Request::KeysSelect {
                         category: cat.to_string(),
                         index,
-                    })
-                } else if let Some(cat) = rest.strip_suffix("/pickcommit") {
-                    Some(Request::KeysPickCommit { category: cat.to_string() })
-                } else if let Some(cat) = rest.strip_suffix("/pickcancel") {
-                    Some(Request::KeysPickCancel { category: cat.to_string() })
-                } else if let Some((cat, idx)) = rest.rsplit_once("/pick/") {
-                    idx.parse::<usize>().ok().map(|label| Request::KeysPick {
-                        category: cat.to_string(),
-                        label,
                     })
                 } else if let Some((cat, idx)) = rest.rsplit_once("/scroll/") {
                     idx.parse::<i32>().ok().map(|top| Request::KeysScroll {

@@ -124,13 +124,6 @@ fn genre_order(name: &str) -> u8 {
         .unwrap_or(14)
 }
 
-/// キー順の機能ラベル（トークン）を画面表示用の日本語名へ変換する。未知トークンはそのまま。
-fn label_display(label: &str) -> String {
-    Command::from_token(label)
-        .map(|c| c.display_name().to_string())
-        .unwrap_or_else(|| label.to_string())
-}
-
 /// 機能ピッカーの並び・見出し用ジャンル。`(並び順, 見出し)` を返す。並びは機能ピッカーを
 /// ジャンルごとに固まらせるためのもので、設定 UI 専用の括り（コアの文脈分けとは別軸）。
 /// メニュー編集のコマンドピッカー（[`crate::settings_dialog`]）も同じ括りで流用する。
@@ -181,13 +174,6 @@ enum KeyView {
     ByKey,
 }
 
-/// 機能ピッカー（インライン）の対象。キー順で機能ラベルをダブルクリックすると、その chord の
-/// `old_value`（差し替え対象の生 invocation）を別機能へ置き換えるためにこの状態へ入る。
-struct PickState {
-    chord: String,
-    old_value: String,
-}
-
 /// 「キー」ページの編集状態。
 struct KeyEditorInner {
     shared: Rc<Shared>,
@@ -207,10 +193,6 @@ struct KeyEditorInner {
     /// キー順の選択行内で、どの機能（`values` の添字）を対象にするか。クリックで指す・既定 0。
     /// 「式を編集」の対象を 1 つに定めるために使う（衝突行＝複数機能のどれを編集するか）。
     sel_li: Cell<usize>,
-    /// ピックモード中ならその対象。`Some` の間はリストが機能ピッカー（全機能一覧）へ切り替わる。
-    picking: RefCell<Option<PickState>>,
-    /// ピックモードで選べる機能一覧（文脈で絞り済み）。`view` はこれを検索で絞った index。
-    pick_rows: RefCell<Vec<Command>>,
     /// キー順で「キー定義を追加」したが、まだ機能未割当のキー（－表示の空キー定義）。
     pending: RefCell<Vec<String>>,
     /// 並べ方（機能順／キー順）。
@@ -393,8 +375,6 @@ impl KeyEditor {
                 rows: RefCell::new(Vec::new()),
                 key_rows: RefCell::new(Vec::new()),
                 sel_li: Cell::new(0),
-                picking: RefCell::new(None),
-                pick_rows: RefCell::new(Vec::new()),
                 pending: RefCell::new(Vec::new()),
                 view_mode: Cell::new(KeyView::ByCommand),
                 view: RefCell::new(Vec::new()),
@@ -428,14 +408,14 @@ impl KeyEditor {
                 Ok(())
             });
         }
-        // ボタン1：機能順＝キーを追加／キー順＝機能を変更（ピッカー）。
+        // ボタン1：機能順＝キーを追加／キー順＝式を編集（機能の割り当て・差し替え）。
         {
             let this = me.clone();
             btn_a.on().bn_clicked(move || {
                 if this.inner.view_mode.get() == KeyView::ByCommand {
                     this.begin_capture();
                 } else {
-                    this.enter_pick(0);
+                    this.edit_expr_row();
                 }
                 Ok(())
             });
@@ -482,41 +462,40 @@ impl KeyEditor {
         me
     }
 
-    /// 現在のモードに合わせて左グループ 3 ボタンのラベルを更新する。
+    /// 現在のモードに合わせて左グループのボタンを更新する。キー順では btn_a 自身が「式を編集」を
+    /// 担うので、機能順専用の独立「式を編集」ボタン（btn_edit）は隠す。
     fn relabel_buttons(&self) {
-        let (a, b, c) = match self.inner.view_mode.get() {
-            KeyView::ByCommand => ("キー定義を追加(&K)", "キー定義を変更(&C)", "キー定義を削除(&D)"),
-            KeyView::ByKey => ("機能定義を変更(&C)", "キー定義を削除(&D)", "キー定義を追加(&K)"),
+        let by_key = self.inner.view_mode.get() == KeyView::ByKey;
+        let (a, b, c) = if by_key {
+            ("式を編集(&E)", "キー定義を削除(&D)", "キー定義を追加(&K)")
+        } else {
+            ("キー定義を追加(&K)", "キー定義を変更(&C)", "キー定義を削除(&D)")
         };
         let _ = self.btn_a.hwnd().SetWindowText(a);
         let _ = self.btn_b.hwnd().SetWindowText(b);
         let _ = self.btn_c.hwnd().SetWindowText(c);
+        self.btn_edit.hwnd().ShowWindow(if by_key { co::SW::HIDE } else { co::SW::SHOW });
     }
 
-    /// 「式を編集」ボタンの有効/無効を状態に合わせる。機能順・キー順とも、編集対象の式が定まる
-    /// 行を選んでいるときだけ有効（キー順は選択行の対象機能＝`sel_li`・衝突行はクリックで機能を指す）。
-    /// ピック中・見出し/未選択・未割当（－）行ではグレーアウトする。
+    /// 機能順の独立「式を編集」ボタン（btn_edit）の有効/無効を状態に合わせる。編集対象の式が
+    /// 定まる行を選んでいるときだけ有効。キー順では隠れている（btn_a が担う）ので影響しない。
     fn update_edit_button(&self) {
         // 窓未作成（構築途中）の間は触らない＝既定の有効のまま。
         if self.btn_edit.hwnd().ptr().is_null() {
             return;
         }
-        let enabled = self.inner.picking.borrow().is_none() && self.selected_bind().is_some();
+        let enabled = self.selected_bind().is_some();
         self.btn_edit.hwnd().EnableWindow(enabled);
     }
 
-    /// 上部ヒントの文面を現モードに合わせて更新する。ピッカー中は中止方法をここに明示する。
+    /// 上部ヒントの文面を現モードに合わせて更新する。
     fn update_hint(&self) {
-        let text = if self.inner.picking.borrow().is_some() {
-            "◆ 機能ピッカー：割り当てる機能を選んで Enter／ダブルクリック（右クリックか Esc で中止）"
-        } else {
-            match self.inner.view_mode.get() {
-                KeyView::ByCommand => {
-                    "機能を選び「キー定義を追加」で割り当て（実際にキーを押す・右クリックで中止）"
-                }
-                KeyView::ByKey => {
-                    "機能をクリックで指して「式を編集」（ダブルクリックでも）。－は「機能定義を変更」で割り当て"
-                }
+        let text = match self.inner.view_mode.get() {
+            KeyView::ByCommand => {
+                "機能を選び「キー定義を追加」で割り当て（実際にキーを押す・右クリックで中止）"
+            }
+            KeyView::ByKey => {
+                "機能をクリックで指して「式を編集」（ダブルクリックでも）。－の行も「式を編集」で機能を割り当て"
             }
         };
         let _ = self.hint.hwnd().SetWindowText(text);
@@ -534,16 +513,9 @@ impl KeyEditor {
         let read = {
             let this = self.clone();
             Box::new(move || {
-                let picking = this.inner.picking.borrow().is_some();
                 let by_key = this.inner.view_mode.get() == KeyView::ByKey;
                 let view = this.inner.view.borrow();
-                let rows = if picking {
-                    let pr = this.inner.pick_rows.borrow();
-                    view.iter()
-                        .filter_map(|&i| pr.get(i))
-                        .map(|c| (c.as_token().to_string(), Vec::new()))
-                        .collect()
-                } else if by_key {
+                let rows = if by_key {
                     let all = this.inner.key_rows.borrow();
                     view.iter()
                         .map(|&ri| {
@@ -565,7 +537,6 @@ impl KeyEditor {
                     selected: this.inner.sel.get(),
                     top: this.inner.top.get(),
                     capturing: this.inner.capturing.get(),
-                    picking,
                     status: this.inner.status.borrow().clone(),
                     query: this.inner.query.borrow().clone(),
                     mode: if by_key { "key" } else { "command" }.to_string(),
@@ -662,18 +633,6 @@ impl KeyEditor {
             let this = self.clone();
             Box::new(move || this.edit_expr_row()) as Box<dyn Fn()>
         };
-        let pick = {
-            let this = self.clone();
-            Box::new(move |li: usize| this.enter_pick(li)) as Box<dyn Fn(usize)>
-        };
-        let pick_commit = {
-            let this = self.clone();
-            Box::new(move || this.commit_pick()) as Box<dyn Fn()>
-        };
-        let pick_cancel = {
-            let this = self.clone();
-            Box::new(move || this.cancel_pick()) as Box<dyn Fn()>
-        };
         let scroll = {
             let this = self.clone();
             Box::new(move |top: i32| this.scroll_to(top as isize)) as Box<dyn Fn(i32)>
@@ -711,9 +670,6 @@ impl KeyEditor {
                 capture,
                 set_expr,
                 open_expr,
-                pick,
-                pick_commit,
-                pick_cancel,
                 scroll,
                 add_keydef,
                 tooltip,
@@ -977,35 +933,8 @@ impl KeyEditor {
     }
 
     /// 検索クエリで現モードの行を絞り込み、表示対象 `view` を組み直す。選択を範囲内へ収める。
-    /// ピックモード中は機能一覧（`pick_rows`）を絞り込む。
     fn rebuild_view(&self) {
         let q = self.inner.query.borrow().to_lowercase();
-        if self.inner.picking.borrow().is_some() {
-            let view: Vec<usize> = self
-                .inner
-                .pick_rows
-                .borrow()
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| {
-                    q.is_empty()
-                        || c.as_token().to_lowercase().contains(&q)
-                        || c.display_name().to_lowercase().contains(&q)
-                })
-                .map(|(i, _)| i)
-                .collect();
-            let n = view.len();
-            *self.inner.view.borrow_mut() = view;
-            if n == 0 {
-                self.inner.sel.set(0);
-                self.inner.top.set(0);
-            } else if self.inner.sel.get() >= n {
-                self.inner.sel.set(n - 1);
-            }
-            self.update_scrollbar();
-            self.update_edit_button();
-            return;
-        }
         let mut view: Vec<usize> = match self.inner.view_mode.get() {
             KeyView::ByCommand => self
                 .inner
@@ -1108,10 +1037,9 @@ impl KeyEditor {
         self.inner.key_rows.borrow().get(ri).map(|r| r.chord.clone())
     }
 
-    /// 機能順で選択行のバインド（式・キー）。キー順・範囲外は `None`。
     /// 選択中の編集対象＝`(式, キー)`。機能順は選択行の式とそのキー。キー順は選択行（chord）の
-    /// `sel_li` 番目の機能の式とその chord（衝突行は対象機能を 1 つに絞る）。式が空（未割当・－行）は
-    /// `None`＝「式を編集」の対象なし。
+    /// `sel_li` 番目の機能の式とその chord（衝突行は対象機能を 1 つに絞る）。キー順の空キー定義
+    /// （－行）は空の式＋chord を返す＝「式を編集」で新規割り当てできる。範囲外は `None`。
     fn selected_bind(&self) -> Option<(String, Option<String>)> {
         let ri = *self.inner.view.borrow().get(self.inner.sel.get())?;
         match self.inner.view_mode.get() {
@@ -1124,22 +1052,20 @@ impl KeyEditor {
                 let krows = self.inner.key_rows.borrow();
                 let r = krows.get(ri)?;
                 if r.values.is_empty() {
-                    return None;
+                    return Some((String::new(), Some(r.chord.clone())));
                 }
                 let li = self.inner.sel_li.get().min(r.values.len() - 1);
                 let expr = r.values.get(li)?.clone();
-                (!expr.trim().is_empty()).then_some((expr, Some(r.chord.clone())))
+                Some((expr, Some(r.chord.clone())))
             }
         }
     }
 
     /// 機能順リストの表示行（ジャンル見出しをデータ行の間に挟む）。`top` はこの単位で進む。
-    /// キー順・ピックモードは見出しを挟まず、データ行だけを順に並べる。
+    /// キー順は見出しを挟まず、データ行だけを順に並べる。
     fn display_lines(&self) -> Vec<DisplayLine> {
         let view = self.inner.view.borrow();
-        if self.inner.picking.borrow().is_some()
-            || self.inner.view_mode.get() != KeyView::ByCommand
-        {
+        if self.inner.view_mode.get() != KeyView::ByCommand {
             return (0..view.len()).map(DisplayLine::Row).collect();
         }
         let rows = self.inner.rows.borrow();
@@ -1192,115 +1118,8 @@ impl KeyEditor {
         None
     }
 
-    /// キー順で選択行の li 番目の機能を「別機能へ差し替える」ピックモードへ入る（インライン）。
-    fn enter_pick(&self, li: usize) {
-        if self.inner.view_mode.get() != KeyView::ByKey
-            || self.inner.capturing.get()
-            || self.inner.picking.borrow().is_some()
-        {
-            return;
-        }
-        let Some(&ri) = self.inner.view.borrow().get(self.inner.sel.get()) else {
-            return;
-        };
-        let chord = match self.inner.key_rows.borrow().get(ri) {
-            Some(r) => r.chord.clone(),
-            None => return,
-        };
-        // 空キー定義（pending）なら old_value は空＝置換でなく新規割り当て。
-        let old_value = {
-            let draft = self.inner.draft.borrow();
-            let nonempty: Vec<String> = draft
-                .get(&chord)
-                .map(|vs| vs.iter().filter(|v| !v.trim().is_empty()).cloned().collect())
-                .unwrap_or_default();
-            nonempty.get(li).cloned().unwrap_or_default()
-        };
-        let old_label = if old_value.is_empty() {
-            "－".to_string()
-        } else {
-            label_display(&row_token(&old_value))
-        };
-        let ctx = self.inner.category.context();
-        // ジャンル順に固める（同ジャンル内は元の列挙順）。見出しは描画時に境界で出す。
-        let mut pick: Vec<Command> = Command::all().filter(|c| c.available_in(ctx)).collect();
-        pick.sort_by_key(|c| command_genre(*c).0);
-        *self.inner.pick_rows.borrow_mut() = pick;
-        *self.inner.picking.borrow_mut() = Some(PickState {
-            chord: chord.clone(),
-            old_value,
-        });
-        self.inner.sel.set(0);
-        self.inner.top.set(0);
-        *self.inner.query.borrow_mut() = String::new();
-        let _ = self.search.set_text("");
-        *self.inner.status.borrow_mut() = format!(
-            "{} に割り当てる機能を選択（{} を置換・右クリック/Escで中止）",
-            chord, old_label
-        );
-        self.update_hint();
-        self.rebuild_view();
-        let _ = self.hwnd().InvalidateRect(None, false);
-    }
-
-    /// ピックモードで選択中の機能を確定し、対象キーの定義を差し替える。
-    fn commit_pick(&self) {
-        let Some(pick) = self.inner.picking.borrow_mut().take() else {
-            return;
-        };
-        let new_cmd = self
-            .inner
-            .view
-            .borrow()
-            .get(self.inner.sel.get())
-            .and_then(|&i| self.inner.pick_rows.borrow().get(i).copied());
-        if let Some(cmd) = new_cmd {
-            let new_val = format!("{}()", cmd.as_token());
-            {
-                let mut draft = self.inner.draft.borrow_mut();
-                let vals = draft.entry(pick.chord.clone()).or_default();
-                // 置換対象（old_value）があれば外す。空キー定義なら新規割り当て。
-                if !pick.old_value.is_empty() {
-                    vals.retain(|v| *v != pick.old_value);
-                }
-                if !vals.iter().any(|v| matches!(Call::parse(v), Call::Builtin { command, .. } if command == cmd)) {
-                    vals.push(new_val);
-                }
-            }
-            // 機能が付いたので pending（空キー定義）からは外す。
-            self.inner.pending.borrow_mut().retain(|c| *c != pick.chord);
-            *self.inner.status.borrow_mut() =
-                format!("{} を {} に割り当てました", pick.chord, cmd.display_name());
-        }
-        self.exit_pick_common();
-    }
-
-    /// ピックモードを中止して元のキー一覧へ戻る。
-    fn cancel_pick(&self) {
-        if self.inner.picking.borrow_mut().take().is_none() {
-            return;
-        }
-        *self.inner.status.borrow_mut() = "中止しました".to_string();
-        self.exit_pick_common();
-    }
-
-    /// ピック解除の後始末（検索クリア・選択リセット・再構築・再描画）。
-    fn exit_pick_common(&self) {
-        self.inner.pick_rows.borrow_mut().clear();
-        *self.inner.query.borrow_mut() = String::new();
-        let _ = self.search.set_text("");
-        self.inner.sel.set(0);
-        self.inner.top.set(0);
-        self.update_hint();
-        self.rebuild_rows();
-        let _ = self.hwnd().InvalidateRect(None, false);
-    }
-
     /// 選択行のキーを別キーへ移し替えるキャプチャを始める（次の打鍵で旧キー→新キー）。未割当行は不可。
     fn begin_remap(&self) {
-        if self.inner.picking.borrow().is_some() {
-            return;
-        }
         if !matches!(self.selected_bind(), Some((_, Some(_)))) {
             return;
         }
@@ -1372,9 +1191,6 @@ impl KeyEditor {
     /// 選択行の割り当てを解除する（既定キーは空 Vec で打ち消す＝差分保存で永続）。
     /// 機能順＝サブ選択中の1キーからその機能を外す／キー順＝選択中のその1キー（定義を丸ごと）。
     fn unbind_selected(&self) {
-        if self.inner.picking.borrow().is_some() {
-            return;
-        }
         let status = match self.inner.view_mode.get() {
             KeyView::ByCommand => {
                 let Some((expr, chord)) = self.selected_bind() else {
@@ -1419,9 +1235,6 @@ impl KeyEditor {
 
     /// このページを既定キーマップへ戻す。
     fn reset(&self) {
-        if self.inner.picking.borrow().is_some() {
-            return;
-        }
         let def = self.inner.category.default_map();
         let draft: BTreeMap<String, Vec<String>> = def
             .into_iter()
@@ -1443,7 +1256,7 @@ impl KeyEditor {
 
     /// キャプチャ開始（次の打鍵を選択行へ割り当てる）。リストへフォーカスを移す。
     fn begin_capture(&self) {
-        if self.inner.picking.borrow().is_some() || self.selected_expr().is_none() {
+        if self.selected_expr().is_none() {
             return;
         }
         self.inner.capturing.set(true);
@@ -1455,7 +1268,7 @@ impl KeyEditor {
     /// 「式を編集」：選択中の行の機能欄の式を、現在の式を prefill したモーダルで編集させ、`apply_expr`
     /// で行へ反映する。組込呼び出しの引数付け・スクリプトの呼び替え・コード（複文）まで全部ここで扱う。
     fn edit_expr_row(&self) {
-        if self.inner.picking.borrow().is_some() || self.inner.capturing.get() {
+        if self.inner.capturing.get() {
             return;
         }
         let Some((expr, _)) = self.selected_bind() else {
@@ -1492,14 +1305,23 @@ impl KeyEditor {
         if new_expr.is_empty() || new_expr == old_expr {
             return;
         }
-        // キー順での編集＝そのキーの対象式だけ差し替えて、キー順のままその chord 行を選び直す
-        //（機能順へ切り替えない）。衝突行のどれを編集したかは `selected_bind` が `sel_li` で絞る。
+        // キー順での編集＝そのキーの式を差し替え／空キー定義（－）へは新規割り当てし、キー順の
+        // ままその chord 行を選び直す（機能順へ切り替えない）。衝突行のどれを編集したかは
+        // `selected_bind` が `sel_li` で絞る。
         if self.inner.view_mode.get() == KeyView::ByKey
             && let Some(ch) = chord.clone()
         {
+            let assigned = old_expr.is_empty();
             {
                 let mut draft = self.inner.draft.borrow_mut();
-                if let Some(vals) = draft.get_mut(&ch) {
+                let vals = draft.entry(ch.clone()).or_default();
+                if assigned {
+                    // 空キー定義への新規割り当て＝unbind マーカーを外して式を足す。
+                    vals.retain(|v| !v.trim().is_empty());
+                    if !vals.contains(&new_expr) {
+                        vals.push(new_expr.clone());
+                    }
+                } else {
                     for v in vals.iter_mut() {
                         if *v == old_expr {
                             *v = new_expr.clone();
@@ -1507,8 +1329,13 @@ impl KeyEditor {
                     }
                 }
             }
-            *self.inner.status.borrow_mut() =
-                format!("{} の式を変更しました（{}）", self.value_label(&new_expr), ch);
+            // 機能が付いたので pending（空キー定義）からは外す。
+            self.inner.pending.borrow_mut().retain(|c| *c != ch);
+            *self.inner.status.borrow_mut() = if assigned {
+                format!("{} に {} を割り当てました", ch, self.value_label(&new_expr))
+            } else {
+                format!("{} の式を変更しました（{}）", self.value_label(&new_expr), ch)
+            };
             self.rebuild_rows();
             self.select_key_row(&ch);
             let _ = self.hwnd().InvalidateRect(None, false);
@@ -1610,10 +1437,7 @@ impl KeyEditor {
 
     /// キー順で「キー定義を追加」：次の打鍵で機能未割当の空キー定義（－）を作る。
     fn add_key_def(&self) {
-        if self.inner.view_mode.get() != KeyView::ByKey
-            || self.inner.picking.borrow().is_some()
-            || self.inner.capturing.get()
-        {
+        if self.inner.view_mode.get() != KeyView::ByKey || self.inner.capturing.get() {
             return;
         }
         self.inner.capturing.set(true);
@@ -1704,9 +1528,9 @@ impl KeyEditor {
     }
 
     /// 直近の操作結果メッセージ（「中止しました」等）を消す。次の操作で残骸を残さないため、
-    /// 移動・選択・検索のたびに呼ぶ。キャプチャ中・ピック中の案内はライブなので消さない。
+    /// 移動・選択・検索のたびに呼ぶ。キャプチャ中の案内はライブなので消さない。
     fn clear_status(&self) {
-        if self.inner.capturing.get() || self.inner.picking.borrow().is_some() {
+        if self.inner.capturing.get() {
             return;
         }
         if !self.inner.status.borrow().is_empty() {
@@ -1729,7 +1553,7 @@ impl KeyEditor {
     fn setup_events(&self) {
         let this = self.clone();
         self.list.on().wm_get_dlg_code(move |_| {
-            let flags = if this.inner.capturing.get() || this.inner.picking.borrow().is_some() {
+            let flags = if this.inner.capturing.get() {
                 co::DLGC::WANTALLKEYS.raw()
             } else {
                 co::DLGC::WANTARROWS.raw()
@@ -1781,7 +1605,7 @@ impl KeyEditor {
         });
 
         // ダブルクリック：機能順=キー有りは「変更」キャプチャ・キー無しは新規キャプチャ／
-        // キー順=機能を機能ピッカーへ／ピック中=その機能で確定。
+        // キー順=機能・空キー定義（－）とも「式を編集」へ。
         let this = self.clone();
         self.list.on().wm_l_button_dbl_clk(move |p| {
             if this.inner.capturing.get() {
@@ -1793,10 +1617,6 @@ impl KeyEditor {
                 return Ok(());
             };
             this.inner.sel.set(vp);
-            if this.inner.picking.borrow().is_some() {
-                this.commit_pick();
-                return Ok(());
-            }
             match this.inner.view_mode.get() {
                 KeyView::ByCommand => match this.selected_bind() {
                     // キー有り＝そのキーを「変更」キャプチャへ。キー無し＝新規キャプチャへ
@@ -1814,26 +1634,12 @@ impl KeyEditor {
                     None => {}
                 },
                 KeyView::ByKey => {
-                    // 機能ラベル上＝その機能の式を code_box で編集。空キー定義（－）行＝従来どおり
-                    // 機能ピッカーで新規割り当て（新規割当の式エディタ化は後続）。
-                    if let Some(li) = this.label_hit(vp, p.coords.x) {
-                        this.inner.sel_li.set(li);
-                        this.ensure_visible();
-                        this.edit_expr_row();
-                        return Ok(());
-                    }
-                    let empty = this
-                        .inner
-                        .view
-                        .borrow()
-                        .get(vp)
-                        .and_then(|&ri| this.inner.key_rows.borrow().get(ri).map(|r| r.labels.is_empty()))
-                        .unwrap_or(false);
-                    if empty {
-                        this.ensure_visible();
-                        this.enter_pick(0);
-                        return Ok(());
-                    }
+                    // 機能ラベル上＝その機能の式を code_box で編集。空キー定義（－）行も
+                    // 「式を編集」で機能を割り当てる（`selected_bind` が空式＋chord を返す）。
+                    this.inner.sel_li.set(this.label_hit(vp, p.coords.x).unwrap_or(0));
+                    this.ensure_visible();
+                    this.edit_expr_row();
+                    return Ok(());
                 }
             }
             this.ensure_visible();
@@ -1841,13 +1647,11 @@ impl KeyEditor {
             Ok(())
         });
 
-        // 右クリック：キャプチャ中／ピック中なら中止（左クリックは「決定」感があるので使わない）。
+        // 右クリック：キャプチャ中なら中止（左クリックは「決定」感があるので使わない）。
         let this = self.clone();
         self.list.on().wm_r_button_down(move |_| {
             if this.inner.capturing.get() {
                 this.cancel_capture();
-            } else if this.inner.picking.borrow().is_some() {
-                this.cancel_pick();
             }
             Ok(())
         });
@@ -1938,21 +1742,6 @@ impl KeyEditor {
             return;
         }
         let vis = self.visible_rows() as isize;
-        // ピックモード：↑↓/PageUp/Down/Home/End で機能を選び、Enter で確定・Esc で中止。
-        if self.inner.picking.borrow().is_some() {
-            match vk {
-                k::UP => self.move_sel(-1),
-                k::DOWN => self.move_sel(1),
-                k::PRIOR => self.move_sel(-vis),
-                k::NEXT => self.move_sel(vis),
-                k::HOME => self.move_sel(isize::MIN / 2),
-                k::END => self.move_sel(isize::MAX / 2),
-                k::RETURN => self.commit_pick(),
-                k::ESCAPE => self.cancel_pick(),
-                _ => {}
-            }
-            return;
-        }
         if vk == k::UP {
             self.move_sel(-1);
         } else if vk == k::DOWN {
@@ -2036,9 +1825,9 @@ impl KeyEditor {
     }
 
     /// 現在のビューの指定セル（`vp`＝データ行・`col`＝左から 0/1/2）に描かれる文字列。
-    /// hover ツールチップの対象にならないセル（キャプチャ中の案内・未割当「－」・ピック中・無効指定）は `None`。
+    /// hover ツールチップの対象にならないセル（キャプチャ中の案内・未割当「－」・無効指定）は `None`。
     fn cell_text(&self, vp: usize, col: usize) -> Option<String> {
-        if self.inner.picking.borrow().is_some() || col >= 3 {
+        if col >= 3 {
             return None;
         }
         let &ri = self.inner.view.borrow().get(vp)?;
@@ -2112,7 +1901,7 @@ impl KeyEditor {
     /// その行が今表示範囲に無い・無効指定なら `None`。
     #[cfg(feature = "debug-server")]
     fn cell_point(&self, vp: usize, col: usize) -> Option<w::POINT> {
-        if self.inner.picking.borrow().is_some() || col >= 3 {
+        if col >= 3 {
             return None;
         }
         let di = self
@@ -2186,20 +1975,14 @@ impl KeyEditor {
         self.inner.row_h.set(row_h);
         dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
 
-        // ピックモード（機能ピッカー表示）中は背景色を変えて「別モード」を一目で分かるようにする。
-        let picking = self.inner.picking.borrow().is_some();
-        let fill = if picking {
-            w::HBRUSH::GetSysColorBrush(co::COLOR::INFOBK)?
-        } else {
-            w::HBRUSH::GetSysColorBrush(co::COLOR::WINDOW)?
-        };
+        let fill = w::HBRUSH::GetSysColorBrush(co::COLOR::WINDOW)?;
         dc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: ch }, &fill)?;
 
         let text_col = w::GetSysColor(co::COLOR::WINDOWTEXT);
         let gray_col = w::GetSysColor(co::COLOR::GRAYTEXT);
         let hl_text = w::GetSysColor(co::COLOR::HIGHLIGHTTEXT);
         let hl_bg = w::HBRUSH::GetSysColorBrush(co::COLOR::HIGHLIGHT)?;
-        // キャプチャ中の当該行・メッセージ行・ピッカー地に使うアイボリー。
+        // キャプチャ中の当該行・メッセージ行に使うアイボリー。
         let ivory = w::HBRUSH::GetSysColorBrush(co::COLOR::INFOBK)?;
 
         let view = self.inner.view.borrow();
@@ -2210,44 +1993,6 @@ impl KeyEditor {
         // 最下部 1 行はステータス（操作結果・衝突メッセージ）に充てる。
         let body_h = (ch - row_h).max(row_h);
         let vis = (body_h / row_h).max(1) as usize;
-        // 機能ピッカーは専用描画：左ガターにジャンル見出し（境界の行に淡色）、本体に機能名を並べる。
-        if picking {
-            let pr = self.inner.pick_rows.borrow();
-            let name_x = gui::dpi_x(168);
-            for vi in 0..vis {
-                let di = top + vi;
-                let Some(cmd) = view.get(di).and_then(|&i| pr.get(i)).copied() else {
-                    break;
-                };
-                let y = vi as i32 * row_h;
-                let ty = y + (row_h - fh) / 2;
-                if di == sel {
-                    dc.FillRect(w::RECT { left: 0, top: y, right: cw, bottom: y + row_h }, &hl_bg)?;
-                }
-                // ジャンルの先頭行（または可視範囲の最上行）にだけ見出しを出す。
-                let genre = command_genre(cmd).1;
-                let prev_genre = if vi > 0 {
-                    view.get(di - 1).and_then(|&i| pr.get(i)).map(|c| command_genre(*c).1)
-                } else {
-                    None
-                };
-                if prev_genre != Some(genre) {
-                    dc.SetTextColor(if di == sel { hl_text } else { gray_col })?;
-                    dc.TextOut(key_x, ty, genre)?;
-                }
-                dc.SetTextColor(if di == sel { hl_text } else { text_col })?;
-                dc.TextOut(name_x, ty, cmd.display_name())?;
-            }
-            let sep_y = ch - row_h;
-            let sep_brush = w::HBRUSH::GetSysColorBrush(co::COLOR::BTNSHADOW)?;
-            dc.FillRect(w::RECT { left: 0, top: sep_y, right: cw, bottom: sep_y + 1 }, &sep_brush)?;
-            let status = self.inner.status.borrow();
-            if !status.is_empty() {
-                dc.SetTextColor(text_col)?;
-                dc.TextOut(key_x, sep_y + (row_h - fh) / 2, &status)?;
-            }
-            return Ok(());
-        }
         // 機能順は「見出し行＋3カラム（機能名｜実呼び出し｜キー）」、キー順は「キー｜機能群」を描く。
         // どちらも表示行（見出し込み）を `top` から `vis` 行ぶん辿る。キー列は狭いので、入力待ちの
         // 詳しい案内（右クリックで中止）は下部ステータス行に任せ、行内は短い目印だけ出す。

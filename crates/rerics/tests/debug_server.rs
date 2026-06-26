@@ -2040,56 +2040,6 @@ fn settings_key_editor_deletes_unbound_arg_definition() {
     assert_eq!(count(), 1, "引数つきの定義が消えて bare だけ残る: {}", keys());
 }
 
-/// キー順で機能名をダブルクリック相当＝インライン機能ピッカーで別機能へ差し替える。
-/// 機能一覧は検索ボックスで絞り込め、確定でそのキーの定義が変わる（中止なら不変）。
-#[test]
-fn settings_key_editor_inline_function_picker_changes_binding() {
-    let server = Server::start(&["a.txt"], "");
-    server.req("POST", "/command/openSettings", "").expect("openSettings");
-    wait_modal(&server);
-    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
-
-    // 未使用キー Ctrl+Shift+Q を selectMask に割り当て、キー順でその行を出す。
-    server.req("POST", "/keys/filer/bind", r#"["selectMask","Ctrl+Shift+Q"]"#).unwrap();
-    server.req("POST", "/keys/filer/view", "key").unwrap();
-    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
-    assert!(keys().contains(r#"["Ctrl+Shift+Q",["selectMask"]]"#), "対象キー行: {}", keys());
-    server.req("POST", "/keys/filer/select/0", "").unwrap();
-
-    // その機能（label 0＝selectMask）のピッカーへ。中止すると不変。
-    server.req("POST", "/keys/filer/pick/0", "").unwrap();
-    assert!(keys().contains(r#""picking":true"#), "ピックモードに入る: {}", keys());
-    // ピッカーはジャンル順に並ぶ（カーソル移動ジャンルが先頭＝cursorUp が最初）。
-    assert!(
-        keys().contains(r#""rows":[["cursorUp",[]]"#),
-        "機能ピッカーはジャンル順（先頭 cursorUp）: {}",
-        keys()
-    );
-    server.req("POST", "/keys/filer/pickcancel", "").unwrap();
-    assert!(keys().contains(r#""picking":false"#), "中止でピック解除");
-    // 中止後（検索クリア・キー順へ復帰）も割り当ては不変。
-    server.req("POST", "/keys/filer/view", "key").unwrap();
-    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
-    assert!(keys().contains(r#"["Ctrl+Shift+Q",["selectMask"]]"#), "中止で不変: {}", keys());
-
-    // 再びピッカーへ入り、検索で makeDirectory に絞って確定＝定義が差し替わる。
-    server.req("POST", "/keys/filer/select/0", "").unwrap();
-    server.req("POST", "/keys/filer/pick/0", "").unwrap();
-    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
-    assert!(keys().contains(r#"["makeDirectory",[]]"#), "ピッカーに機能が並ぶ: {}", keys());
-    server.req("POST", "/keys/filer/select/0", "").unwrap();
-    server.req("POST", "/keys/filer/pickcommit", "").unwrap();
-
-    // 確定後（キー順・検索クリア）：Ctrl+Shift+Q は makeDirectory に、selectMask からは外れる。
-    server.req("POST", "/keys/filer/view", "key").unwrap();
-    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
-    let s = keys();
-    assert!(s.contains(r#"["Ctrl+Shift+Q",["makeDirectory"]]"#), "機能が差し替わる: {s}");
-
-    server.req("POST", "/modal/command/cancel", "").expect("cancel");
-    poll(&server, "/state/modal", |b| b.trim() == "null");
-}
-
 /// キー順でも「式を編集」（set_expr）で選択キーの機能欄の式を差し替えられる。キー順のまま反映され、
 /// そのキーの機能が変わる（機能順専用だった式編集をキー順へ拡張）。
 #[test]
@@ -2301,8 +2251,8 @@ fn settings_key_editor_scrolls_long_list() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
-/// キー順で「キー定義を追加」＝空キー定義（機能未割当・－）を作り、後から機能ピッカーで
-/// 機能を割り当てられる。
+/// キー順で「キー定義を追加」＝空キー定義（機能未割当・－）を作り、後から「式を編集」（set_expr）で
+/// 機能を割り当てられる（空式は新規割り当てとして draft へ足される）。
 #[test]
 fn settings_key_editor_add_empty_key_def_then_assign() {
     let server = Server::start(&["a.txt"], "");
@@ -2316,12 +2266,9 @@ fn settings_key_editor_add_empty_key_def_then_assign() {
     server.req("POST", "/keys/filer/search", "Ctrl+Shift+Z").unwrap();
     assert!(keys().contains(r#"["Ctrl+Shift+Z",[]]"#), "空キー定義の行: {}", keys());
 
-    // その行を選び、機能ピッカーで makeDirectory を割り当てる。
+    // その行を選び、「式を編集」で makeDirectory を割り当てる（空キー定義への新規割り当て）。
     server.req("POST", "/keys/filer/select/0", "").unwrap();
-    server.req("POST", "/keys/filer/pick/0", "").unwrap();
-    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
-    server.req("POST", "/keys/filer/select/0", "").unwrap();
-    server.req("POST", "/keys/filer/pickcommit", "").unwrap();
+    server.req("POST", "/keys/filer/expr", "makeDirectory()").unwrap();
 
     // 割り当て後：Ctrl+Shift+Z → makeDirectory（空キー定義が解消）。
     server.req("POST", "/keys/filer/view", "key").unwrap();

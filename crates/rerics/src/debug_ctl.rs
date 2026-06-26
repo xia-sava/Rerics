@@ -419,24 +419,6 @@ impl MainWindow {
                     let ok = crate::dialog::completion_probe::accept(idx);
                     let _ = tx.send(debug_server::Response::Json(format!("{{\"accepted\":{ok}}}")));
                 }
-                debug_server::Request::KeysPick { category, label } => {
-                    let _ = tx.send(self.debug_keys_op(&category, |h| {
-                        (h.pick)(label);
-                        Ok(())
-                    }));
-                }
-                debug_server::Request::KeysPickCommit { category } => {
-                    let _ = tx.send(self.debug_keys_op(&category, |h| {
-                        (h.pick_commit)();
-                        Ok(())
-                    }));
-                }
-                debug_server::Request::KeysPickCancel { category } => {
-                    let _ = tx.send(self.debug_keys_op(&category, |h| {
-                        (h.pick_cancel)();
-                        Ok(())
-                    }));
-                }
                 debug_server::Request::KeysScroll { category, top } => {
                     let _ = tx.send(self.debug_keys_op(&category, |h| {
                         (h.scroll)(top);
