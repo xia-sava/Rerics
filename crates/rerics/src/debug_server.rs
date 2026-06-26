@@ -166,6 +166,9 @@ pub mod modal_registry {
     /// usize 1 つを取るフック（設定ナビのページ切替など）。
     pub type IndexFn = Box<dyn Fn(usize)>;
 
+    /// キー順セル（行・カラム）への hover 駆動フック＝(生成成功, 表示状態, 全文)。範囲外は `None`。
+    pub type HoverFn = Box<dyn Fn(usize, usize) -> Option<(bool, bool, String)>>;
+
     /// キー編集ページを UI スレッドで読み書きするフック（gui をクロージャに閉じ込める）。
     pub struct KeyEditorHooks {
         pub read: Box<dyn Fn() -> KeyEditorState>,
@@ -200,6 +203,9 @@ pub mod modal_registry {
         /// キー順の指定セル（行・カラム）が切り詰められていれば hover で出る全文を返す。
         /// 切り詰め無しは `None`。
         pub tooltip: Box<dyn Fn(usize, usize) -> Option<String>>,
+        /// キー順の指定セルへ実際に hover した時の表示経路を駆動し (生成成功, 表示状態, 全文) を返す。
+        /// 表示範囲外・未登録は `None`。
+        pub hover: HoverFn,
     }
 
     thread_local! {
@@ -219,6 +225,8 @@ pub mod modal_registry {
         KEY_EDITORS.with(|e| e.borrow_mut().clear());
         SETTINGS_NAV.with(|n| *n.borrow_mut() = None);
         MENU_EDITOR.with(|m| *m.borrow_mut() = None);
+        #[cfg(feature = "debug-server")]
+        crate::winutil::clear_hover_registry();
     }
 
     thread_local! {
@@ -403,6 +411,9 @@ pub enum Request {
     /// `GET /keys/<category>/tooltip/<row>/<col>`：キー順の指定セル（row＝表示行・col＝0:キー/
     /// 1:機能名/2:実呼び出し）が切り詰められていれば全文を `{"text":…}` で返す。切り詰め無しは空文字。
     KeysTooltip { category: String, row: usize, col: usize },
+    /// `GET /keys/<category>/hover/<row>/<col>`：キー順の指定セルへ実際に hover した表示経路を駆動し
+    /// `{"created":bool,"visible":bool,"text":…}` を返す（ツールチップ生成成否・WS_VISIBLE・全文）。
+    KeysHover { category: String, row: usize, col: usize },
     /// `POST /settings/nav/<pane>`：設定ダイアログの左ナビを pane 番号のページへ切り替える。
     SettingsNav { pane: usize },
     /// `GET /menu-editor`：メニュー編集ページの現在状態（JSON）。未オープンは null。
@@ -547,19 +558,24 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::Menu { name: name.trim_end_matches('/').to_string() })
             } else if let Some(rest) = path.strip_prefix("/keys/") {
                 let rest = rest.trim_end_matches('/');
-                if let Some((cat, pos)) = rest.split_once("/tooltip/") {
+                let cell = |pos: &str| {
                     let mut parts = pos.split('/');
-                    match (
-                        parts.next().and_then(|s| s.parse::<usize>().ok()),
-                        parts.next().and_then(|s| s.parse::<usize>().ok()),
-                    ) {
-                        (Some(row), Some(col)) => Some(Request::KeysTooltip {
-                            category: cat.to_string(),
-                            row,
-                            col,
-                        }),
-                        _ => None,
-                    }
+                    let row = parts.next().and_then(|s| s.parse::<usize>().ok())?;
+                    let col = parts.next().and_then(|s| s.parse::<usize>().ok())?;
+                    Some((row, col))
+                };
+                if let Some((cat, pos)) = rest.split_once("/tooltip/") {
+                    cell(pos).map(|(row, col)| Request::KeysTooltip {
+                        category: cat.to_string(),
+                        row,
+                        col,
+                    })
+                } else if let Some((cat, pos)) = rest.split_once("/hover/") {
+                    cell(pos).map(|(row, col)| Request::KeysHover {
+                        category: cat.to_string(),
+                        row,
+                        col,
+                    })
                 } else {
                     Some(Request::KeysState { category: rest.to_string() })
                 }

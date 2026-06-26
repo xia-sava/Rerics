@@ -689,6 +689,11 @@ impl KeyEditor {
             Box::new(move |row: usize, col: usize| this.key_cell_tooltip(row, col))
                 as Box<dyn Fn(usize, usize) -> Option<String>>
         };
+        let hover = {
+            let this = self.clone();
+            Box::new(move |row: usize, col: usize| this.key_cell_hover(row, col))
+                as crate::debug_server::modal_registry::HoverFn
+        };
         crate::debug_server::modal_registry::register_key_editor(
             self.inner.category.debug_str(),
             KeyEditorHooks {
@@ -709,6 +714,7 @@ impl KeyEditor {
                 scroll,
                 add_keydef,
                 tooltip,
+                hover,
             },
         );
     }
@@ -2035,6 +2041,39 @@ impl KeyEditor {
         let Ok(font) = w::HFONT::GetStockObject(co::STOCK_FONT::DEFAULT_GUI) else { return false };
         let Ok(_sel) = dc.SelectObject(&font) else { return false };
         dc.GetTextExtentPoint32(text).map(|z| z.cx).unwrap_or(0) > avail
+    }
+
+    /// キー順の指定セル（`vp`＝表示行・`col`＝0/1/2）の中心のクライアント座標（debug 駆動用）。
+    /// その行が今表示範囲に無い・無効指定なら `None`。
+    #[cfg(feature = "debug-server")]
+    fn key_cell_point(&self, vp: usize, col: usize) -> Option<w::POINT> {
+        if self.inner.view_mode.get() != KeyView::ByKey || col >= 3 {
+            return None;
+        }
+        let di = self
+            .display_lines()
+            .iter()
+            .position(|d| matches!(d, DisplayLine::Row(p) if *p == vp))?;
+        let top = self.inner.top.get();
+        if di < top {
+            return None;
+        }
+        let vi = di - top;
+        if vi >= self.visible_rows() {
+            return None;
+        }
+        let row_h = self.inner.row_h.get().max(1);
+        let cw = self.hwnd().GetClientRect().ok()?.right;
+        let (x0, x1) = Self::key_columns(cw)[col];
+        Some(w::POINT::with((x0 + x1) / 2, vi as i32 * row_h + row_h / 2))
+    }
+
+    /// キー順の指定セルへ実際に hover した時の表示経路（resolver→ツールチップ生成→表示）を
+    /// headless で駆動する。戻り値＝(生成成功, 表示状態, 全文)。表示範囲外・未登録は `None`。
+    #[cfg(feature = "debug-server")]
+    fn key_cell_hover(&self, vp: usize, col: usize) -> Option<(bool, bool, String)> {
+        let pt = self.key_cell_point(vp, col)?;
+        crate::winutil::force_hover_probe(self.hwnd(), pt)
     }
 
     /// キー順の指定セルが切り詰められていれば全文を返す（debug 観測用）。切り詰め無しは `None`。

@@ -183,6 +183,25 @@ impl MainWindow {
                     };
                     let _ = tx.send(resp);
                 }
+                debug_server::Request::KeysHover { category, row, col } => {
+                    let resp = match debug_server::modal_registry::with_key_editor(&category, |h| {
+                        (h.hover)(row, col)
+                    }) {
+                        Some(Some((created, visible, text))) => {
+                            debug_server::Response::Json(
+                                serde_json::json!({
+                                    "created": created,
+                                    "visible": visible,
+                                    "text": text,
+                                })
+                                .to_string(),
+                            )
+                        }
+                        Some(None) => debug_server::Response::Json("null".to_string()),
+                        None => debug_server::Response::NotFound,
+                    };
+                    let _ = tx.send(resp);
+                }
                 debug_server::Request::KeysSelect { category, index } => {
                     let _ = tx.send(self.debug_keys_op(&category, |h| {
                         (h.select)(index);

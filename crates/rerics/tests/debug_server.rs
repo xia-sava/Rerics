@@ -2159,6 +2159,39 @@ fn settings_key_editor_truncated_cell_shows_tooltip() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// 切り詰めセルへ実際に hover した時の表示経路（resolver→ツールチップ生成→表示）が動く＝生成成功・
+/// `WS_VISIBLE`・全文が返る（`/keys/<cat>/hover/<row>/<col>`）。切り詰め無しのセルは表示しない。
+#[test]
+fn settings_key_editor_hover_shows_tooltip_window() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
+    wait_modal(&server);
+
+    server.req("POST", "/keys/filer/bind", r#"["selectMask","Ctrl+Shift+Q"]"#).unwrap();
+    server.req("POST", "/keys/filer/view", "key").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    let long = "{ aLongFunctionNumberOne(); aLongFunctionNumberTwo(); aLongFunctionNumberThree() }";
+    server.req("POST", "/keys/filer/expr", long).unwrap();
+    server.req("POST", "/keys/filer/view", "key").unwrap();
+    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
+
+    // 実呼び出し列（col 2）へ hover＝ツールチップ窓が作られ、表示状態になり、全文が出る。
+    let (code, body) = server.req("GET", "/keys/filer/hover/0/2", "").expect("hover call");
+    assert_eq!(code, 200, "hover は 200: {body}");
+    assert!(body.contains(r#""created":true"#), "ツールチップ窓が作られる: {body}");
+    assert!(body.contains(r#""visible":true"#), "表示状態になる: {body}");
+    assert!(body.contains("aLongFunctionNumberThree"), "全文が出る: {body}");
+
+    // キー列（col 0）は短い＝切り詰め無しなので表示しない。
+    let body = server.req("GET", "/keys/filer/hover/0/0", "").expect("hover chord").1;
+    assert!(body.contains(r#""visible":false"#), "短いセルは表示しない: {body}");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// 長い一覧をスクロールできる（先頭行が動く・選択は不変・範囲外はクランプ）。ホイール／
 /// スクロールバーと同じ scroll 経路を headless から叩く。
 #[test]

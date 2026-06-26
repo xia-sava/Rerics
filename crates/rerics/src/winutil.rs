@@ -65,6 +65,8 @@ unsafe extern "system" {
         param: *mut c_void,
     ) -> *mut c_void;
     fn SendMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> isize;
+    #[cfg(feature = "debug-server")]
+    fn GetWindowLongW(hwnd: *mut c_void, index: i32) -> i32;
 }
 
 const WM_USER: u32 = 0x0400;
@@ -81,8 +83,14 @@ const TTS_BALLOON: u32 = 0x40;
 const WS_POPUP: u32 = 0x8000_0000;
 const WS_EX_TOPMOST: u32 = 0x0000_0008;
 const CW_USEDEFAULT: i32 = i32::MIN;
+#[cfg(feature = "debug-server")]
+const WS_VISIBLE: i32 = 0x1000_0000;
+#[cfg(feature = "debug-server")]
+const GWL_STYLE: i32 = -16;
 
 /// [`TTTOOLINFOW`](https://learn.microsoft.com/en-us/windows/win32/api/commctrl/ns-commctrl-tttoolinfow)。
+/// 末尾の `lpReserved`（comctl32 v6 で追加）は載せない＝マニフェスト無しで使う v5.82 の
+/// `cbSize`（lParam まで）に合わせる。これより大きい `cbSize` だと v5 では `TTM_ADDTOOL` が弾く。
 #[repr(C)]
 struct ToolInfoW {
     cb_size: u32,
@@ -93,7 +101,6 @@ struct ToolInfoW {
     hinst: *mut c_void,
     lpsz_text: *mut u16,
     l_param: isize,
-    lp_reserved: *mut c_void,
 }
 
 /// 親窓に張り付く 1 個の追跡ツールチップ。`show`/`hide` で位置と本文を差し替える。
@@ -128,8 +135,9 @@ impl Tooltip {
         }
         let tip = Tooltip { hwnd, parent: parent.ptr() };
         let mut ti = tip.tool_info(std::ptr::null_mut());
-        unsafe {
-            SendMessageW(hwnd, TTM_ADDTOOLW, 0, &mut ti as *mut ToolInfoW as isize);
+        let added = unsafe { SendMessageW(hwnd, TTM_ADDTOOLW, 0, &mut ti as *mut ToolInfoW as isize) };
+        if added == 0 {
+            return None;
         }
         Some(tip)
     }
@@ -144,8 +152,13 @@ impl Tooltip {
             hinst: std::ptr::null_mut(),
             lpsz_text: text,
             l_param: 0,
-            lp_reserved: std::ptr::null_mut(),
         }
+    }
+
+    /// ツールチップ窓が表示状態（`WS_VISIBLE`）か。表示経路の観測用。
+    #[cfg(feature = "debug-server")]
+    fn is_visible(&self) -> bool {
+        unsafe { GetWindowLongW(self.hwnd, GWL_STYLE) & WS_VISIBLE != 0 }
     }
 
     /// `screen`（スクリーン座標）を指す位置に `text` を表示する。
@@ -200,7 +213,10 @@ where
         pending: None,
         tracking: false,
     }));
-    let resolver = Rc::new(resolver);
+    let resolver: Rc<dyn Fn(w::POINT) -> Option<(w::RECT, String)>> = Rc::new(resolver);
+
+    #[cfg(feature = "debug-server")]
+    register_hover(list.clone(), state.clone(), resolver.clone());
 
     let st = state.clone();
     let res = resolver.clone();
@@ -274,4 +290,67 @@ fn hover_clear(s: &mut HoverState, hwnd: &w::HWND) {
     {
         tip.hide();
     }
+}
+
+// 取り付けた hover を debug-server から駆動・観測するための登録簿。実際の hover 経路
+//（resolver→ツールチップ生成→表示）を headless で検証できるようにする（表示は視覚要素なので、
+// 生成成否と `WS_VISIBLE` で確かめる）。
+#[cfg(feature = "debug-server")]
+struct HoverEntry {
+    wnd: gui::WindowControl,
+    state: Rc<RefCell<HoverState>>,
+    resolver: Rc<dyn Fn(w::POINT) -> Option<(w::RECT, String)>>,
+}
+
+#[cfg(feature = "debug-server")]
+thread_local! {
+    static HOVER_REG: RefCell<Vec<HoverEntry>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(feature = "debug-server")]
+fn register_hover(
+    wnd: gui::WindowControl,
+    state: Rc<RefCell<HoverState>>,
+    resolver: Rc<dyn Fn(w::POINT) -> Option<(w::RECT, String)>>,
+) {
+    HOVER_REG.with(|r| r.borrow_mut().push(HoverEntry { wnd, state, resolver }));
+}
+
+/// hover 登録簿を空にする（設定ダイアログを開く直前に呼ぶ＝再オープンで貯まらないように）。
+/// 子ウィンドウは親生成まで未作成（hwnd が未確定）なので、生死では掃除できず開くたびに全消去する。
+#[cfg(feature = "debug-server")]
+pub fn clear_hover_registry() {
+    HOVER_REG.with(|r| r.borrow_mut().clear());
+}
+
+/// `list` に取り付けた hover を、マウス位置 `pt`（クライアント座標）で**実際の表示経路ごと**
+/// 駆動する（500ms タイマーは待たず即表示）。戻り値＝(ツールチップ生成成功, 表示状態, 全文)。
+/// 切り詰めセルでなければ消去して `(_, false, "")`。未登録（その list に hover 無し）は `None`。
+#[cfg(feature = "debug-server")]
+pub fn force_hover_probe(list: &w::HWND, pt: w::POINT) -> Option<(bool, bool, String)> {
+    HOVER_REG.with(|r| {
+        let reg = r.borrow();
+        let entry = reg.iter().find(|e| e.wnd.hwnd().ptr() == list.ptr())?;
+        let mut s = entry.state.borrow_mut();
+        match (entry.resolver)(pt) {
+            None => {
+                hover_clear(&mut s, list);
+                Some((s.tip.is_some(), false, String::new()))
+            }
+            Some((rect, text)) => {
+                if s.tip.is_none() {
+                    s.tip = Tooltip::new(list);
+                }
+                let anchor = list
+                    .ClientToScreen(w::POINT::with(rect.left, rect.bottom))
+                    .unwrap_or(w::POINT::with(rect.left, rect.bottom));
+                let visible = s.tip.as_ref().is_some_and(|tip| {
+                    tip.show(&text, anchor);
+                    tip.is_visible()
+                });
+                s.shown = Some(rect);
+                Some((s.tip.is_some(), visible, text))
+            }
+        }
+    })
 }
