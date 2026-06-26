@@ -2851,6 +2851,35 @@ fn code_editor_folds_between_single_and_multi_line() {
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
 
+/// 式エディタ（code_box）はサイズ可変。リサイズしても再レイアウトがクラッシュせず、撮影でき、
+/// 補完も動く（リサイズ後の候補欄で候補が出る）。
+#[test]
+fn code_editor_is_resizable() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
+    wait_modal(&server);
+    server.req("POST", "/settings/nav/5", "").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/openexpr", "").unwrap();
+    poll(&server, "/state", |b| b.contains("コードを割り当て"));
+
+    // 大きくリサイズしても再レイアウトが走り、撮影できる（クラッシュしない）。
+    let (st, _) = server.req("POST", "/modal/resize/720x600", "").expect("resize");
+    assert_eq!(st, 200, "/modal/resize は 200");
+    let (sst, png) = req_bytes(server.port, "GET", "/snapshot/modal").expect("snap");
+    assert_eq!(sst, 200, "リサイズ後も /snapshot/modal は 200");
+    assert!(png.starts_with(&[0x89, b'P', b'N', b'G']), "PNG 署名");
+
+    // リサイズ後も補完が動く（再配置された候補欄に候補が出る）。
+    server.req("POST", "/modal/text", "").unwrap();
+    server.req("POST", "/completion/keystrokes", "=r.cursorDow").unwrap();
+    let c = poll(&server, "/completion", |b| b.contains("cursorDown"));
+    assert!(c.contains("cursorDown"), "リサイズ後も補完が出る: {c}");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
 /// 式エディタの `r.` 補完は、登録スクリプト関数にも `registerCommand` の summary を添える
 /// （組込メタと同じインタフェース＝組込／スクリプトを区別せず説明が出る）。
 #[test]

@@ -492,9 +492,65 @@ fn install_completion(arm: &ModalArm, edit: &gui::Edit, cand: &gui::ListBox, com
 
 /// 式エディタの可変寸法（DPI 換算前）を返す。`(入力欄の高さ, 候補欄の上端 y, 候補欄の高さ)`。
 /// compact＝1 行入力＋広い候補欄（コマンドを探しやすい）／expanded＝複数行入力＋下に候補欄
-/// （凝った処理を書きやすい）。入力欄の左上・幅は両モード共通なので持たない。
+/// （凝った処理を書きやすい）。入力欄の左上・幅は両モード共通なので持たない。生成時の初期配置に使う
+/// （以後のリサイズ・モード切替は [`relayout_code_box`] が動的に計算する）。
 fn code_box_geometry(expanded: bool) -> (i32, i32, i32) {
     if expanded { (150, 194, 150) } else { (24, 70, 274) }
+}
+
+/// 式エディタの子コントロールを、クライアント `cw`×`ch`（物理px）に合わせて配置し直す。リサイズ
+/// （`wm_size`）とモード切替（複数行トグル）の両方から呼ぶ。compact＝入力 1 行＋候補欄が残りを占める／
+/// expanded＝入力欄が伸び縮みして候補欄は下端固定。論理寸法は `gui::dpi_*` で物理へ換算する。
+#[allow(clippy::too_many_arguments)]
+fn relayout_code_box(
+    label: &winsafe::HWND,
+    mode: &winsafe::HWND,
+    edit: &winsafe::HWND,
+    cand: &winsafe::HWND,
+    ok: &winsafe::HWND,
+    cancel: &winsafe::HWND,
+    cw: i32,
+    ch: i32,
+    expanded: bool,
+) {
+    use winsafe::{POINT as P, SIZE as S};
+    let m = gui::dpi_x(16);
+    let cbw = gui::dpi_x(92);
+    let btn_gap = gui::dpi_x(8);
+    let btn_h = gui::dpi_y(26);
+    let gap = gui::dpi_y(12);
+    let edit_top = gui::dpi_y(38);
+
+    // 上端：左にラベル、右上にモードトグル。
+    let label_w = (cw - m * 2 - cbw - btn_gap).max(1);
+    let _ = label.MoveWindow(P { x: m, y: gui::dpi_y(14) }, S { cx: label_w, cy: gui::dpi_y(18) }, true);
+    let _ = mode.MoveWindow(P { x: cw - m - cbw, y: gui::dpi_y(12) }, S { cx: cbw, cy: gui::dpi_y(20) }, true);
+
+    // 下端：キャンセル＝最右、OK＝その左。
+    let btn_y = (ch - gui::dpi_y(16) - btn_h).max(edit_top);
+    let (ok_w, cancel_w) = (gui::dpi_x(80), gui::dpi_x(86));
+    let cancel_x = (cw - m - cancel_w).max(0);
+    let _ = cancel.MoveWindow(P { x: cancel_x, y: btn_y }, S { cx: cancel_w, cy: btn_h }, true);
+    let ok_x = (cancel_x - btn_gap - ok_w).max(0);
+    let _ = ok.MoveWindow(P { x: ok_x, y: btn_y }, S { cx: ok_w, cy: btn_h }, true);
+
+    // 中央：入力欄と候補欄。下端のボタン行より上の領域を分け合う。
+    let content_w = (cw - m * 2).max(1);
+    let content_bottom = (btn_y - gap).max(edit_top);
+    let min_pane = gui::dpi_y(40);
+    let (edit_h, cand_y, cand_h) = if expanded {
+        let cand_h = gui::dpi_y(150).min((content_bottom - edit_top - gap - min_pane).max(min_pane));
+        let cand_y = content_bottom - cand_h;
+        let edit_h = (cand_y - gap - edit_top).max(min_pane);
+        (edit_h, cand_y, cand_h)
+    } else {
+        let edit_h = gui::dpi_y(24);
+        let cand_y = edit_top + edit_h + gap;
+        let cand_h = (content_bottom - cand_y).max(min_pane);
+        (edit_h, cand_y, cand_h)
+    };
+    let _ = edit.MoveWindow(P { x: m, y: edit_top }, S { cx: content_w, cy: edit_h }, true);
+    let _ = cand.MoveWindow(P { x: m, y: cand_y }, S { cx: content_w, cy: cand_h }, true);
 }
 
 pub fn code_box(
@@ -503,13 +559,14 @@ pub fn code_box(
     value: &str,
     members: &[CompletionMember],
 ) -> Option<String> {
-    let (wnd, arm) = modal_window("コードを割り当て", 480, 400);
+    // サイズ可変＋サイズ記憶（キー "code_box"・キー編集/メニュー編集で共有）。
+    let (wnd, arm) = modal_window_resizable_keyed("コードを割り当て", "code_box", 480, 400, 360, 300);
 
     // 種の式が複数行を含めば展開モード、単一行ならコンパクトモードで開く（凝った式だけ広く使う）。
     let multiline_init = value.contains('\n');
     let (edit_h0, cand_y0, cand_h0) = code_box_geometry(multiline_init);
 
-    let _label = gui::Label::new(
+    let label = gui::Label::new(
         &wnd,
         gui::LabelOpts {
             text: message,
@@ -566,30 +623,8 @@ pub fn code_box(
         },
     );
 
-    // 「複数行」トグル＝チェック状態に合わせて入力欄と候補欄を畳む／広げる（コントロール再生成なし）。
+    // 現在のモード（複数行なら true）。トグルとリサイズ追従が共有する。
     let expanded = Rc::new(Cell::new(multiline_init));
-    {
-        let edit = edit.clone();
-        let cand = cand.clone();
-        let mode_h = mode.clone();
-        let expanded = expanded.clone();
-        mode.on().bn_clicked(move || {
-            let exp = mode_h.is_checked();
-            expanded.set(exp);
-            let (eh, cy, ch) = code_box_geometry(exp);
-            let _ = edit.hwnd().MoveWindow(
-                winsafe::POINT { x: gui::dpi_x(16), y: gui::dpi_y(38) },
-                winsafe::SIZE { cx: gui::dpi_x(448), cy: gui::dpi_y(eh) },
-                true,
-            );
-            let _ = cand.hwnd().MoveWindow(
-                winsafe::POINT { x: gui::dpi_x(16), y: gui::dpi_y(cy) },
-                winsafe::SIZE { cx: gui::dpi_x(448), cy: gui::dpi_y(ch) },
-                true,
-            );
-            Ok(())
-        });
-    }
 
     let ok = gui::Button::new(
         &wnd,
@@ -614,6 +649,50 @@ pub fn code_box(
             ..Default::default()
         },
     );
+
+    // 子コントロールを現在のクライアントサイズとモードに合わせて配置し直す共有処理。リサイズと
+    // 「複数行」トグルの両方から呼ぶ。
+    let relayout: Rc<dyn Fn(bool)> = {
+        let wnd = wnd.clone();
+        let (label, mode, edit, cand, ok, cancel) =
+            (label.clone(), mode.clone(), edit.clone(), cand.clone(), ok.clone(), cancel.clone());
+        Rc::new(move |expanded: bool| {
+            if let Ok(rc) = wnd.hwnd().GetClientRect() {
+                relayout_code_box(
+                    label.hwnd(),
+                    mode.hwnd(),
+                    edit.hwnd(),
+                    cand.hwnd(),
+                    ok.hwnd(),
+                    cancel.hwnd(),
+                    rc.right,
+                    rc.bottom,
+                    expanded,
+                );
+            }
+        })
+    };
+    // 「複数行」トグル＝モードを反転して配置し直す（コントロール再生成なし）。
+    {
+        let mode_h = mode.clone();
+        let expanded = expanded.clone();
+        let relayout = relayout.clone();
+        mode.on().bn_clicked(move || {
+            let exp = mode_h.is_checked();
+            expanded.set(exp);
+            relayout(exp);
+            Ok(())
+        });
+    }
+    // リサイズ追従＝現在のモードのまま配置し直す。
+    {
+        let expanded = expanded.clone();
+        let relayout = relayout.clone();
+        wnd.on().wm_size(move |_| {
+            relayout(expanded.get());
+            Ok(())
+        });
+    }
 
     let result: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
