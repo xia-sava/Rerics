@@ -330,7 +330,8 @@ fn install_completion(arm: &ModalArm, edit: &gui::Edit, cand: &gui::ListBox, com
                     let displays: Vec<String> = items
                         .iter()
                         .map(|i| match &i.detail {
-                            Some(d) => format!("{}    {}", i.display, d),
+                            // タブ区切り＝listbox のタブストップで説明の頭を桁揃えする。
+                            Some(d) => format!("{}\t{}", i.display, d),
                             None => i.display.clone(),
                         })
                         .collect();
@@ -381,6 +382,9 @@ fn install_completion(arm: &ModalArm, edit: &gui::Edit, cand: &gui::ListBox, com
         let suppress_space = Rc::new(Cell::new(false));
         arm.on_create(move |hwnd| {
             edit_focus.hwnd().SetFocus();
+            // 説明列の頭を固定するタブストップ（ダイアログ単位＝平均文字幅の 1/4）。名前が
+            // これを超える長い候補は次の桁へ送られる（桁グリッド揃え）。
+            let _ = unsafe { cand_h.hwnd().SendMessage(lb::SetTabStops { tab_stops: &[92] }) };
             let edit_h = edit_h.clone();
             let cand_h = cand_h.clone();
             let range = range.clone();
@@ -555,6 +559,8 @@ pub fn code_box(
         gui::ListBoxOpts {
             position: gui::dpi(16, cand_y0),
             size: gui::dpi(448, cand_h0),
+            // タブストップで「名前／説明」を桁揃えする（説明の頭位置を固定する）。
+            control_style: co::LBS::NOTIFY | co::LBS::USETABSTOPS,
             window_style: co::WS::CHILD | co::WS::BORDER | co::WS::VSCROLL,
             ..Default::default()
         },
@@ -724,6 +730,8 @@ pub fn command_box(
         gui::ListBoxOpts {
             position: gui::dpi(16, 70),
             size: gui::dpi(428, 180),
+            // タブストップで「名前／説明」を桁揃えする（説明の頭位置を固定する）。
+            control_style: co::LBS::NOTIFY | co::LBS::USETABSTOPS,
             window_style: co::WS::CHILD | co::WS::BORDER | co::WS::VSCROLL,
             ..Default::default()
         },
