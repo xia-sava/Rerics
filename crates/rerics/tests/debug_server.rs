@@ -397,10 +397,10 @@ fn debug_server_smoke() {
 
     // 書込み許可なしなのでモーダル系コマンドは 400（破壊防止のゲート）。
     let mst = server
-        .req("POST", "/command/makeDirectory", "")
+        .req("POST", "/command/makeDirectoryDialog", "")
         .expect("modal command")
         .0;
-    assert_eq!(mst, 400, "makeDirectory without --debug-allow-write should be 400");
+    assert_eq!(mst, 400, "makeDirectoryDialog without --debug-allow-write should be 400");
 
     // 外見の設定反映：config.toml の font size=18 が解決値・ペイン保持値の双方に出る。
     let pf = server
@@ -566,7 +566,7 @@ fn archive_mkdir_and_move() {
 
     // 右ペイン（書庫）をアクティブにして mkdir。
     server.req("POST", "/command/focusRight", "").unwrap();
-    server.req("POST", "/command/makeDirectory", "").unwrap();
+    server.req("POST", "/command/makeDirectoryDialog", "").unwrap();
     wait_modal(&server);
     server.req("POST", "/modal/text", "newdir").unwrap();
     server.req("POST", "/modal/key/enter", "").unwrap();
@@ -576,7 +576,7 @@ fn archive_mkdir_and_move() {
     assert!(r.contains("\"name\":\"newdir\""), "newdir should be created in the archive: {r}");
 
     // 同名 mkdir はエラー（実FS のディレクトリ作成と同じ挙動）。
-    server.req("POST", "/command/makeDirectory", "").unwrap();
+    server.req("POST", "/command/makeDirectoryDialog", "").unwrap();
     wait_modal(&server);
     server.req("POST", "/modal/text", "newdir").unwrap();
     server.req("POST", "/modal/key/enter", "").unwrap();
@@ -678,7 +678,7 @@ fn ask_before_delete_off_skips_confirm() {
 fn compress_creates_named_zip() {
     let server = Server::start_writable(&["a.txt", "b.txt"]);
     server.req("POST", "/command/cursorDown", "").unwrap(); // .. -> a.txt
-    server.req("POST", "/command/compress", "").unwrap();
+    server.req("POST", "/command/compressDialog", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"compress\""), "compress dialog should open: {modal}");
     server.req("POST", "/modal/text", "out.zip").unwrap();
@@ -695,7 +695,7 @@ fn compress_one_by_one_makes_per_item_zips() {
     server.req("POST", "/command/cursorDown", "").unwrap(); // .. -> a.txt
     server.req("POST", "/command/markToggle", "").unwrap(); // mark a.txt -> b.txt
     server.req("POST", "/command/markToggle", "").unwrap(); // mark b.txt
-    server.req("POST", "/command/compress", "").unwrap();
+    server.req("POST", "/command/compressDialog", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"compress\""), "compress dialog should open: {modal}");
     // 個別圧縮にチェックして OK。
@@ -743,7 +743,7 @@ fn archive_rename() {
     server.req("POST", "/command/focusRight", "").unwrap();
     // 右 items は [.., a.txt, b.txt]。cursorDown×1 で a.txt。
     server.req("POST", "/command/cursorDown", "").unwrap();
-    server.req("POST", "/command/rename", "").unwrap();
+    server.req("POST", "/command/renameDialog", "").unwrap();
     wait_modal(&server);
     server.req("POST", "/modal/text", "z.txt").unwrap();
     server.req("POST", "/modal/key/enter", "").unwrap();
@@ -758,7 +758,7 @@ fn archive_rename() {
     // 衝突：b.txt -> z.txt（z.txt は既存）はエラー。reload でカーソルは .. に戻る。
     // items は [.., b.txt, z.txt]。cursorDown×1 で b.txt。
     server.req("POST", "/command/cursorDown", "").unwrap();
-    server.req("POST", "/command/rename", "").unwrap();
+    server.req("POST", "/command/renameDialog", "").unwrap();
     wait_modal(&server);
     server.req("POST", "/modal/text", "z.txt").unwrap();
     server.req("POST", "/modal/key/enter", "").unwrap();
@@ -782,7 +782,7 @@ fn rename_meta_dialog_opens_and_closes() {
     let server = Server::start_writable(&["a.txt"]);
     // items は [.., a.txt]。cursorDown×1 で a.txt。
     server.req("POST", "/command/cursorDown", "").unwrap();
-    server.req("POST", "/command/rename", "").unwrap();
+    server.req("POST", "/command/renameDialog", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"rename\""), "should open rename meta modal: {modal}");
     // 既定値のまま OK（名前据え置き＝改名なし）。
@@ -1754,31 +1754,31 @@ fn settings_key_editor_binds_unbinds_resets() {
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // 既定：makeDirectory=K、selectMask=未割当、衝突なし。
+    // 既定：makeDirectoryDialog=K、selectMaskDialog=未割当、衝突なし。
     let s = keys();
-    assert!(s.contains(r#"["makeDirectory",["K"]]"#), "既定 makeDirectory=K: {s}");
-    assert!(s.contains(r#"["selectMask",[]]"#), "既定 selectMask 未割当: {s}");
+    assert!(s.contains(r#"["makeDirectoryDialog",["K"]]"#), "既定 makeDirectoryDialog=K: {s}");
+    assert!(s.contains(r#"["selectMaskDialog",[]]"#), "既定 selectMaskDialog 未割当: {s}");
     assert!(s.contains(r#""conflicts":[]"#), "既定は衝突なし: {s}");
 
     // 未使用キーを割り当て（実打鍵キャプチャと同じ assign 経路・衝突なし）。
     assert_eq!(
-        server.req("POST", "/keys/filer/bind", r#"["selectMask","Ctrl+Shift+M"]"#).unwrap().0,
+        server.req("POST", "/keys/filer/bind", r#"["selectMaskDialog","Ctrl+Shift+M"]"#).unwrap().0,
         200,
         "bind は ok"
     );
     let s = keys();
-    assert!(s.contains(r#"["selectMask",["Ctrl+Shift+M"]]"#), "割り当てが反映: {s}");
+    assert!(s.contains(r#"["selectMaskDialog",["Ctrl+Shift+M"]]"#), "割り当てが反映: {s}");
     assert!(s.contains(r#""conflicts":[]"#), "未使用キーなので衝突なし: {s}");
     assert!(s.contains("を割り当てました"), "割り当て直後はメッセージが出る: {s}");
 
-    // unbind：直前の bind で選択は selectMask。その割り当てを解除。
+    // unbind：直前の bind で選択は selectMaskDialog。その割り当てを解除。
     server.req("POST", "/keys/filer/unbind", "").unwrap();
-    assert!(keys().contains(r#"["selectMask",[]]"#), "selectMask の割り当てが消える");
+    assert!(keys().contains(r#"["selectMaskDialog",[]]"#), "selectMaskDialog の割り当てが消える");
 
-    // reset：既定へ戻る（makeDirectory=K が復活）。直後はステータスにメッセージが残る。
+    // reset：既定へ戻る（makeDirectoryDialog=K が復活）。直後はステータスにメッセージが残る。
     server.req("POST", "/keys/filer/reset", "").unwrap();
     let s = keys();
-    assert!(s.contains(r#"["makeDirectory",["K"]]"#), "reset で既定へ");
+    assert!(s.contains(r#"["makeDirectoryDialog",["K"]]"#), "reset で既定へ");
     assert!(!s.contains(r#""status":"""#), "reset 直後はメッセージが残る: {s}");
     // 次の操作（選択）でメッセージが消える＝残骸が居座らない。
     server.req("POST", "/keys/filer/select/0", "").unwrap();
@@ -1804,13 +1804,13 @@ fn settings_key_editor_conflicts_block_ok_until_resolved() {
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // K は既定で makeDirectory。これを selectMask にも割り当てる＝消えずに衝突。
-    server.req("POST", "/keys/filer/bind", r#"["selectMask","K"]"#).unwrap();
+    // K は既定で makeDirectoryDialog。これを selectMaskDialog にも割り当てる＝消えずに衝突。
+    server.req("POST", "/keys/filer/bind", r#"["selectMaskDialog","K"]"#).unwrap();
     let s = keys();
-    assert!(s.contains(r#"["makeDirectory",["K"]]"#), "makeDirectory は K を保持: {s}");
-    assert!(s.contains(r#"["selectMask",["K"]]"#), "selectMask も K を得る: {s}");
+    assert!(s.contains(r#"["makeDirectoryDialog",["K"]]"#), "makeDirectoryDialog は K を保持: {s}");
+    assert!(s.contains(r#"["selectMaskDialog",["K"]]"#), "selectMaskDialog も K を得る: {s}");
     assert!(
-        s.contains(r#""conflicts":[["K",["makeDirectory","selectMask"]]]"#),
+        s.contains(r#""conflicts":[["K",["makeDirectoryDialog","selectMaskDialog"]]]"#),
         "K の衝突が立つ: {s}"
     );
 
@@ -1823,11 +1823,11 @@ fn settings_key_editor_conflicts_block_ok_until_resolved() {
         "衝突中は OK で閉じない"
     );
 
-    // 衝突を解消：選択中（selectMask）の割り当てを外す＝K は makeDirectory だけに戻る。
+    // 衝突を解消：選択中（selectMaskDialog）の割り当てを外す＝K は makeDirectoryDialog だけに戻る。
     server.req("POST", "/keys/filer/unbind", "").unwrap();
     let s = keys();
     assert!(s.contains(r#""conflicts":[]"#), "衝突が解消: {s}");
-    assert!(s.contains(r#"["makeDirectory",["K"]]"#), "makeDirectory=K に戻る: {s}");
+    assert!(s.contains(r#"["makeDirectoryDialog",["K"]]"#), "makeDirectoryDialog=K に戻る: {s}");
 
     // 解消後は OK で閉じられる。
     server.req("POST", "/modal/command/ok", "").expect("ok");
@@ -1842,29 +1842,29 @@ fn settings_key_editor_per_chord_delete_in_command_view() {
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // makeDirectory に未使用キーを足す＝1 キー=1 行なので 2 行に割れる（既定 K ＋ Ctrl+Shift+M）。
-    server.req("POST", "/keys/filer/bind", r#"["makeDirectory","Ctrl+Shift+M"]"#).unwrap();
-    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    // makeDirectoryDialog に未使用キーを足す＝1 キー=1 行なので 2 行に割れる（既定 K ＋ Ctrl+Shift+M）。
+    server.req("POST", "/keys/filer/bind", r#"["makeDirectoryDialog","Ctrl+Shift+M"]"#).unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
     let s = keys();
     assert!(
-        s.contains(r#"["makeDirectory",["Ctrl+Shift+M"]]"#)
-            && s.contains(r#"["makeDirectory",["K"]]"#),
-        "makeDirectory が 2 行に割れる: {s}"
+        s.contains(r#"["makeDirectoryDialog",["Ctrl+Shift+M"]]"#)
+            && s.contains(r#"["makeDirectoryDialog",["K"]]"#),
+        "makeDirectoryDialog が 2 行に割れる: {s}"
     );
 
     // K の行（chord 昇順で index 1）を選んで削除＝K 行だけ消え、Ctrl+Shift+M 行が残る。
     server.req("POST", "/keys/filer/select/1", "").unwrap();
     server.req("POST", "/keys/filer/unbind", "").unwrap();
-    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
     let s = keys();
-    assert!(s.contains(r#"["makeDirectory",["Ctrl+Shift+M"]]"#), "Ctrl+Shift+M 行が残る: {s}");
-    assert!(!s.contains(r#"["makeDirectory",["K"]]"#), "K 行は消える: {s}");
+    assert!(s.contains(r#"["makeDirectoryDialog",["Ctrl+Shift+M"]]"#), "Ctrl+Shift+M 行が残る: {s}");
+    assert!(!s.contains(r#"["makeDirectoryDialog",["K"]]"#), "K 行は消える: {s}");
 
     // 残った行も削除＝未割当の空行に戻る。
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/unbind", "").unwrap();
-    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
-    assert!(keys().contains(r#"["makeDirectory",[]]"#), "未割当の空行に戻る: {}", keys());
+    server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
+    assert!(keys().contains(r#"["makeDirectoryDialog",[]]"#), "未割当の空行に戻る: {}", keys());
 
     server.req("POST", "/modal/command/cancel", "").expect("cancel");
     poll(&server, "/state/modal", |b| b.trim() == "null");
@@ -1879,20 +1879,20 @@ fn settings_key_editor_rebinds_selected_chord() {
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // makeDirectory に 2 つ目のキーを足す＝2 行に割れる（chord 昇順 [Ctrl+Shift+M, K]）。
-    server.req("POST", "/keys/filer/bind", r#"["makeDirectory","Ctrl+Shift+M"]"#).unwrap();
-    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    // makeDirectoryDialog に 2 つ目のキーを足す＝2 行に割れる（chord 昇順 [Ctrl+Shift+M, K]）。
+    server.req("POST", "/keys/filer/bind", r#"["makeDirectoryDialog","Ctrl+Shift+M"]"#).unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
     let s = keys();
-    assert!(s.contains(r#"["makeDirectory",["K"]]"#), "K 行がある: {s}");
+    assert!(s.contains(r#"["makeDirectoryDialog",["K"]]"#), "K 行がある: {s}");
 
     // K の行（index 1）を選んで Ctrl+Alt+K へ変更＝K は外れ Ctrl+Alt+K になる（Ctrl+Shift+M は残る）。
     server.req("POST", "/keys/filer/select/1", "").unwrap();
     server.req("POST", "/keys/filer/rebind", "Ctrl+Alt+K").unwrap();
-    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
     let s = keys();
-    assert!(s.contains(r#"["makeDirectory",["Ctrl+Alt+K"]]"#), "K が Ctrl+Alt+K に移る: {s}");
-    assert!(s.contains(r#"["makeDirectory",["Ctrl+Shift+M"]]"#), "Ctrl+Shift+M は残る: {s}");
-    assert!(!s.contains(r#"["makeDirectory",["K"]]"#), "K 行は無い: {s}");
+    assert!(s.contains(r#"["makeDirectoryDialog",["Ctrl+Alt+K"]]"#), "K が Ctrl+Alt+K に移る: {s}");
+    assert!(s.contains(r#"["makeDirectoryDialog",["Ctrl+Shift+M"]]"#), "Ctrl+Shift+M は残る: {s}");
+    assert!(!s.contains(r#"["makeDirectoryDialog",["K"]]"#), "K 行は無い: {s}");
 
     server.req("POST", "/modal/command/cancel", "").expect("cancel");
     poll(&server, "/state/modal", |b| b.trim() == "null");
@@ -1939,9 +1939,9 @@ fn settings_key_editor_binds_code() {
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // 未割当の行（selectMask）を選んで式をコードへ書き替える＝コードの未割当行が生える
-    //（前後スペースは trim される）。bare の selectMask 行は残る。
-    server.req("POST", "/keys/filer/search", "selectMask").unwrap();
+    // 未割当の行（selectMaskDialog）を選んで式をコードへ書き替える＝コードの未割当行が生える
+    //（前後スペースは trim される）。bare の selectMaskDialog 行は残る。
+    server.req("POST", "/keys/filer/search", "selectMaskDialog").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/expr", "  r.log(42)  ").unwrap();
     server.req("POST", "/keys/filer/search", "r.log").unwrap();
@@ -1989,7 +1989,7 @@ fn settings_key_editor_edits_bound_command_arg() {
 }
 
 /// 「式を編集」＝未割当の組込コマンド行へ引数つきの式を付けると、引数つきの未割当（－）行が生え、
-/// その行をキャプチャしてキーへ結べる。OK で `selectMask("=式")` が当該キーに残る。
+/// その行をキャプチャしてキーへ結べる。OK で `selectMaskDialog("=式")` が当該キーに残る。
 #[test]
 fn settings_key_editor_attaches_arg_to_unbound_command() {
     let server = Server::start(&["a.txt"], "");
@@ -1997,14 +1997,14 @@ fn settings_key_editor_attaches_arg_to_unbound_command() {
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // 既定で未バインドの selectMask（bare 行）を選ぶ。
-    server.req("POST", "/keys/filer/search", "selectMask").unwrap();
-    assert!(keys().contains(r#"["selectMask",[]]"#), "未割当の selectMask 行: {}", keys());
+    // 既定で未バインドの selectMaskDialog（bare 行）を選ぶ。
+    server.req("POST", "/keys/filer/search", "selectMaskDialog").unwrap();
+    assert!(keys().contains(r#"["selectMaskDialog",[]]"#), "未割当の selectMask 行: {}", keys());
     server.req("POST", "/keys/filer/select/0", "").unwrap();
 
     // 引数つきの式へ書き替える＝引数つきの未割当行が生え、その行が選択される（apply_expr が選択する）。
-    server.req("POST", "/keys/filer/expr", r#"selectMask("*.txt")"#).unwrap();
-    // 選択中のその行をキャプチャ＝selectMask("*.txt") が Ctrl+Alt+J に割り当たる。
+    server.req("POST", "/keys/filer/expr", r#"selectMaskDialog("*.txt")"#).unwrap();
+    // 選択中のその行をキャプチャ＝selectMaskDialog("*.txt") が Ctrl+Alt+J に割り当たる。
     server.req("POST", "/keys/filer/capture", "Ctrl+Alt+J").unwrap();
 
     // OK で確定＝config.toml の Ctrl+Alt+J に引数つき呼び出しが残る。
@@ -2012,7 +2012,7 @@ fn settings_key_editor_attaches_arg_to_unbound_command() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
     let cfg = std::fs::read_to_string(server.base.join("data").join("config.toml")).unwrap();
     assert!(
-        cfg.contains(r#"selectMask("*.txt")"#),
+        cfg.contains(r#"selectMaskDialog("*.txt")"#),
         "引数つき呼び出しがキーに割り当たって保存される: {cfg}"
     );
 }
@@ -2024,19 +2024,19 @@ fn settings_key_editor_deletes_unbound_arg_definition() {
     server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
-    let count = || keys().matches(r#"["selectMask",[]]"#).count();
+    let count = || keys().matches(r#"["selectMaskDialog",[]]"#).count();
 
-    // 未バインドの selectMask（bare 行）を選んで引数つきの式へ書き替える＝引数つきの未割当行が増える。
-    server.req("POST", "/keys/filer/search", "selectMask").unwrap();
+    // 未バインドの selectMaskDialog（bare 行）を選んで引数つきの式へ書き替える＝引数つきの未割当行が増える。
+    server.req("POST", "/keys/filer/search", "selectMaskDialog").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
-    server.req("POST", "/keys/filer/expr", r#"selectMask("*.txt")"#).unwrap();
-    server.req("POST", "/keys/filer/search", "selectMask").unwrap();
-    assert_eq!(count(), 2, "bare と引数つきで selectMask 行が2つ: {}", keys());
+    server.req("POST", "/keys/filer/expr", r#"selectMaskDialog("*.txt")"#).unwrap();
+    server.req("POST", "/keys/filer/search", "selectMaskDialog").unwrap();
+    assert_eq!(count(), 2, "bare と引数つきで selectMaskDialog 行が2つ: {}", keys());
 
     // 引数つき行（bare の次＝index 1）を選んで「キー定義を削除」＝その定義が消えて bare だけ残る。
     server.req("POST", "/keys/filer/select/1", "").unwrap();
     server.req("POST", "/keys/filer/unbind", "").unwrap();
-    server.req("POST", "/keys/filer/search", "selectMask").unwrap();
+    server.req("POST", "/keys/filer/search", "selectMaskDialog").unwrap();
     assert_eq!(count(), 1, "引数つきの定義が消えて bare だけ残る: {}", keys());
 }
 
@@ -2049,19 +2049,19 @@ fn settings_key_editor_by_key_edits_expression() {
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // 未使用キー Ctrl+Shift+Q を selectMask に割り当て、キー順でその行を選ぶ。
-    server.req("POST", "/keys/filer/bind", r#"["selectMask","Ctrl+Shift+Q"]"#).unwrap();
+    // 未使用キー Ctrl+Shift+Q を selectMaskDialog に割り当て、キー順でその行を選ぶ。
+    server.req("POST", "/keys/filer/bind", r#"["selectMaskDialog","Ctrl+Shift+Q"]"#).unwrap();
     server.req("POST", "/keys/filer/view", "key").unwrap();
     server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
-    assert!(keys().contains(r#"["Ctrl+Shift+Q",["selectMask"]]"#), "対象キー行: {}", keys());
+    assert!(keys().contains(r#"["Ctrl+Shift+Q",["selectMaskDialog"]]"#), "対象キー行: {}", keys());
     server.req("POST", "/keys/filer/select/0", "").unwrap();
 
-    // キー順のまま式を編集＝そのキーの機能が makeDirectory へ差し替わる。
-    server.req("POST", "/keys/filer/expr", "makeDirectory()").unwrap();
+    // キー順のまま式を編集＝そのキーの機能が makeDirectoryDialog へ差し替わる。
+    server.req("POST", "/keys/filer/expr", "makeDirectoryDialog()").unwrap();
     server.req("POST", "/keys/filer/view", "key").unwrap();
     server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
     let s = keys();
-    assert!(s.contains(r#"["Ctrl+Shift+Q",["makeDirectory"]]"#), "キー順で式を編集して機能が変わる: {s}");
+    assert!(s.contains(r#"["Ctrl+Shift+Q",["makeDirectoryDialog"]]"#), "キー順で式を編集して機能が変わる: {s}");
 
     server.req("POST", "/modal/command/cancel", "").expect("cancel");
     poll(&server, "/state/modal", |b| b.trim() == "null");
@@ -2082,7 +2082,7 @@ fn settings_key_editor_truncated_cell_shows_tooltip() {
     wait_modal(&server);
 
     // 未使用キーへ割り当て、キー順でその行を選び、列に収まらない長い式を入れる。
-    server.req("POST", "/keys/filer/bind", r#"["selectMask","Ctrl+Shift+Q"]"#).unwrap();
+    server.req("POST", "/keys/filer/bind", r#"["selectMaskDialog","Ctrl+Shift+Q"]"#).unwrap();
     server.req("POST", "/keys/filer/view", "key").unwrap();
     server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
@@ -2117,7 +2117,7 @@ fn settings_key_editor_hover_shows_tooltip_window() {
     server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
 
-    server.req("POST", "/keys/filer/bind", r#"["selectMask","Ctrl+Shift+Q"]"#).unwrap();
+    server.req("POST", "/keys/filer/bind", r#"["selectMaskDialog","Ctrl+Shift+Q"]"#).unwrap();
     server.req("POST", "/keys/filer/view", "key").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
@@ -2151,7 +2151,7 @@ fn settings_key_editor_command_view_shows_tooltip() {
     wait_modal(&server);
 
     // 既定の機能順のまま、未使用キーを割り当てて選択行へ列に収まらない長い式を入れる。
-    server.req("POST", "/keys/filer/bind", r#"["selectMask","Ctrl+Shift+Q"]"#).unwrap();
+    server.req("POST", "/keys/filer/bind", r#"["selectMaskDialog","Ctrl+Shift+Q"]"#).unwrap();
     let long = "{ aLongFunctionNumberOne(); aLongFunctionNumberTwo(); aLongFunctionNumberThree() }";
     server.req("POST", "/keys/filer/expr", long).unwrap();
     server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
@@ -2200,7 +2200,7 @@ fn log_view_truncated_line_shows_tooltip() {
     let server = Server::start_writable_cfg(&["a.txt"], cfg);
     // ログを空にしてから 1 行だけ作る＝作成ログが row 0 に来る。
     server.req("POST", "/command/clearLog", "").unwrap();
-    server.req("POST", "/command/makeDirectory", "").unwrap();
+    server.req("POST", "/command/makeDirectoryDialog", "").unwrap();
     wait_modal(&server);
     let long = "a_directory_with_a_fairly_long_name_for_logging_xx";
     server.req("POST", "/modal/text", long).unwrap();
@@ -2266,15 +2266,15 @@ fn settings_key_editor_add_empty_key_def_then_assign() {
     server.req("POST", "/keys/filer/search", "Ctrl+Shift+Z").unwrap();
     assert!(keys().contains(r#"["Ctrl+Shift+Z",[]]"#), "空キー定義の行: {}", keys());
 
-    // その行を選び、「式を編集」で makeDirectory を割り当てる（空キー定義への新規割り当て）。
+    // その行を選び、「式を編集」で makeDirectoryDialog を割り当てる（空キー定義への新規割り当て）。
     server.req("POST", "/keys/filer/select/0", "").unwrap();
-    server.req("POST", "/keys/filer/expr", "makeDirectory()").unwrap();
+    server.req("POST", "/keys/filer/expr", "makeDirectoryDialog()").unwrap();
 
-    // 割り当て後：Ctrl+Shift+Z → makeDirectory（空キー定義が解消）。
+    // 割り当て後：Ctrl+Shift+Z → makeDirectoryDialog（空キー定義が解消）。
     server.req("POST", "/keys/filer/view", "key").unwrap();
     server.req("POST", "/keys/filer/search", "Ctrl+Shift+Z").unwrap();
     assert!(
-        keys().contains(r#"["Ctrl+Shift+Z",["makeDirectory"]]"#),
+        keys().contains(r#"["Ctrl+Shift+Z",["makeDirectoryDialog"]]"#),
         "空キー定義に機能が付く: {}",
         keys()
     );
@@ -2299,7 +2299,7 @@ fn settings_key_editor_search_filters_by_name_and_key() {
     assert!(full_n > 40, "既定は Filer 全コマンドが並ぶ: {full_n}");
     assert!(full.contains(r#""query":"""#), "初期クエリは空: {full}");
 
-    // 機能名で絞り込む："copy" は copy/clipCopy/viewerCopy… を含み、makeDirectory は除外。
+    // 機能名で絞り込む："copy" は copy/clipCopy/viewerCopy… を含み、makeDirectoryDialog は除外。
     assert_eq!(
         server.req("POST", "/keys/filer/search", "copy").unwrap().0,
         200,
@@ -2309,22 +2309,22 @@ fn settings_key_editor_search_filters_by_name_and_key() {
     assert!(s.contains(r#""query":"copy""#), "クエリが反映される: {s}");
     assert!(s.contains(r#"["copy",["C"]]"#), "copy が残る: {s}");
     assert!(s.contains("clipCopy"), "clipCopy が残る: {s}");
-    assert!(!s.contains("makeDirectory"), "無関係な機能は消える: {s}");
+    assert!(!s.contains("makeDirectoryDialog"), "無関係な機能は消える: {s}");
     let copy_n = count(&s);
     assert!(copy_n > 0 && copy_n < full_n, "件数が減る: {copy_n} < {full_n}");
 
     // 日本語の表示名でも絞り込める："コピー" は copy（表示名「コピー」）/clipCopy
-    //（「クリップボードにコピー」）に一致し、makeDirectory（「フォルダ作成」）は除外。
+    //（「クリップボードにコピー」）に一致し、makeDirectoryDialog（「フォルダ作成」）は除外。
     server.req("POST", "/keys/filer/search", "コピー").unwrap();
     let s = keys();
     assert!(s.contains(r#"["copy",["C"]]"#), "表示名検索で copy が残る: {s}");
     assert!(s.contains("clipCopy"), "表示名検索で clipCopy が残る: {s}");
-    assert!(!s.contains("makeDirectory"), "表示名検索で無関係な機能は消える: {s}");
+    assert!(!s.contains("makeDirectoryDialog"), "表示名検索で無関係な機能は消える: {s}");
 
-    // キーで絞り込む：既定 K は makeDirectory のみ（大小無視なので chord "K" に一致）。
+    // キーで絞り込む：既定 K は makeDirectoryDialog のみ（大小無視なので chord "K" に一致）。
     server.req("POST", "/keys/filer/search", "K").unwrap();
     let s = keys();
-    assert!(s.contains("makeDirectory"), "K を持つ makeDirectory が出る: {s}");
+    assert!(s.contains("makeDirectoryDialog"), "K を持つ makeDirectory が出る: {s}");
 
     // 空クエリで全件へ戻る。
     server.req("POST", "/keys/filer/search", "").unwrap();
@@ -2348,31 +2348,31 @@ fn settings_key_editor_toggles_command_and_key_views() {
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // 既定は機能順：行は (機能, [キー…])。makeDirectory=K。
+    // 既定は機能順：行は (機能, [キー…])。makeDirectoryDialog=K。
     let s = keys();
     assert!(s.contains(r#""mode":"command""#), "初期は機能順: {s}");
-    assert!(s.contains(r#"["makeDirectory",["K"]]"#), "機能順 makeDirectory=K: {s}");
+    assert!(s.contains(r#"["makeDirectoryDialog",["K"]]"#), "機能順 makeDirectory=K: {s}");
 
-    // キー順へ切替：行は (キー, [機能])。K→makeDirectory。
+    // キー順へ切替：行は (キー, [機能])。K→makeDirectoryDialog。
     assert_eq!(server.req("POST", "/keys/filer/view", "key").unwrap().0, 200, "view 切替 ok");
     let s = keys();
     assert!(s.contains(r#""mode":"key""#), "キー順になる: {s}");
-    assert!(s.contains(r#"["K",["makeDirectory"]]"#), "キー順 K→makeDirectory: {s}");
+    assert!(s.contains(r#"["K",["makeDirectoryDialog"]]"#), "キー順 K→makeDirectory: {s}");
 
     // キー順でも検索が効く（キー・機能名どちらにも一致）。
-    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
-    assert!(keys().contains(r#"["K",["makeDirectory"]]"#), "キー順で機能名検索が効く");
+    server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
+    assert!(keys().contains(r#"["K",["makeDirectoryDialog"]]"#), "キー順で機能名検索が効く");
     server.req("POST", "/keys/filer/search", "").unwrap();
 
     // 機能順へ戻して、同じ機能に 2 キーを割り当てる（1 キー=1 行なので 2 行に割れる）。
     server.req("POST", "/keys/filer/view", "command").unwrap();
-    server.req("POST", "/keys/filer/bind", r#"["selectMask","Ctrl+Shift+M"]"#).unwrap();
-    server.req("POST", "/keys/filer/bind", r#"["selectMask","Ctrl+Shift+N"]"#).unwrap();
+    server.req("POST", "/keys/filer/bind", r#"["selectMaskDialog","Ctrl+Shift+M"]"#).unwrap();
+    server.req("POST", "/keys/filer/bind", r#"["selectMaskDialog","Ctrl+Shift+N"]"#).unwrap();
     let s = keys();
     assert!(
-        s.contains(r#"["selectMask",["Ctrl+Shift+M"]]"#)
-            && s.contains(r#"["selectMask",["Ctrl+Shift+N"]]"#),
-        "selectMask が 2 行に割れる: {s}"
+        s.contains(r#"["selectMaskDialog",["Ctrl+Shift+M"]]"#)
+            && s.contains(r#"["selectMaskDialog",["Ctrl+Shift+N"]]"#),
+        "selectMaskDialog が 2 行に割れる: {s}"
     );
 
     // キー順で Ctrl+Shift+M の行だけを選び、削除＝その 1 キーだけ外れる。
@@ -2381,17 +2381,17 @@ fn settings_key_editor_toggles_command_and_key_views() {
     let s = keys();
     // 絞り込みで M の行だけ（N の行は出ない）。rows 配列を厳密に見る（status 文言の巻き込みを避ける）。
     assert!(
-        s.contains(r#""rows":[["Ctrl+Shift+M",["selectMask"]]]"#),
+        s.contains(r#""rows":[["Ctrl+Shift+M",["selectMaskDialog"]]]"#),
         "M の行だけが出る: {s}"
     );
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/unbind", "").unwrap();
 
-    // 機能順へ戻すと、selectMask は N だけ残る（M だけが外れた）。
+    // 機能順へ戻すと、selectMaskDialog は N だけ残る（M だけが外れた）。
     server.req("POST", "/keys/filer/search", "").unwrap();
     server.req("POST", "/keys/filer/view", "command").unwrap();
     assert!(
-        keys().contains(r#"["selectMask",["Ctrl+Shift+N"]]"#),
+        keys().contains(r#"["selectMaskDialog",["Ctrl+Shift+N"]]"#),
         "M だけ外れ N が残る: {}",
         keys()
     );
@@ -2892,11 +2892,11 @@ fn completion_popup_lists_members_and_inserts_on_accept() {
     server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     server.req("POST", "/settings/nav/5", "").expect("nav");
-    // 組込コマンド行（makeDirectory）を選んで、補完つき「式を編集」モーダルを開く（応答先返し）。
-    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    // 組込コマンド行（makeDirectoryDialog）を選んで、補完つき「式を編集」モーダルを開く（応答先返し）。
+    server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/openexpr", "").unwrap();
-    // prefill（makeDirectory()）を一旦空にしてから打鍵する。
+    // prefill（makeDirectoryDialog()）を一旦空にしてから打鍵する。
     server.req("POST", "/modal/text", "").unwrap();
 
     // `=r.my` と実キー入力（WM_CHAR＝EN_CHANGE 経路）すると、登録コマンド myCmd が候補に出る。
@@ -2920,7 +2920,7 @@ fn completion_annotates_builtin_members_with_meta() {
     server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     server.req("POST", "/settings/nav/5", "").unwrap();
-    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/openexpr", "").unwrap();
     server.req("POST", "/modal/text", "").unwrap();
@@ -2951,7 +2951,7 @@ fn code_editor_folds_between_single_and_multi_line() {
     server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     server.req("POST", "/settings/nav/5", "").unwrap();
-    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/openexpr", "").unwrap();
 
@@ -2959,7 +2959,7 @@ fn code_editor_folds_between_single_and_multi_line() {
         serde_json::from_str::<serde_json::Value>(s).unwrap()["multiline"].as_bool().unwrap()
     };
 
-    // 単一行の式（makeDirectory()）はコンパクト（1 行）で開く。
+    // 単一行の式（makeDirectoryDialog()）はコンパクト（1 行）で開く。
     let c = poll(&server, "/completion", |b| b.contains("multiline"));
     assert!(!mode(&c), "単一行式はコンパクトで開く: {c}");
 
@@ -2984,7 +2984,7 @@ fn code_editor_inserts_function_by_genre_browse() {
     server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     server.req("POST", "/settings/nav/5", "").unwrap();
-    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/openexpr", "").unwrap();
     poll(&server, "/state", |b| b.contains("コードを割り当て"));
@@ -3018,7 +3018,7 @@ fn code_editor_is_resizable() {
     server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     server.req("POST", "/settings/nav/5", "").unwrap();
-    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/openexpr", "").unwrap();
     poll(&server, "/state", |b| b.contains("コードを割り当て"));
@@ -3054,7 +3054,7 @@ fn completion_annotates_script_members_with_summary() {
     server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     server.req("POST", "/settings/nav/5", "").unwrap();
-    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/openexpr", "").unwrap();
     server.req("POST", "/modal/text", "").unwrap();
@@ -3074,7 +3074,7 @@ fn completion_keyboard_navigation_and_ctrl_space() {
     server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     server.req("POST", "/settings/nav/5", "").unwrap();
-    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/openexpr", "").unwrap();
     server.req("POST", "/modal/text", "").unwrap();
@@ -3116,7 +3116,7 @@ fn completion_uses_text_up_to_caret() {
     server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
     server.req("POST", "/settings/nav/5", "").unwrap();
-    server.req("POST", "/keys/filer/search", "makeDirectory").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
     server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/openexpr", "").unwrap();
     server.req("POST", "/modal/text", "").unwrap();

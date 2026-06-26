@@ -137,13 +137,13 @@ pub enum Command {
     PagePrevious,
     NewFiler,
     Exit,
-    MakeDirectory,
+    MakeDirectoryDialog,
     Copy,
     Move,
     SwapPath,
     OppositeToCurrent,
     CurrentToOpposite,
-    Rename,
+    RenameDialog,
     Delete,
     SendToRecycled,
     CreateShortcut,
@@ -154,12 +154,12 @@ pub enum Command {
     ViewFile,
     Edit,
     PropertyDialog,
-    Compress,
+    CompressDialog,
     Extract,
     NextDrive,
     PreviousDrive,
-    PathMask,
-    SelectMask,
+    PathMaskDialog,
+    SelectMaskDialog,
     OpenTaskManager,
     OpenSettings,
     OpenHelp,
@@ -358,13 +358,13 @@ impl Command {
             (PagePrevious, "pagePrevious", "前のタブへ", "前のタブへ切り替える"),
             (NewFiler, "newFiler", "新しいタブ", "新しいタブを開く"),
             (Exit, "exit", "タブを閉じる", "現在のタブを閉じる"),
-            (MakeDirectory, "makeDirectory", "ディレクトリの作成", "新しいディレクトリを作成する"),
+            (MakeDirectoryDialog, "makeDirectoryDialog", "ディレクトリの作成", "新しいディレクトリを作成する"),
             (Copy, "copy", "コピー", "選択した項目を反対側のパスへコピーする"),
             (Move, "move", "移動", "選択した項目を反対側のパスへ移動する"),
             (SwapPath, "swapPath", "左右のパスを入れ替え", "左右ペインの表示ディレクトリを入れ替える"),
             (OppositeToCurrent, "oppositeToCurrent", "反対側をカレントと同じに", "反対側ペインを現在のディレクトリと同じ場所にする"),
             (CurrentToOpposite, "currentToOpposite", "カレントを反対側と同じに", "現在のペインを反対側と同じ場所にする"),
-            (Rename, "rename", "名前の変更", "カーソル位置の項目の名前を変更する"),
+            (RenameDialog, "renameDialog", "名前の変更", "カーソル位置の項目の名前を変更する"),
             (Delete, "delete", "削除", "選択した項目を完全に削除する"),
             (SendToRecycled, "sendToRecycled", "ごみ箱へ送る", "選択した項目をごみ箱へ送る"),
             (CreateShortcut, "createShortcut", "ショートカットの作成", "選択した項目のショートカットを作成する"),
@@ -375,12 +375,12 @@ impl Command {
             (ViewFile, "viewFile", "ビューアで開く", "カーソル位置のファイルを内蔵ビューアで開く"),
             (Edit, "edit", "エディタで開く", "カーソル位置のファイルを外部エディタで開く"),
             (PropertyDialog, "propertyDialog", "プロパティの表示", "カーソル位置の項目のプロパティを表示する"),
-            (Compress, "compress", "圧縮", "選択した項目を書庫に圧縮する"),
+            (CompressDialog, "compressDialog", "圧縮", "選択した項目を書庫に圧縮する"),
             (Extract, "extract", "解凍", "選択した書庫を解凍する"),
             (NextDrive, "nextDrive", "次のドライブへ", "次のドライブへ切り替える"),
             (PreviousDrive, "previousDrive", "前のドライブへ", "前のドライブへ切り替える"),
-            (PathMask, "pathMask", "パスマスク", "表示する項目をマスクで絞り込む"),
-            (SelectMask, "selectMask", "マスクで選択", "マスクに一致する項目をまとめて選択する"),
+            (PathMaskDialog, "pathMaskDialog", "パスマスク", "表示する項目をマスクで絞り込む"),
+            (SelectMaskDialog, "selectMaskDialog", "マスクで選択", "マスクに一致する項目をまとめて選択する"),
             (OpenTaskManager, "openTaskManager", "タスクマネージャ", "実行中のファイル操作を一覧するタスクマネージャを開く"),
             (OpenSettings, "openSettings", "設定を開く", "設定ダイアログを開く"),
             (OpenHelp, "openHelp", "ヘルプ", "コマンドリファレンスを既定ブラウザで開く"),
@@ -964,11 +964,11 @@ impl Default for KeyMap {
         m.bind(KeyChord::new(vk::C, true, false, false), ClipCopy);
         m.bind(KeyChord::new(vk::X, true, false, false), ClipCut);
         m.bind(KeyChord::new(vk::V, true, false, false), ClipPaste);
-        m.bind(KeyChord::key(vk::R), Rename);
-        m.bind(KeyChord::key(vk::F2), Rename);
+        m.bind(KeyChord::key(vk::R), RenameDialog);
+        m.bind(KeyChord::key(vk::F2), RenameDialog);
         m.bind(KeyChord::new(vk::R, false, true, false), RenameSequenceDialog);
-        m.bind(KeyChord::key(vk::K), MakeDirectory);
-        m.bind(KeyChord::key(vk::P), Compress);
+        m.bind(KeyChord::key(vk::K), MakeDirectoryDialog);
+        m.bind(KeyChord::key(vk::P), CompressDialog);
         m.bind(KeyChord::key(vk::U), Extract);
         // 表示・ペイン。
         m.bind(KeyChord::key(vk::V), ViewFile);
@@ -978,8 +978,8 @@ impl Default for KeyMap {
         m.bind(KeyChord::new(vk::O, false, true, false), CurrentToOpposite);
         m.bind(KeyChord::new(vk::RIGHT, true, false, false), MaximizeLeft);
         m.bind(KeyChord::new(vk::LEFT, true, false, false), MaximizeRight);
-        m.bind(KeyChord::key(vk::Y), PathMask);
-        m.bind(KeyChord::new(vk::P, false, true, false), PathMask);
+        m.bind(KeyChord::key(vk::Y), PathMaskDialog);
+        m.bind(KeyChord::new(vk::P, false, true, false), PathMaskDialog);
         m.bind(KeyChord::key(vk::S), SortDialog);
         // ドライブ切替。
         m.bind(KeyChord::new(vk::LEFT, false, true, false), PreviousDrive);
@@ -1249,7 +1249,7 @@ mod tests {
     fn default_binds_make_directory() {
         // K=ディレクトリ作成。
         let m = KeyMap::default();
-        assert_eq!(m.resolve(&KeyChord::key(vk::K)), Some(Command::MakeDirectory));
+        assert_eq!(m.resolve(&KeyChord::key(vk::K)), Some(Command::MakeDirectoryDialog));
     }
 
     #[test]
@@ -1272,7 +1272,7 @@ mod tests {
     #[test]
     fn default_binds_rename_delete() {
         let m = KeyMap::default();
-        assert_eq!(m.resolve(&KeyChord::key(vk::R)), Some(Command::Rename));
+        assert_eq!(m.resolve(&KeyChord::key(vk::R)), Some(Command::RenameDialog));
         assert_eq!(m.resolve(&KeyChord::key(vk::D)), Some(Command::Delete));
     }
 
@@ -1280,7 +1280,7 @@ mod tests {
     fn default_binds_compress_extract() {
         // P=圧縮・U=展開。
         let m = KeyMap::default();
-        assert_eq!(m.resolve(&KeyChord::key(vk::P)), Some(Command::Compress));
+        assert_eq!(m.resolve(&KeyChord::key(vk::P)), Some(Command::CompressDialog));
         assert_eq!(m.resolve(&KeyChord::key(vk::U)), Some(Command::Extract));
     }
 
@@ -1383,12 +1383,12 @@ mod tests {
 
     #[test]
     fn default_binds_mask() {
-        // Y・Shift+P=パスマスク。selectMask は既定キー無し。
+        // Y・Shift+P=パスマスク。selectMaskDialog は既定キー無し。
         let m = KeyMap::default();
-        assert_eq!(m.resolve(&KeyChord::key(vk::Y)), Some(Command::PathMask));
+        assert_eq!(m.resolve(&KeyChord::key(vk::Y)), Some(Command::PathMaskDialog));
         assert_eq!(
             m.resolve(&KeyChord::new(vk::P, false, true, false)),
-            Some(Command::PathMask)
+            Some(Command::PathMaskDialog)
         );
     }
 

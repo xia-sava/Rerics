@@ -102,8 +102,8 @@ enum DebugCmdClass {
 fn debug_command_class(cmd: Command) -> DebugCmdClass {
     use Command::*;
     match cmd {
-        MakeDirectory | CreateFileDialog | Rename | Delete | Copy | Move | Compress | Extract
-        | RenameSequenceDialog | SendToRecycled | CreateShortcut | ClipPaste => {
+        MakeDirectoryDialog | CreateFileDialog | RenameDialog | Delete | Copy | Move | CompressDialog
+        | Extract | RenameSequenceDialog | SendToRecycled | CreateShortcut | ClipPaste => {
             DebugCmdClass::ModalWrite
         }
         // view/viewFile は暗号化書庫でパスワード入力モーダルを開き得る（書込みではない）。
@@ -1132,7 +1132,7 @@ impl MainWindow {
                 self.close_tab()?;
                 return Ok(());
             }
-            Command::MakeDirectory => {
+            Command::MakeDirectoryDialog => {
                 self.make_directory(is_left)?;
                 return Ok(());
             }
@@ -1140,7 +1140,7 @@ impl MainWindow {
                 self.create_file(is_left)?;
                 return Ok(());
             }
-            Command::Compress => {
+            Command::CompressDialog => {
                 self.compress(is_left)?;
                 return Ok(());
             }
@@ -1194,7 +1194,7 @@ impl MainWindow {
                 self.reload_side_navigated_nolog(is_left)?;
                 return Ok(());
             }
-            Command::Rename => {
+            Command::RenameDialog => {
                 self.rename(is_left)?;
                 return Ok(());
             }
@@ -1222,11 +1222,11 @@ impl MainWindow {
                 self.clip_paste(is_left)?;
                 return Ok(());
             }
-            Command::PathMask => {
+            Command::PathMaskDialog => {
                 self.path_mask(is_left)?;
                 return Ok(());
             }
-            Command::SelectMask => {
+            Command::SelectMaskDialog => {
                 self.select_mask(is_left)?;
                 return Ok(());
             }
