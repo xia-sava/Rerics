@@ -1957,6 +1957,18 @@ impl KeyEditor {
         }
     }
 
+    /// 列セルを `x0..x1`（右に余白）へ縦中央で描く。幅を超える内容は末尾を「…」に切り詰めて、
+    /// 隣の列へはみ出さないようにする（全文は hover ツールチップで見せる）。
+    fn draw_cell(dc: &w::HDC, text: &str, x0: i32, x1: i32, y: i32, row_h: i32) {
+        let pad = gui::dpi_x(8);
+        let rc = w::RECT { left: x0, top: y, right: (x1 - pad).max(x0 + 1), bottom: y + row_h };
+        let _ = dc.DrawText(
+            text,
+            rc,
+            co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX | co::DT::END_ELLIPSIS,
+        );
+    }
+
     fn render(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
         let font = w::HFONT::GetStockObject(co::STOCK_FONT::DEFAULT_GUI)?;
         let _fsel = dc.SelectObject(&font)?;
@@ -2107,7 +2119,6 @@ impl KeyEditor {
                     let Some(&ri) = view.get(vp) else { continue };
                     let r = &krows[ri];
                     let y = vi as i32 * row_h;
-                    let ty = y + (row_h - fh) / 2;
                     let selected = vp == sel;
                     if selected && capturing {
                         dc.FillRect(w::RECT { left: 0, top: y, right: cw, bottom: y + row_h }, &ivory)?;
@@ -2118,14 +2129,14 @@ impl KeyEditor {
                     } else {
                         dc.SetTextColor(text_col)?;
                     }
-                    dc.TextOut(chord_x, ty, &r.chord)?;
+                    Self::draw_cell(dc, &r.chord, chord_x, name_x, y, row_h);
                     if selected && capturing {
-                        dc.TextOut(name_x, ty, prompt)?;
+                        Self::draw_cell(dc, prompt, name_x, call_x, y, row_h);
                     } else if r.values.is_empty() {
                         if !selected {
                             dc.SetTextColor(gray_col)?;
                         }
-                        dc.TextOut(name_x, ty, "－")?;
+                        Self::draw_cell(dc, "－", name_x, call_x, y, row_h);
                     } else {
                         let mut names =
                             r.values.iter().map(|v| self.value_label(v)).collect::<Vec<_>>().join(", ");
@@ -2134,8 +2145,8 @@ impl KeyEditor {
                         }
                         let calls =
                             r.values.iter().map(|v| call_display(v)).collect::<Vec<_>>().join(", ");
-                        dc.TextOut(name_x, ty, &names)?;
-                        dc.TextOut(call_x, ty, &calls)?;
+                        Self::draw_cell(dc, &names, name_x, call_x, y, row_h);
+                        Self::draw_cell(dc, &calls, call_x, cw, y, row_h);
                     }
                 }
             }
