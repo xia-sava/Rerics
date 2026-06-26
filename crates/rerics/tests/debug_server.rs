@@ -2117,6 +2117,48 @@ fn settings_key_editor_by_key_edits_expression() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// キー順で列幅に収まらず切り詰められたセルは、hover ツールチップで全文を返す（debug は
+/// `/keys/<cat>/tooltip/<row>/<col>` で観測）。短いセル・機能順ビュー・設定が閉じている時は出さない。
+#[test]
+fn settings_key_editor_truncated_cell_shows_tooltip() {
+    let server = Server::start(&["a.txt"], "");
+    // 設定が開いていなければ 404。
+    assert_eq!(
+        server.req("GET", "/keys/filer/tooltip/0/2", "").expect("closed").0,
+        404,
+        "設定が開いていなければ 404"
+    );
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
+    wait_modal(&server);
+
+    // 未使用キーへ割り当て、キー順でその行を選び、列に収まらない長い式を入れる。
+    server.req("POST", "/keys/filer/bind", r#"["selectMask","Ctrl+Shift+Q"]"#).unwrap();
+    server.req("POST", "/keys/filer/view", "key").unwrap();
+    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    let long = "{ aLongFunctionNumberOne(); aLongFunctionNumberTwo(); aLongFunctionNumberThree() }";
+    server.req("POST", "/keys/filer/expr", long).unwrap();
+    server.req("POST", "/keys/filer/view", "key").unwrap();
+    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
+
+    // 実呼び出し列（col 2）は切り詰められる＝全文が返る。
+    let (code, body) = server.req("GET", "/keys/filer/tooltip/0/2", "").expect("tooltip call");
+    assert_eq!(code, 200, "切り詰めセルは 200: {body}");
+    assert!(body.contains("aLongFunctionNumberThree"), "全文が返る: {body}");
+
+    // キー列（col 0）は短いので切り詰め無し＝空。
+    let body = server.req("GET", "/keys/filer/tooltip/0/0", "").expect("tooltip chord").1;
+    assert!(body.contains(r#""text":"""#), "短いセルは空: {body}");
+
+    // 機能順ビューはキー順専用の hover の対象外＝空。
+    server.req("POST", "/keys/filer/view", "command").unwrap();
+    let body = server.req("GET", "/keys/filer/tooltip/0/2", "").expect("tooltip cmdview").1;
+    assert!(body.contains(r#""text":"""#), "機能順では空: {body}");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// 長い一覧をスクロールできる（先頭行が動く・選択は不変・範囲外はクランプ）。ホイール／
 /// スクロールバーと同じ scroll 経路を headless から叩く。
 #[test]

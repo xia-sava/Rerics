@@ -172,6 +172,17 @@ impl MainWindow {
                 debug_server::Request::KeysState { category } => {
                     let _ = tx.send(self.debug_keys_state(&category));
                 }
+                debug_server::Request::KeysTooltip { category, row, col } => {
+                    let resp = match debug_server::modal_registry::with_key_editor(&category, |h| {
+                        (h.tooltip)(row, col)
+                    }) {
+                        Some(text) => debug_server::Response::Json(
+                            serde_json::json!({ "text": text.unwrap_or_default() }).to_string(),
+                        ),
+                        None => debug_server::Response::NotFound,
+                    };
+                    let _ = tx.send(resp);
+                }
                 debug_server::Request::KeysSelect { category, index } => {
                     let _ = tx.send(self.debug_keys_op(&category, |h| {
                         (h.select)(index);

@@ -684,6 +684,11 @@ impl KeyEditor {
                 Ok(())
             }) as crate::debug_server::modal_registry::ChordFn
         };
+        let tooltip = {
+            let this = self.clone();
+            Box::new(move |row: usize, col: usize| this.key_cell_tooltip(row, col))
+                as Box<dyn Fn(usize, usize) -> Option<String>>
+        };
         crate::debug_server::modal_registry::register_key_editor(
             self.inner.category.debug_str(),
             KeyEditorHooks {
@@ -703,6 +708,7 @@ impl KeyEditor {
                 pick_cancel,
                 scroll,
                 add_keydef,
+                tooltip,
             },
         );
     }
@@ -1871,6 +1877,10 @@ impl KeyEditor {
             this.on_key(p.vkey_code.raw());
             Ok(())
         });
+
+        // 切り詰められたセルに hover で全文を出す（キー順）。当たり判定は描画と同じ列境界を使う。
+        let this = self.clone();
+        crate::winutil::attach_cell_tooltip(&self.list, move |pt| this.key_cell_at(pt));
     }
 
     /// キー入力処理。キャプチャ中は打鍵を chord 化して割り当て（中止はクリック＝ESC も
@@ -1967,6 +1977,100 @@ impl KeyEditor {
             rc,
             co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX | co::DT::END_ELLIPSIS,
         );
+    }
+
+    /// キー順の 3 カラム（キー｜機能名｜実呼び出し）の x 範囲 `(x0, x1)`。描画（`draw_cell`）と
+    /// hover の当たり判定で同じ境界を使うために 1 か所へ括り出す。最後のカラムはクライアント幅まで。
+    fn key_columns(cw: i32) -> [(i32, i32); 3] {
+        let chord_x = gui::dpi_x(8);
+        let name_x = gui::dpi_x(200);
+        let call_x = gui::dpi_x(420);
+        [(chord_x, name_x), (name_x, call_x), (call_x, cw)]
+    }
+
+    /// キー順の指定セル（`vp`＝表示行・`col`＝0:キー/1:機能名/2:実呼び出し）に描かれる文字列。
+    /// hover ツールチップの対象にならないセル（キャプチャ中の案内・未割当「－」・無効指定）は `None`。
+    fn key_cell_text(&self, vp: usize, col: usize) -> Option<String> {
+        if self.inner.view_mode.get() != KeyView::ByKey {
+            return None;
+        }
+        let &ri = self.inner.view.borrow().get(vp)?;
+        let krows = self.inner.key_rows.borrow();
+        let r = krows.get(ri)?;
+        let capturing = vp == self.inner.sel.get() && self.inner.capturing.get();
+        let text = match col {
+            0 => r.chord.clone(),
+            1 => {
+                if capturing || r.values.is_empty() {
+                    return None;
+                }
+                let mut names =
+                    r.values.iter().map(|v| self.value_label(v)).collect::<Vec<_>>().join(", ");
+                if r.values.len() > 1 {
+                    names.push_str(" ⚠");
+                }
+                names
+            }
+            2 => {
+                if capturing || r.values.is_empty() {
+                    return None;
+                }
+                r.values.iter().map(|v| call_display(v)).collect::<Vec<_>>().join(", ")
+            }
+            _ => return None,
+        };
+        Some(text)
+    }
+
+    /// セルの全文が `x0..x1`（右に `draw_cell` と同じ余白）に収まりきらず切り詰められるか。
+    fn cell_truncated(&self, text: &str, x0: i32, x1: i32) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        let avail = (x1 - gui::dpi_x(8)) - x0;
+        if avail <= 0 {
+            return true;
+        }
+        let Ok(dc) = self.hwnd().GetDC() else { return false };
+        let Ok(font) = w::HFONT::GetStockObject(co::STOCK_FONT::DEFAULT_GUI) else { return false };
+        let Ok(_sel) = dc.SelectObject(&font) else { return false };
+        dc.GetTextExtentPoint32(text).map(|z| z.cx).unwrap_or(0) > avail
+    }
+
+    /// キー順の指定セルが切り詰められていれば全文を返す（debug 観測用）。切り詰め無しは `None`。
+    #[cfg(feature = "debug-server")]
+    fn key_cell_tooltip(&self, vp: usize, col: usize) -> Option<String> {
+        let text = self.key_cell_text(vp, col)?;
+        let cw = self.hwnd().GetClientRect().ok()?.right;
+        let (x0, x1) = Self::key_columns(cw)[col];
+        self.cell_truncated(&text, x0, x1).then_some(text)
+    }
+
+    /// マウス位置（クライアント座標）→ 切り詰められたセルの (矩形, 全文)。それ以外は `None`。
+    /// hover ツールチップの resolver。
+    fn key_cell_at(&self, pt: w::POINT) -> Option<(w::RECT, String)> {
+        if self.inner.view_mode.get() != KeyView::ByKey || pt.y < 0 {
+            return None;
+        }
+        let row_h = self.inner.row_h.get().max(1);
+        let vi = (pt.y / row_h) as usize;
+        if vi >= self.visible_rows() {
+            return None;
+        }
+        let di = self.inner.top.get() + vi;
+        let DisplayLine::Row(vp) = self.display_lines().get(di).cloned()? else {
+            return None;
+        };
+        let cw = self.hwnd().GetClientRect().ok()?.right;
+        let cols = Self::key_columns(cw);
+        let col = cols.iter().position(|&(x0, x1)| pt.x >= x0 && pt.x < x1)?;
+        let text = self.key_cell_text(vp, col)?;
+        let (x0, x1) = cols[col];
+        if !self.cell_truncated(&text, x0, x1) {
+            return None;
+        }
+        let y = vi as i32 * row_h;
+        Some((w::RECT { left: x0, top: y, right: x1, bottom: y + row_h }, text))
     }
 
     fn render(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
@@ -2108,9 +2212,7 @@ impl KeyEditor {
             KeyView::ByKey => {
                 // 機能順と対称に「キー｜機能名｜実呼び出し」の 3 カラム。機能名は Script ラベルを
                 // 反映し、実呼び出しはラッパを剥がした中身（スクリプト名・コード・引数つきトークン）。
-                let chord_x = gui::dpi_x(8);
-                let name_x = gui::dpi_x(200);
-                let call_x = gui::dpi_x(420);
+                let [(chord_x, name_x), (_, call_x), _] = Self::key_columns(cw);
                 let krows = self.inner.key_rows.borrow();
                 for vi in 0..vis {
                     let Some(DisplayLine::Row(vp)) = display.get(top + vi).cloned() else {

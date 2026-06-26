@@ -197,6 +197,9 @@ pub mod modal_registry {
         pub scroll: Box<dyn Fn(i32)>,
         /// キー順で空キー定義（機能未割当・－表示）を作る。未知キーは Err。
         pub add_keydef: ChordFn,
+        /// キー順の指定セル（行・カラム）が切り詰められていれば hover で出る全文を返す。
+        /// 切り詰め無しは `None`。
+        pub tooltip: Box<dyn Fn(usize, usize) -> Option<String>>,
     }
 
     thread_local! {
@@ -397,6 +400,9 @@ pub enum Request {
     KeysScroll { category: String, top: i32 },
     /// `POST /keys/<category>/addkeydef`：キー順で body のキーの空キー定義（機能未割当）を作る。
     KeysAddKeyDef { category: String, chord: String },
+    /// `GET /keys/<category>/tooltip/<row>/<col>`：キー順の指定セル（row＝表示行・col＝0:キー/
+    /// 1:機能名/2:実呼び出し）が切り詰められていれば全文を `{"text":…}` で返す。切り詰め無しは空文字。
+    KeysTooltip { category: String, row: usize, col: usize },
     /// `POST /settings/nav/<pane>`：設定ダイアログの左ナビを pane 番号のページへ切り替える。
     SettingsNav { pane: usize },
     /// `GET /menu-editor`：メニュー編集ページの現在状態（JSON）。未オープンは null。
@@ -539,10 +545,26 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::MenuEditorState)
             } else if let Some(name) = path.strip_prefix("/menu/") {
                 Some(Request::Menu { name: name.trim_end_matches('/').to_string() })
+            } else if let Some(rest) = path.strip_prefix("/keys/") {
+                let rest = rest.trim_end_matches('/');
+                if let Some((cat, pos)) = rest.split_once("/tooltip/") {
+                    let mut parts = pos.split('/');
+                    match (
+                        parts.next().and_then(|s| s.parse::<usize>().ok()),
+                        parts.next().and_then(|s| s.parse::<usize>().ok()),
+                    ) {
+                        (Some(row), Some(col)) => Some(Request::KeysTooltip {
+                            category: cat.to_string(),
+                            row,
+                            col,
+                        }),
+                        _ => None,
+                    }
+                } else {
+                    Some(Request::KeysState { category: rest.to_string() })
+                }
             } else {
-                path.strip_prefix("/keys/").map(|cat| Request::KeysState {
-                    category: cat.trim_end_matches('/').to_string(),
-                })
+                None
             }
         }
         tiny_http::Method::Post => {
