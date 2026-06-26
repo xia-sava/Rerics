@@ -204,6 +204,9 @@ struct KeyEditorInner {
     rows: RefCell<Vec<BindRow>>,
     /// キー順ビューの行（chord でソート）。`draft` から組む。
     key_rows: RefCell<Vec<KeyChordRow>>,
+    /// キー順の選択行内で、どの機能（`values` の添字）を対象にするか。クリックで指す・既定 0。
+    /// 「式を編集」の対象を 1 つに定めるために使う（衝突行＝複数機能のどれを編集するか）。
+    sel_li: Cell<usize>,
     /// ピックモード中ならその対象。`Some` の間はリストが機能ピッカー（全機能一覧）へ切り替わる。
     picking: RefCell<Option<PickState>>,
     /// ピックモードで選べる機能一覧（文脈で絞り済み）。`view` はこれを検索で絞った index。
@@ -387,6 +390,7 @@ impl KeyEditor {
                 draft: RefCell::new(BTreeMap::new()),
                 rows: RefCell::new(Vec::new()),
                 key_rows: RefCell::new(Vec::new()),
+                sel_li: Cell::new(0),
                 picking: RefCell::new(None),
                 pick_rows: RefCell::new(Vec::new()),
                 pending: RefCell::new(Vec::new()),
@@ -486,19 +490,14 @@ impl KeyEditor {
         let _ = self.btn_c.hwnd().SetWindowText(c);
     }
 
-    /// 「式を編集」ボタンの表示と有効/無効を状態に合わせる。式編集は機能順専用（キー順の 1 行は
-    /// 複数機能を持ちうるので「どの機能の式か」が一意に定まらない）。そのためキー順ではボタン自体を
-    /// 隠し、機能順では行を選んでいるときだけ有効にする（ピック中・見出し/未選択ではグレーアウト）。
+    /// 「式を編集」ボタンの有効/無効を状態に合わせる。機能順・キー順とも、編集対象の式が定まる
+    /// 行を選んでいるときだけ有効（キー順は選択行の対象機能＝`sel_li`・衝突行はクリックで機能を指す）。
+    /// ピック中・見出し/未選択・未割当（－）行ではグレーアウトする。
     fn update_edit_button(&self) {
         // 窓未作成（構築途中）の間は触らない＝既定の有効のまま。
         if self.btn_edit.hwnd().ptr().is_null() {
             return;
         }
-        if self.inner.view_mode.get() == KeyView::ByKey {
-            self.btn_edit.hwnd().ShowWindow(co::SW::HIDE);
-            return;
-        }
-        self.btn_edit.hwnd().ShowWindow(co::SW::SHOW);
         let enabled = self.inner.picking.borrow().is_none() && self.selected_bind().is_some();
         self.btn_edit.hwnd().EnableWindow(enabled);
     }
@@ -513,7 +512,7 @@ impl KeyEditor {
                     "機能を選び「キー定義を追加」で割り当て（実際にキーを押す・右クリックで中止）"
                 }
                 KeyView::ByKey => {
-                    "キーを選び「機能定義を変更」で機能を割り当て（－はダブルクリックでも割り当て可）"
+                    "機能をクリックで指して「式を編集」（ダブルクリックでも）。－は「機能定義を変更」で割り当て"
                 }
             }
         };
@@ -1095,14 +1094,28 @@ impl KeyEditor {
     }
 
     /// 機能順で選択行のバインド（式・キー）。キー順・範囲外は `None`。
+    /// 選択中の編集対象＝`(式, キー)`。機能順は選択行の式とそのキー。キー順は選択行（chord）の
+    /// `sel_li` 番目の機能の式とその chord（衝突行は対象機能を 1 つに絞る）。式が空（未割当・－行）は
+    /// `None`＝「式を編集」の対象なし。
     fn selected_bind(&self) -> Option<(String, Option<String>)> {
-        if self.inner.view_mode.get() != KeyView::ByCommand {
-            return None;
-        }
         let ri = *self.inner.view.borrow().get(self.inner.sel.get())?;
-        let rows = self.inner.rows.borrow();
-        let r = rows.get(ri)?;
-        Some((r.expr.clone(), r.chord.clone()))
+        match self.inner.view_mode.get() {
+            KeyView::ByCommand => {
+                let rows = self.inner.rows.borrow();
+                let r = rows.get(ri)?;
+                Some((r.expr.clone(), r.chord.clone()))
+            }
+            KeyView::ByKey => {
+                let krows = self.inner.key_rows.borrow();
+                let r = krows.get(ri)?;
+                if r.values.is_empty() {
+                    return None;
+                }
+                let li = self.inner.sel_li.get().min(r.values.len() - 1);
+                let expr = r.values.get(li)?.clone();
+                (!expr.trim().is_empty()).then_some((expr, Some(r.chord.clone())))
+            }
+        }
     }
 
     /// 機能順リストの表示行（ジャンル見出しをデータ行の間に挟む）。`top` はこの単位で進む。
@@ -1464,6 +1477,28 @@ impl KeyEditor {
         if new_expr.is_empty() || new_expr == old_expr {
             return;
         }
+        // キー順での編集＝そのキーの対象式だけ差し替えて、キー順のままその chord 行を選び直す
+        //（機能順へ切り替えない）。衝突行のどれを編集したかは `selected_bind` が `sel_li` で絞る。
+        if self.inner.view_mode.get() == KeyView::ByKey
+            && let Some(ch) = chord.clone()
+        {
+            {
+                let mut draft = self.inner.draft.borrow_mut();
+                if let Some(vals) = draft.get_mut(&ch) {
+                    for v in vals.iter_mut() {
+                        if *v == old_expr {
+                            *v = new_expr.clone();
+                        }
+                    }
+                }
+            }
+            *self.inner.status.borrow_mut() =
+                format!("{} の式を変更しました（{}）", self.value_label(&new_expr), ch);
+            self.rebuild_rows();
+            self.select_key_row(&ch);
+            let _ = self.hwnd().InvalidateRect(None, false);
+            return;
+        }
         match chord {
             // バインド済み＝そのキーの式を新しい式へ差し替える。
             Some(ch) => {
@@ -1530,6 +1565,19 @@ impl KeyEditor {
             let view = self.inner.view.borrow();
             let rows = self.inner.rows.borrow();
             view.iter().position(|&ri| rows.get(ri).is_some_and(|r| r.expr == expr))
+        };
+        if let Some(p) = pos {
+            self.inner.sel.set(p);
+            self.ensure_visible();
+        }
+    }
+
+    /// キー順で `chord` の行を選択し、見える位置までスクロールする。
+    fn select_key_row(&self, chord: &str) {
+        let pos = {
+            let view = self.inner.view.borrow();
+            let krows = self.inner.key_rows.borrow();
+            view.iter().position(|&ri| krows.get(ri).is_some_and(|r| r.chord == chord))
         };
         if let Some(p) = pos {
             self.inner.sel.set(p);
@@ -1707,6 +1755,10 @@ impl KeyEditor {
             if let Some(DisplayLine::Row(vp)) = this.display_lines().get(di).cloned() {
                 this.clear_status();
                 this.inner.sel.set(vp);
+                // キー順＝クリックした機能を「式を編集」の対象に指す（衝突行のどれを編集するか）。
+                if this.inner.view_mode.get() == KeyView::ByKey {
+                    this.inner.sel_li.set(this.label_hit(vp, p.coords.x).unwrap_or(0));
+                }
                 this.ensure_visible();
                 let _ = this.hwnd().InvalidateRect(None, false);
             }
@@ -1747,20 +1799,24 @@ impl KeyEditor {
                     None => {}
                 },
                 KeyView::ByKey => {
-                    // 機能ラベル上なら そのラベルを差替へ。空キー定義（－）行なら新規割り当てへ。
-                    let li = this.label_hit(vp, p.coords.x).or_else(|| {
-                        let empty = this
-                            .inner
-                            .view
-                            .borrow()
-                            .get(vp)
-                            .and_then(|&ri| this.inner.key_rows.borrow().get(ri).map(|r| r.labels.is_empty()))
-                            .unwrap_or(false);
-                        empty.then_some(0)
-                    });
-                    if let Some(li) = li {
+                    // 機能ラベル上＝その機能の式を code_box で編集。空キー定義（－）行＝従来どおり
+                    // 機能ピッカーで新規割り当て（新規割当の式エディタ化は後続）。
+                    if let Some(li) = this.label_hit(vp, p.coords.x) {
+                        this.inner.sel_li.set(li);
                         this.ensure_visible();
-                        this.enter_pick(li);
+                        this.edit_expr_row();
+                        return Ok(());
+                    }
+                    let empty = this
+                        .inner
+                        .view
+                        .borrow()
+                        .get(vp)
+                        .and_then(|&ri| this.inner.key_rows.borrow().get(ri).map(|r| r.labels.is_empty()))
+                        .unwrap_or(false);
+                    if empty {
+                        this.ensure_visible();
+                        this.enter_pick(0);
                         return Ok(());
                     }
                 }

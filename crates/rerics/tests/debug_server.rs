@@ -2090,6 +2090,33 @@ fn settings_key_editor_inline_function_picker_changes_binding() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// キー順でも「式を編集」（set_expr）で選択キーの機能欄の式を差し替えられる。キー順のまま反映され、
+/// そのキーの機能が変わる（機能順専用だった式編集をキー順へ拡張）。
+#[test]
+fn settings_key_editor_by_key_edits_expression() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
+    wait_modal(&server);
+    let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
+
+    // 未使用キー Ctrl+Shift+Q を selectMask に割り当て、キー順でその行を選ぶ。
+    server.req("POST", "/keys/filer/bind", r#"["selectMask","Ctrl+Shift+Q"]"#).unwrap();
+    server.req("POST", "/keys/filer/view", "key").unwrap();
+    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
+    assert!(keys().contains(r#"["Ctrl+Shift+Q",["selectMask"]]"#), "対象キー行: {}", keys());
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+
+    // キー順のまま式を編集＝そのキーの機能が makeDirectory へ差し替わる。
+    server.req("POST", "/keys/filer/expr", "makeDirectory()").unwrap();
+    server.req("POST", "/keys/filer/view", "key").unwrap();
+    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
+    let s = keys();
+    assert!(s.contains(r#"["Ctrl+Shift+Q",["makeDirectory"]]"#), "キー順で式を編集して機能が変わる: {s}");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// 長い一覧をスクロールできる（先頭行が動く・選択は不変・範囲外はクランプ）。ホイール／
 /// スクロールバーと同じ scroll 経路を headless から叩く。
 #[test]
