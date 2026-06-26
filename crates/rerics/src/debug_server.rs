@@ -200,10 +200,10 @@ pub mod modal_registry {
         pub scroll: Box<dyn Fn(i32)>,
         /// キー順で空キー定義（機能未割当・－表示）を作る。未知キーは Err。
         pub add_keydef: ChordFn,
-        /// キー順の指定セル（行・カラム）が切り詰められていれば hover で出る全文を返す。
+        /// 現在のビューの指定セル（行・カラム）が切り詰められていれば hover で出る全文を返す。
         /// 切り詰め無しは `None`。
         pub tooltip: Box<dyn Fn(usize, usize) -> Option<String>>,
-        /// キー順の指定セルへ実際に hover した時の表示経路を駆動し (生成成功, 表示状態, 全文) を返す。
+        /// 現在のビューの指定セルへ実際に hover した時の表示経路を駆動し (生成成功, 表示状態, 全文) を返す。
         /// 表示範囲外・未登録は `None`。
         pub hover: HoverFn,
     }
@@ -408,11 +408,11 @@ pub enum Request {
     KeysScroll { category: String, top: i32 },
     /// `POST /keys/<category>/addkeydef`：キー順で body のキーの空キー定義（機能未割当）を作る。
     KeysAddKeyDef { category: String, chord: String },
-    /// `GET /keys/<category>/tooltip/<row>/<col>`：キー順の指定セル（row＝表示行・col＝0:キー/
-    /// 1:機能名/2:実呼び出し）が切り詰められていれば全文を `{"text":…}` で返す。切り詰め無しは空文字。
+    /// `GET /keys/<category>/tooltip/<row>/<col>`：現在のビューの指定セル（row＝データ行・col＝左から
+    /// 0/1/2）が切り詰められていれば全文を `{"text":…}` で返す。切り詰め無しは空文字。
     KeysTooltip { category: String, row: usize, col: usize },
-    /// `GET /keys/<category>/hover/<row>/<col>`：キー順の指定セルへ実際に hover した表示経路を駆動し
-    /// `{"created":bool,"visible":bool,"text":…}` を返す（ツールチップ生成成否・WS_VISIBLE・全文）。
+    /// `GET /keys/<category>/hover/<row>/<col>`：現在のビューの指定セルへ実際に hover した表示経路を
+    /// 駆動し `{"created":bool,"visible":bool,"text":…}` を返す（ツールチップ生成成否・WS_VISIBLE・全文）。
     KeysHover { category: String, row: usize, col: usize },
     /// `POST /settings/nav/<pane>`：設定ダイアログの左ナビを pane 番号のページへ切り替える。
     SettingsNav { pane: usize },

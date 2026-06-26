@@ -686,12 +686,12 @@ impl KeyEditor {
         };
         let tooltip = {
             let this = self.clone();
-            Box::new(move |row: usize, col: usize| this.key_cell_tooltip(row, col))
+            Box::new(move |row: usize, col: usize| this.cell_tooltip(row, col))
                 as Box<dyn Fn(usize, usize) -> Option<String>>
         };
         let hover = {
             let this = self.clone();
-            Box::new(move |row: usize, col: usize| this.key_cell_hover(row, col))
+            Box::new(move |row: usize, col: usize| this.cell_hover(row, col))
                 as crate::debug_server::modal_registry::HoverFn
         };
         crate::debug_server::modal_registry::register_key_editor(
@@ -1884,9 +1884,9 @@ impl KeyEditor {
             Ok(())
         });
 
-        // 切り詰められたセルに hover で全文を出す（キー順）。当たり判定は描画と同じ列境界を使う。
+        // 切り詰められたセルに hover で全文を出す（機能順・キー順）。当たり判定は描画と同じ列境界を使う。
         let this = self.clone();
-        crate::winutil::attach_cell_tooltip(&self.list, move |pt| this.key_cell_at(pt));
+        crate::winutil::attach_cell_tooltip(&self.list, move |pt| this.cell_at(pt));
     }
 
     /// キー入力処理。キャプチャ中は打鍵を chord 化して割り当て（中止はクリック＝ESC も
@@ -1985,8 +1985,7 @@ impl KeyEditor {
         );
     }
 
-    /// キー順の 3 カラム（キー｜機能名｜実呼び出し）の x 範囲 `(x0, x1)`。描画（`draw_cell`）と
-    /// hover の当たり判定で同じ境界を使うために 1 か所へ括り出す。最後のカラムはクライアント幅まで。
+    /// キー順の 3 カラム（キー｜機能名｜実呼び出し）の x 範囲 `(x0, x1)`。最後のカラムはクライアント幅まで。
     fn key_columns(cw: i32) -> [(i32, i32); 3] {
         let chord_x = gui::dpi_x(8);
         let name_x = gui::dpi_x(200);
@@ -1994,38 +1993,79 @@ impl KeyEditor {
         [(chord_x, name_x), (name_x, call_x), (call_x, cw)]
     }
 
-    /// キー順の指定セル（`vp`＝表示行・`col`＝0:キー/1:機能名/2:実呼び出し）に描かれる文字列。
-    /// hover ツールチップの対象にならないセル（キャプチャ中の案内・未割当「－」・無効指定）は `None`。
-    fn key_cell_text(&self, vp: usize, col: usize) -> Option<String> {
-        if self.inner.view_mode.get() != KeyView::ByKey {
+    /// 機能順の 3 カラム（機能名｜実呼び出し｜キー）の x 範囲 `(x0, x1)`。最後のカラムはクライアント幅まで。
+    fn command_columns(cw: i32) -> [(i32, i32); 3] {
+        let name_x = gui::dpi_x(24);
+        let call_x = gui::dpi_x(200);
+        let key_x = gui::dpi_x(600);
+        [(name_x, call_x), (call_x, key_x), (key_x, cw)]
+    }
+
+    /// 現在のビューの 3 カラムの x 範囲。描画（`draw_cell`）と hover の当たり判定で同じ境界を使うため、
+    /// 両者ともこれを通す。
+    fn columns(&self, cw: i32) -> [(i32, i32); 3] {
+        match self.inner.view_mode.get() {
+            KeyView::ByKey => Self::key_columns(cw),
+            KeyView::ByCommand => Self::command_columns(cw),
+        }
+    }
+
+    /// 現在のビューの指定セル（`vp`＝データ行・`col`＝左から 0/1/2）に描かれる文字列。
+    /// hover ツールチップの対象にならないセル（キャプチャ中の案内・未割当「－」・ピック中・無効指定）は `None`。
+    fn cell_text(&self, vp: usize, col: usize) -> Option<String> {
+        if self.inner.picking.borrow().is_some() || col >= 3 {
             return None;
         }
         let &ri = self.inner.view.borrow().get(vp)?;
-        let krows = self.inner.key_rows.borrow();
-        let r = krows.get(ri)?;
         let capturing = vp == self.inner.sel.get() && self.inner.capturing.get();
-        let text = match col {
-            0 => r.chord.clone(),
-            1 => {
-                if capturing || r.values.is_empty() {
-                    return None;
+        match self.inner.view_mode.get() {
+            // キー順＝キー｜機能名（複数機能はカンマ連結・衝突は ⚠）｜実呼び出し。
+            KeyView::ByKey => {
+                let krows = self.inner.key_rows.borrow();
+                let r = krows.get(ri)?;
+                match col {
+                    0 => Some(r.chord.clone()),
+                    1 => {
+                        if capturing || r.values.is_empty() {
+                            return None;
+                        }
+                        let mut names =
+                            r.values.iter().map(|v| self.value_label(v)).collect::<Vec<_>>().join(", ");
+                        if r.values.len() > 1 {
+                            names.push_str(" ⚠");
+                        }
+                        Some(names)
+                    }
+                    _ => {
+                        if capturing || r.values.is_empty() {
+                            return None;
+                        }
+                        Some(r.values.iter().map(|v| call_display(v)).collect::<Vec<_>>().join(", "))
+                    }
                 }
-                let mut names =
-                    r.values.iter().map(|v| self.value_label(v)).collect::<Vec<_>>().join(", ");
-                if r.values.len() > 1 {
-                    names.push_str(" ⚠");
-                }
-                names
             }
-            2 => {
-                if capturing || r.values.is_empty() {
-                    return None;
+            // 機能順＝機能名｜実呼び出し｜キー（未割当「－」は対象外）。
+            KeyView::ByCommand => {
+                let rows = self.inner.rows.borrow();
+                let r = rows.get(ri)?;
+                match col {
+                    0 => Some(self.value_label(&r.expr)),
+                    1 => Some(call_display(&r.expr)),
+                    _ => {
+                        if capturing {
+                            return None;
+                        }
+                        r.chord.as_ref().map(|c| {
+                            let mut k = c.clone();
+                            if r.conflicted {
+                                k.push_str(" ⚠");
+                            }
+                            k
+                        })
+                    }
                 }
-                r.values.iter().map(|v| call_display(v)).collect::<Vec<_>>().join(", ")
             }
-            _ => return None,
-        };
-        Some(text)
+        }
     }
 
     /// セルの全文が `x0..x1`（右に `draw_cell` と同じ余白）に収まりきらず切り詰められるか。
@@ -2043,11 +2083,11 @@ impl KeyEditor {
         dc.GetTextExtentPoint32(text).map(|z| z.cx).unwrap_or(0) > avail
     }
 
-    /// キー順の指定セル（`vp`＝表示行・`col`＝0/1/2）の中心のクライアント座標（debug 駆動用）。
+    /// 現在のビューの指定セル（`vp`＝データ行・`col`＝0/1/2）の中心のクライアント座標（debug 駆動用）。
     /// その行が今表示範囲に無い・無効指定なら `None`。
     #[cfg(feature = "debug-server")]
-    fn key_cell_point(&self, vp: usize, col: usize) -> Option<w::POINT> {
-        if self.inner.view_mode.get() != KeyView::ByKey || col >= 3 {
+    fn cell_point(&self, vp: usize, col: usize) -> Option<w::POINT> {
+        if self.inner.picking.borrow().is_some() || col >= 3 {
             return None;
         }
         let di = self
@@ -2064,31 +2104,31 @@ impl KeyEditor {
         }
         let row_h = self.inner.row_h.get().max(1);
         let cw = self.hwnd().GetClientRect().ok()?.right;
-        let (x0, x1) = Self::key_columns(cw)[col];
+        let (x0, x1) = self.columns(cw)[col];
         Some(w::POINT::with((x0 + x1) / 2, vi as i32 * row_h + row_h / 2))
     }
 
-    /// キー順の指定セルへ実際に hover した時の表示経路（resolver→ツールチップ生成→表示）を
-    /// headless で駆動する。戻り値＝(生成成功, 表示状態, 全文)。表示範囲外・未登録は `None`。
+    /// 指定セルへ実際に hover した時の表示経路（resolver→ツールチップ生成→表示）を headless で
+    /// 駆動する。戻り値＝(生成成功, 表示状態, 全文)。表示範囲外・未登録は `None`。
     #[cfg(feature = "debug-server")]
-    fn key_cell_hover(&self, vp: usize, col: usize) -> Option<(bool, bool, String)> {
-        let pt = self.key_cell_point(vp, col)?;
+    fn cell_hover(&self, vp: usize, col: usize) -> Option<(bool, bool, String)> {
+        let pt = self.cell_point(vp, col)?;
         crate::winutil::force_hover_probe(self.hwnd(), pt)
     }
 
-    /// キー順の指定セルが切り詰められていれば全文を返す（debug 観測用）。切り詰め無しは `None`。
+    /// 指定セルが切り詰められていれば全文を返す（debug 観測用）。切り詰め無しは `None`。
     #[cfg(feature = "debug-server")]
-    fn key_cell_tooltip(&self, vp: usize, col: usize) -> Option<String> {
-        let text = self.key_cell_text(vp, col)?;
+    fn cell_tooltip(&self, vp: usize, col: usize) -> Option<String> {
+        let text = self.cell_text(vp, col)?;
         let cw = self.hwnd().GetClientRect().ok()?.right;
-        let (x0, x1) = Self::key_columns(cw)[col];
+        let (x0, x1) = self.columns(cw)[col];
         self.cell_truncated(&text, x0, x1).then_some(text)
     }
 
     /// マウス位置（クライアント座標）→ 切り詰められたセルの (矩形, 全文)。それ以外は `None`。
-    /// hover ツールチップの resolver。
-    fn key_cell_at(&self, pt: w::POINT) -> Option<(w::RECT, String)> {
-        if self.inner.view_mode.get() != KeyView::ByKey || pt.y < 0 {
+    /// hover ツールチップの resolver（機能順・キー順の両ビュー）。
+    fn cell_at(&self, pt: w::POINT) -> Option<(w::RECT, String)> {
+        if pt.y < 0 {
             return None;
         }
         let row_h = self.inner.row_h.get().max(1);
@@ -2101,9 +2141,9 @@ impl KeyEditor {
             return None;
         };
         let cw = self.hwnd().GetClientRect().ok()?.right;
-        let cols = Self::key_columns(cw);
+        let cols = self.columns(cw);
         let col = cols.iter().position(|&(x0, x1)| pt.x >= x0 && pt.x < x1)?;
-        let text = self.key_cell_text(vp, col)?;
+        let text = self.cell_text(vp, col)?;
         let (x0, x1) = cols[col];
         if !self.cell_truncated(&text, x0, x1) {
             return None;
@@ -2189,9 +2229,7 @@ impl KeyEditor {
         let display = self.display_lines();
         match self.inner.view_mode.get() {
             KeyView::ByCommand => {
-                let name_x = gui::dpi_x(24);
-                let call_x = gui::dpi_x(200);
-                let keycol_x = gui::dpi_x(600);
+                let [(name_x, _), (call_x, _), (keycol_x, _)] = Self::command_columns(cw);
                 let band = w::HBRUSH::GetSysColorBrush(co::COLOR::BTNFACE)?;
                 let rows = self.inner.rows.borrow();
                 for vi in 0..vis {
@@ -2228,21 +2266,21 @@ impl KeyEditor {
                             } else {
                                 dc.SetTextColor(text_col)?;
                             }
-                            dc.TextOut(name_x, ty, &self.value_label(&r.expr))?;
-                            dc.TextOut(call_x, ty, &call_display(&r.expr))?;
+                            Self::draw_cell(dc, &self.value_label(&r.expr), name_x, call_x, y, row_h);
+                            Self::draw_cell(dc, &call_display(&r.expr), call_x, keycol_x, y, row_h);
                             if selected && capturing {
-                                dc.TextOut(keycol_x, ty, prompt)?;
+                                Self::draw_cell(dc, prompt, keycol_x, cw, y, row_h);
                             } else if let Some(c) = &r.chord {
                                 let mut k = c.clone();
                                 if r.conflicted {
                                     k.push_str(" ⚠");
                                 }
-                                dc.TextOut(keycol_x, ty, &k)?;
+                                Self::draw_cell(dc, &k, keycol_x, cw, y, row_h);
                             } else {
                                 if !selected {
                                     dc.SetTextColor(gray_col)?;
                                 }
-                                dc.TextOut(keycol_x, ty, "—")?;
+                                Self::draw_cell(dc, "—", keycol_x, cw, y, row_h);
                             }
                         }
                     }

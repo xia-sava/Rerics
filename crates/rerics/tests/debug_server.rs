@@ -2192,6 +2192,34 @@ fn settings_key_editor_hover_shows_tooltip_window() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// 機能順ビューでも同じ部品で切り詰めセルの全文を hover 表示する（col は左から機能名/実呼び出し/
+/// キー）。全文取得（tooltip）と実表示経路（hover）の両方を検証する。
+#[test]
+fn settings_key_editor_command_view_shows_tooltip() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
+    wait_modal(&server);
+
+    // 既定の機能順のまま、未使用キーを割り当てて選択行へ列に収まらない長い式を入れる。
+    server.req("POST", "/keys/filer/bind", r#"["selectMask","Ctrl+Shift+Q"]"#).unwrap();
+    let long = "{ aLongFunctionNumberOne(); aLongFunctionNumberTwo(); aLongFunctionNumberThree() }";
+    server.req("POST", "/keys/filer/expr", long).unwrap();
+    server.req("POST", "/keys/filer/search", "Ctrl+Shift+Q").unwrap();
+
+    // 実呼び出し列（機能順では col 1）は切り詰め＝全文が返る。
+    let (code, body) = server.req("GET", "/keys/filer/tooltip/0/1", "").expect("tooltip");
+    assert_eq!(code, 200, "tooltip 200: {body}");
+    assert!(body.contains("aLongFunctionNumberThree"), "全文が返る: {body}");
+
+    // 実 hover でツールチップ窓が作られて表示状態になる。
+    let body = server.req("GET", "/keys/filer/hover/0/1", "").expect("hover").1;
+    assert!(body.contains(r#""created":true"#), "ツールチップ窓が作られる: {body}");
+    assert!(body.contains(r#""visible":true"#), "表示状態になる: {body}");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// 長い一覧をスクロールできる（先頭行が動く・選択は不変・範囲外はクランプ）。ホイール／
 /// スクロールバーと同じ scroll 経路を headless から叩く。
 #[test]
