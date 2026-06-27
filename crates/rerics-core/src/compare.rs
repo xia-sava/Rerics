@@ -42,6 +42,20 @@ pub struct CompareOptions {
     pub show_deleted: bool,
 }
 
+impl CompareOptions {
+    /// 「差分を見る」既定プリセット：日付かサイズが違う一致ファイル＋片側だけの項目を出す
+    /// （再帰はしない）。引数なしの `directoryCompare` コマンドで使う。
+    pub fn differences() -> Self {
+        Self {
+            date: CompareCondition::NotEquals,
+            size: CompareCondition::NotEquals,
+            recurse: false,
+            show_added: true,
+            show_deleted: true,
+        }
+    }
+}
+
 /// 比較結果の集計（原作 Equals/NotEquals/Adds/Deletes）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CompareCounts {

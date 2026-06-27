@@ -108,14 +108,31 @@ impl MainWindow {
     /// カーソル行を侵入する（dir/親なら移動、file は無視）。
     pub(crate) fn activate(&self, is_left: bool, index: usize) -> w::AnyResult<()> {
         let view = self.view(is_left);
-        let (is_parent, is_dir, name) = {
+        let (is_parent, is_dir, name, find_result, source) = {
             let state = view.state();
             let s = state.borrow();
             let Some(it) = s.items.get(index) else {
                 return Ok(());
             };
-            (it.is_parent, it.is_dir, it.name.clone())
+            (it.is_parent, it.is_dir, it.name.clone(), s.find_result, it.source.clone())
         };
+        // 結果一覧（検索・比較）の項目を開く：その項目の出自ディレクトリへ移動してカーソルを
+        // 名前に合わせ、結果モードを抜ける。先頭の ".." は基準ディレクトリへ戻る（再読込で解除）。
+        if find_result {
+            if is_parent {
+                return self.reload_side(is_left);
+            }
+            let target = source.unwrap_or_else(|| self.pane(is_left).borrow().loc().clone());
+            self.remember_cursor_for_nav(is_left);
+            let moved = self.pane(is_left).borrow_mut().navigate(target);
+            if moved {
+                self.record_visit(is_left);
+                self.reload_side_focus(is_left, &name, true)?;
+            } else {
+                self.reload_side(is_left)?;
+            }
+            return Ok(());
+        }
         if is_parent {
             return self.to_parent(is_left);
         }

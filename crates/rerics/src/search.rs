@@ -74,6 +74,47 @@ impl MainWindow {
         Ok(())
     }
 
+    /// 指定ペインを検索・比較の結果一覧へ切り替える。`items` は合成項目（各々 `source`/`info`
+    /// を持つ。先頭の ".." は結果モードを抜ける親項目）。一覧だけ差し替え、現在地（パスバー・
+    /// 基準ディレクトリ）は元のままにする。
+    pub(crate) fn show_find_result(
+        &self,
+        is_left: bool,
+        items: Vec<rerics_core::FileItem>,
+    ) -> w::AnyResult<()> {
+        let view = self.view(is_left);
+        {
+            let state = view.state();
+            state.borrow_mut().set_find_result(items);
+        }
+        view.autofit_columns()?;
+        view.refresh()?;
+        self.update_selected_info(is_left);
+        Ok(())
+    }
+
+    /// アクティブペインと反対ペインのディレクトリを比較し、差分を結果一覧に出す（原作
+    /// ディレクトリ比較）。比較はワーカースレッドで回し、終わったら結果ペインへ流し込む。
+    pub(crate) fn run_directory_compare(&self, is_left: bool, opts: rerics_core::CompareOptions) {
+        let src = self.pane(is_left).borrow().loc().clone();
+        let dst = self.pane(!is_left).borrow().loc().clone();
+        self.log.info(&format!("ディレクトリ比較: {}", src.loc_display()));
+        self.spawn_job(
+            move || rerics_core::directory_compare(&src, &dst, &opts),
+            move |mw, (items, counts)| {
+                let mut all = Vec::with_capacity(items.len() + 1);
+                all.push(rerics_core::FileItem::parent());
+                all.extend(items);
+                mw.show_find_result(is_left, all)?;
+                mw.log.info(&format!(
+                    "比較結果 一致:{} 不一致:{} 追加:{} 削除:{}",
+                    counts.equals, counts.not_equals, counts.adds, counts.deletes
+                ));
+                Ok(())
+            },
+        );
+    }
+
     /// インクリメンタルサーチ。小さな入力モーダルを出し、打鍵ごとに先頭から一致を
     /// 探してアクティブペインのカーソルを動かす（追従）。OK で確定、中止/Esc で元へ戻す。
     pub(crate) fn incremental_search(&self, is_left: bool) -> w::AnyResult<()> {

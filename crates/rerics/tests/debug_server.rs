@@ -181,6 +181,37 @@ impl Server {
         Server { child, port, base }
     }
 
+    /// 左右ペインを **別々の実ディレクトリ**（`base/left`・`base/right`）に向けて起動する。
+    /// それぞれに `(名前, 中身)` のファイルを置く。ディレクトリ比較のように左右で内容が違う
+    /// 状況を、cd/フォーカスの順序に依存せず最初から用意するための起動口。
+    fn start_dirs(left_files: &[(&str, &[u8])], right_files: &[(&str, &[u8])]) -> Server {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("rerics_it_{}_{}", std::process::id(), n));
+        let data = base.join("data");
+        let left = base.join("left");
+        let right = base.join("right");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        for (name, body) in left_files {
+            std::fs::write(left.join(name), body).unwrap();
+        }
+        for (name, body) in right_files {
+            std::fs::write(right.join(name), body).unwrap();
+        }
+        std::fs::write(
+            data.join("state.toml"),
+            format!(
+                "active_tab = 0\nsplit_ratio = 0.5\n[[tabs]]\nleft = '{l}'\nright = '{r}'\nactive_right = false\n",
+                l = left.display(),
+                r = right.display(),
+            ),
+        )
+        .unwrap();
+        let (child, port) = spawn_and_wait(&data, false);
+        Server { child, port, base }
+    }
+
     /// HTTP リクエストを投げる。`(status, body)` を返す。
     fn req(&self, method: &str, path: &str, body: &str) -> Option<(u16, String)> {
         req(self.port, method, path, body)
@@ -4324,4 +4355,67 @@ fn help_endpoint_returns_command_reference() {
     assert!(html.contains("標準キー") && html.contains("現在キー"), "両キー列");
     // スクリプトも同じ表形式で並ぶ＝組込/スクリプトの統一。
     assert!(html.contains("organize") && html.contains("散らかりを整える"), "スクリプトも同表に");
+}
+
+/// ディレクトリ比較：左右に異なる内容のディレクトリを置き、`directoryCompare` で差分が
+/// 結果一覧（find_result＝true・情報列つき）に出る。さらに結果項目を開くと出自へ移動して
+/// 結果モードを抜ける。
+#[test]
+fn directory_compare_shows_diff_result_pane() {
+    // 左＝base/left、右＝base/right。共通名サイズ違い・左のみ・右のみを仕込む。
+    let server = Server::start_dirs(
+        &[("common.txt", b"aaaa"), ("only_left.txt", b"x")],
+        &[("common.txt", b"b"), ("only_right.txt", b"y")],
+    );
+
+    // 比較実行（ワーカー→結果ペイン）。find_result が立つまで待つ。
+    server.req("POST", "/command/directoryCompare", "").unwrap();
+    let body = poll(&server, "/state", |b| {
+        serde_json::from_str::<serde_json::Value>(b)
+            .ok()
+            .and_then(|v| v["panes"]["left"]["find_result"].as_bool())
+            .unwrap_or(false)
+    });
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let left_pane = &v["panes"]["left"];
+    assert_eq!(left_pane["find_result"], true, "結果モードに入る: {body}");
+    // 情報列が出る。
+    let cols = left_pane["columns"].as_array().unwrap();
+    assert!(
+        cols.iter().any(|c| c["kind"] == "Information"),
+        "情報列が並ぶ: {cols:?}"
+    );
+
+    let items = left_pane["items"].as_array().unwrap();
+    let by_name = |n: &str| items.iter().find(|it| it["name"] == n);
+    // 共通サイズ違い・追加・削除がそれぞれ出る。
+    assert!(by_name("common.txt").is_some(), "サイズ違いの common.txt: {items:?}");
+    let add = by_name("only_left.txt").expect("追加項目");
+    assert_eq!(add["info"], "追加", "追加の情報列");
+    assert!(add["source"].as_str().unwrap().replace('\\', "/").ends_with("/left"), "追加の出自は left: {add}");
+    let del = by_name("only_right.txt").expect("削除項目");
+    assert!(del["info"].as_str().unwrap().starts_with("削除:"), "削除の情報列: {del}");
+    // 先頭は結果モードを抜ける ".."。
+    assert_eq!(items[0]["name"], "..", "先頭は親項目");
+
+    // 追加項目（only_left.txt）にカーソルを合わせて開く→出自 L へ移動して結果モードを抜ける。
+    server
+        .req("POST", "/command/setCursorPosition", "[\"only_left.txt\"]")
+        .unwrap();
+    server.req("POST", "/command/enterDir", "").unwrap();
+    let after = poll(&server, "/state", |b| {
+        serde_json::from_str::<serde_json::Value>(b)
+            .ok()
+            .and_then(|v| v["panes"]["left"]["find_result"].as_bool())
+            .map(|fr| !fr)
+            .unwrap_or(false)
+    });
+    let v2: serde_json::Value = serde_json::from_str(&after).unwrap();
+    assert_eq!(v2["panes"]["left"]["find_result"], false, "開くと結果モードを抜ける");
+    let loc = v2["panes"]["left"]["location"].as_str().unwrap().replace('\\', "/");
+    assert!(loc.ends_with("/left"), "出自 left へ移動している: {loc}");
+    // カーソルは開いた名前に乗る。
+    let items2 = v2["panes"]["left"]["items"].as_array().unwrap();
+    let cur = items2.iter().find(|it| it["cursor"] == true).unwrap();
+    assert_eq!(cur["name"], "only_left.txt", "カーソルは開いた項目に乗る");
 }

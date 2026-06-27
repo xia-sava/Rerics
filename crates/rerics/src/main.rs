@@ -1246,6 +1246,10 @@ impl MainWindow {
                 self.compare_dialog()?;
                 return Ok(());
             }
+            Command::DirectoryCompare => {
+                self.run_directory_compare(is_left, rerics_core::CompareOptions::differences());
+                return Ok(());
+            }
             Command::OpenTaskManager => {
                 self.open_task_manager()?;
                 return Ok(());
@@ -1646,6 +1650,11 @@ impl MainWindow {
         {
             let state = view.state();
             let mut s = state.borrow_mut();
+            // 実ディレクトリを読み込んだ＝結果一覧モードを抜ける（情報列を畳み設定列へ戻す）。
+            if s.find_result {
+                s.find_result = false;
+                s.columns = self.config.borrow().columns.clone();
+            }
             s.items = items;
             let sort = s.sort_type;
             let reverse = s.sort_reverse;

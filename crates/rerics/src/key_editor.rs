@@ -134,7 +134,8 @@ pub(crate) fn command_genre(cmd: Command) -> (u8, &'static str) {
         | SetCursorPosition | SetCursorIndex | CenterCursor | CursorOpposite => (0, "カーソル移動"),
         EnterDir | ToParent | ToRoot | HistoryBack | HistoryForward | PathHistoryDialog
         | ChangeDirectory | ChangeDirectoryDialog | ChangeDrive | ChangeDriveDialog | JumpDialog
-        | PathRegisterDialog | IncrementalSearchDialog | NextDrive | PreviousDrive => (1, "移動・ナビゲーション"),
+        | PathRegisterDialog | IncrementalSearchDialog | DirectoryCompare | NextDrive
+        | PreviousDrive => (1, "移動・ナビゲーション"),
         MarkToggle | SelectAll | ClearAll | ReverseAll | SelectAllFile | ReverseAllFile
         | SelectFile | SelectMaskDialog | PathMaskDialog | CompareDialog => (2, "選択"),
         Reload | Refresh | View | ViewFile | DirectoryInformation | SortByName | SortByExtension
