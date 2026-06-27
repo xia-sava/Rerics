@@ -994,6 +994,9 @@ impl Default for KeyMap {
         m.bind(KeyChord::key(vk::HOME), ClearAll);
         // 検索。
         m.bind(KeyChord::key(vk::F), IncrementalSearchDialog);
+        m.bind(KeyChord::new(vk::F, true, false, false), FindFileDialog);
+        m.bind(KeyChord::key(vk::F3), FindFileDialog);
+        m.bind(KeyChord::new(vk::D, false, true, false), DirectoryCompareDialog);
         // ファイル操作。
         m.bind(KeyChord::key(vk::C), Copy);
         m.bind(KeyChord::key(vk::M), Move);
