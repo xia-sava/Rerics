@@ -365,3 +365,10 @@ declare const rerics: {
   delete(options?: RericsOpOptions): RericsJob;
   delete(items: string[], options?: RericsOpOptions): RericsJob;
 };
+
+/**
+ * `rerics` の短縮別名。`rerics.foo()` と `r.foo()` は同じものを指す（実行時に
+ * `globalThis.r = globalThis.rerics` で結ばれる）。設定欄やスクリプトでは `r.` が短くて使いやすい。
+ * 登録コマンド・組込コマンドも `r.<名前>()` で呼べる（型としては index シグネチャで許容）。
+ */
+declare const r: typeof rerics & { [command: string]: (...args: unknown[]) => unknown };
