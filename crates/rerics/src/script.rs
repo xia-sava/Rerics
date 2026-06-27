@@ -66,6 +66,8 @@ pub trait HostApi {
     fn log(&self, level: rerics_core::LogLevel, msg: &str);
     /// ログ欄の全文を返す（行は `\r\n` 区切り・末尾にも改行）。
     fn log_text(&self) -> String;
+    /// 設定値をドット区切りキーで読む（未知キーは `None`）。
+    fn config_get(&self, key: &str) -> Option<serde_json::Value>;
     /// アクティブペインの現在ディレクトリ（絶対パス）を返す。
     fn current_dir(&self) -> String;
     /// アクティブペインを `path` へ移動する。
@@ -221,6 +223,26 @@ fn op_log_text(state: &mut OpState) -> String {
 #[string]
 fn op_version() -> String {
     env!("CARGO_PKG_VERSION").to_owned()
+}
+
+/// ドット区切りキー（例 `"layout.border_unit"`）で JSON 値をたどる。各段はオブジェクトの
+/// キー。途中で見つからなければ `None`。空キーは全体を返す。
+pub fn config_lookup(root: &serde_json::Value, key: &str) -> Option<serde_json::Value> {
+    if key.is_empty() {
+        return Some(root.clone());
+    }
+    let mut cur = root;
+    for part in key.split('.') {
+        cur = cur.get(part)?;
+    }
+    Some(cur.clone())
+}
+
+/// 設定値をドット区切りキーで読む。`[]`＝未知キー・`[value]`＝値（JS 側で `null` へ畳む）。
+#[op2]
+#[serde]
+fn op_config(state: &mut OpState, #[string] key: &str) -> Vec<serde_json::Value> {
+    state.borrow::<Host>().config_get(key).into_iter().collect()
 }
 
 #[op2]
@@ -641,6 +663,7 @@ extension!(
         op_log,
         op_log_text,
         op_version,
+        op_config,
         op_current_dir,
         op_navigate,
         op_confirm,
@@ -791,6 +814,10 @@ const BOOTSTRAP: &str = r#"
     error: (m) => ops.op_log("error", String(m)),
     getLog: () => ops.op_log_text(),
     version: () => ops.op_version(),
+    config: (key) => {
+      const r = ops.op_config(String(key));
+      return r.length ? r[0] : null;
+    },
     currentDir: () => ops.op_current_dir(),
     navigate: (p) => ops.op_navigate(String(p)),
     confirm: (m) => ops.op_confirm(String(m)),
@@ -1202,6 +1229,8 @@ mod tests {
         save_reply: Option<String>,
         /// `modifiers()` が返す修飾キー状態。
         modifiers: Modifiers,
+        /// `config_get()` が引くルート JSON（ドット区切りキーでたどる）。
+        config: serde_json::Value,
     }
 
     impl HostApi for MockHost {
@@ -1210,6 +1239,9 @@ mod tests {
         }
         fn log_text(&self) -> String {
             self.logs.borrow().iter().map(|l| format!("{l}\r\n")).collect()
+        }
+        fn config_get(&self, key: &str) -> Option<serde_json::Value> {
+            config_lookup(&self.config, key)
         }
         fn current_dir(&self) -> String {
             self.dir.clone()
@@ -1352,6 +1384,41 @@ mod tests {
                 // getLog 呼び出し時点で 4 行溜まっている。
                 "len=4".to_string(),
                 "ver=true".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn config_reads_by_dotted_key() {
+        let host = Rc::new(MockHost {
+            config: serde_json::json!({
+                "editor": "notepad.exe",
+                "layout": { "border_unit": 50 },
+                "cursor": { "to_parent": false },
+            }),
+            ..Default::default()
+        });
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:config",
+            r#"
+              rerics.log("editor=" + rerics.config("editor"));
+              rerics.log("unit=" + rerics.config("layout.border_unit"));
+              rerics.log("toParent=" + rerics.config("cursor.to_parent"));
+              rerics.log("missing=" + (rerics.config("no.such.key") === null));
+              rerics.log("obj=" + JSON.stringify(rerics.config("layout")));
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            *host.logs.borrow(),
+            vec![
+                "editor=notepad.exe".to_string(),
+                "unit=50".to_string(),
+                "toParent=false".to_string(),
+                "missing=true".to_string(),
+                "obj={\"border_unit\":50}".to_string(),
             ]
         );
     }

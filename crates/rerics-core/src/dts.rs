@@ -8,10 +8,10 @@ use crate::input::{ArgType, Command};
 /// host API（bootstrap が `r`/`rerics` に直に生やすメンバー）と同名の組込コマンドは、実行時に
 /// 組込側を生やさず host を優先する。型定義でも二重宣言を避けるためここで除外する。
 const HOST_API_MEMBERS: &[&str] = &[
-    "log", "info", "warning", "error", "getLog", "version", "currentDir", "navigate", "confirm",
-    "prompt", "select", "listDir", "activePane", "oppositePane", "command", "copy", "move",
-    "delete", "open", "folderDialog", "openDialog", "saveDialog", "modifiers", "spawn", "run",
-    "unpack", "fs", "registerCommand", "registerMenu", "on",
+    "log", "info", "warning", "error", "getLog", "version", "config", "currentDir", "navigate",
+    "confirm", "prompt", "select", "listDir", "activePane", "oppositePane", "command", "copy",
+    "move", "delete", "open", "folderDialog", "openDialog", "saveDialog", "modifiers", "spawn",
+    "run", "unpack", "fs", "registerCommand", "registerMenu", "on",
 ];
 
 /// `r`/`rerics` で組込側が優先される名前か（host API メンバー or 組込コマンド token）。

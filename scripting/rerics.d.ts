@@ -211,6 +211,13 @@ interface RericsApi {
   /** アプリのバージョン文字列を返す。 */
   version(): string;
 
+  /**
+   * 設定値をドット区切りキーで読む（読取専用）。キーは `config.toml` の構造に対応する
+   * （例：`r.config("editor")`・`r.config("layout.border_unit")`・`r.config("cursor.to_parent")`）。
+   * 値はそのまま（文字列・数値・真偽・配列・オブジェクト）返り、未知キーは null。
+   */
+  config(key: string): unknown;
+
   /** アクティブペインの現在ディレクトリ（絶対パス）を返す。 */
   currentDir(): string;
 

@@ -27,6 +27,7 @@ use crate::winutil::msg::SCRIPT_WAKE;
 pub enum HostCall {
     Log { level: LogLevel, text: String },
     GetLog,
+    ConfigGet(String),
     CurrentDir,
     Navigate(String),
     Confirm(String),
@@ -54,6 +55,7 @@ pub enum HostResp {
     Done,
     Dir(String),
     LogText(String),
+    Json(Option<serde_json::Value>),
     Bool(bool),
     Text(Option<String>),
     Index(Option<usize>),
@@ -183,6 +185,18 @@ impl HostApi for GuiHost {
         match ui_marshal::call(&self.queue, self.hwnd_ptr, SCRIPT_WAKE.raw(), HostCall::GetLog) {
             Ok(HostResp::LogText(text)) => text,
             _ => String::new(),
+        }
+    }
+
+    fn config_get(&self, key: &str) -> Option<serde_json::Value> {
+        match ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::ConfigGet(key.to_string()),
+        ) {
+            Ok(HostResp::Json(value)) => value,
+            _ => None,
         }
     }
 
@@ -526,6 +540,11 @@ impl MainWindow {
                 }
                 HostCall::GetLog => {
                     let _ = tx.send(HostResp::LogText(self.log.text()));
+                }
+                HostCall::ConfigGet(key) => {
+                    let value = serde_json::to_value(&*self.config.borrow()).ok();
+                    let found = value.as_ref().and_then(|v| script::config_lookup(v, &key));
+                    let _ = tx.send(HostResp::Json(found));
                 }
                 HostCall::CurrentDir => {
                     let is_left = !self.active_right.get();
