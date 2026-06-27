@@ -13,8 +13,8 @@ const HOST_API_MEMBERS: &[&str] = &[
     "changeOppositeDirectory", "changeOppositeDirectoryToParent", "changeOppositeDirectoryToRoot",
     "selectMask", "pathMask", "makeDirectory", "compress", "navigate", "confirm",
     "prompt", "select", "listDir", "activePane", "oppositePane", "command", "copy", "move",
-    "delete", "open", "folderDialog", "openDialog", "saveDialog", "modifiers", "spawn", "run",
-    "unpack", "fs", "str", "env", "registerCommand", "registerMenu", "on",
+    "delete", "open", "folderDialog", "openDialog", "saveDialog", "modifiers", "spawn", "execute",
+    "run", "unpack", "fs", "str", "env", "registerCommand", "registerMenu", "on",
 ];
 
 /// `r`/`rerics` で組込側が優先される名前か（host API メンバー or 組込コマンド token）。

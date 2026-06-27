@@ -444,6 +444,18 @@ interface RericsApi {
   spawn(cmd: string, ...args: (string | RericsProcOptions)[]): void;
 
   /**
+   * 実行ファイル `path` を、生の引数文字列 `params` 付きで**現在のディレクトリ**で起動して
+   * **待たずに**戻る（投げっぱなし）。`params` はコマンドラインの末尾へそのまま付くので
+   * `/flag "値"` のような書式を保てる（個別に渡してクォートされる `spawn` とは別物）。
+   * 起動失敗は例外。
+   *
+   * ```ts
+   * rerics.execute("notepad.exe", "C:\\memo.txt");
+   * ```
+   */
+  execute(path: string, params?: string): void;
+
+  /**
    * 外部プログラムを起動して**終了まで待ち**、結果（終了コード・標準出力・標準エラー）を返す。
    * 引数は文字列で渡し、末尾に `{ cwd }` を付けると作業ディレクトリを指定できる。`await` して使う。
    *

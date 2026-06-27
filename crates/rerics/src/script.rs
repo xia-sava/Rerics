@@ -688,6 +688,34 @@ fn op_spawn(
         .map_err(|e| deno_error::JsErrorBox::generic(format!("起動に失敗しました [{cmd}]: {e}")))
 }
 
+/// 実行ファイル `path` を生の引数文字列 `params` 付きで起動して即リターンする（投げっぱなし）。
+/// `params` はコマンドラインの末尾へそのまま付くので `/flag "値"` のような書式を保てる
+/// （`op_spawn` の配列引数とは別物）。`cwd` が非空ならそこを作業ディレクトリにする。
+#[op2(fast)]
+fn op_execute(
+    #[string] path: &str,
+    #[string] params: &str,
+    #[string] cwd: &str,
+) -> Result<(), deno_error::JsErrorBox> {
+    let mut command = std::process::Command::new(path);
+    if !params.is_empty() {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.raw_arg(params);
+        }
+        #[cfg(not(windows))]
+        command.args(params.split_whitespace());
+    }
+    if !cwd.is_empty() {
+        command.current_dir(cwd);
+    }
+    command
+        .spawn()
+        .map(|_child| ())
+        .map_err(|e| deno_error::JsErrorBox::generic(format!("起動に失敗しました [{path}]: {e}")))
+}
+
 /// 指定プログラムを起動して終了まで待ち、結果（終了コード・標準出力・標準エラー）を返す
 /// 非同期 op。`cwd` が非空ならそこを作業ディレクトリにする。重い待ちはブロッキングプールへ
 /// 逃がす（`op_list_dir` と同じ形）。
@@ -885,6 +913,7 @@ extension!(
         op_save_dialog,
         op_modifiers,
         op_spawn,
+        op_execute,
         op_run,
         op_unpack,
         op_fs_read_text,
@@ -1153,6 +1182,8 @@ const BOOTSTRAP: &str = r#"
       const { args, cwd } = splitProcArgs(rest);
       return ops.op_run(String(cmd), args, cwd);
     },
+    execute: (path, params) =>
+      ops.op_execute(String(path), params == null ? "" : String(params), ops.op_current_dir()),
     unpack: (src, dst) => ops.op_unpack(String(src), String(dst)),
     // 裏で動く低レベルファイル操作。画面にもログにも触れない（更新は呼び手が navigate 等で明示）。
     // 絶対パス前提。I/O エラーは例外（exists は false 寄せ・stat は不在で null）。
@@ -1926,6 +1957,34 @@ mod tests {
             false
         });
         assert!(appeared, "spawn したプロセスが空ファイルを作るはず: {}", marker.display());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn execute_launches_with_raw_params_in_current_dir() {
+        let dir = std::env::temp_dir().join(format!("rerics-exec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("done.txt");
+
+        // 現在地（current_dir）を temp dir にして execute を投げる。params は生のコマンドライン
+        // 末尾としてそのまま渡るので、相対名 done.txt は現在地に作られる。
+        let host = Rc::new(MockHost { dir: dir.display().to_string(), ..Default::default() });
+        let mut eng = Engine::new(host);
+        eng.run_to_completion(
+            "test:execute",
+            r#"rerics.execute("cmd", "/c copy /y nul done.txt");"#.to_string(),
+        )
+        .unwrap();
+
+        let appeared = (0..50).any(|_| {
+            if marker.exists() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            false
+        });
+        assert!(appeared, "execute が現在地に空ファイルを作るはず: {}", marker.display());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
