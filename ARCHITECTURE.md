@@ -7,6 +7,22 @@
 - **`rerics`** … GUI（winsafe）と OS 連携、組込スクリプトエンジン（deno_core）。`rerics-core`
   を土台に、画面・入力・外部プロセス・スクリプト API を実装する。
 
+## スクリプトエンジンとスレッドモデル
+
+Rerics は組込スクリプトエンジン（deno_core・埋め込み V8）を専用スレッドで動かす。スクリプト
+からホスト（ファイルシステム・画面状態・外部プロセス）へ触れるのは、`crates/rerics/src/script.rs`
+で定義する op（`#[op2]`）経由のみ。bootstrap スクリプトが起動時に `globalThis.rerics`
+（別名 `r`）を組み立て、各 op をメソッドとして公開する。
+
+UI はメインスレッド（winsafe のメッセージループ）で動く。エンジンスレッドが画面状態を要する
+操作（カーソル移動・選択・ペイン情報の取得など）を行うときは、`HostCall` / `HostResp` で
+メインスレッドへ要求を marshaling し、メインスレッド側の dispatch が処理して返す。逆に UI 側
+からスクリプトを起動するときは `EngineCmd::Eval` でソースをエンジンスレッドへ送る
+（投げっぱなし・非同期）。
+
+この境界があるため、表層 UI コマンドが純ロジックの `r.xxx` を呼ぶときは `EngineCmd::Eval`
+経由になり、選択などの結果は marshaling を一往復してから画面へ反映される（即時ではない）。
+
 ## コマンドの構造：表層 UI と実処理の分離
 
 UI（ダイアログ・入力ボックス・リスト選択）を伴うコマンドは、次の二層に必ず分ける。
@@ -43,6 +59,16 @@ UI を差し替えても実処理は変わらず、同じ処理が UI 側とロ�
 （純 JS・両ペインの一覧を突き合わせて選択する）が唯一の正本で、UI コマンドは値を集めて
 渡すだけ。実装は `crates/rerics/src/search.rs` の `compare_dialog`。
 
+## コマンドの実行経路（機能欄は式）
+
+キー定義・メニュー項目など「機能を指定する場所」は式（コード）で書ける。
+`crates/rerics-core/src/call.rs` の `Call` が式を振り分ける。単一の組込コマンド呼び出しに
+簡約できる式は同期実行の fast-path（`Call::Builtin`）に、それ以外（ネスト呼び出し・
+スクリプト関数・制御構文など）はエンジンへ丸投げ（`Call::Script`）になる。
+
+- 組込コマンドは token で直接書ける（例：`cursorDown`、`compareDialog`）。
+- スクリプト API メンバーや登録コマンドは `r.xxx()` の式で書く（裸の token では引けない）。
+
 ## 組込コマンドを追加するとき触る箇所
 
 `Command` を 1 つ増やすときのチェックリスト。
@@ -66,3 +92,10 @@ UI を差し替えても実処理は変わらず、同じ処理が UI 側とロ�
 - `extension!` の ops 一覧に登録し、bootstrap の `globalThis.rerics` に生やす。
 - `crates/rerics-core/src/dts.rs` の `HOST_API_MEMBERS` と `scripting/rerics.d.ts` の両方に
   追加する。
+
+## 観測可能性とテスト
+
+GUI は debug-server（`--debug-server` / `--headless`）から状態を観測し、操作を駆動できる形で
+実装する。モーダルはレジストリに登録し、window を出さずに `/state`・`/command/*`・`/modal/*`
+などで検証できるようにする。前述の「実処理を引数で駆動できる形に分ける」設計と合わせて、機能は
+ヘッドレスで end-to-end にテストする（`crates/rerics/tests/debug_server.rs`）。
