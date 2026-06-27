@@ -9,6 +9,7 @@ mod compare;
 mod config;
 mod dts;
 mod file_list;
+mod find;
 mod highlight;
 mod input;
 mod log;
@@ -46,6 +47,7 @@ pub use file_list::{
 };
 pub use call::Call;
 pub use compare::{CompareCondition, CompareCounts, CompareOptions, directory_compare};
+pub use find::{FindOptions, find_file};
 pub use input::{
     ArgSpec, ArgType, Command, CommandContext, CommandMeta, Invocation, KeyChord, KeyMap, OptSpec,
     vk,
