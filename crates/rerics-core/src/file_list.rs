@@ -20,6 +20,7 @@ pub struct FileItem {
     pub size: Option<u64>,
     pub created: Option<SystemTime>,
     pub modified: Option<SystemTime>,
+    pub accessed: Option<SystemTime>,
     pub readonly: bool,
     pub hidden: bool,
     pub system: bool,
@@ -41,6 +42,7 @@ impl FileItem {
             size: None,
             created: None,
             modified: None,
+            accessed: None,
             readonly: false,
             hidden: false,
             system: false,
@@ -72,6 +74,7 @@ impl FileItem {
         it.size = if is_dir { None } else { Some(meta.len()) };
         it.created = meta.created().ok();
         it.modified = meta.modified().ok();
+        it.accessed = meta.accessed().ok();
         it
     }
 }

@@ -39,6 +39,10 @@ interface RericsItem {
   readonly size: number;
   /** 最終更新時刻（Unix epoch ミリ秒）。`new Date(mtime)` で扱える。取得不可なら 0。 */
   readonly mtime: number;
+  /** 作成時刻（Unix epoch ミリ秒）。`new Date(ctime)` で扱える。取得不可なら 0。 */
+  readonly ctime: number;
+  /** 最終アクセス時刻（Unix epoch ミリ秒）。`new Date(atime)` で扱える。取得不可なら 0。 */
+  readonly atime: number;
   /**
    * 選択（マーク）されているか。**代入できる**。
    *
@@ -48,6 +52,14 @@ interface RericsItem {
   selected: boolean;
   readonly readonly: boolean;
   readonly hidden: boolean;
+  /** システム属性。 */
+  readonly system: boolean;
+  /** アーカイブ属性（書庫内かどうかではなく属性ビット）。 */
+  readonly archive: boolean;
+  /** 再解析ポイント（シンボリックリンク・ジャンクション等）。 */
+  readonly reparse: boolean;
+  /** 書庫など仮想ディレクトリ内の項目なら true。 */
+  readonly virtual: boolean;
 }
 
 /**

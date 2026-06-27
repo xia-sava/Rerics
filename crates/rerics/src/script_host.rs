@@ -950,9 +950,16 @@ impl MainWindow {
                 is_parent: it.is_parent,
                 size: it.size.unwrap_or(0),
                 mtime: system_time_ms(it.modified),
+                ctime: system_time_ms(it.created),
+                atime: system_time_ms(it.accessed),
                 selected: it.selected,
                 readonly: it.readonly,
                 hidden: it.hidden,
+                system: it.system,
+                archive: it.archive,
+                reparse: it.reparse,
+                // 書庫など仮想ペインの項目はすべて仮想扱い。
+                is_virtual: is_archive,
             })
             .collect();
         PaneSnapshot {

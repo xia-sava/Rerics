@@ -204,10 +204,23 @@ pub struct PaneItem {
     pub size: u64,
     /// 最終更新時刻（Unix epoch ミリ秒・取得不可は 0）。
     pub mtime: u64,
+    /// 作成時刻（Unix epoch ミリ秒・取得不可は 0）。
+    pub ctime: u64,
+    /// 最終アクセス時刻（Unix epoch ミリ秒・取得不可は 0）。
+    pub atime: u64,
     /// 選択（マーク）されているか。
     pub selected: bool,
     pub readonly: bool,
     pub hidden: bool,
+    /// システム属性。
+    pub system: bool,
+    /// アーカイブ属性（書庫内かどうかではなく属性ビット）。
+    pub archive: bool,
+    /// 再解析ポイント（シンボリックリンク・ジャンクション等）。
+    pub reparse: bool,
+    /// 書庫など仮想ディレクトリ内の項目か（JS では `virtual`）。
+    #[serde(rename = "virtual")]
+    pub is_virtual: bool,
 }
 
 type Host = Rc<dyn HostApi>;
@@ -910,8 +923,14 @@ const BOOTSTRAP: &str = r#"
         isParent: raw.isParent,
         size: raw.size,
         mtime: raw.mtime,
+        ctime: raw.ctime,
+        atime: raw.atime,
         readonly: raw.readonly,
         hidden: raw.hidden,
+        system: raw.system,
+        archive: raw.archive,
+        reparse: raw.reparse,
+        virtual: raw.virtual,
       };
       Object.defineProperty(it, "selected", {
         enumerable: true,
@@ -1661,9 +1680,50 @@ mod tests {
             size: 0,
             mtime: 0,
             selected,
-            readonly: false,
-            hidden: false,
+            ..Default::default()
         }
+    }
+
+    #[test]
+    fn item_exposes_attrs_times_and_virtual() {
+        let mut a = item(1, "link.txt", false, false);
+        a.system = true;
+        a.archive = true;
+        a.reparse = true;
+        a.is_virtual = true;
+        a.ctime = 1000;
+        a.atime = 2000;
+        a.mtime = 3000;
+        let host = Rc::new(MockHost {
+            active_pane: PaneSnapshot {
+                dir: "C:\\arc.zip".into(),
+                is_archive: true,
+                is_left: true,
+                items: vec![item(0, "..", true, false), a],
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:item-ext",
+            r#"
+              const it = rerics.activePane().items[1];
+              rerics.log("attr=" + it.system + "," + it.archive + "," + it.reparse);
+              rerics.log("time=" + it.ctime + "," + it.atime + "," + it.mtime);
+              rerics.log("virtual=" + it.virtual);
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            *host.logs.borrow(),
+            vec![
+                "attr=true,true,true".to_string(),
+                "time=1000,2000,3000".to_string(),
+                "virtual=true".to_string(),
+            ]
+        );
     }
 
     #[test]

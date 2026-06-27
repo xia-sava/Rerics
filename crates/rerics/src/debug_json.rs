@@ -126,6 +126,7 @@ mod tests {
             size: Some(100),
             created: None,
             modified: None,
+            accessed: None,
             readonly: false,
             hidden,
             system: false,
