@@ -10,6 +10,7 @@ use crate::input::{ArgType, Command};
 const HOST_API_MEMBERS: &[&str] = &[
     "log", "info", "warning", "error", "getLog", "version", "config", "currentDir", "currentDrive",
     "isLeft", "isRight", "getSortType", "getSortReverse", "getPathMask", "incrementalSearch",
+    "changeOppositeDirectory", "changeOppositeDirectoryToParent", "changeOppositeDirectoryToRoot",
     "navigate", "confirm",
     "prompt", "select", "listDir", "activePane", "oppositePane", "command", "copy", "move",
     "delete", "open", "folderDialog", "openDialog", "saveDialog", "modifiers", "spawn", "run",

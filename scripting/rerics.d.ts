@@ -249,6 +249,15 @@ interface RericsApi {
   /** アクティブペインを `path` へ移動する。 */
   navigate(path: string): void;
 
+  /** 反対ペインを `path` へ移動する（失敗時はログのみ）。 */
+  changeOppositeDirectory(path: string): void;
+
+  /** 反対ペインを親ディレクトリへ移動する。 */
+  changeOppositeDirectoryToParent(): void;
+
+  /** 反対ペインをドライブのルートへ移動する（書庫内では効かない）。 */
+  changeOppositeDirectoryToRoot(): void;
+
   /**
    * いま押されている修飾キー（Shift/Ctrl/Alt）の状態を返す。キーに割り当てたスクリプト
    * コマンドの中で、押下中の修飾で動作を分けたいときに使う（呼んだ時点の物理キー状態）。

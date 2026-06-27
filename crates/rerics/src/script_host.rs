@@ -28,6 +28,7 @@ pub enum HostCall {
     Log { level: LogLevel, text: String },
     GetLog,
     ConfigGet(String),
+    ChangeOpposite { kind: String, path: String },
     CurrentDir,
     Navigate(String),
     Confirm(String),
@@ -198,6 +199,15 @@ impl HostApi for GuiHost {
             Ok(HostResp::Json(value)) => value,
             _ => None,
         }
+    }
+
+    fn change_opposite(&self, kind: &str, path: &str) {
+        let _ = ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::ChangeOpposite { kind: kind.to_string(), path: path.to_string() },
+        );
     }
 
     fn current_dir(&self) -> String {
@@ -545,6 +555,16 @@ impl MainWindow {
                     let value = serde_json::to_value(&*self.config.borrow()).ok();
                     let found = value.as_ref().and_then(|v| script::config_lookup(v, &key));
                     let _ = tx.send(HostResp::Json(found));
+                }
+                HostCall::ChangeOpposite { kind, path } => {
+                    // 反対ペイン＝アクティブの逆側（is_left = active_right）。
+                    let opposite = self.active_right.get();
+                    let _ = match kind.as_str() {
+                        "parent" => self.to_parent(opposite),
+                        "root" => self.to_root(opposite),
+                        _ => self.change_directory(opposite, Some(&path)),
+                    };
+                    let _ = tx.send(HostResp::Done);
                 }
                 HostCall::CurrentDir => {
                     let is_left = !self.active_right.get();

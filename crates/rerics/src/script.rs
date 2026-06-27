@@ -68,6 +68,8 @@ pub trait HostApi {
     fn log_text(&self) -> String;
     /// 設定値をドット区切りキーで読む（未知キーは `None`）。
     fn config_get(&self, key: &str) -> Option<serde_json::Value>;
+    /// 反対ペインを移動する。`kind`＝`"parent"`（親へ）/`"root"`（ルートへ）/その他（`path` へ）。
+    fn change_opposite(&self, kind: &str, path: &str);
     /// アクティブペインの現在ディレクトリ（絶対パス）を返す。
     fn current_dir(&self) -> String;
     /// アクティブペインを `path` へ移動する。
@@ -249,6 +251,12 @@ pub fn config_lookup(root: &serde_json::Value, key: &str) -> Option<serde_json::
 #[serde]
 fn op_config(state: &mut OpState, #[string] key: &str) -> Vec<serde_json::Value> {
     state.borrow::<Host>().config_get(key).into_iter().collect()
+}
+
+/// 反対ペインを移動する（投げっぱなし）。`kind`＝`"parent"`/`"root"`/その他（パス指定）。
+#[op2(fast)]
+fn op_change_opposite(state: &mut OpState, #[string] kind: &str, #[string] path: &str) {
+    state.borrow::<Host>().change_opposite(kind, path);
 }
 
 #[op2]
@@ -670,6 +678,7 @@ extension!(
         op_log_text,
         op_version,
         op_config,
+        op_change_opposite,
         op_current_dir,
         op_navigate,
         op_confirm,
@@ -859,6 +868,9 @@ const BOOTSTRAP: &str = r#"
       }
       return false;
     },
+    changeOppositeDirectory: (path) => ops.op_change_opposite("path", String(path)),
+    changeOppositeDirectoryToParent: () => ops.op_change_opposite("parent", ""),
+    changeOppositeDirectoryToRoot: () => ops.op_change_opposite("root", ""),
     navigate: (p) => ops.op_navigate(String(p)),
     confirm: (m) => ops.op_confirm(String(m)),
     prompt: (m, d) => {
@@ -1271,6 +1283,8 @@ mod tests {
         modifiers: Modifiers,
         /// `config_get()` が引くルート JSON（ドット区切りキーでたどる）。
         config: serde_json::Value,
+        /// `change_opposite()` が受けた `(kind, path)` の記録。
+        opposite_nav: RefCell<Vec<(String, String)>>,
     }
 
     impl HostApi for MockHost {
@@ -1282,6 +1296,9 @@ mod tests {
         }
         fn config_get(&self, key: &str) -> Option<serde_json::Value> {
             config_lookup(&self.config, key)
+        }
+        fn change_opposite(&self, kind: &str, path: &str) {
+            self.opposite_nav.borrow_mut().push((kind.to_string(), path.to_string()));
         }
         fn current_dir(&self) -> String {
             self.dir.clone()
@@ -1872,6 +1889,30 @@ mod tests {
                 "sel=a.txt,b.txt".to_string(),
                 "cursor=a.txt".to_string(),
                 "opp=C:\\other".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn change_opposite_directory_routes_kind_and_path() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:opposite-nav",
+            r#"
+              rerics.changeOppositeDirectory("D:\\dst");
+              rerics.changeOppositeDirectoryToParent();
+              rerics.changeOppositeDirectoryToRoot();
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            *host.opposite_nav.borrow(),
+            vec![
+                ("path".to_string(), "D:\\dst".to_string()),
+                ("parent".to_string(), "".to_string()),
+                ("root".to_string(), "".to_string()),
             ]
         );
     }
