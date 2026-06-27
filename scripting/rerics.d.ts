@@ -347,6 +347,40 @@ interface RericsApi {
   compress(type: string, archive: string, files: string): void;
 
   /**
+   * アクティブペインの各項目を、反対ペインで**同名（大小無視）かつ同じディレクトリ種別**の
+   * 項目と突き合わせ、比較種別 `type` に合う項目だけを選択し直す（既存の選択はクリア）。選択
+   * した件数を返す。`..` は対象外。種別はアクティブ側から見た関係（`"newer"` ＝アクティブ側が
+   * 新しい等）。日付系（`sameDate`/`diffDate`/`newer`/`older`）はディレクトリを対象外とする。
+   * UI ありの版は `compareDialog`。
+   *
+   * - `"name"`：同名（種別だけ一致）
+   * - `"sameDate"` / `"diffDate"`：更新日時が一致 / 不一致
+   * - `"newer"` / `"older"`：更新日時が新しい / 古い
+   * - `"sameSize"` / `"diffSize"`：サイズが一致 / 不一致
+   * - `"smaller"` / `"larger"`：サイズが小さい / 大きい
+   * - `"notExists"`：反対ペインに同名（同種別）が無い
+   */
+  compare(
+    type:
+      | "name"
+      | "sameDate"
+      | "diffDate"
+      | "newer"
+      | "older"
+      | "sameSize"
+      | "diffSize"
+      | "smaller"
+      | "larger"
+      | "notExists",
+  ): number;
+
+  /**
+   * 比較方法を一覧から選ばせ、選んだ種別で `compare` を実行する。選択した件数を返す
+   * （キャンセルなら null）。
+   */
+  compareDialog(): number | null;
+
+  /**
    * いま押されている修飾キー（Shift/Ctrl/Alt）の状態を返す。キーに割り当てたスクリプト
    * コマンドの中で、押下中の修飾で動作を分けたいときに使う（呼んだ時点の物理キー状態）。
    */

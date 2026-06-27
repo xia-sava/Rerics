@@ -1124,6 +1124,67 @@ const BOOTSTRAP: &str = r#"
     makeDirectory: (name) => ops.op_make_directory(String(name)),
     compress: (type, archive, files) =>
       ops.op_compress(String(type), String(archive), String(files)),
+    // アクティブ側の各項目を、反対側で同名（大小無視）かつ同じ dir 種別の項目と突き合わせ、
+    // 比較種別 type に合う項目だけを選択し直す（既存選択はクリア）。選択した件数を返す。".." は
+    // 対象外。日付系（sameDate/diffDate/newer/older）はディレクトリを対象外とする（原作
+    // CompareDateCheck の既定 True 相当）。種別は active 視点（newer＝自分が新しい等）。
+    compare: (type) => {
+      const t = String(type);
+      const cur = ops.op_pane_snapshot(false);
+      const opp = ops.op_pane_snapshot(true);
+      const key = (it) => it.name.toUpperCase() + "\0" + (it.isDir ? "D" : "F");
+      const oppMap = new Map();
+      for (const it of opp.items) {
+        if (!it.isParent) oppMap.set(key(it), it);
+      }
+      const changes = [];
+      let count = 0;
+      for (const it of cur.items) {
+        if (it.isParent) continue;
+        const other = oppMap.get(key(it));
+        let want = false;
+        if (t === "notExists") {
+          want = !other;
+        } else if (other) {
+          const dateOk = !it.isDir;
+          switch (t) {
+            case "name": want = true; break;
+            case "sameDate": want = dateOk && it.mtime === other.mtime; break;
+            case "diffDate": want = dateOk && it.mtime !== other.mtime; break;
+            case "newer": want = dateOk && it.mtime > other.mtime; break;
+            case "older": want = dateOk && it.mtime < other.mtime; break;
+            case "sameSize": want = it.size === other.size; break;
+            case "diffSize": want = it.size !== other.size; break;
+            case "smaller": want = it.size < other.size; break;
+            case "larger": want = it.size > other.size; break;
+            default: want = false;
+          }
+        }
+        if (want) count++;
+        if (!!it.selected !== want) changes.push([it.index, want]);
+      }
+      if (changes.length) ops.op_apply_selection(cur.isLeft, changes);
+      return count;
+    },
+    // 比較方法を一覧から選ばせ、選んだ種別で compare を実行する。選択した件数を返す
+    // （キャンセルなら null）。
+    compareDialog: () => {
+      const opts = [
+        ["名前一致のみ", "name"],
+        ["日付が一致", "sameDate"],
+        ["日付が不一致", "diffDate"],
+        ["日付が新しい", "newer"],
+        ["日付が古い", "older"],
+        ["サイズが一致", "sameSize"],
+        ["サイズが不一致", "diffSize"],
+        ["サイズが小さい", "smaller"],
+        ["サイズが大きい", "larger"],
+        ["存在しないファイル", "notExists"],
+      ];
+      const i = rerics.select("同名ファイル選択", opts.map((o) => o[0]));
+      if (i == null) return null;
+      return rerics.compare(opts[i][1]);
+    },
     // カンマ区切りの各マスク（VB Like）に一致する項目だけを選択し直す（既存選択はクリア）。
     // 1 件でも一致すれば true。大小無視。".." は対象外。
     selectMask: (mask) => {
@@ -2377,6 +2438,73 @@ mod tests {
                 (true, vec![(1, false)]),
             ]
         );
+    }
+
+    #[test]
+    fn compare_marks_active_items_against_opposite_by_type() {
+        // mtime/size を持たせた項目を組む小ヘルパ。
+        let it = |index: usize, name: &str, is_dir: bool, mtime: u64, size: u64| {
+            let mut p = item(index, name, is_dir, false);
+            p.mtime = mtime;
+            p.size = size;
+            p
+        };
+        let host = Rc::new(MockHost {
+            active_pane: PaneSnapshot {
+                dir: "C:\\left".into(),
+                is_left: true,
+                items: vec![
+                    it(0, "..", true, 0, 0),
+                    it(1, "same.txt", false, 100, 10), // 反対と同日時・同サイズ
+                    it(2, "newer.txt", false, 200, 20), // 反対より新しく大きい
+                    it(3, "only.txt", false, 100, 10), // 反対に無い
+                    it(4, "dir1", true, 500, 0),       // 反対と同名 dir（日時は違うが dir）
+                ],
+                ..Default::default()
+            },
+            opposite_pane: PaneSnapshot {
+                dir: "C:\\right".into(),
+                is_left: false,
+                items: vec![
+                    it(0, "..", true, 0, 0),
+                    it(1, "same.txt", false, 100, 10),
+                    it(2, "newer.txt", false, 100, 10),
+                    it(3, "dir1", true, 100, 0),
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:compare",
+            r#"
+              rerics.log("name=" + rerics.compare("name"));
+              rerics.log("newer=" + rerics.compare("newer"));
+              rerics.log("sameDate=" + rerics.compare("sameDate"));
+              rerics.log("diffSize=" + rerics.compare("diffSize"));
+              rerics.log("notExists=" + rerics.compare("notExists"));
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            *host.logs.borrow(),
+            vec![
+                // name: same/newer/dir1 が同名一致＝3。only.txt は反対に無い。
+                "name=3".to_string(),
+                // newer: newer.txt のみ（dir1 は dir＝日付対象外、same は同日時）。
+                "newer=1".to_string(),
+                // sameDate: same.txt のみ（newer は不一致、dir1 は dir で対象外）。
+                "sameDate=1".to_string(),
+                // diffSize: newer.txt(20≠10) のみ。same は同サイズ、dir1 は 0==0。
+                "diffSize=1".to_string(),
+                // notExists: only.txt のみ反対に同名無し。
+                "notExists=1".to_string(),
+            ]
+        );
+        // name 比較（最初の呼び出し）は左ペインへ 1/2/4 を立てる差分を流す（全項目は元々未選択）。
+        assert_eq!(host.applied.borrow()[0], (true, vec![(1, true), (2, true), (4, true)]));
     }
 
     #[test]
