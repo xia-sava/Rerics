@@ -153,6 +153,12 @@ impl LogView {
         Ok(())
     }
 
+    /// ログ全文を返す（行は `\r\n` 区切り・末尾にも改行）。スクリプト `getLog` 用。
+    pub fn text(&self) -> String {
+        let s = self.inner.state.borrow();
+        s.lines.iter().map(|l| format!("{}\r\n", l.text)).collect()
+    }
+
     /// ログを全消去して再描画する。
     pub fn clear(&self) {
         self.inner.state.borrow_mut().clear();

@@ -62,8 +62,10 @@ pub struct Modifiers {
 /// テストはモックで記録する。`&self` で受けるのは V8 アイソレートと同一スレッドから
 /// 同期的に呼ばれるため。
 pub trait HostApi {
-    /// アプリのログ欄（実装依存）にメッセージを出す。
-    fn log(&self, msg: &str);
+    /// アプリのログ欄（実装依存）に指定レベルでメッセージを出す。
+    fn log(&self, level: rerics_core::LogLevel, msg: &str);
+    /// ログ欄の全文を返す（行は `\r\n` 区切り・末尾にも改行）。
+    fn log_text(&self) -> String;
     /// アクティブペインの現在ディレクトリ（絶対パス）を返す。
     fn current_dir(&self) -> String;
     /// アクティブペインを `path` へ移動する。
@@ -193,9 +195,32 @@ pub struct PaneItem {
 
 type Host = Rc<dyn HostApi>;
 
+/// ログレベル名（`info`/`warning`/`error`）を [`rerics_core::LogLevel`] へ。未知は `Normal`。
+fn parse_log_level(name: &str) -> rerics_core::LogLevel {
+    match name {
+        "info" => rerics_core::LogLevel::Info,
+        "warning" => rerics_core::LogLevel::Warning,
+        "error" => rerics_core::LogLevel::Error,
+        _ => rerics_core::LogLevel::Normal,
+    }
+}
+
 #[op2(fast)]
-fn op_log(state: &mut OpState, #[string] msg: &str) {
-    state.borrow::<Host>().log(msg);
+fn op_log(state: &mut OpState, #[string] level: &str, #[string] msg: &str) {
+    state.borrow::<Host>().log(parse_log_level(level), msg);
+}
+
+#[op2]
+#[string]
+fn op_log_text(state: &mut OpState) -> String {
+    state.borrow::<Host>().log_text()
+}
+
+/// アプリのバージョン文字列（`Cargo.toml` の version）。
+#[op2]
+#[string]
+fn op_version() -> String {
+    env!("CARGO_PKG_VERSION").to_owned()
 }
 
 #[op2]
@@ -614,6 +639,8 @@ extension!(
     rerics_ext,
     ops = [
         op_log,
+        op_log_text,
+        op_version,
         op_current_dir,
         op_navigate,
         op_confirm,
@@ -758,7 +785,12 @@ const BOOTSTRAP: &str = r#"
     return { args: rest.map(String), cwd };
   };
   globalThis.rerics = {
-    log: (m) => ops.op_log(String(m)),
+    log: (m) => ops.op_log("normal", String(m)),
+    info: (m) => ops.op_log("info", String(m)),
+    warning: (m) => ops.op_log("warning", String(m)),
+    error: (m) => ops.op_log("error", String(m)),
+    getLog: () => ops.op_log_text(),
+    version: () => ops.op_version(),
     currentDir: () => ops.op_current_dir(),
     navigate: (p) => ops.op_navigate(String(p)),
     confirm: (m) => ops.op_confirm(String(m)),
@@ -1173,8 +1205,11 @@ mod tests {
     }
 
     impl HostApi for MockHost {
-        fn log(&self, m: &str) {
+        fn log(&self, _level: rerics_core::LogLevel, m: &str) {
             self.logs.borrow_mut().push(m.to_string());
+        }
+        fn log_text(&self) -> String {
+            self.logs.borrow().iter().map(|l| format!("{l}\r\n")).collect()
         }
         fn current_dir(&self) -> String {
             self.dir.clone()
@@ -1287,6 +1322,38 @@ mod tests {
         .unwrap();
         assert_eq!(*host.logs.borrow(), vec!["hi".to_string()]);
         assert_eq!(*host.navigated.borrow(), vec!["C:\\tmp\\sub".to_string()]);
+    }
+
+    #[test]
+    fn leveled_log_getlog_and_version() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:log",
+            r#"
+              rerics.log("plain");
+              rerics.info("ok");
+              rerics.warning("hmm");
+              rerics.error("boom");
+              rerics.log("len=" + rerics.getLog().split("\r\n").filter(s => s).length);
+              rerics.log("ver=" + (rerics.version().length > 0));
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        // MockHost はレベルを無視して本文だけ溜める。getLog はそれを \r\n 連結で返す。
+        assert_eq!(
+            *host.logs.borrow(),
+            vec![
+                "plain".to_string(),
+                "ok".to_string(),
+                "hmm".to_string(),
+                "boom".to_string(),
+                // getLog 呼び出し時点で 4 行溜まっている。
+                "len=4".to_string(),
+                "ver=true".to_string(),
+            ]
+        );
     }
 
     #[test]

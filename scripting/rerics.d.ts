@@ -193,8 +193,23 @@ type CommandResult = string | number | boolean | null;
  * Rerics 本体が提供するホスト API（グローバル `rerics`／短縮 `r`）。
  */
 interface RericsApi {
-  /** アプリのログ欄へメッセージを出す。 */
+  /** アプリのログ欄へ通常レベルで出す。 */
   log(message: string): void;
+
+  /** ログ欄へ情報レベルで出す（太字）。 */
+  info(message: string): void;
+
+  /** ログ欄へ警告レベルで出す。 */
+  warning(message: string): void;
+
+  /** ログ欄へエラーレベルで出す（太字）。 */
+  error(message: string): void;
+
+  /** ログ欄の全文を返す（行は `\r\n` 区切り・末尾にも改行）。 */
+  getLog(): string;
+
+  /** アプリのバージョン文字列を返す。 */
+  version(): string;
 
   /** アクティブペインの現在ディレクトリ（絶対パス）を返す。 */
   currentDir(): string;

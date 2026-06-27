@@ -17,7 +17,7 @@ use winsafe::prelude::*;
 use crate::MainWindow;
 use crate::dialog::{InputMode, MessageResult, MessageStyle, input_box, list_box, message_box};
 use crate::shell;
-use rerics_core::{Call, Command};
+use rerics_core::{Call, Command, LogLevel};
 
 use crate::script::{self, HostApi, PaneItem, PaneSnapshot, ScriptCommand, ScriptOp};
 use crate::ui_marshal::{self, WakeQueue};
@@ -25,7 +25,8 @@ use crate::winutil::msg::SCRIPT_WAKE;
 
 /// エンジンスレッド → UI スレッドへの要求（[`HostApi`] の各操作）。
 pub enum HostCall {
-    Log(String),
+    Log { level: LogLevel, text: String },
+    GetLog,
     CurrentDir,
     Navigate(String),
     Confirm(String),
@@ -52,6 +53,7 @@ pub enum HostCall {
 pub enum HostResp {
     Done,
     Dir(String),
+    LogText(String),
     Bool(bool),
     Text(Option<String>),
     Index(Option<usize>),
@@ -168,13 +170,20 @@ struct GuiHost {
 }
 
 impl HostApi for GuiHost {
-    fn log(&self, msg: &str) {
+    fn log(&self, level: LogLevel, msg: &str) {
         let _ = ui_marshal::call(
             &self.queue,
             self.hwnd_ptr,
             SCRIPT_WAKE.raw(),
-            HostCall::Log(msg.to_string()),
+            HostCall::Log { level, text: msg.to_string() },
         );
+    }
+
+    fn log_text(&self) -> String {
+        match ui_marshal::call(&self.queue, self.hwnd_ptr, SCRIPT_WAKE.raw(), HostCall::GetLog) {
+            Ok(HostResp::LogText(text)) => text,
+            _ => String::new(),
+        }
     }
 
     fn current_dir(&self) -> String {
@@ -442,7 +451,7 @@ pub fn spawn_engine(queue: ScriptQueue, hwnd_ptr: isize, cmd_rx: Receiver<Engine
         let scripts = rerics_core::data_dir().join("scripts");
         ensure_script_type_files(&scripts);
         for (path, msg) in script::load_dir(&mut engine, &scripts) {
-            host.log(&format!("スクリプト読込エラー [{}]: {}", path.display(), msg));
+            host.log(LogLevel::Error, &format!("スクリプト読込エラー [{}]: {}", path.display(), msg));
         }
         // 読込後に確定した登録コマンドの型定義を書き出す（補完用）。
         write_if_changed(
@@ -453,7 +462,7 @@ pub fn spawn_engine(queue: ScriptQueue, hwnd_ptr: isize, cmd_rx: Receiver<Engine
             match cmd {
                 EngineCmd::Invoke { name, args } => {
                     if let Err(e) = engine.invoke_command(&name, &args) {
-                        host.log(&format!("コマンド実行エラー [{name}]: {e}"));
+                        host.log(LogLevel::Error, &format!("コマンド実行エラー [{name}]: {e}"));
                     }
                 }
                 EngineCmd::Eval(code) => {
@@ -463,7 +472,7 @@ pub fn spawn_engine(queue: ScriptQueue, hwnd_ptr: isize, cmd_rx: Receiver<Engine
                         deno_ast::MediaType::TypeScript,
                         code,
                     ) {
-                        host.log(&format!("eval エラー: {e}"));
+                        host.log(LogLevel::Error, &format!("eval エラー: {e}"));
                     }
                 }
                 EngineCmd::EvalValue { code, tx } => {
@@ -475,7 +484,7 @@ pub fn spawn_engine(queue: ScriptQueue, hwnd_ptr: isize, cmd_rx: Receiver<Engine
                             code,
                         )
                         .unwrap_or_else(|e| {
-                            host.log(&format!("eval エラー: {e}"));
+                            host.log(LogLevel::Error, &format!("eval エラー: {e}"));
                             String::new()
                         });
                     let _ = tx.send(value);
@@ -491,7 +500,7 @@ pub fn spawn_engine(queue: ScriptQueue, hwnd_ptr: isize, cmd_rx: Receiver<Engine
                 }
                 EngineCmd::FireEvent { event, arg } => {
                     if let Err(e) = engine.fire_event(&event, &arg) {
-                        host.log(&format!("イベント発火エラー [{event}]: {e}"));
+                        host.log(LogLevel::Error, &format!("イベント発火エラー [{event}]: {e}"));
                     }
                 }
             }
@@ -506,9 +515,17 @@ impl MainWindow {
             let item = self.script.queue.lock().unwrap().pop_front();
             let Some((req, tx)) = item else { break };
             match req {
-                HostCall::Log(msg) => {
-                    self.log.info(&msg);
+                HostCall::Log { level, text } => {
+                    match level {
+                        LogLevel::Normal => self.log.normal(&text),
+                        LogLevel::Info => self.log.info(&text),
+                        LogLevel::Warning => self.log.warn(&text),
+                        LogLevel::Error => self.log.error(&text),
+                    }
                     let _ = tx.send(HostResp::Done);
+                }
+                HostCall::GetLog => {
+                    let _ = tx.send(HostResp::LogText(self.log.text()));
                 }
                 HostCall::CurrentDir => {
                     let is_left = !self.active_right.get();
