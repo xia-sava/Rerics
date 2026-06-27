@@ -259,6 +259,13 @@ interface RericsApi {
   changeOppositeDirectoryToRoot(): void;
 
   /**
+   * カンマ区切りの各マスク（VB Like：`*` `?` `#` `[...]` `[!...]`）に一致する項目だけを
+   * 選択し直す（既存選択はクリアしてから付け直す）。大小無視・`".."` は対象外。1 件でも
+   * 一致すれば true。UI ありの版は `selectMaskDialog`。
+   */
+  selectMask(mask: string): boolean;
+
+  /**
    * いま押されている修飾キー（Shift/Ctrl/Alt）の状態を返す。キーに割り当てたスクリプト
    * コマンドの中で、押下中の修飾で動作を分けたいときに使う（呼んだ時点の物理キー状態）。
    */

@@ -822,6 +822,34 @@ const BOOTSTRAP: &str = r#"
     }
     return { args: rest.map(String), cwd };
   };
+  // VB の Like パターン（`*`=0文字以上・`?`=任意1文字・`#`=数字1文字・`[...]`/`[!...]`=文字クラス）
+  // を正規表現へ。selectMask のマスク照合に使う（呼び手が大小を揃えて渡す）。
+  const vbLikeToRegExp = (pattern) => {
+    let re = "^";
+    let i = 0;
+    while (i < pattern.length) {
+      const c = pattern[i];
+      if (c === "*") { re += ".*"; i++; }
+      else if (c === "?") { re += "."; i++; }
+      else if (c === '#') { re += "[0-9]"; i++; }
+      else if (c === "[") {
+        let j = i + 1;
+        let cls = "";
+        if (pattern[j] === "!") { cls += "^"; j++; }
+        while (j < pattern.length && pattern[j] !== "]") {
+          const ch = pattern[j];
+          cls += (ch === "\\" || ch === "]" || ch === "^") ? "\\" + ch : ch;
+          j++;
+        }
+        if (j >= pattern.length) { re += "\\["; i++; }       // 閉じない [ はリテラル。
+        else { re += "[" + cls + "]"; i = j + 1; }
+      } else {
+        re += c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");       // リテラルはメタをエスケープ。
+        i++;
+      }
+    }
+    return new RegExp(re + "$");
+  };
   globalThis.rerics = {
     log: (m) => ops.op_log("normal", String(m)),
     info: (m) => ops.op_log("info", String(m)),
@@ -871,6 +899,24 @@ const BOOTSTRAP: &str = r#"
     changeOppositeDirectory: (path) => ops.op_change_opposite("path", String(path)),
     changeOppositeDirectoryToParent: () => ops.op_change_opposite("parent", ""),
     changeOppositeDirectoryToRoot: () => ops.op_change_opposite("root", ""),
+    // カンマ区切りの各マスク（VB Like）に一致する項目だけを選択し直す（既存選択はクリア）。
+    // 1 件でも一致すれば true。大小無視。".." は対象外。
+    selectMask: (mask) => {
+      const patterns = String(mask).split(",").map((p) => p.trim()).filter((p) => p.length);
+      const res = patterns.map((p) => vbLikeToRegExp(p.toUpperCase()));
+      const snap = ops.op_pane_snapshot(false);
+      const changes = [];
+      let any = false;
+      for (const it of snap.items) {
+        if (it.isParent) continue;
+        const name = it.name.toUpperCase();
+        const want = res.some((r) => r.test(name));
+        if (want) any = true;
+        if (!!it.selected !== want) changes.push([it.index, want]);
+      }
+      if (changes.length) ops.op_apply_selection(snap.isLeft, changes);
+      return any;
+    },
     navigate: (p) => ops.op_navigate(String(p)),
     confirm: (m) => ops.op_confirm(String(m)),
     prompt: (m, d) => {
@@ -1889,6 +1935,50 @@ mod tests {
                 "sel=a.txt,b.txt".to_string(),
                 "cursor=a.txt".to_string(),
                 "opp=C:\\other".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn select_mask_replaces_selection_by_vb_like() {
+        let host = Rc::new(MockHost {
+            active_pane: PaneSnapshot {
+                dir: "C:\\work".into(),
+                is_left: true,
+                items: vec![
+                    item(0, "..", true, false),
+                    item(1, "a.txt", false, true),   // 既存選択（マスク外＝解除されるはず）
+                    item(2, "b.txt", false, false),
+                    item(3, "c.dat", false, false),
+                    item(4, "log9.txt", false, false),
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:select-mask",
+            r#"
+              // *.txt と log# の2マスク。a.txt は既選択だが *.txt に一致＝維持。
+              rerics.log("hit=" + rerics.selectMask("*.txt, log#*"));
+              rerics.log("none=" + rerics.selectMask("*.zip"));
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            *host.logs.borrow(),
+            vec!["hit=true".to_string(), "none=false".to_string()]
+        );
+        // 1回目：望む選択＝b.txt(2), log9.txt(4) を立て、a.txt(1) は既に true＝差分なし。c.dat(3) は対象外。
+        // → 変更は (2,true),(4,true)。2回目（*.zip）は一致ゼロ＝全解除だが、MockHost のスナップショットは
+        // 固定（前回の変更を反映しない）ため、元状態で選択済みの a.txt(1) のみが false への差分になる。
+        assert_eq!(
+            *host.applied.borrow(),
+            vec![
+                (true, vec![(2, true), (4, true)]),
+                (true, vec![(1, false)]),
             ]
         );
     }
