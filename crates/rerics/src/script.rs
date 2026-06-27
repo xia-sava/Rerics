@@ -72,6 +72,8 @@ pub trait HostApi {
     fn change_opposite(&self, kind: &str, path: &str);
     /// アクティブペインの表示マスクを設定する（空 or `"*"` で解除）。設定後に一覧を更新する。
     fn set_path_mask(&self, mask: &str);
+    /// ディレクトリを作る（相対名はアクティブペインの現在地基準）。作成した絶対パスを返す。失敗は `Err`。
+    fn create_directory(&self, name: &str) -> Result<String, String>;
     /// アクティブペインの現在ディレクトリ（絶対パス）を返す。
     fn current_dir(&self) -> String;
     /// アクティブペインを `path` へ移動する。
@@ -265,6 +267,20 @@ fn op_change_opposite(state: &mut OpState, #[string] kind: &str, #[string] path:
 #[op2(fast)]
 fn op_set_path_mask(state: &mut OpState, #[string] mask: &str) {
     state.borrow::<Host>().set_path_mask(mask);
+}
+
+/// ディレクトリを作って作成パス（文字列）を返す。失敗は JS の例外になる。
+#[op2]
+#[serde]
+fn op_make_directory(
+    state: &mut OpState,
+    #[string] name: &str,
+) -> Result<serde_json::Value, deno_error::JsErrorBox> {
+    state
+        .borrow::<Host>()
+        .create_directory(name)
+        .map(serde_json::Value::String)
+        .map_err(deno_error::JsErrorBox::generic)
 }
 
 #[op2]
@@ -688,6 +704,7 @@ extension!(
         op_config,
         op_change_opposite,
         op_set_path_mask,
+        op_make_directory,
         op_current_dir,
         op_navigate,
         op_confirm,
@@ -909,6 +926,7 @@ const BOOTSTRAP: &str = r#"
     changeOppositeDirectoryToParent: () => ops.op_change_opposite("parent", ""),
     changeOppositeDirectoryToRoot: () => ops.op_change_opposite("root", ""),
     pathMask: (mask) => ops.op_set_path_mask(mask == null ? "" : String(mask)),
+    makeDirectory: (name) => ops.op_make_directory(String(name)),
     // カンマ区切りの各マスク（VB Like）に一致する項目だけを選択し直す（既存選択はクリア）。
     // 1 件でも一致すれば true。大小無視。".." は対象外。
     selectMask: (mask) => {
@@ -1343,6 +1361,8 @@ mod tests {
         opposite_nav: RefCell<Vec<(String, String)>>,
         /// `set_path_mask()` が受けたマスクの記録。
         path_masks: RefCell<Vec<String>>,
+        /// `create_directory()` が受けた名前の記録。
+        created_dirs: RefCell<Vec<String>>,
     }
 
     impl HostApi for MockHost {
@@ -1360,6 +1380,11 @@ mod tests {
         }
         fn set_path_mask(&self, mask: &str) {
             self.path_masks.borrow_mut().push(mask.to_string());
+        }
+        fn create_directory(&self, name: &str) -> Result<String, String> {
+            self.created_dirs.borrow_mut().push(name.to_string());
+            // モックは現在地（dir）に名前を継いだ絶対パスを返す。
+            Ok(format!("{}\\{name}", self.dir))
         }
         fn current_dir(&self) -> String {
             self.dir.clone()
@@ -1996,6 +2021,22 @@ mod tests {
                 (true, vec![(1, false)]),
             ]
         );
+    }
+
+    #[test]
+    fn make_directory_returns_path_and_records_name() {
+        let host = Rc::new(MockHost {
+            dir: "C:\\work".into(),
+            ..Default::default()
+        });
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:mkdir",
+            r#"rerics.log("made=" + rerics.makeDirectory("newdir"));"#.to_string(),
+        )
+        .unwrap();
+        assert_eq!(*host.created_dirs.borrow(), vec!["newdir".to_string()]);
+        assert_eq!(*host.logs.borrow(), vec!["made=C:\\work\\newdir".to_string()]);
     }
 
     #[test]

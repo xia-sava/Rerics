@@ -272,6 +272,12 @@ interface RericsApi {
   pathMask(mask: string): void;
 
   /**
+   * ディレクトリを作る（相対名はアクティブペインの現在地基準）。作成した絶対パスを返す。
+   * 失敗すると例外（`try/catch` で拾える）。UI ありの版は `makeDirectoryDialog`。
+   */
+  makeDirectory(name: string): string;
+
+  /**
    * いま押されている修飾キー（Shift/Ctrl/Alt）の状態を返す。キーに割り当てたスクリプト
    * コマンドの中で、押下中の修飾で動作を分けたいときに使う（呼んだ時点の物理キー状態）。
    */

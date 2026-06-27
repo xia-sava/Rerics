@@ -30,6 +30,7 @@ pub enum HostCall {
     ConfigGet(String),
     ChangeOpposite { kind: String, path: String },
     SetPathMask(String),
+    CreateDirectory(String),
     CurrentDir,
     Navigate(String),
     Confirm(String),
@@ -218,6 +219,19 @@ impl HostApi for GuiHost {
             SCRIPT_WAKE.raw(),
             HostCall::SetPathMask(mask.to_string()),
         );
+    }
+
+    fn create_directory(&self, name: &str) -> Result<String, String> {
+        match ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::CreateDirectory(name.to_string()),
+        ) {
+            Ok(HostResp::CommandResult(Ok(serde_json::Value::String(p)))) => Ok(p),
+            Ok(HostResp::CommandResult(Err(e))) => Err(e),
+            _ => Err("ディレクトリ作成に応答がありませんでした".to_string()),
+        }
     }
 
     fn current_dir(&self) -> String {
@@ -583,6 +597,10 @@ impl MainWindow {
                         if m.is_empty() || m == "*" { None } else { Some(m.to_owned()) };
                     let _ = self.reload_side(is_left);
                     let _ = tx.send(HostResp::Done);
+                }
+                HostCall::CreateDirectory(name) => {
+                    let r = self.script_create_directory(&name).map(serde_json::Value::String);
+                    let _ = tx.send(HostResp::CommandResult(r));
                 }
                 HostCall::CurrentDir => {
                     let is_left = !self.active_right.get();

@@ -37,6 +37,34 @@ impl MainWindow {
         Ok(())
     }
 
+    /// スクリプト用：名前（相対はアクティブペインの現在地基準）でディレクトリを作り、作成した
+    /// 絶対パスを返す。作成後は一覧を更新して新ディレクトリへカーソルを移す。失敗は `Err`。
+    pub(crate) fn script_create_directory(&self, name: &str) -> Result<String, String> {
+        let is_left = !self.active_right.get();
+        if self.pane(is_left).borrow().is_archive() {
+            return Err("書庫内ではディレクトリを作成できません".to_string());
+        }
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("ディレクトリ名が空です".to_string());
+        }
+        let p = Path::new(name);
+        let dir = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            self.pane(is_left).borrow().path().join(name)
+        };
+        if let Err(e) = std::fs::create_dir(&dir) {
+            let line = messages::create_directory_failure(name, &e.to_string());
+            self.log.error(&line);
+            return Err(line);
+        }
+        self.log.normal(&messages::create_directory(name));
+        let focus = dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let _ = self.reload_side_focus(is_left, &focus, false);
+        Ok(dir.display().to_string())
+    }
+
     /// 新規ファイルを作る。入力されたファイル名で空ファイルを作成する。
     /// 既存ファイルは上書きしない。
     pub(crate) fn create_file(&self, is_left: bool) -> w::AnyResult<()> {
