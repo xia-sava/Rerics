@@ -186,12 +186,13 @@ interface RericsProcessResult {
   readonly stderr: string;
 }
 
+/** 組込コマンドを `r.<名前>()` で呼んだときの戻り値（値返しクエリは値・アクションは null）。 */
+type CommandResult = string | number | boolean | null;
+
 /**
- * Rerics 本体が提供するホスト API。グローバル `rerics` から呼ぶ。
- *
- * （`delete` が予約語のため `declare namespace` ではなくオブジェクト型で宣言している。）
+ * Rerics 本体が提供するホスト API（グローバル `rerics`／短縮 `r`）。
  */
-declare const rerics: {
+interface RericsApi {
   /** アプリのログ欄へメッセージを出す。 */
   log(message: string): void;
 
@@ -364,11 +365,20 @@ declare const rerics: {
    */
   delete(options?: RericsOpOptions): RericsJob;
   delete(items: string[], options?: RericsOpOptions): RericsJob;
-};
+}
+
+/**
+ * 組込コマンド（`cursorDown` など）を `r.<名前>()` で呼ぶための宣言。中身は起動時に
+ * `rerics.commands.d.ts`（`Command::ALL` から自動生成）が宣言マージで埋める。手書きしない。
+ */
+interface RericsCommands {}
+
+/** ホスト API ＋ 組込コマンド。グローバル `rerics` から呼ぶ。 */
+declare const rerics: RericsApi & RericsCommands;
 
 /**
  * `rerics` の短縮別名。`rerics.foo()` と `r.foo()` は同じものを指す（実行時に
  * `globalThis.r = globalThis.rerics` で結ばれる）。設定欄やスクリプトでは `r.` が短くて使いやすい。
- * 登録コマンド・組込コマンドも `r.<名前>()` で呼べる（型としては index シグネチャで許容）。
+ * 登録したスクリプトコマンドも `r.<名前>()` で呼べる（型としては index シグネチャで許容）。
  */
 declare const r: typeof rerics & { [command: string]: (...args: unknown[]) => unknown };

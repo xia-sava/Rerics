@@ -375,6 +375,32 @@ impl HostApi for GuiHost {
     }
 }
 
+/// エディタ補完用の型ファイルを `scripts/` に整備する。`rerics.d.ts`（ホスト API）と
+/// `rerics.commands.d.ts`（`Command::ALL` から生成した組込コマンド宣言）は管理対象として
+/// 内容が違えば上書きし、`tsconfig.json` は無いときだけ作る（ユーザの編集を残す）。
+/// 失敗しても起動を妨げない（補完が効かないだけ）。
+fn ensure_script_type_files(dir: &std::path::Path) {
+    const BASE_DTS: &str = include_str!("../../../scripting/rerics.d.ts");
+    const TSCONFIG: &str = include_str!("../../../scripting/tsconfig.json");
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    write_if_changed(&dir.join("rerics.d.ts"), BASE_DTS);
+    write_if_changed(&dir.join("rerics.commands.d.ts"), &rerics_core::commands_dts());
+    let tsconfig = dir.join("tsconfig.json");
+    if !tsconfig.exists() {
+        let _ = std::fs::write(tsconfig, TSCONFIG);
+    }
+}
+
+/// `content` と中身が違うとき（または無いとき）だけ書く。無駄な書き換えを避ける。
+fn write_if_changed(path: &std::path::Path, content: &str) {
+    if std::fs::read_to_string(path).is_ok_and(|s| s == content) {
+        return;
+    }
+    let _ = std::fs::write(path, content);
+}
+
 /// スクリプトエンジンを別スレッドに建てる。起動スクリプト（`data_dir()/scripts`）を読み込み、
 /// 以後 [`EngineCmd`] を受けて捌くループに入る。`hwnd_ptr` は UI スレッドを起こす先。
 pub fn spawn_engine(queue: ScriptQueue, hwnd_ptr: isize, cmd_rx: Receiver<EngineCmd>) {
@@ -382,6 +408,7 @@ pub fn spawn_engine(queue: ScriptQueue, hwnd_ptr: isize, cmd_rx: Receiver<Engine
         let host: Rc<dyn HostApi> = Rc::new(GuiHost { queue, hwnd_ptr });
         let mut engine = script::Engine::new(host.clone());
         let scripts = rerics_core::data_dir().join("scripts");
+        ensure_script_type_files(&scripts);
         for (path, msg) in script::load_dir(&mut engine, &scripts) {
             host.log(&format!("スクリプト読込エラー [{}]: {}", path.display(), msg));
         }

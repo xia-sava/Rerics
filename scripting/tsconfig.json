@@ -8,5 +8,5 @@
     "lib": ["ES2020"],
     "types": []
   },
-  "include": ["rerics.d.ts", "*.ts"]
+  "include": ["rerics.d.ts", "rerics.commands.d.ts", "*.ts"]
 }
