@@ -217,6 +217,21 @@ impl SortType {
             _ => None,
         }
     }
+
+    /// 種別を正規トークン文字列にする（`from_token` で読み戻せる）。スクリプトの
+    /// `getSortType` が返す値。
+    pub fn as_token(self) -> &'static str {
+        match self {
+            Self::FileName => "fileName",
+            Self::Extension => "extension",
+            Self::Length => "length",
+            Self::CreateTime => "createTime",
+            Self::LastWriteTime => "lastWriteTime",
+            Self::Attribute => "attribute",
+            Self::FileNameExpLike => "fileNameExpLike",
+            Self::ExtensionExpLike => "extensionExpLike",
+        }
+    }
 }
 
 /// ファイル名同士を比較する。Windows ではユーザの既定ロケールの言語的照合
@@ -1350,6 +1365,22 @@ mod tests {
         assert_eq!(SortType::from_token("size"), Some(SortType::Length));
         assert_eq!(SortType::from_token(" Date "), Some(SortType::LastWriteTime));
         assert_eq!(SortType::from_token("bogus"), None);
+    }
+
+    #[test]
+    fn sort_type_token_round_trips() {
+        for t in [
+            SortType::FileName,
+            SortType::Extension,
+            SortType::Length,
+            SortType::CreateTime,
+            SortType::LastWriteTime,
+            SortType::Attribute,
+            SortType::FileNameExpLike,
+            SortType::ExtensionExpLike,
+        ] {
+            assert_eq!(SortType::from_token(t.as_token()), Some(t), "token: {}", t.as_token());
+        }
     }
 
     fn file(name: &str) -> FileItem {

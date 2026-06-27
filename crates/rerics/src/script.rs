@@ -166,6 +166,12 @@ pub struct PaneSnapshot {
     pub cursor: usize,
     /// 表示順の項目一覧（".." を含む）。
     pub items: Vec<PaneItem>,
+    /// ソート種別のトークン（`getSortType` 用・`SortType::as_token`）。
+    pub sort_type: String,
+    /// ソートが逆順か（`getSortReverse` 用）。
+    pub sort_reverse: bool,
+    /// 現在のパスマスク（無ければ空文字・`getPathMask` 用）。
+    pub path_mask: String,
 }
 
 /// ペイン内の 1 項目（スクリプトへ渡す）。コア `FileItem` を素直に写したもの。
@@ -819,6 +825,15 @@ const BOOTSTRAP: &str = r#"
       return r.length ? r[0] : null;
     },
     currentDir: () => ops.op_current_dir(),
+    isLeft: () => ops.op_pane_snapshot(false).isLeft,
+    isRight: () => !ops.op_pane_snapshot(false).isLeft,
+    currentDrive: () => {
+      const m = /^([A-Za-z]:)/.exec(ops.op_current_dir());
+      return m ? m[1] : "";
+    },
+    getSortType: () => ops.op_pane_snapshot(false).sortType,
+    getSortReverse: () => ops.op_pane_snapshot(false).sortReverse,
+    getPathMask: () => ops.op_pane_snapshot(false).pathMask,
     navigate: (p) => ops.op_navigate(String(p)),
     confirm: (m) => ops.op_confirm(String(m)),
     prompt: (m, d) => {
@@ -1802,6 +1817,7 @@ mod tests {
                     item(2, "a.txt", false, true),
                     item(3, "b.txt", false, true),
                 ],
+                ..Default::default()
             },
             opposite_pane: PaneSnapshot {
                 dir: "C:\\other".into(),
@@ -1831,6 +1847,47 @@ mod tests {
                 "sel=a.txt,b.txt".to_string(),
                 "cursor=a.txt".to_string(),
                 "opp=C:\\other".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn state_getters_read_pane_and_dir() {
+        let host = Rc::new(MockHost {
+            dir: "D:\\proj\\src".into(),
+            active_pane: PaneSnapshot {
+                dir: "D:\\proj\\src".into(),
+                is_left: false,
+                sort_type: "lastWriteTime".into(),
+                sort_reverse: true,
+                path_mask: "*.rs".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:getters",
+            r#"
+              rerics.log("isLeft=" + rerics.isLeft());
+              rerics.log("isRight=" + rerics.isRight());
+              rerics.log("drive=" + rerics.currentDrive());
+              rerics.log("sort=" + rerics.getSortType());
+              rerics.log("rev=" + rerics.getSortReverse());
+              rerics.log("mask=" + rerics.getPathMask());
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            *host.logs.borrow(),
+            vec![
+                "isLeft=false".to_string(),
+                "isRight=true".to_string(),
+                "drive=D:".to_string(),
+                "sort=lastWriteTime".to_string(),
+                "rev=true".to_string(),
+                "mask=*.rs".to_string(),
             ]
         );
     }

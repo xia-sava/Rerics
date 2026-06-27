@@ -881,6 +881,9 @@ impl MainWindow {
             is_left,
             cursor: s.cursor,
             items,
+            sort_type: s.sort_type.as_token().to_string(),
+            sort_reverse: s.sort_reverse,
+            path_mask: self.mask(is_left).borrow().clone().unwrap_or_default(),
         }
     }
 

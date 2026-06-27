@@ -221,6 +221,24 @@ interface RericsApi {
   /** アクティブペインの現在ディレクトリ（絶対パス）を返す。 */
   currentDir(): string;
 
+  /** アクティブペインのドライブ（例 `"C:"`）。判別できなければ空文字。 */
+  currentDrive(): string;
+
+  /** アクティブペインが左ペインなら true。 */
+  isLeft(): boolean;
+
+  /** アクティブペインが右ペインなら true。 */
+  isRight(): boolean;
+
+  /** 現在のソート種別トークンを返す（例 `"fileName"`・`"lastWriteTime"`）。 */
+  getSortType(): string;
+
+  /** ソートが逆順なら true。 */
+  getSortReverse(): boolean;
+
+  /** 現在のパスマスクを返す（マスク無しは空文字）。 */
+  getPathMask(): string;
+
   /** アクティブペインを `path` へ移動する。 */
   navigate(path: string): void;
 
