@@ -176,6 +176,40 @@ interface RericsStr {
   toHiragana(text: string): string;
 }
 
+/**
+ * 環境情報（`rerics.env`）。特殊フォルダ・システム情報・環境変数を読む。取得できない値は空文字。
+ */
+interface RericsEnv {
+  /** ドキュメントフォルダ。 */
+  documents(): string;
+  /** デスクトップフォルダ。 */
+  desktop(): string;
+  /** Program Files フォルダ。 */
+  programFiles(): string;
+  /** スタートメニューフォルダ。 */
+  startMenu(): string;
+  /** スタートメニューのプログラムフォルダ。 */
+  programs(): string;
+  /** システムフォルダ（System32）。 */
+  system(): string;
+  /** 一時ディレクトリ。 */
+  tempPath(): string;
+  /** 実行ファイルのあるディレクトリ。 */
+  applicationPath(): string;
+  /** 起動コマンドライン（文字列）。 */
+  commandLine(): string;
+  /** 起動引数の配列（先頭は実行ファイル）。 */
+  commandLineArgs(): string[];
+  /** ログオンユーザ名。 */
+  userName(): string;
+  /** ドメイン名。 */
+  domainName(): string;
+  /** コンピュータ名。 */
+  machineName(): string;
+  /** 環境変数の値（未設定は空文字）。 */
+  get(name: string): string;
+}
+
 /** `rerics.spawn()` / `rerics.run()` の末尾に渡せる起動オプション。 */
 interface RericsProcOptions {
   /** 作業ディレクトリ（省略時はプロセス既定）。 */
@@ -375,6 +409,16 @@ interface RericsApi {
    * ```
    */
   str: RericsStr;
+
+  /**
+   * 環境情報（特殊フォルダ・システム情報・環境変数）。詳細は {@link RericsEnv}。
+   *
+   * ```ts
+   * rerics.navigate(rerics.env.desktop());
+   * const home = rerics.env.get("USERPROFILE");
+   * ```
+   */
+  env: RericsEnv;
 
   /**
    * 外部プログラムを起動して**待たずに**戻る（投げっぱなし）。引数は文字列で渡し、末尾に

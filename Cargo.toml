@@ -7,7 +7,7 @@ version = "1.0.0"
 edition = "2024"
 
 [workspace.dependencies]
-winsafe = { version = "0.0.27", features = ["gui", "gdi", "shell"] }
+winsafe = { version = "0.0.27", features = ["gui", "gdi", "shell", "advapi"] }
 rerics-core = { path = "crates/rerics-core" }
 
 # モーダルを閉じる際の use-after-free（WM_NCDESTROY が実行中のクローズ処理の

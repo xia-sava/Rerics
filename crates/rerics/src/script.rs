@@ -306,6 +306,64 @@ fn lcmap_string(_flags: u32, text: &str) -> String {
     text.to_owned()
 }
 
+/// 既知フォルダのパスを返す（取得不可は空文字）。`kind`＝documents/desktop/programFiles/
+/// startMenu/programs/system。GUI に触れないのでエンジンスレッドから直接呼ぶ。
+#[op2]
+#[string]
+fn op_known_folder(#[string] kind: &str) -> String {
+    known_folder(kind)
+}
+
+#[cfg(windows)]
+fn known_folder(kind: &str) -> String {
+    use winsafe::co::{KF, KNOWNFOLDERID};
+    let id = match kind {
+        "documents" => KNOWNFOLDERID::Documents,
+        "desktop" => KNOWNFOLDERID::Desktop,
+        "programFiles" => KNOWNFOLDERID::ProgramFiles,
+        "startMenu" => KNOWNFOLDERID::StartMenu,
+        "programs" => KNOWNFOLDERID::Programs,
+        "system" => KNOWNFOLDERID::System,
+        _ => return String::new(),
+    };
+    winsafe::SHGetKnownFolderPath(&id, KF::DEFAULT, None).unwrap_or_default()
+}
+
+#[cfg(not(windows))]
+fn known_folder(_kind: &str) -> String {
+    String::new()
+}
+
+/// 環境変数を返す（未設定は空文字）。
+#[op2]
+#[string]
+fn op_env_var(#[string] name: &str) -> String {
+    std::env::var(name).unwrap_or_default()
+}
+
+/// 環境系の単一文字列を返す。`kind`＝temp（一時ディレクトリ）/app（実行ファイルのディレクトリ）/
+/// commandLine（起動コマンドライン）。
+#[op2]
+#[string]
+fn op_env_special(#[string] kind: &str) -> String {
+    match kind {
+        "temp" => std::env::temp_dir().display().to_string(),
+        "app" => std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.display().to_string()))
+            .unwrap_or_default(),
+        "commandLine" => std::env::args().collect::<Vec<_>>().join(" "),
+        _ => String::new(),
+    }
+}
+
+/// 起動引数の一覧（先頭は実行ファイル）。
+#[op2]
+#[serde]
+fn op_command_line_args() -> Vec<String> {
+    std::env::args().collect()
+}
+
 /// ドット区切りキー（例 `"layout.border_unit"`）で JSON 値をたどる。各段はオブジェクトの
 /// キー。途中で見つからなければ `None`。空キーは全体を返す。
 pub fn config_lookup(root: &serde_json::Value, key: &str) -> Option<serde_json::Value> {
@@ -785,6 +843,10 @@ extension!(
         op_log_text,
         op_version,
         op_str_conv,
+        op_known_folder,
+        op_env_var,
+        op_env_special,
+        op_command_line_args,
         op_config,
         op_change_opposite,
         op_set_path_mask,
@@ -1094,6 +1156,23 @@ const BOOTSTRAP: &str = r#"
       toWide: (t) => ops.op_str_conv("wide", String(t)),
       toKatakana: (t) => ops.op_str_conv("katakana", String(t)),
       toHiragana: (t) => ops.op_str_conv("hiragana", String(t)),
+    },
+    // 環境情報（特殊フォルダ・システム情報・環境変数）。
+    env: {
+      documents: () => ops.op_known_folder("documents"),
+      desktop: () => ops.op_known_folder("desktop"),
+      programFiles: () => ops.op_known_folder("programFiles"),
+      startMenu: () => ops.op_known_folder("startMenu"),
+      programs: () => ops.op_known_folder("programs"),
+      system: () => ops.op_known_folder("system"),
+      tempPath: () => ops.op_env_special("temp"),
+      applicationPath: () => ops.op_env_special("app"),
+      commandLine: () => ops.op_env_special("commandLine"),
+      commandLineArgs: () => ops.op_command_line_args(),
+      userName: () => ops.op_env_var("USERNAME"),
+      domainName: () => ops.op_env_var("USERDOMAIN"),
+      machineName: () => ops.op_env_var("COMPUTERNAME"),
+      get: (name) => ops.op_env_var(String(name)),
     },
     registerCommand: (name, fn, opts) => {
       if (typeof fn !== "function") throw new TypeError("registerCommand: fn must be a function");
@@ -1631,6 +1710,34 @@ mod tests {
                 // getLog 呼び出し時点で 4 行溜まっている。
                 "len=4".to_string(),
                 "ver=true".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn environment_exposes_folders_and_vars() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:env",
+            r#"
+              rerics.log("temp=" + (rerics.env.tempPath().length > 0));
+              rerics.log("docs=" + (rerics.env.documents().length > 0));
+              rerics.log("user=" + (rerics.env.userName() === rerics.env.get("USERNAME")));
+              rerics.log("missing=[" + rerics.env.get("RERICS_NO_SUCH_VAR_XYZ") + "]");
+              rerics.log("args=" + (rerics.env.commandLineArgs().length > 0));
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            *host.logs.borrow(),
+            vec![
+                "temp=true".to_string(),
+                "docs=true".to_string(),
+                "user=true".to_string(),
+                "missing=[]".to_string(),
+                "args=true".to_string(),
             ]
         );
     }
