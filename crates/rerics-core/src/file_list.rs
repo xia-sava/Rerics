@@ -478,7 +478,8 @@ impl<'a> ExpMatcher<'a> {
     }
 }
 
-/// 列の表示種別（Icon/Information は今回なし）。
+/// 列の表示種別（Icon は今回なし）。`Information` は検索・比較の結果一覧でだけ使う
+/// 補助情報列（相対サブパスや "追加"/"削除" などの説明＝`FileItem.info`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColumnKind {
     FileName,
@@ -490,6 +491,7 @@ pub enum ColumnKind {
     CreateTimeS,
     LastWriteTimeS,
     Attribute,
+    Information,
 }
 
 impl ColumnKind {
@@ -511,6 +513,8 @@ impl ColumnKind {
             ColumnKind::CreateTime | ColumnKind::CreateTimeS => SortType::CreateTime,
             ColumnKind::LastWriteTime | ColumnKind::LastWriteTimeS => SortType::LastWriteTime,
             ColumnKind::Attribute => SortType::Attribute,
+            // 補助情報列は対応するソート種別を持たない。見出しクリックは現在のソートを保つ。
+            ColumnKind::Information => current,
         }
     }
 
@@ -523,6 +527,7 @@ impl ColumnKind {
             ColumnKind::CreateTime | ColumnKind::CreateTimeS => "作成日時",
             ColumnKind::LastWriteTime | ColumnKind::LastWriteTimeS => "更新日時",
             ColumnKind::Attribute => "属性",
+            ColumnKind::Information => "情報",
         }
     }
 
@@ -562,7 +567,8 @@ impl Column {
 /// 内容追従させたい列（フレックスの名前列・可変の拡張子列）は空文字列を返す。
 pub fn column_sample(kind: ColumnKind) -> &'static str {
     match kind {
-        ColumnKind::FileName | ColumnKind::FileBaseName | ColumnKind::FileExtension => "",
+        // 情報列は内容が可変長（相対パス等）なので内容追従させる。
+        ColumnKind::FileName | ColumnKind::FileBaseName | ColumnKind::FileExtension | ColumnKind::Information => "",
         // 生バイト＋3桁区切り。12桁（〜約931GiB）まで固定し、それ以上は手動拡張に委ねる。
         ColumnKind::Length => "999,999,999,999",
         ColumnKind::CreateTime | ColumnKind::LastWriteTime => "0000/00/00 00:00",
@@ -580,6 +586,13 @@ pub fn default_columns() -> Vec<Column> {
         Column::new(ColumnKind::LastWriteTime, "更新日時", 120, Align::Left),
         Column::new(ColumnKind::Attribute, "属性", 50, Align::Left),
     ]
+}
+
+/// 検索・比較の結果一覧の列構成。通常の列に末尾の情報列（出自の相対パスや説明）を足す。
+pub fn result_columns() -> Vec<Column> {
+    let mut cols = default_columns();
+    cols.push(Column::new(ColumnKind::Information, "情報", 160, Align::Left));
+    cols
 }
 
 /// 列幅を内容に合わせて調整する（content-fit）。
@@ -822,6 +835,9 @@ pub struct FileListState {
     /// 日付ソートのときだけ昇降を追加で反転する（古い日付を先頭にできる）。既定 false。
     pub reverse_sort_date: bool,
     pub columns: Vec<Column>,
+    /// 検索・比較の結果一覧を表示中か。`true` のとき項目は複数ディレクトリ出身の合成項目
+    /// （各々 `FileItem.source`/`info` を持つ）で、情報列を出す。通常の再読込で `false` に戻る。
+    pub find_result: bool,
 }
 
 impl Default for FileListState {
@@ -835,6 +851,7 @@ impl Default for FileListState {
             sort_reverse: false,
             reverse_sort_date: false,
             columns: default_columns(),
+            find_result: false,
         }
     }
 }
@@ -846,6 +863,18 @@ impl FileListState {
 
     pub fn count(&self) -> usize {
         self.items.len()
+    }
+
+    /// 検索・比較の結果一覧へ切り替える。与えられた合成項目（各々 `source`/`info` を持つ）を
+    /// そのまま並べ、情報列を出し、カーソルを先頭へ戻す。項目の並びは呼び出し側（ワーカー）が
+    /// 確定済みとして保持する（ここでは並べ替えない）。通常の再読込で `find_result` は解除される。
+    pub fn set_find_result(&mut self, items: Vec<FileItem>) {
+        self.items = items;
+        self.columns = result_columns();
+        self.find_result = true;
+        self.cursor = 0;
+        self.scroll_top = 0;
+        self.select_start = 0;
     }
 
     /// 表示できる最終行。
@@ -1111,6 +1140,7 @@ impl FileListState {
                 }
                 s
             }
+            ColumnKind::Information => item.info.clone().unwrap_or_default(),
         }
     }
 }
@@ -1422,6 +1452,51 @@ mod tests {
         result.source = Some(Location::Real(std::path::PathBuf::from("C:\\other")));
         result.info = Some("追加".to_owned());
         assert!(matches!(result.source_or(&pane), Location::Real(p) if p == std::path::Path::new("C:\\other")));
+    }
+
+    #[test]
+    fn information_column_renders_info_field() {
+        let mut it = file("b.txt");
+        it.info = Some("sub\\dir".to_owned());
+        let s = FileListState::new();
+        assert_eq!(s.cell_text(&it, ColumnKind::Information, SizeFormat::Detail), "sub\\dir");
+        // info 無しは空文字。
+        let plain = file("c.txt");
+        assert_eq!(s.cell_text(&plain, ColumnKind::Information, SizeFormat::Detail), "");
+    }
+
+    #[test]
+    fn result_columns_appends_information() {
+        let cols = result_columns();
+        assert_eq!(cols.last().map(|c| c.kind), Some(ColumnKind::Information));
+        // 通常列はそのまま含む。
+        assert!(cols.iter().any(|c| c.kind == ColumnKind::FileBaseName));
+    }
+
+    #[test]
+    fn set_find_result_switches_mode_columns_and_cursor() {
+        use crate::vfs::Location;
+        let mut s = FileListState::new();
+        s.cursor = 3;
+        assert!(!s.find_result);
+        assert!(!s.columns.iter().any(|c| c.kind == ColumnKind::Information));
+
+        let mut a = file("a.txt");
+        a.source = Some(Location::Real(std::path::PathBuf::from("C:\\x")));
+        a.info = Some("追加".to_owned());
+        s.set_find_result(vec![FileItem::parent(), a]);
+
+        assert!(s.find_result);
+        assert_eq!(s.cursor, 0);
+        assert_eq!(s.count(), 2);
+        assert!(s.columns.iter().any(|c| c.kind == ColumnKind::Information));
+    }
+
+    #[test]
+    fn information_header_and_no_sort_change() {
+        assert_eq!(ColumnKind::Information.header_label(), "情報");
+        // 情報列の見出しクリックは現在のソートを保つ（専用ソート種別を持たない）。
+        assert_eq!(ColumnKind::Information.sort_target(SortType::Length), SortType::Length);
     }
 
     #[test]

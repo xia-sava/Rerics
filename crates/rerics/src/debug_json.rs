@@ -58,6 +58,9 @@ pub fn item_json(it: &FileItem, is_cursor: bool) -> Value {
         "attrs": attrs_string(it),
         "cursor": is_cursor,
         "modified": modified,
+        // 検索・比較の結果項目のみ非 null（出自の場所と補助情報）。通常一覧では null。
+        "source": it.source.as_ref().map(|l| l.loc_display()),
+        "info": it.info,
     })
 }
 
@@ -94,6 +97,7 @@ pub fn pane_state_json(state: &FileListState, chrome: &PaneChrome) -> Value {
         "visible": [state.scroll_top, visible_end],
         "mask": chrome.mask,
         "sort": { "type": format!("{:?}", state.sort_type), "reverse": state.sort_reverse },
+        "find_result": state.find_result,
         "selected_count": sel_count,
         "selected_size": sel_size,
         "columns": columns,
