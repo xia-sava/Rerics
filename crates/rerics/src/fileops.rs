@@ -25,15 +25,11 @@ impl MainWindow {
         if name.is_empty() {
             return Ok(());
         }
-        let dir = self.pane(is_left).borrow().path().join(name);
-        if let Err(e) = std::fs::create_dir(&dir) {
-            let line = messages::create_directory_failure(name, &e.to_string());
-            self.log.error(&line);
+        // 実処理は no-UI 版の正本 script_create_directory へ委譲する（作成・ログ・一覧更新は
+        // そちらが行う）。失敗時はログに加えてダイアログでも報せる。
+        if let Err(line) = self.script_create_directory(name) {
             dialog::message_box(&self.wnd, "ディレクトリの作成", &line, dialog::MessageStyle::Error);
-            return Ok(());
         }
-        self.log.normal(&messages::create_directory(name));
-        self.reload_side_focus(is_left, name, false)?;
         Ok(())
     }
 
