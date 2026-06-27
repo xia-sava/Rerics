@@ -76,7 +76,7 @@ pub trait HostApi {
     fn create_directory(&self, name: &str) -> Result<String, String>;
     /// 書庫を作る（ワーカー起動・投げっぱなし）。`files` は空白区切りの対象名（相対はアクティブ
     /// ペインの現在地基準）、`archive` は出力先（相対も同様）。起動前の検証失敗は `Err`。
-    fn compress(&self, kind: &str, archive: &str, files: &str) -> Result<(), String>;
+    fn compress(&self, kind: &str, archive: &str, files: &[String]) -> Result<(), String>;
     /// アクティブペインの現在ディレクトリ（絶対パス）を返す。
     fn current_dir(&self) -> String;
     /// アクティブペインを `path` へ移動する。
@@ -424,16 +424,16 @@ fn op_make_directory(
 }
 
 /// 書庫を作る（ワーカー起動・投げっぱなし）。起動前の検証失敗は JS の例外になる。
-#[op2(fast)]
+#[op2]
 fn op_compress(
     state: &mut OpState,
     #[string] kind: &str,
     #[string] archive: &str,
-    #[string] files: &str,
+    #[serde] files: Vec<String>,
 ) -> Result<(), deno_error::JsErrorBox> {
     state
         .borrow::<Host>()
-        .compress(kind, archive, files)
+        .compress(kind, archive, &files)
         .map_err(deno_error::JsErrorBox::generic)
 }
 
@@ -1123,7 +1123,7 @@ const BOOTSTRAP: &str = r#"
     pathMask: (mask) => ops.op_set_path_mask(mask == null ? "" : String(mask)),
     makeDirectory: (name) => ops.op_make_directory(String(name)),
     compress: (type, archive, files) =>
-      ops.op_compress(String(type), String(archive), String(files)),
+      ops.op_compress(String(type), String(archive), (files || []).map(String)),
     // アクティブ側の各項目を、反対側で同名（大小無視）かつ同じ dir 種別の項目と突き合わせ、
     // 比較種別 type に合う項目だけを選択し直す（既存選択はクリア）。選択した件数を返す。".." は
     // 対象外。日付系（sameDate/diffDate/newer/older）はディレクトリを対象外とする（原作
@@ -1629,7 +1629,7 @@ mod tests {
         /// `create_directory()` が受けた名前の記録。
         created_dirs: RefCell<Vec<String>>,
         /// `compress()` が受けた `(kind, archive, files)` の記録。
-        compressed: RefCell<Vec<(String, String, String)>>,
+        compressed: RefCell<Vec<(String, String, Vec<String>)>>,
     }
 
     impl HostApi for MockHost {
@@ -1653,11 +1653,11 @@ mod tests {
             // モックは現在地（dir）に名前を継いだ絶対パスを返す。
             Ok(format!("{}\\{name}", self.dir))
         }
-        fn compress(&self, kind: &str, archive: &str, files: &str) -> Result<(), String> {
+        fn compress(&self, kind: &str, archive: &str, files: &[String]) -> Result<(), String> {
             self.compressed.borrow_mut().push((
                 kind.to_string(),
                 archive.to_string(),
-                files.to_string(),
+                files.to_vec(),
             ));
             Ok(())
         }
@@ -2511,12 +2511,17 @@ mod tests {
         let mut eng = Engine::new(host.clone());
         eng.run_to_completion(
             "test:compress",
-            r#"rerics.compress("zip", "out.zip", "a.txt b.txt");"#.to_string(),
+            // 空白を含む名前も配列なら壊れずに届く。
+            r#"rerics.compress("zip", "out.zip", ["a.txt", "my file.txt"]);"#.to_string(),
         )
         .unwrap();
         assert_eq!(
             *host.compressed.borrow(),
-            vec![("zip".to_string(), "out.zip".to_string(), "a.txt b.txt".to_string())]
+            vec![(
+                "zip".to_string(),
+                "out.zip".to_string(),
+                vec!["a.txt".to_string(), "my file.txt".to_string()],
+            )]
         );
     }
 

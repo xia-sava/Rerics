@@ -340,11 +340,11 @@ interface RericsApi {
   makeDirectory(name: string): string;
 
   /**
-   * `files`（空白区切りの対象名・相対はアクティブペインの現在地基準）を `archive` へ圧縮する
-   * ワーカーを起動して**待たずに**戻る（進捗はログに出る）。対応形式は `type` = `"zip"` のみ。
-   * 起動前の検証失敗（未対応形式・対象なし・書庫内）は例外。UI ありの版は `compressDialog`。
+   * 対象名の配列 `files`（相対はアクティブペインの現在地基準）を `archive` へ圧縮するワーカーを
+   * 起動して**待たずに**戻る（進捗はログに出る）。対応形式は `type` = `"zip"` のみ。起動前の
+   * 検証失敗（未対応形式・対象なし・書庫内）は例外。UI ありの版は `compressDialog`。
    */
-  compress(type: string, archive: string, files: string): void;
+  compress(type: string, archive: string, files: string[]): void;
 
   /**
    * アクティブペインの各項目を、反対ペインで**同名（大小無視）かつ同じディレクトリ種別**の

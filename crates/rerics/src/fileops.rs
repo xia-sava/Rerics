@@ -145,8 +145,7 @@ impl MainWindow {
         }
         hist.add("compress", name);
         let _ = hist.save();
-        let dst_zip = dir.join(name);
-        if dst_zip.exists() {
+        if dir.join(name).exists() {
             let r = dialog::message_box(
                 &self.wnd,
                 "圧縮",
@@ -157,16 +156,23 @@ impl MainWindow {
                 return Ok(());
             }
         }
-        self.start_compress(dir, names, dst_zip)
+        // 実処理は no-UI 版の正本 script_compress へ委譲する（検証・ワーカー起動はそちら）。
+        // 失敗時はログに加えてダイアログでも報せる。
+        if let Err(line) = self.script_compress("zip", name, &names) {
+            self.log.error(&line);
+            dialog::message_box(&self.wnd, "圧縮", &line, dialog::MessageStyle::Error);
+        }
+        Ok(())
     }
 
-    /// スクリプト用：`files`（空白区切りの対象名・相対は現在地基準）を `archive` へ圧縮する
-    /// ワーカーを起動する（投げっぱなし）。対応形式は zip のみ。起動前の検証失敗は `Err`。
+    /// スクリプト用：対象名の列 `files`（相対は現在地基準）を `archive` へ圧縮するワーカーを
+    /// 起動する（投げっぱなし）。対応形式は zip のみ。起動前の検証失敗は `Err`。表層 UI の
+    /// `compress` ダイアログもこの実処理を共有して呼ぶ。
     pub(crate) fn script_compress(
         &self,
         kind: &str,
         archive: &str,
-        files: &str,
+        files: &[String],
     ) -> Result<(), String> {
         let is_left = !self.active_right.get();
         if self.pane(is_left).borrow().is_archive() {
@@ -175,7 +181,8 @@ impl MainWindow {
         if !kind.trim().eq_ignore_ascii_case("zip") {
             return Err(format!("未対応の圧縮形式です: {kind}（zip のみ対応）"));
         }
-        let names: Vec<String> = files.split_whitespace().map(str::to_owned).collect();
+        let names: Vec<String> =
+            files.iter().map(|f| f.trim().to_owned()).filter(|f| !f.is_empty()).collect();
         if names.is_empty() {
             return Err("圧縮対象がありません".to_string());
         }

@@ -31,7 +31,7 @@ pub enum HostCall {
     ChangeOpposite { kind: String, path: String },
     SetPathMask(String),
     CreateDirectory(String),
-    Compress { kind: String, archive: String, files: String },
+    Compress { kind: String, archive: String, files: Vec<String> },
     CurrentDir,
     Navigate(String),
     Confirm(String),
@@ -235,7 +235,7 @@ impl HostApi for GuiHost {
         }
     }
 
-    fn compress(&self, kind: &str, archive: &str, files: &str) -> Result<(), String> {
+    fn compress(&self, kind: &str, archive: &str, files: &[String]) -> Result<(), String> {
         match ui_marshal::call(
             &self.queue,
             self.hwnd_ptr,
@@ -243,7 +243,7 @@ impl HostApi for GuiHost {
             HostCall::Compress {
                 kind: kind.to_string(),
                 archive: archive.to_string(),
-                files: files.to_string(),
+                files: files.to_vec(),
             },
         ) {
             Ok(HostResp::CommandResult(Ok(_))) => Ok(()),
