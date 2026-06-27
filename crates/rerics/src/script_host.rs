@@ -353,6 +353,15 @@ impl HostApi for GuiHost {
         }
     }
 
+    fn modifiers(&self) -> script::Modifiers {
+        // 物理キー状態はスレッド非依存なので UI 往復せず直接読む。
+        script::Modifiers {
+            shift: winsafe::GetAsyncKeyState(co::VK::SHIFT),
+            ctrl: winsafe::GetAsyncKeyState(co::VK::CONTROL),
+            alt: winsafe::GetAsyncKeyState(co::VK::MENU),
+        }
+    }
+
     fn save_dialog(&self, title: &str) -> Option<String> {
         match ui_marshal::call(
             &self.queue,

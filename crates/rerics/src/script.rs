@@ -48,6 +48,16 @@ pub type JobSender = tokio::sync::mpsc::UnboundedSender<JobEvent>;
 /// `op_op_next` が 1 件ずつ取り出す。OpState に常駐させ、ops 間で共有する。
 type JobReceivers = Rc<RefCell<HashMap<u64, tokio::sync::mpsc::UnboundedReceiver<JobEvent>>>>;
 
+/// いま物理的に押されている修飾キーの状態（原作 `Filer.Shift`/`Control`/`Alt` 相当）。
+/// JS では camelCase の真偽プロパティで見える。
+#[derive(serde::Serialize, Clone, Copy, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Modifiers {
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+}
+
 /// スクリプトからのホスト操作を受ける窓口。実 GUI 実装は UI スレッドへマーシャルし、
 /// テストはモックで記録する。`&self` で受けるのは V8 アイソレートと同一スレッドから
 /// 同期的に呼ばれるため。
@@ -95,6 +105,9 @@ pub trait HostApi {
     fn open_dialog(&self, title: &str) -> Option<String>;
     /// ファイル保存ダイアログを開く（`title` 空なら既定見出し）。キャンセルは `None`。
     fn save_dialog(&self, title: &str) -> Option<String>;
+    /// いま押されている修飾キー（Shift/Ctrl/Alt）の状態を返す。物理キー状態なので UI スレッド
+    /// 往復は不要（実装は直接読む）。
+    fn modifiers(&self) -> Modifiers;
 }
 
 /// 外部プロセスを終了まで待った結果（`rerics.run` の戻り）。JS では camelCase で見える。
@@ -410,6 +423,13 @@ fn op_save_dialog(state: &mut OpState, #[string] title: &str) -> Vec<String> {
     state.borrow::<Host>().save_dialog(title).into_iter().collect()
 }
 
+/// いま押されている修飾キー（Shift/Ctrl/Alt）の状態を返す同期 op。
+#[op2]
+#[serde]
+fn op_modifiers(state: &mut OpState) -> Modifiers {
+    state.borrow::<Host>().modifiers()
+}
+
 /// 指定プログラムを起動して即リターンする（投げっぱなし）。`cwd` が非空ならそこを作業
 /// ディレクトリにする。起動失敗は例外。GUI に触れないのでエンジンスレッドから直接起動する。
 #[op2]
@@ -612,6 +632,7 @@ extension!(
         op_folder_dialog,
         op_open_dialog,
         op_save_dialog,
+        op_modifiers,
         op_spawn,
         op_run,
         op_unpack,
@@ -770,6 +791,7 @@ const BOOTSTRAP: &str = r#"
       const r = ops.op_save_dialog(t == null ? "" : String(t));
       return r.length ? r[0] : null;
     },
+    modifiers: () => ops.op_modifiers(),
     spawn: (cmd, ...rest) => {
       const { args, cwd } = splitProcArgs(rest);
       return ops.op_spawn(String(cmd), args, cwd);
@@ -1146,6 +1168,8 @@ mod tests {
         folder_reply: Option<String>,
         open_reply: Option<String>,
         save_reply: Option<String>,
+        /// `modifiers()` が返す修飾キー状態。
+        modifiers: Modifiers,
     }
 
     impl HostApi for MockHost {
@@ -1220,6 +1244,9 @@ mod tests {
         }
         fn save_dialog(&self, _title: &str) -> Option<String> {
             self.save_reply.clone()
+        }
+        fn modifiers(&self) -> Modifiers {
+            self.modifiers
         }
     }
 
@@ -2046,6 +2073,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(*host.logs.borrow(), vec!["caught".to_string()]);
+    }
+
+    #[test]
+    fn modifiers_expose_pressed_keys() {
+        let host = Rc::new(MockHost {
+            modifiers: Modifiers { shift: true, ctrl: false, alt: true },
+            ..Default::default()
+        });
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:modifiers",
+            r#"
+              const m = rerics.modifiers();
+              rerics.log("s=" + m.shift + ",c=" + m.ctrl + ",a=" + m.alt);
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(*host.logs.borrow(), vec!["s=true,c=false,a=true".to_string()]);
     }
 
     #[test]

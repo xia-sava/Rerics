@@ -166,6 +166,16 @@ interface RericsProcOptions {
   cwd?: string;
 }
 
+/** いま押されている修飾キーの状態（`rerics.modifiers()`）。原作 `Filer.Shift`/`Control`/`Alt` 相当。 */
+interface RericsModifiers {
+  /** Shift が押されているか。 */
+  readonly shift: boolean;
+  /** Ctrl が押されているか。 */
+  readonly ctrl: boolean;
+  /** Alt が押されているか。 */
+  readonly alt: boolean;
+}
+
 /** `rerics.run()` が返す外部プロセスの結果。 */
 interface RericsProcessResult {
   /** 終了コード（シグナル等でコード無しに終わった場合は null）。 */
@@ -190,6 +200,12 @@ declare const rerics: {
 
   /** アクティブペインを `path` へ移動する。 */
   navigate(path: string): void;
+
+  /**
+   * いま押されている修飾キー（Shift/Ctrl/Alt）の状態を返す。キーに割り当てたスクリプト
+   * コマンドの中で、押下中の修飾で動作を分けたいときに使う（呼んだ時点の物理キー状態）。
+   */
+  modifiers(): RericsModifiers;
 
   /** 確認ダイアログ（はい/いいえ）を出す。「はい」なら true。 */
   confirm(message: string): boolean;
