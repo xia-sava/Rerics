@@ -14,7 +14,7 @@ const HOST_API_MEMBERS: &[&str] = &[
     "selectMask", "pathMask", "makeDirectory", "compress", "navigate", "confirm",
     "prompt", "select", "listDir", "activePane", "oppositePane", "command", "copy", "move",
     "delete", "open", "folderDialog", "openDialog", "saveDialog", "modifiers", "spawn", "run",
-    "unpack", "fs", "registerCommand", "registerMenu", "on",
+    "unpack", "fs", "str", "registerCommand", "registerMenu", "on",
 ];
 
 /// `r`/`rerics` で組込側が優先される名前か（host API メンバー or 組込コマンド token）。

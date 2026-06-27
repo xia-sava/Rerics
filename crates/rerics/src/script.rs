@@ -240,6 +240,72 @@ fn op_version() -> String {
     env!("CARGO_PKG_VERSION").to_owned()
 }
 
+/// VB の `StrConv` 相当の文字変換。`kind`＝`"wide"`（半角→全角）/`"narrow"`（全角→半角）/
+/// `"katakana"`（ひらがな→カタカナ）/`"hiragana"`（カタカナ→ひらがな）。Win32 `LCMapStringEx`
+/// に委譲するので VB StrConv と同一結果になる。GUI に触れないのでエンジンスレッドから直接呼ぶ。
+#[op2]
+#[string]
+fn op_str_conv(#[string] kind: &str, #[string] text: &str) -> String {
+    // LCMAP_FULLWIDTH/HALFWIDTH/KATAKANA/HIRAGANA。
+    let flags: u32 = match kind {
+        "wide" => 0x0080_0000,
+        "narrow" => 0x0040_0000,
+        "katakana" => 0x0020_0000,
+        "hiragana" => 0x0010_0000,
+        _ => return text.to_owned(),
+    };
+    lcmap_string(flags, text)
+}
+
+/// `LCMapStringEx`（ja-JP ロケール）で文字種変換する。失敗時は入力をそのまま返す。
+#[cfg(windows)]
+fn lcmap_string(flags: u32, text: &str) -> String {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn LCMapStringEx(
+            locale: *const u16,
+            flags: u32,
+            src: *const u16,
+            srclen: i32,
+            dst: *mut u16,
+            dstlen: i32,
+            version: *const core::ffi::c_void,
+            reserved: *const core::ffi::c_void,
+            sort_handle: isize,
+        ) -> i32;
+    }
+    if text.is_empty() {
+        return String::new();
+    }
+    let src: Vec<u16> = text.encode_utf16().collect();
+    // かな変換には日本語ロケールが要る。NUL 終端の名前を渡す。
+    let locale: Vec<u16> = "ja-JP\0".encode_utf16().collect();
+    unsafe {
+        // dstlen=0 で必要長を問い合わせる。
+        let needed = LCMapStringEx(
+            locale.as_ptr(), flags, src.as_ptr(), src.len() as i32,
+            core::ptr::null_mut(), 0, core::ptr::null(), core::ptr::null(), 0,
+        );
+        if needed <= 0 {
+            return text.to_owned();
+        }
+        let mut dst = vec![0u16; needed as usize];
+        let written = LCMapStringEx(
+            locale.as_ptr(), flags, src.as_ptr(), src.len() as i32,
+            dst.as_mut_ptr(), needed, core::ptr::null(), core::ptr::null(), 0,
+        );
+        if written <= 0 {
+            return text.to_owned();
+        }
+        String::from_utf16_lossy(&dst[..written as usize])
+    }
+}
+
+#[cfg(not(windows))]
+fn lcmap_string(_flags: u32, text: &str) -> String {
+    text.to_owned()
+}
+
 /// ドット区切りキー（例 `"layout.border_unit"`）で JSON 値をたどる。各段はオブジェクトの
 /// キー。途中で見つからなければ `None`。空キーは全体を返す。
 pub fn config_lookup(root: &serde_json::Value, key: &str) -> Option<serde_json::Value> {
@@ -718,6 +784,7 @@ extension!(
         op_log,
         op_log_text,
         op_version,
+        op_str_conv,
         op_config,
         op_change_opposite,
         op_set_path_mask,
@@ -1020,6 +1087,13 @@ const BOOTSTRAP: &str = r#"
         const r = ops.op_fs_stat(String(p));
         return r.length ? r[0] : null;
       },
+    },
+    // 文字列ユーティリティ（JS 標準で足りない分のみ）。全角半角・かなの相互変換。
+    str: {
+      toNarrow: (t) => ops.op_str_conv("narrow", String(t)),
+      toWide: (t) => ops.op_str_conv("wide", String(t)),
+      toKatakana: (t) => ops.op_str_conv("katakana", String(t)),
+      toHiragana: (t) => ops.op_str_conv("hiragana", String(t)),
     },
     registerCommand: (name, fn, opts) => {
       if (typeof fn !== "function") throw new TypeError("registerCommand: fn must be a function");
@@ -1557,6 +1631,32 @@ mod tests {
                 // getLog 呼び出し時点で 4 行溜まっている。
                 "len=4".to_string(),
                 "ver=true".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn string_conv_width_and_kana() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:strconv",
+            r#"
+              rerics.log("wide=" + rerics.str.toWide("ABC123"));
+              rerics.log("narrow=" + rerics.str.toNarrow("ＡＢＣ"));
+              rerics.log("kata=" + rerics.str.toKatakana("あいう"));
+              rerics.log("hira=" + rerics.str.toHiragana("アイウ"));
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            *host.logs.borrow(),
+            vec![
+                "wide=ＡＢＣ１２３".to_string(),
+                "narrow=ABC".to_string(),
+                "kata=アイウ".to_string(),
+                "hira=あいう".to_string(),
             ]
         );
     }

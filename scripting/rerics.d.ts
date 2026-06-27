@@ -160,6 +160,22 @@ interface RericsFs {
   stat(path: string): RericsFsStat | null;
 }
 
+/**
+ * 文字列ユーティリティ（`rerics.str`）。JS 標準で足りる操作（大小変換・trim・正規表現など）は
+ * 持たず、JS 標準では難しい全角半角・かなの相互変換だけを提供する。VB の `StrConv` 相当
+ * （内部は Win32 `LCMapStringEx`）。
+ */
+interface RericsStr {
+  /** 全角を半角へ（ASCII・カタカナ）。 */
+  toNarrow(text: string): string;
+  /** 半角を全角へ（ASCII・カタカナ）。 */
+  toWide(text: string): string;
+  /** ひらがなをカタカナへ。 */
+  toKatakana(text: string): string;
+  /** カタカナをひらがなへ。 */
+  toHiragana(text: string): string;
+}
+
 /** `rerics.spawn()` / `rerics.run()` の末尾に渡せる起動オプション。 */
 interface RericsProcOptions {
   /** 作業ディレクトリ（省略時はプロセス既定）。 */
@@ -349,6 +365,16 @@ interface RericsApi {
    * ```
    */
   fs: RericsFs;
+
+  /**
+   * 文字列ユーティリティ（全角半角・かなの相互変換）。詳細は {@link RericsStr}。
+   *
+   * ```ts
+   * rerics.str.toNarrow("ＡＢＣ１２３"); // "ABC123"
+   * rerics.str.toKatakana("あいう");    // "アイウ"
+   * ```
+   */
+  str: RericsStr;
 
   /**
    * 外部プログラムを起動して**待たずに**戻る（投げっぱなし）。引数は文字列で渡し、末尾に
