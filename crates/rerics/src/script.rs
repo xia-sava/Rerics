@@ -74,6 +74,9 @@ pub trait HostApi {
     fn set_path_mask(&self, mask: &str);
     /// ディレクトリを作る（相対名はアクティブペインの現在地基準）。作成した絶対パスを返す。失敗は `Err`。
     fn create_directory(&self, name: &str) -> Result<String, String>;
+    /// 書庫を作る（ワーカー起動・投げっぱなし）。`files` は空白区切りの対象名（相対はアクティブ
+    /// ペインの現在地基準）、`archive` は出力先（相対も同様）。起動前の検証失敗は `Err`。
+    fn compress(&self, kind: &str, archive: &str, files: &str) -> Result<(), String>;
     /// アクティブペインの現在ディレクトリ（絶対パス）を返す。
     fn current_dir(&self) -> String;
     /// アクティブペインを `path` へ移動する。
@@ -280,6 +283,20 @@ fn op_make_directory(
         .borrow::<Host>()
         .create_directory(name)
         .map(serde_json::Value::String)
+        .map_err(deno_error::JsErrorBox::generic)
+}
+
+/// 書庫を作る（ワーカー起動・投げっぱなし）。起動前の検証失敗は JS の例外になる。
+#[op2(fast)]
+fn op_compress(
+    state: &mut OpState,
+    #[string] kind: &str,
+    #[string] archive: &str,
+    #[string] files: &str,
+) -> Result<(), deno_error::JsErrorBox> {
+    state
+        .borrow::<Host>()
+        .compress(kind, archive, files)
         .map_err(deno_error::JsErrorBox::generic)
 }
 
@@ -705,6 +722,7 @@ extension!(
         op_change_opposite,
         op_set_path_mask,
         op_make_directory,
+        op_compress,
         op_current_dir,
         op_navigate,
         op_confirm,
@@ -927,6 +945,8 @@ const BOOTSTRAP: &str = r#"
     changeOppositeDirectoryToRoot: () => ops.op_change_opposite("root", ""),
     pathMask: (mask) => ops.op_set_path_mask(mask == null ? "" : String(mask)),
     makeDirectory: (name) => ops.op_make_directory(String(name)),
+    compress: (type, archive, files) =>
+      ops.op_compress(String(type), String(archive), String(files)),
     // カンマ区切りの各マスク（VB Like）に一致する項目だけを選択し直す（既存選択はクリア）。
     // 1 件でも一致すれば true。大小無視。".." は対象外。
     selectMask: (mask) => {
@@ -1363,6 +1383,8 @@ mod tests {
         path_masks: RefCell<Vec<String>>,
         /// `create_directory()` が受けた名前の記録。
         created_dirs: RefCell<Vec<String>>,
+        /// `compress()` が受けた `(kind, archive, files)` の記録。
+        compressed: RefCell<Vec<(String, String, String)>>,
     }
 
     impl HostApi for MockHost {
@@ -1385,6 +1407,14 @@ mod tests {
             self.created_dirs.borrow_mut().push(name.to_string());
             // モックは現在地（dir）に名前を継いだ絶対パスを返す。
             Ok(format!("{}\\{name}", self.dir))
+        }
+        fn compress(&self, kind: &str, archive: &str, files: &str) -> Result<(), String> {
+            self.compressed.borrow_mut().push((
+                kind.to_string(),
+                archive.to_string(),
+                files.to_string(),
+            ));
+            Ok(())
         }
         fn current_dir(&self) -> String {
             self.dir.clone()
@@ -2037,6 +2067,22 @@ mod tests {
         .unwrap();
         assert_eq!(*host.created_dirs.borrow(), vec!["newdir".to_string()]);
         assert_eq!(*host.logs.borrow(), vec!["made=C:\\work\\newdir".to_string()]);
+    }
+
+    #[test]
+    fn compress_routes_args_to_host() {
+        // 形式検証は GUI 側 script_compress の責務（実機スモークで確認）。ここは引数転送のみ検証。
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:compress",
+            r#"rerics.compress("zip", "out.zip", "a.txt b.txt");"#.to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            *host.compressed.borrow(),
+            vec![("zip".to_string(), "out.zip".to_string(), "a.txt b.txt".to_string())]
+        );
     }
 
     #[test]

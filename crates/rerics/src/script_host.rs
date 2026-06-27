@@ -31,6 +31,7 @@ pub enum HostCall {
     ChangeOpposite { kind: String, path: String },
     SetPathMask(String),
     CreateDirectory(String),
+    Compress { kind: String, archive: String, files: String },
     CurrentDir,
     Navigate(String),
     Confirm(String),
@@ -231,6 +232,23 @@ impl HostApi for GuiHost {
             Ok(HostResp::CommandResult(Ok(serde_json::Value::String(p)))) => Ok(p),
             Ok(HostResp::CommandResult(Err(e))) => Err(e),
             _ => Err("ディレクトリ作成に応答がありませんでした".to_string()),
+        }
+    }
+
+    fn compress(&self, kind: &str, archive: &str, files: &str) -> Result<(), String> {
+        match ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::Compress {
+                kind: kind.to_string(),
+                archive: archive.to_string(),
+                files: files.to_string(),
+            },
+        ) {
+            Ok(HostResp::CommandResult(Ok(_))) => Ok(()),
+            Ok(HostResp::CommandResult(Err(e))) => Err(e),
+            _ => Err("圧縮の起動に応答がありませんでした".to_string()),
         }
     }
 
@@ -600,6 +618,12 @@ impl MainWindow {
                 }
                 HostCall::CreateDirectory(name) => {
                     let r = self.script_create_directory(&name).map(serde_json::Value::String);
+                    let _ = tx.send(HostResp::CommandResult(r));
+                }
+                HostCall::Compress { kind, archive, files } => {
+                    let r = self
+                        .script_compress(&kind, &archive, &files)
+                        .map(|()| serde_json::Value::Null);
                     let _ = tx.send(HostResp::CommandResult(r));
                 }
                 HostCall::CurrentDir => {

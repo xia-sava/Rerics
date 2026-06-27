@@ -278,6 +278,13 @@ interface RericsApi {
   makeDirectory(name: string): string;
 
   /**
+   * `files`（空白区切りの対象名・相対はアクティブペインの現在地基準）を `archive` へ圧縮する
+   * ワーカーを起動して**待たずに**戻る（進捗はログに出る）。対応形式は `type` = `"zip"` のみ。
+   * 起動前の検証失敗（未対応形式・対象なし・書庫内）は例外。UI ありの版は `compressDialog`。
+   */
+  compress(type: string, archive: string, files: string): void;
+
+  /**
    * いま押されている修飾キー（Shift/Ctrl/Alt）の状態を返す。キーに割り当てたスクリプト
    * コマンドの中で、押下中の修飾で動作を分けたいときに使う（呼んだ時点の物理キー状態）。
    */

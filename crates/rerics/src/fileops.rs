@@ -164,6 +164,35 @@ impl MainWindow {
         self.start_compress(dir, names, dst_zip)
     }
 
+    /// スクリプト用：`files`（空白区切りの対象名・相対は現在地基準）を `archive` へ圧縮する
+    /// ワーカーを起動する（投げっぱなし）。対応形式は zip のみ。起動前の検証失敗は `Err`。
+    pub(crate) fn script_compress(
+        &self,
+        kind: &str,
+        archive: &str,
+        files: &str,
+    ) -> Result<(), String> {
+        let is_left = !self.active_right.get();
+        if self.pane(is_left).borrow().is_archive() {
+            return Err("書庫内では圧縮できません".to_string());
+        }
+        if !kind.trim().eq_ignore_ascii_case("zip") {
+            return Err(format!("未対応の圧縮形式です: {kind}（zip のみ対応）"));
+        }
+        let names: Vec<String> = files.split_whitespace().map(str::to_owned).collect();
+        if names.is_empty() {
+            return Err("圧縮対象がありません".to_string());
+        }
+        let archive = archive.trim();
+        if archive.is_empty() {
+            return Err("出力する書庫名が空です".to_string());
+        }
+        let dir = self.pane(is_left).borrow().path().to_path_buf();
+        let ap = Path::new(archive);
+        let dst_zip = if ap.is_absolute() { ap.to_path_buf() } else { dir.join(archive) };
+        self.start_compress(dir, names, dst_zip).map_err(|e| e.to_string())
+    }
+
     /// メニュー「解凍」からの取り出し。アクティブが書庫なら反対の実ペインへ展開する。
     pub(crate) fn extract_menu(&self, is_left: bool) -> w::AnyResult<()> {
         if !self.pane(is_left).borrow().is_archive() {
