@@ -1088,6 +1088,35 @@ fn set_cursor_position_jumps_to_named_file() {
     assert_eq!(name.trim(), "\"c.txt\"", "cursor should land on c.txt");
 }
 
+/// `setCursorIndex(n)` がカーソルを 0 始まりの絶対番号へ移し、範囲外は端へ丸める。
+#[test]
+fn set_cursor_index_moves_to_absolute_position() {
+    let server = Server::start(&["a.txt", "b.txt", "c.txt"], "");
+    // 絶対番号 2 へ（debug-server は引数を文字列で受ける＝スクリプト経路と同じ）。
+    server
+        .req("POST", "/command/setCursorIndex", r#"["2"]"#)
+        .unwrap();
+    let cur = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(cur.trim(), "2", "cursor should land on index 2");
+    // 範囲超過は末尾へ丸める（".." の有無に依らず最終項目は c.txt）。
+    server
+        .req("POST", "/command/setCursorIndex", r#"["999"]"#)
+        .unwrap();
+    let cur = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    let cur = cur.trim();
+    let name = server
+        .req("GET", &format!("/state/panes/left/items/{cur}/name"), "")
+        .unwrap()
+        .1;
+    assert_eq!(name.trim(), "\"c.txt\"", "out-of-range index clamps to last item");
+    // 負数は先頭へ丸める。
+    server
+        .req("POST", "/command/setCursorIndex", r#"["-5"]"#)
+        .unwrap();
+    let cur = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(cur.trim(), "0", "negative index clamps to 0");
+}
+
 /// `changeDrive("X:")` がアクティブペインを指定ドライブのルートへ移す。
 /// サンドボックスがどのドライブにあっても動くよう、現在地のドライブ文字を使う。
 #[test]

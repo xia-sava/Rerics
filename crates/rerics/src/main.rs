@@ -962,6 +962,11 @@ impl MainWindow {
                     }
                 }
             }
+            Command::SetCursorIndex => {
+                if let Some(idx) = args.int(0) {
+                    state.borrow_mut().set_cursor(idx as isize, pr);
+                }
+            }
             Command::EnterDir => {
                 let cursor = state.borrow().cursor;
                 self.activate(is_left, cursor)?;
@@ -1713,6 +1718,12 @@ impl Args {
     /// `i` 番目を文字列として読む（文字列値はそのまま、その他は `None`）。
     fn str(&self, i: usize) -> Option<&str> {
         self.0.get(i).and_then(|v| v.as_str())
+    }
+
+    /// `i` 番目を整数として読む。式パーサ経由は数値・スクリプト経由は文字列で来るので両対応。
+    fn int(&self, i: usize) -> Option<i64> {
+        let v = self.0.get(i)?;
+        v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
     }
 
     /// 末尾に乗った名前付きオプション（`{ select: true }` 形の Object）を返す。

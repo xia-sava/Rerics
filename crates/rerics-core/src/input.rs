@@ -101,6 +101,7 @@ pub enum Command {
     CursorPageUp,
     CursorPageDown,
     SetCursorPosition,
+    SetCursorIndex,
     EnterDir,
     View,
     ToParent,
@@ -322,6 +323,7 @@ impl Command {
             (CursorPageUp, "cursorPageUp", "1ページ上へ", "1 ページ分カーソルを上へ移動する"),
             (CursorPageDown, "cursorPageDown", "1ページ下へ", "1 ページ分カーソルを下へ移動する"),
             (SetCursorPosition, "setCursorPosition", "指定位置へカーソル移動", "指定した名前の項目へカーソルを移動する"),
+            (SetCursorIndex, "setCursorIndex", "指定番号へカーソル移動", "指定した位置（0 始まりの番号）の項目へカーソルを移動する"),
             (EnterDir, "enterDir", "開く（ディレクトリ・書庫へ）", "カーソル位置のディレクトリや書庫を開いて中へ入る"),
             (View, "view", "ビューアで表示", "カーソル位置のファイルを内蔵ビューアで表示する"),
             (ToParent, "toParent", "親ディレクトリへ移動", "1 つ上の親ディレクトリへ移動する"),
@@ -565,6 +567,16 @@ impl Command {
                     doc: "移動先の項目名",
                 }],
                 examples: &[r#"setCursorPosition("readme.txt")"#],
+            },
+            SetCursorIndex => CommandMeta {
+                summary,
+                args: &[ArgSpec {
+                    name: "index",
+                    ty: ArgType::Int,
+                    required: true,
+                    doc: "移動先の位置（0 始まり・範囲外は端に丸める）",
+                }],
+                examples: &["setCursorIndex(0)", "setCursorIndex(10)"],
             },
             MarkToggle => CommandMeta {
                 summary,
