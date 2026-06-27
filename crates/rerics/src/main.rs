@@ -113,6 +113,8 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         PathHistoryDialog => DebugCmdClass::MaybeModal,
         // 同名ファイル選択は比較方法のリスト選択モーダルを開く（選択操作のみ＝書込みではない）。
         CompareDialog => DebugCmdClass::MaybeModal,
+        // ディレクトリ比較（条件指定）は条件ラジオ/チェックのモーダルを開く（比較は非破壊）。
+        DirectoryCompareDialog => DebugCmdClass::MaybeModal,
         // マスクで選択・パスマスクは入力モーダルを開く（選択/表示の操作のみ＝書込みではない）。
         SelectMaskDialog | PathMaskDialog => DebugCmdClass::MaybeModal,
         // ディレクトリ移動は入力/フォルダ選択マクロでモーダルを開き得る（移動は書込みではない）。
@@ -1248,6 +1250,10 @@ impl MainWindow {
             }
             Command::DirectoryCompare => {
                 self.run_directory_compare(is_left, rerics_core::CompareOptions::differences());
+                return Ok(());
+            }
+            Command::DirectoryCompareDialog => {
+                self.directory_compare_dialog(is_left)?;
                 return Ok(());
             }
             Command::OpenTaskManager => {

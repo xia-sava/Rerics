@@ -15,6 +15,7 @@ mod message;
 mod input;
 mod conflict;
 mod archive_add;
+mod compare;
 mod compress;
 mod sort;
 mod rename;
@@ -27,6 +28,7 @@ pub use input::{
 pub use input::completion_probe;
 pub use conflict::conflict_box;
 pub use archive_add::archive_add_box;
+pub use compare::compare_options_box;
 pub use compress::compress_box;
 pub use sort::sort_box;
 pub use rename::rename_box;

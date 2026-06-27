@@ -4419,3 +4419,36 @@ fn directory_compare_shows_diff_result_pane() {
     let cur = items2.iter().find(|it| it["cursor"] == true).unwrap();
     assert_eq!(cur["name"], "only_left.txt", "カーソルは開いた項目に乗る");
 }
+
+/// ディレクトリ比較（条件指定）：条件ダイアログが開き、OK で既定条件の比較が走って結果ペインに
+/// 差分が出る（ラジオ値そのものの選択は debug-server 未対応＝条件別ロジックは core テストで担保。
+/// ここは「開く→OK→比較が走る」までを検証する）。
+#[test]
+fn directory_compare_dialog_opens_and_runs() {
+    let server = Server::start_dirs(
+        &[("only_left.txt", b"x")],
+        &[("only_right.txt", b"y")],
+    );
+
+    // 条件ダイアログを開く。
+    server.req("POST", "/command/directoryCompareDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("ディレクトリ比較"), "比較条件モーダルが開く: {modal}");
+
+    // 既定条件（日付:不一致・サイズ:無視・再帰/追加/削除 on）で OK。
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+
+    let body = poll(&server, "/state", |b| {
+        serde_json::from_str::<serde_json::Value>(b)
+            .ok()
+            .and_then(|v| v["panes"]["left"]["find_result"].as_bool())
+            .unwrap_or(false)
+    });
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["panes"]["left"]["find_result"], true, "OK で比較が走り結果モードへ: {body}");
+    let items = v["panes"]["left"]["items"].as_array().unwrap();
+    // 追加（左のみ）・削除（右のみ）が既定チェックで出る。
+    assert!(items.iter().any(|it| it["name"] == "only_left.txt"), "追加項目: {items:?}");
+    assert!(items.iter().any(|it| it["name"] == "only_right.txt"), "削除項目: {items:?}");
+}

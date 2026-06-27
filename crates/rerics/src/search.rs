@@ -93,6 +93,15 @@ impl MainWindow {
         Ok(())
     }
 
+    /// 条件ダイアログ（日付・サイズの比較条件と抽出範囲）を出し、OK ならその条件で
+    /// ディレクトリ比較を実行する。比較ロジックは `run_directory_compare`（Rust 正本）へ委譲。
+    pub(crate) fn directory_compare_dialog(&self, is_left: bool) -> w::AnyResult<()> {
+        if let Some(opts) = crate::dialog::compare_options_box(&self.wnd) {
+            self.run_directory_compare(is_left, opts);
+        }
+        Ok(())
+    }
+
     /// アクティブペインと反対ペインのディレクトリを比較し、差分を結果一覧に出す（原作
     /// ディレクトリ比較）。比較はワーカースレッドで回し、終わったら結果ペインへ流し込む。
     pub(crate) fn run_directory_compare(&self, is_left: bool, opts: rerics_core::CompareOptions) {
