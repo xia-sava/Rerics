@@ -27,6 +27,11 @@ pub struct FileItem {
     pub archive: bool,
     pub reparse: bool,
     pub selected: bool,
+    /// この項目が属する場所（VFS）。通常一覧では `None`（ペインの現在地が場所）。検索・比較などの
+    /// 結果一覧では、項目が出自のディレクトリをまたぐので、その出自の場所をここに持つ。
+    pub source: Option<crate::vfs::Location>,
+    /// 結果一覧で表示する補助情報（相対サブパスや "追加"/"削除"/"新しい" などの説明）。
+    pub info: Option<String>,
 }
 
 impl FileItem {
@@ -49,7 +54,15 @@ impl FileItem {
             archive: false,
             reparse: false,
             selected: false,
+            source: None,
+            info: None,
         }
+    }
+
+    /// この項目が属する場所（VFS）を返す。`source` があればそれを、無ければ与えられたペインの
+    /// 現在地 `pane` を使う（通常一覧の項目はペイン現在地が場所）。
+    pub fn source_or(&self, pane: &crate::vfs::Location) -> crate::vfs::Location {
+        self.source.clone().unwrap_or_else(|| pane.clone())
     }
 
     /// 親（".."）エントリを作る。
@@ -1392,6 +1405,23 @@ mod tests {
 
     fn dir(name: &str) -> FileItem {
         FileItem::bare(name.to_owned(), true)
+    }
+
+    #[test]
+    fn source_or_falls_back_to_pane_location() {
+        use crate::vfs::Location;
+        let pane = Location::Real(std::path::PathBuf::from("C:\\pane"));
+
+        // 通常項目（source 無し）はペイン現在地を場所とする。
+        let normal = file("a.txt");
+        assert!(normal.source.is_none());
+        assert!(matches!(normal.source_or(&pane), Location::Real(p) if p == std::path::Path::new("C:\\pane")));
+
+        // 結果項目（source 有り）は自身の出自を場所とする。
+        let mut result = file("b.txt");
+        result.source = Some(Location::Real(std::path::PathBuf::from("C:\\other")));
+        result.info = Some("追加".to_owned());
+        assert!(matches!(result.source_or(&pane), Location::Real(p) if p == std::path::Path::new("C:\\other")));
     }
 
     #[test]

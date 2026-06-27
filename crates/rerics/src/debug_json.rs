@@ -133,6 +133,8 @@ mod tests {
             archive: false,
             reparse: false,
             selected,
+            source: None,
+            info: None,
         }
     }
 
