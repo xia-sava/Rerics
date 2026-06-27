@@ -967,6 +967,9 @@ impl MainWindow {
                     state.borrow_mut().set_cursor(idx as isize, pr);
                 }
             }
+            Command::CenterCursor => {
+                state.borrow_mut().center_cursor(pr);
+            }
             Command::EnterDir => {
                 let cursor = state.borrow().cursor;
                 self.activate(is_left, cursor)?;

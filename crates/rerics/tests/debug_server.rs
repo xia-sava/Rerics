@@ -1117,6 +1117,29 @@ fn set_cursor_index_moves_to_absolute_position() {
     assert_eq!(cur.trim(), "0", "negative index clamps to 0");
 }
 
+/// `centerCursor()` がカーソル行を画面中央へスクロールする（scroll_top = cursor - page/2）。
+#[test]
+fn center_cursor_scrolls_cursor_to_middle() {
+    // ページ行数より十分多い項目を置き、カーソルが端でクランプされない中ほどへ。
+    let names: Vec<String> = (0..300).map(|i| format!("f{i:03}.txt")).collect();
+    let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    let server = Server::start(&refs, "");
+    server
+        .req("POST", "/command/setCursorIndex", r#"["150"]"#)
+        .unwrap();
+    server.req("POST", "/command/centerCursor", "").unwrap();
+    let n = |path: &str| -> i64 {
+        server.req("GET", path, "").unwrap().1.trim().parse().unwrap()
+    };
+    let cursor = n("/state/panes/left/cursor");
+    let top = n("/state/panes/left/scroll_top");
+    let page = n("/state/panes/left/page_rows");
+    assert_eq!(cursor, 150, "cursor should be at 150");
+    assert!(page > 2 && page < 150, "sane headless page_rows: {page}");
+    // カーソルが画面中央＝先頭からの距離がページの半分。
+    assert_eq!(cursor - top, page / 2, "cursor not centered: top={top} page={page}");
+}
+
 /// `changeDrive("X:")` がアクティブペインを指定ドライブのルートへ移す。
 /// サンドボックスがどのドライブにあっても動くよう、現在地のドライブ文字を使う。
 #[test]

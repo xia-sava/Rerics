@@ -131,7 +131,7 @@ pub(crate) fn command_genre(cmd: Command) -> (u8, &'static str) {
     use Command::*;
     match cmd {
         CursorUp | CursorDown | CursorTop | CursorEnd | CursorPageUp | CursorPageDown
-        | SetCursorPosition | SetCursorIndex | CursorOpposite => (0, "カーソル移動"),
+        | SetCursorPosition | SetCursorIndex | CenterCursor | CursorOpposite => (0, "カーソル移動"),
         EnterDir | ToParent | ToRoot | HistoryBack | HistoryForward | PathHistoryDialog
         | ChangeDirectory | ChangeDirectoryDialog | ChangeDrive | ChangeDriveDialog | JumpDialog
         | PathRegisterDialog | IncrementalSearchDialog | NextDrive | PreviousDrive => (1, "移動・ナビゲーション"),

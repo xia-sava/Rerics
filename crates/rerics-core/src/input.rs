@@ -102,6 +102,7 @@ pub enum Command {
     CursorPageDown,
     SetCursorPosition,
     SetCursorIndex,
+    CenterCursor,
     EnterDir,
     View,
     ToParent,
@@ -324,6 +325,7 @@ impl Command {
             (CursorPageDown, "cursorPageDown", "1ページ下へ", "1 ページ分カーソルを下へ移動する"),
             (SetCursorPosition, "setCursorPosition", "指定位置へカーソル移動", "指定した名前の項目へカーソルを移動する"),
             (SetCursorIndex, "setCursorIndex", "指定番号へカーソル移動", "指定した位置（0 始まりの番号）の項目へカーソルを移動する"),
+            (CenterCursor, "centerCursor", "カーソルを画面中央へ", "カーソル行が画面の中央に来るようスクロールする"),
             (EnterDir, "enterDir", "開く（ディレクトリ・書庫へ）", "カーソル位置のディレクトリや書庫を開いて中へ入る"),
             (View, "view", "ビューアで表示", "カーソル位置のファイルを内蔵ビューアで表示する"),
             (ToParent, "toParent", "親ディレクトリへ移動", "1 つ上の親ディレクトリへ移動する"),
@@ -577,6 +579,11 @@ impl Command {
                     doc: "移動先の位置（0 始まり・範囲外は端に丸める）",
                 }],
                 examples: &["setCursorIndex(0)", "setCursorIndex(10)"],
+            },
+            CenterCursor => CommandMeta {
+                summary,
+                args: &[],
+                examples: &["centerCursor()"],
             },
             MarkToggle => CommandMeta {
                 summary,
