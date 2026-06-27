@@ -59,6 +59,32 @@ impl MainWindow {
         Ok(())
     }
 
+    /// 比較方法を一覧から選ばせ、選んだ条件で同名ファイル比較選択を実行する。比較ロジック
+    /// 自体は UI を持たない `r.compare` に委譲する（UI で選んだ条件を引数として渡すだけ）。
+    pub(crate) fn compare_dialog(&self) -> w::AnyResult<()> {
+        const OPTIONS: &[(&str, &str)] = &[
+            ("名前一致のみ", "name"),
+            ("日付が一致", "sameDate"),
+            ("日付が不一致", "diffDate"),
+            ("日付が新しい", "newer"),
+            ("日付が古い", "older"),
+            ("サイズが一致", "sameSize"),
+            ("サイズが不一致", "diffSize"),
+            ("サイズが小さい", "smaller"),
+            ("サイズが大きい", "larger"),
+            ("存在しないファイル", "notExists"),
+        ];
+        let labels: Vec<String> = OPTIONS.iter().map(|(label, _)| label.to_string()).collect();
+        let Some(idx) =
+            crate::dialog::list_box(&self.wnd, "同名ファイル選択", "compare_dialog", &labels, 0)
+        else {
+            return Ok(());
+        };
+        let token = OPTIONS[idx].1;
+        self.script_send(crate::script_host::EngineCmd::Eval(format!("r.compare({token:?})")));
+        Ok(())
+    }
+
     /// インクリメンタルサーチ。小さな入力モーダルを出し、打鍵ごとに先頭から一致を
     /// 探してアクティブペインのカーソルを動かす（追従）。OK で確定、中止/Esc で元へ戻す。
     pub(crate) fn incremental_search(&self, is_left: bool) -> w::AnyResult<()> {

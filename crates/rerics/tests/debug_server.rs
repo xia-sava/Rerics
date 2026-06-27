@@ -905,6 +905,33 @@ fn nav_path_history_dialog() {
     assert_eq!(now.trim(), parent, "selecting the parent entry should navigate there");
 }
 
+/// compareDialog＝比較方法の list_box モーダルで選んだ条件を no-UI 版 `r.compare` へ委譲して
+/// 同名ファイルを選択する。左右とも同じディレクトリで開くので、`名前一致のみ` は各ファイルが
+/// 反対側の同名（自分自身）と一致＝全ファイルが marked になる。
+#[test]
+fn compare_dialog_marks_same_name_files() {
+    let server = Server::start(&["a.txt", "b.txt"], "");
+    let items0 = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert_eq!(count_substr(&items0, "\"marked\":true"), 0, "no selection yet: {items0}");
+
+    server.req("POST", "/command/compareDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"list\""), "should open a list modal: {modal}");
+    assert!(modal.contains("名前一致のみ"), "should list compare options: {modal}");
+
+    // 先頭（名前一致のみ）を選んで OK＝両ペイン同一 dir なので全ファイルがマークされる。
+    server.req("POST", "/modal/select/0", "").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    let items1 = poll(&server, "/state/panes/left/items", |b| {
+        count_substr(b, "\"marked\":true") == 2
+    });
+    assert_eq!(
+        count_substr(&items1, "\"marked\":true"),
+        2,
+        "compareDialog(name) should mark both same-name files: {items1}"
+    );
+}
+
 /// changeDirectoryDialog＝パスを入力してそこへ移動する（input_box モーダル）。
 #[test]
 fn nav_change_directory_dialog() {

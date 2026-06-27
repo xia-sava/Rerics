@@ -1166,25 +1166,6 @@ const BOOTSTRAP: &str = r#"
       if (changes.length) ops.op_apply_selection(cur.isLeft, changes);
       return count;
     },
-    // 比較方法を一覧から選ばせ、選んだ種別で compare を実行する。選択した件数を返す
-    // （キャンセルなら null）。
-    compareDialog: () => {
-      const opts = [
-        ["名前一致のみ", "name"],
-        ["日付が一致", "sameDate"],
-        ["日付が不一致", "diffDate"],
-        ["日付が新しい", "newer"],
-        ["日付が古い", "older"],
-        ["サイズが一致", "sameSize"],
-        ["サイズが不一致", "diffSize"],
-        ["サイズが小さい", "smaller"],
-        ["サイズが大きい", "larger"],
-        ["存在しないファイル", "notExists"],
-      ];
-      const i = rerics.select("同名ファイル選択", opts.map((o) => o[0]));
-      if (i == null) return null;
-      return rerics.compare(opts[i][1]);
-    },
     // カンマ区切りの各マスク（VB Like）に一致する項目だけを選択し直す（既存選択はクリア）。
     // 1 件でも一致すれば true。大小無視。".." は対象外。
     selectMask: (mask) => {

@@ -111,6 +111,8 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         View | ViewFile => DebugCmdClass::MaybeModal,
         // 履歴ダイアログは読取モーダル（リスト選択）を開く（書込みではない）。
         PathHistoryDialog => DebugCmdClass::MaybeModal,
+        // 同名ファイル選択は比較方法のリスト選択モーダルを開く（選択操作のみ＝書込みではない）。
+        CompareDialog => DebugCmdClass::MaybeModal,
         // ディレクトリ移動は入力/フォルダ選択マクロでモーダルを開き得る（移動は書込みではない）。
         ChangeDirectory | ChangeDirectoryDialog => DebugCmdClass::MaybeModal,
         // ドライブ選択はリスト選択モーダルを開く（移動は書込みではない）。
@@ -1236,6 +1238,10 @@ impl MainWindow {
             }
             Command::SelectMaskDialog => {
                 self.select_mask(is_left)?;
+                return Ok(());
+            }
+            Command::CompareDialog => {
+                self.compare_dialog()?;
                 return Ok(());
             }
             Command::OpenTaskManager => {
