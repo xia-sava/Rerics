@@ -93,6 +93,37 @@ impl MainWindow {
         Ok(())
     }
 
+    /// 条件ダイアログ（名前・日付・サイズ）を出し、OK ならその条件でファイル検索を実行する。
+    /// 検索ロジックは `run_find_file`（Rust 正本）へ委譲する。
+    pub(crate) fn find_file_dialog(&self, is_left: bool) -> w::AnyResult<()> {
+        if let Some(opts) = crate::dialog::find_file_box(&self.wnd) {
+            if opts.is_empty() {
+                self.log.warn("検索条件がありません。");
+            } else {
+                self.run_find_file(is_left, opts);
+            }
+        }
+        Ok(())
+    }
+
+    /// 現在地以下を再帰検索し、条件に合うファイルを結果一覧に出す。検索はワーカースレッドで
+    /// 回し、終わったら結果ペインへ流し込む。
+    pub(crate) fn run_find_file(&self, is_left: bool, opts: rerics_core::FindOptions) {
+        let root = self.pane(is_left).borrow().loc().clone();
+        self.log.info(&format!("ファイル検索: {}", root.loc_display()));
+        self.spawn_job(
+            move || rerics_core::find_file(&root, &opts),
+            move |mw, (items, count)| {
+                let mut all = Vec::with_capacity(items.len() + 1);
+                all.push(rerics_core::FileItem::parent());
+                all.extend(items);
+                mw.show_find_result(is_left, all)?;
+                mw.log.info(&format!("検索結果 {count}件"));
+                Ok(())
+            },
+        );
+    }
+
     /// 条件ダイアログ（日付・サイズの比較条件と抽出範囲）を出し、OK ならその条件で
     /// ディレクトリ比較を実行する。比較ロジックは `run_directory_compare`（Rust 正本）へ委譲。
     pub(crate) fn directory_compare_dialog(&self, is_left: bool) -> w::AnyResult<()> {

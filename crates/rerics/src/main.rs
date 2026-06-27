@@ -115,6 +115,8 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         CompareDialog => DebugCmdClass::MaybeModal,
         // ディレクトリ比較（条件指定）は条件ラジオ/チェックのモーダルを開く（比較は非破壊）。
         DirectoryCompareDialog => DebugCmdClass::MaybeModal,
+        // ファイル検索（条件指定）は名前/日付/サイズ入力のモーダルを開く（検索は非破壊）。
+        FindFileDialog => DebugCmdClass::MaybeModal,
         // マスクで選択・パスマスクは入力モーダルを開く（選択/表示の操作のみ＝書込みではない）。
         SelectMaskDialog | PathMaskDialog => DebugCmdClass::MaybeModal,
         // ディレクトリ移動は入力/フォルダ選択マクロでモーダルを開き得る（移動は書込みではない）。
@@ -1254,6 +1256,22 @@ impl MainWindow {
             }
             Command::DirectoryCompareDialog => {
                 self.directory_compare_dialog(is_left)?;
+                return Ok(());
+            }
+            Command::FindFile => {
+                let mut opts = rerics_core::FindOptions::default();
+                if let Some(mask) = args.str(0) {
+                    opts.set_masks(mask);
+                }
+                if opts.is_empty() {
+                    self.log.warn("検索条件がありません。");
+                } else {
+                    self.run_find_file(is_left, opts);
+                }
+                return Ok(());
+            }
+            Command::FindFileDialog => {
+                self.find_file_dialog(is_left)?;
                 return Ok(());
             }
             Command::OpenTaskManager => {

@@ -4452,3 +4452,43 @@ fn directory_compare_dialog_opens_and_runs() {
     assert!(items.iter().any(|it| it["name"] == "only_left.txt"), "追加項目: {items:?}");
     assert!(items.iter().any(|it| it["name"] == "only_right.txt"), "削除項目: {items:?}");
 }
+
+/// ファイル検索（引数版）：マスクで現在地以下を再帰検索し、一致ファイルが結果ペインに
+/// 相対サブパス付きで出る。非一致は出ない。
+#[test]
+fn find_file_command_lists_matches_recursively() {
+    let server = Server::start(&["a.txt", "b.log"], "");
+    let sub = server.base.join("sbx").join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("c.txt"), b"x").unwrap();
+
+    server.req("POST", "/command/findFile", "[\"*.txt\"]").unwrap();
+    let body = poll(&server, "/state", |b| {
+        serde_json::from_str::<serde_json::Value>(b)
+            .ok()
+            .and_then(|v| v["panes"]["left"]["find_result"].as_bool())
+            .unwrap_or(false)
+    });
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let items = v["panes"]["left"]["items"].as_array().unwrap();
+    let by_name = |n: &str| items.iter().find(|it| it["name"] == n);
+    assert!(by_name("a.txt").is_some(), "直下の a.txt: {items:?}");
+    let c = by_name("c.txt").expect("サブdir の c.txt");
+    assert_eq!(c["info"], "sub", "相対サブパスが info に出る");
+    assert!(by_name("b.log").is_none(), "非一致は出ない: {items:?}");
+    // 情報列が並ぶ。
+    let cols = v["panes"]["left"]["columns"].as_array().unwrap();
+    assert!(cols.iter().any(|c| c["kind"] == "Information"), "情報列: {cols:?}");
+}
+
+/// ファイル検索（条件指定）：条件ダイアログが開いて閉じられる（名前/日付/サイズ入力欄の
+/// 個別駆動は debug-server 未対応＝検索ロジックは引数版コマンドと core テストで担保）。
+#[test]
+fn find_file_dialog_opens_and_cancels() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/findFileDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("ファイル検索"), "検索条件モーダルが開く: {modal}");
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
