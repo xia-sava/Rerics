@@ -1,0 +1,68 @@
+# アーキテクチャ
+
+## クレート構成
+
+- **`rerics-core`** … UI 非依存のロジック。ファイル一覧・ソート・コマンド定義（`Command`）・
+  機能欄の式パーサ（`Call`）など。GUI にも OS にも依存せず、単体でテストできる。
+- **`rerics`** … GUI（winsafe）と OS 連携、組込スクリプトエンジン（deno_core）。`rerics-core`
+  を土台に、画面・入力・外部プロセス・スクリプト API を実装する。
+
+## コマンドの構造：表層 UI と実処理の分離
+
+UI（ダイアログ・入力ボックス・リスト選択）を伴うコマンドは、次の二層に必ず分ける。
+
+1. **表層 UI コマンド**（`xxxDialog`）… ユーザーから値を集めるだけ。実処理ロジックを持たない。
+2. **実処理**（引数を受ける関数）… 集めた値を引数に取り、実際の処理を行う。UI に依存しない。
+
+表層 UI コマンドは、集めた値を引数として実処理を呼ぶだけにする。これにより実処理は常に
+引数で駆動でき、スクリプト・引数つきキーバインド・debug-server から呼べてテストできる。
+UI を差し替えても実処理は変わらず、同じ処理が UI 側とロジック側で二重に実装されて挙動が
+食い違うことも防げる。
+
+### 実処理の置き場
+
+実処理の置き場は、その性質で決める。
+
+- **純ロジック**（ファイル操作・選択・比較・並べ替えなど、UI/OS に依存しないもの）…
+  スクリプト API `r.xxx` として実装する（`crates/rerics/src/script.rs` の bootstrap）。
+  これが唯一の正本で、スクリプトからも内蔵コマンドからも同じ実装を使う。表層 UI コマンドは
+  `EngineCmd::Eval` でこのスクリプト API を呼ぶ。
+- **GUI/OS 依存**（シェルのプロパティシート・外部エディタ起動・ビューアなど、スクリプトで
+  書けないもの）… `rerics` クレート内の引数つき関数として実装する。表層 UI コマンドは
+  この関数を直接呼ぶ。
+
+### 命名規約
+
+- **表層 UI あり** … `xxxDialog`（`Command` の token。キーに裸の token でバインドできる）。
+- **UI なしの実処理** … `xxx`（スクリプト API メンバー。programmatic 用に予約する）。
+
+### 例：`CompareDialog`
+
+`CompareDialog` は `dialog::list_box` で比較条件を 1 つ選ばせ、選んだ条件 token を引数に
+`r.compare(token)` を `EngineCmd::Eval` で呼ぶ。比較ロジックそのものは `r.compare`
+（純 JS・両ペインの一覧を突き合わせて選択する）が唯一の正本で、UI コマンドは値を集めて
+渡すだけ。実装は `crates/rerics/src/search.rs` の `compare_dialog`。
+
+## 組込コマンドを追加するとき触る箇所
+
+`Command` を 1 つ増やすときのチェックリスト。
+
+- `crates/rerics-core/src/input.rs` … `Command` enum と `ALL` テーブル（token・表示名・説明）。
+- `crates/rerics/src/main.rs` … `exec_resolved` の分岐。モーダルを開くコマンドは
+  `debug_command_class` に種別（`MaybeModal` / `ModalWrite`）を追加する（忘れると
+  debug-server から叩いたときモーダルでブロックする）。
+- `crates/rerics/src/key_editor.rs` … `command_genre`（網羅 match なので追加必須）。
+- 補完・ヘルプ・メニュー・型定義（`.d.ts`）は `ALL` テーブルから自動生成されるため、
+  個別の追従は不要。
+
+## スクリプト API メンバーを追加するとき触る箇所
+
+`r.xxx` を 1 つ増やすときのチェックリスト。
+
+- 値返し・失敗時の例外は `op_command` と同じ `Result<serde_json::Value, JsErrorBox>` 機構を
+  使う。GUI の状態に触るなら `HostApi` trait メソッド＋`HostCall`/`HostResp` バリアント＋
+  `GuiHost` の marshal＋`drain_script_requests` の dispatch＋`MockHost` の実装を揃える。
+  純粋な計算やシステムクエリは Host を介さない op にできる。
+- `extension!` の ops 一覧に登録し、bootstrap の `globalThis.rerics` に生やす。
+- `crates/rerics-core/src/dts.rs` の `HOST_API_MEMBERS` と `scripting/rerics.d.ts` の両方に
+  追加する。
