@@ -459,6 +459,26 @@ async fn op_run(
     .map_err(deno_error::JsErrorBox::generic)
 }
 
+/// 書庫 `src` の全エントリを `dst` 配下へ展開し、展開したファイル数を返す非同期 op。UI も
+/// 確認も伴わず、`dst` は無ければ作る（zip-slip 防御は extract_all 側）。重い展開はブロッキング
+/// プールへ逃がす（`op_list_dir` と同じ形）。GUI に触れないのでホストを介さない。
+#[op2(async(lazy), nofast)]
+async fn op_unpack(
+    #[string] src: String,
+    #[string] dst: String,
+) -> Result<u32, deno_error::JsErrorBox> {
+    tokio::task::spawn_blocking(move || {
+        let backend = rerics_core::open_archive(std::path::Path::new(&src))
+            .map_err(|e| format!("書庫を開けません [{src}]: {e}"))?;
+        rerics_core::extract_all_to(&*backend, std::path::Path::new(&dst))
+            .map(|n| n as u32)
+            .map_err(|e| format!("展開に失敗しました [{src}]: {e}"))
+    })
+    .await
+    .map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?
+    .map_err(deno_error::JsErrorBox::generic)
+}
+
 /// `rerics.fs.stat()` が返すメタデータ。存在しなければ JS 側で null に畳む。JS では camelCase で見える。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -594,6 +614,7 @@ extension!(
         op_save_dialog,
         op_spawn,
         op_run,
+        op_unpack,
         op_fs_read_text,
         op_fs_write_text,
         op_fs_copy_file,
@@ -757,6 +778,7 @@ const BOOTSTRAP: &str = r#"
       const { args, cwd } = splitProcArgs(rest);
       return ops.op_run(String(cmd), args, cwd);
     },
+    unpack: (src, dst) => ops.op_unpack(String(src), String(dst)),
     // 裏で動く低レベルファイル操作。画面にもログにも触れない（更新は呼び手が navigate 等で明示）。
     // 絶対パス前提。I/O エラーは例外（exists は false 寄せ・stat は不在で null）。
     fs: {
@@ -1929,6 +1951,101 @@ mod tests {
             ]
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// テスト用の無圧縮(stored) zip を書き出す（外部書庫を用意せず実 backend を通すため）。
+    fn write_stored_zip(path: &std::path::Path, entries: &[(&str, &[u8])]) {
+        fn crc32(data: &[u8]) -> u32 {
+            let mut crc = 0xFFFF_FFFFu32;
+            for &b in data {
+                crc ^= b as u32;
+                for _ in 0..8 {
+                    let mask = (crc & 1).wrapping_neg();
+                    crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+                }
+            }
+            !crc
+        }
+        let mut out = Vec::new();
+        let mut central = Vec::new();
+        for (name, data) in entries {
+            let nb = name.as_bytes();
+            let crc = crc32(data);
+            let off = out.len() as u32;
+            out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+            out.extend_from_slice(&[20, 0, 0, 0, 0, 0, 0, 0, 0, 0]); // version/flags/method/time/date
+            out.extend_from_slice(&crc.to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(nb.len() as u16).to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(nb);
+            out.extend_from_slice(data);
+            central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+            central.extend_from_slice(&[20, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            central.extend_from_slice(&crc.to_le_bytes());
+            central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            central.extend_from_slice(&(nb.len() as u16).to_le_bytes());
+            central.extend_from_slice(&[0u8; 12]); // extra/comment len, disk, attrs
+            central.extend_from_slice(&off.to_le_bytes());
+            central.extend_from_slice(nb);
+        }
+        let cd_off = out.len() as u32;
+        let cd_len = central.len() as u32;
+        out.extend_from_slice(&central);
+        out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+        out.extend_from_slice(&[0u8; 4]); // disk numbers
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        out.extend_from_slice(&cd_len.to_le_bytes());
+        out.extend_from_slice(&cd_off.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes()); // comment len
+        std::fs::write(path, &out).unwrap();
+    }
+
+    #[test]
+    fn unpack_extracts_archive_to_destination() {
+        let dir = std::env::temp_dir().join(format!("rerics-unpack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let zip = dir.join("arc.zip");
+        write_stored_zip(&zip, &[("a.txt", b"AAA"), ("sub/c.txt", b"CCC")]);
+        let zip_p = zip.display().to_string().replace('\\', "/");
+        let dst_p = dir.join("out").display().to_string().replace('\\', "/");
+
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        let code = format!(
+            r#"(async () => {{
+                 const n = await rerics.unpack("{zip_p}", "{dst_p}");
+                 rerics.log("n=" + n);
+                 rerics.log("a=" + rerics.fs.readText("{dst_p}/a.txt"));
+                 rerics.log("c=" + rerics.fs.readText("{dst_p}/sub/c.txt"));
+               }})();"#
+        );
+        eng.run_to_completion("test:unpack", code).unwrap();
+        assert_eq!(
+            *host.logs.borrow(),
+            vec!["n=2".to_string(), "a=AAA".to_string(), "c=CCC".to_string()]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unpack_missing_archive_throws() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:unpack-throw",
+            r#"(async () => {
+                 try { await rerics.unpack("C:\\no\\such-xyz.zip", "C:\\tmp\\out"); rerics.log("no-throw"); }
+                 catch (e) { rerics.log("caught"); }
+               })();"#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(*host.logs.borrow(), vec!["caught".to_string()]);
     }
 
     #[test]

@@ -21,7 +21,8 @@ mod vfs;
 mod viewer;
 
 pub use archive::{
-    ArchiveBackend, ArchiveEntry, ArchiveWriter, Caps, open_archive, open_archive_writer,
+    ArchiveBackend, ArchiveEntry, ArchiveWriter, Caps, extract_all_to, open_archive,
+    open_archive_writer,
 };
 pub use attrs::{
     FileAttrs, created_time, floor_to_local_midnight, format_local, modified_time, parse_local,

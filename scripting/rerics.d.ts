@@ -274,6 +274,21 @@ declare const rerics: {
   run(cmd: string, ...args: (string | RericsProcOptions)[]): Promise<RericsProcessResult>;
 
   /**
+   * 書庫ファイル `src` の中身を丸ごとディレクトリ `dst` 配下へ展開し、展開したファイル数を
+   * 返す（UI も確認も出さない裏処理）。`dst` は無ければ作る。`..` を含む細工エントリは弾く
+   * （zip-slip 対策）。対応形式は本体と同じ（zip / 7z / tar 系 / 単体圧縮 など）。`await` して使う。
+   *
+   * 選択した項目を画面付きで取り出したいときは内蔵コマンド `extract` を使う。
+   *
+   * ```ts
+   * const n = await rerics.unpack("C:\\dl\\pkg.zip", rerics.activePane().dir + "\\pkg");
+   * rerics.log(`${n} 件展開した`);
+   * rerics.navigate(rerics.activePane().dir); // 表示を更新したいなら明示的に
+   * ```
+   */
+  unpack(src: string, dst: string): Promise<number>;
+
+  /**
    * 名前付きコマンドを登録する。`handler` は同期でも `async`（Promise を返す）でもよい。
    * 同名で再登録すると後勝ちで上書きする。`options` で設定 UI・補完に出すメタ情報を添えられる
    * （`label`＝機能名・`genre`＝機能順の見出しグループ・`summary`＝補完やヘルプに出す 1 行説明）。

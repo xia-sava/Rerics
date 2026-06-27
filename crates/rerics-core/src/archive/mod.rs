@@ -234,6 +234,19 @@ pub fn open_archive(path: &Path) -> io::Result<Box<dyn ArchiveBackend>> {
     }
 }
 
+/// `backend` の全エントリを `dest` 配下へ展開し、展開できたファイル数を返す。`dest` は
+/// 無ければ作る。エントリ名は [`ArchiveBackend::extract_all`] の `safe_join` で zip-slip を
+/// 弾く。UI も確認も伴わない programmatic な一括展開（スクリプトの `unpack` の実体）。
+pub fn extract_all_to(backend: &dyn ArchiveBackend, dest: &Path) -> io::Result<u64> {
+    std::fs::create_dir_all(dest)?;
+    let mut count = 0u64;
+    backend.extract_all(dest, &mut |_inner, _done, _total| {
+        count += 1;
+        true
+    })?;
+    Ok(count)
+}
+
 /// 任意の Read を圧縮種別に応じた解凍ストリームへラップする（`Comp::None` は素通し）。
 fn wrap_comp<R: io::Read + 'static>(r: R, comp: Comp) -> io::Result<Box<dyn io::Read>> {
     Ok(match comp {

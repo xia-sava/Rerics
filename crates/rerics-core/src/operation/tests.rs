@@ -581,6 +581,19 @@
     }
 
     #[test]
+    fn extract_all_to_writes_every_entry() {
+        let dst = TempDir::new();
+        let arc = MockArchive::new(&[("a.txt", b"AAA"), ("sub/c.txt", b"CCC")]);
+        let n = crate::extract_all_to(&arc, &dst.path).unwrap();
+        assert_eq!(n, 2, "should report extracted file count");
+        assert_eq!(std::fs::read_to_string(dst.join("a.txt")).unwrap(), "AAA");
+        assert_eq!(
+            std::fs::read_to_string(dst.path.join("sub").join("c.txt")).unwrap(),
+            "CCC"
+        );
+    }
+
+    #[test]
     fn extract_conflict_skip_keeps_destination() {
         let dst = TempDir::new();
         dst.write_file("a.txt", "old");
