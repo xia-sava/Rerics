@@ -445,6 +445,117 @@ async fn op_run(
     .map_err(deno_error::JsErrorBox::generic)
 }
 
+/// `rerics.fs.stat()` が返すメタデータ。存在しなければ JS 側で null に畳む。JS では camelCase で見える。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FsStat {
+    is_dir: bool,
+    is_file: bool,
+    /// バイトサイズ（ディレクトリは 0）。
+    size: u64,
+    /// 最終更新時刻（Unix epoch ミリ秒・取得不可は 0）。
+    mtime: u64,
+    readonly: bool,
+    hidden: bool,
+}
+
+/// メタデータの隠し属性を取る（非 Windows では常に false）。読取専用は `permissions().readonly()`。
+#[cfg(windows)]
+fn meta_hidden(md: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    md.file_attributes() & 0x2 != 0
+}
+#[cfg(not(windows))]
+fn meta_hidden(_md: &std::fs::Metadata) -> bool {
+    false
+}
+
+/// fs プリミティブ：テキスト読み（UTF-8・不正なバイト列は例外）。バイナリ用は将来 `readBytes` を足す。
+#[op2]
+#[string]
+fn op_fs_read_text(#[string] path: &str) -> Result<String, deno_error::JsErrorBox> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| deno_error::JsErrorBox::generic(format!("読み込みに失敗しました [{path}]: {e}")))?;
+    String::from_utf8(bytes)
+        .map_err(|_| deno_error::JsErrorBox::generic(format!("UTF-8 として読めません [{path}]")))
+}
+
+/// fs プリミティブ：テキスト書き（UTF-8・新規/上書き）。バイナリ用は将来 `writeBytes` を足す。
+#[op2(fast)]
+fn op_fs_write_text(
+    #[string] path: &str,
+    #[string] content: &str,
+) -> Result<(), deno_error::JsErrorBox> {
+    std::fs::write(path, content)
+        .map_err(|e| deno_error::JsErrorBox::generic(format!("書き込みに失敗しました [{path}]: {e}")))
+}
+
+/// fs プリミティブ：ファイルコピー（中身を `dst` へ・上書き）。
+#[op2(fast)]
+fn op_fs_copy_file(
+    #[string] src: &str,
+    #[string] dst: &str,
+) -> Result<(), deno_error::JsErrorBox> {
+    std::fs::copy(src, dst)
+        .map(|_| ())
+        .map_err(|e| deno_error::JsErrorBox::generic(format!("コピーに失敗しました [{src}] → [{dst}]: {e}")))
+}
+
+/// fs プリミティブ：名前変更/移動（programmatic rename）。
+#[op2(fast)]
+fn op_fs_rename(
+    #[string] src: &str,
+    #[string] dst: &str,
+) -> Result<(), deno_error::JsErrorBox> {
+    std::fs::rename(src, dst)
+        .map_err(|e| deno_error::JsErrorBox::generic(format!("名前変更に失敗しました [{src}] → [{dst}]: {e}")))
+}
+
+/// fs プリミティブ：ディレクトリ作成（途中も含め再帰作成・既存はそのまま成功）。
+#[op2(fast)]
+fn op_fs_mkdir(#[string] path: &str) -> Result<(), deno_error::JsErrorBox> {
+    std::fs::create_dir_all(path)
+        .map_err(|e| deno_error::JsErrorBox::generic(format!("ディレクトリ作成に失敗しました [{path}]: {e}")))
+}
+
+/// fs プリミティブ：存在判定（エラーは投げず false 寄せ）。
+#[op2(fast)]
+fn op_fs_exists(#[string] path: &str) -> bool {
+    std::path::Path::new(path).exists()
+}
+
+/// fs プリミティブ：削除（ファイル or 空ディレクトリの非再帰削除）。中身ありディレクトリは例外。
+#[op2(fast)]
+fn op_fs_remove(#[string] path: &str) -> Result<(), deno_error::JsErrorBox> {
+    let md = std::fs::metadata(path)
+        .map_err(|e| deno_error::JsErrorBox::generic(format!("削除対象が見つかりません [{path}]: {e}")))?;
+    let result = if md.is_dir() {
+        std::fs::remove_dir(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    result.map_err(|e| deno_error::JsErrorBox::generic(format!("削除に失敗しました [{path}]: {e}")))
+}
+
+/// fs プリミティブ：stat。存在しなければ `[]`（JS で null へ畳む）・他の I/O エラーは例外。
+/// `Option` を直に返せないため `op_prompt` と同じく長さ 0/1 の `Vec` で包む。
+#[op2]
+#[serde]
+fn op_fs_stat(#[string] path: &str) -> Result<Vec<FsStat>, deno_error::JsErrorBox> {
+    match std::fs::metadata(path) {
+        Ok(md) => Ok(vec![FsStat {
+            is_dir: md.is_dir(),
+            is_file: md.is_file(),
+            size: md.len(),
+            mtime: epoch_millis(md.modified()),
+            readonly: md.permissions().readonly(),
+            hidden: meta_hidden(&md),
+        }]),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(deno_error::JsErrorBox::generic(format!("stat に失敗しました [{path}]: {e}"))),
+    }
+}
+
 extension!(
     rerics_ext,
     ops = [
@@ -468,7 +579,15 @@ extension!(
         op_open_dialog,
         op_save_dialog,
         op_spawn,
-        op_run
+        op_run,
+        op_fs_read_text,
+        op_fs_write_text,
+        op_fs_copy_file,
+        op_fs_rename,
+        op_fs_mkdir,
+        op_fs_exists,
+        op_fs_remove,
+        op_fs_stat
     ]
 );
 
@@ -606,6 +725,21 @@ const BOOTSTRAP: &str = r#"
     },
     spawn: (cmd, ...args) => ops.op_spawn(String(cmd), args.map(String)),
     run: (cmd, ...args) => ops.op_run(String(cmd), args.map(String)),
+    // 裏で動く低レベルファイル操作。画面にもログにも触れない（更新は呼び手が navigate 等で明示）。
+    // 絶対パス前提。I/O エラーは例外（exists は false 寄せ・stat は不在で null）。
+    fs: {
+      readText: (p) => ops.op_fs_read_text(String(p)),
+      writeText: (p, c) => ops.op_fs_write_text(String(p), c == null ? "" : String(c)),
+      copyFile: (s, d) => ops.op_fs_copy_file(String(s), String(d)),
+      rename: (s, d) => ops.op_fs_rename(String(s), String(d)),
+      mkdir: (p) => ops.op_fs_mkdir(String(p)),
+      exists: (p) => ops.op_fs_exists(String(p)),
+      remove: (p) => ops.op_fs_remove(String(p)),
+      stat: (p) => {
+        const r = ops.op_fs_stat(String(p));
+        return r.length ? r[0] : null;
+      },
+    },
     registerCommand: (name, fn, opts) => {
       if (typeof fn !== "function") throw new TypeError("registerCommand: fn must be a function");
       const o = opts || {};
@@ -1693,5 +1827,69 @@ mod tests {
         eng.invoke_command("useShared", &[]).unwrap();
         assert_eq!(*host.logs.borrow(), vec!["lib:42".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fs_layer_round_trips_through_std_fs() {
+        let dir = std::env::temp_dir().join(format!("rerics-fs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // バックスラッシュ回避のためスラッシュ表記で渡す（Windows でも std::fs は受ける）。
+        let base = dir.display().to_string().replace('\\', "/");
+
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        let code = format!(
+            r#"
+              const b = "{base}";
+              // mkdir（再帰）→ writeText → readText 往復。
+              r.fs.mkdir(b + "/nested/deep");
+              r.fs.writeText(b + "/nested/deep/a.txt", "こんにちは");
+              rerics.log("read=" + r.fs.readText(b + "/nested/deep/a.txt"));
+              // exists / stat。
+              rerics.log("exists=" + r.fs.exists(b + "/nested/deep/a.txt"));
+              rerics.log("missing=" + r.fs.exists(b + "/nope.txt"));
+              const st = r.fs.stat(b + "/nested/deep/a.txt");
+              rerics.log("stat=" + st.isFile + "," + (st.size > 0) + "," + (st.mtime > 0));
+              rerics.log("statNull=" + (r.fs.stat(b + "/nope.txt") === null));
+              // copyFile → rename → remove。
+              r.fs.copyFile(b + "/nested/deep/a.txt", b + "/copy.txt");
+              r.fs.rename(b + "/copy.txt", b + "/renamed.txt");
+              rerics.log("renamed=" + (!r.fs.exists(b + "/copy.txt") && r.fs.exists(b + "/renamed.txt")));
+              r.fs.remove(b + "/renamed.txt");
+              rerics.log("removed=" + !r.fs.exists(b + "/renamed.txt"));
+            "#
+        );
+        eng.run_to_completion("test:fs", code).unwrap();
+
+        assert_eq!(
+            *host.logs.borrow(),
+            vec![
+                "read=こんにちは".to_string(),
+                "exists=true".to_string(),
+                "missing=false".to_string(),
+                "stat=true,true,true".to_string(),
+                "statNull=true".to_string(),
+                "renamed=true".to_string(),
+                "removed=true".to_string(),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fs_read_text_missing_file_throws() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:fs-throw",
+            r#"
+              try { r.fs.readText("C:\\no\\such\\rerics-fs-xyz.txt"); rerics.log("no-throw"); }
+              catch (e) { rerics.log("caught"); }
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(*host.logs.borrow(), vec!["caught".to_string()]);
     }
 }

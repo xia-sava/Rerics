@@ -116,6 +116,50 @@ interface RericsJob extends Promise<void> {
   cancel(): void;
 }
 
+/** `rerics.fs.stat()` が返すメタデータ。 */
+interface RericsFsStat {
+  /** ディレクトリなら true。 */
+  readonly isDir: boolean;
+  /** 通常ファイルなら true。 */
+  readonly isFile: boolean;
+  /** バイト単位のサイズ（ディレクトリは 0）。 */
+  readonly size: number;
+  /** 最終更新時刻（Unix epoch ミリ秒）。`new Date(mtime)` で扱える。取得不可なら 0。 */
+  readonly mtime: number;
+  /** 読み取り専用属性。 */
+  readonly readonly: boolean;
+  /** 隠し属性。 */
+  readonly hidden: boolean;
+}
+
+/**
+ * 裏で動く低レベルファイル操作（`rerics.fs`）。`rerics.copy()/move()/delete()` と違い、
+ * 画面にもログにも触れず、確認も進捗も出さずに同期で実行する。表示を更新したいときは
+ * 呼び手が `rerics.navigate()` などで明示する。
+ *
+ * - パスは**絶対パス**で渡す（相対パスは解決しない）。
+ * - I/O 失敗は例外（`try/catch` で拾える）。`exists` は投げず真偽を返し、`stat` は不在で null。
+ * - テキストは `readText`/`writeText`（UTF-8）。バイナリ対応は将来 `readBytes`/`writeBytes` を足す。
+ */
+interface RericsFs {
+  /** テキストファイルを UTF-8 で読む。不正なバイト列・読込失敗は例外。 */
+  readText(path: string): string;
+  /** テキストを UTF-8 で書く（新規作成／既存は上書き）。 */
+  writeText(path: string, content: string): void;
+  /** `src` の中身を `dst` へコピーする（上書き）。 */
+  copyFile(src: string, dst: string): void;
+  /** `src` を `dst` へ名前変更／移動する。 */
+  rename(src: string, dst: string): void;
+  /** ディレクトリを作る（途中の階層も再帰作成・既存はそのまま成功）。 */
+  mkdir(path: string): void;
+  /** 存在すれば true（エラーでも false 寄せ）。 */
+  exists(path: string): boolean;
+  /** ファイル／空ディレクトリを削除する（非再帰・中身ありディレクトリは例外）。 */
+  remove(path: string): void;
+  /** メタデータを返す。存在しなければ null・他の I/O エラーは例外。 */
+  stat(path: string): RericsFsStat | null;
+}
+
 /**
  * Rerics 本体が提供するホスト API。グローバル `rerics` から呼ぶ。
  *
@@ -176,6 +220,20 @@ declare const rerics: {
    * `await` して使う。
    */
   listDir(path: string): Promise<RericsDirEntry[]>;
+
+  /**
+   * 裏で動く低レベルファイル操作（読み書き・コピー・名前変更・mkdir・存在判定・stat・削除）。
+   * 画面に触れない同期 API。詳細は {@link RericsFs}。
+   *
+   * ```ts
+   * const cfg = rerics.activePane().dir + "\\config.json";
+   * if (rerics.fs.exists(cfg)) {
+   *   const data = JSON.parse(rerics.fs.readText(cfg));
+   *   rerics.fs.writeText(cfg, JSON.stringify({ ...data, opened: true }));
+   * }
+   * ```
+   */
+  fs: RericsFs;
 
   /**
    * 名前付きコマンドを登録する。`handler` は同期でも `async`（Promise を返す）でもよい。
