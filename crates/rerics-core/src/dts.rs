@@ -9,7 +9,8 @@ use crate::input::{ArgType, Command};
 /// 組込側を生やさず host を優先する。型定義でも二重宣言を避けるためここで除外する。
 const HOST_API_MEMBERS: &[&str] = &[
     "log", "info", "warning", "error", "getLog", "version", "config", "currentDir", "currentDrive",
-    "isLeft", "isRight", "getSortType", "getSortReverse", "getPathMask", "navigate", "confirm",
+    "isLeft", "isRight", "getSortType", "getSortReverse", "getPathMask", "incrementalSearch",
+    "navigate", "confirm",
     "prompt", "select", "listDir", "activePane", "oppositePane", "command", "copy", "move",
     "delete", "open", "folderDialog", "openDialog", "saveDialog", "modifiers", "spawn", "run",
     "unpack", "fs", "registerCommand", "registerMenu", "on",

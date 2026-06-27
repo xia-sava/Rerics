@@ -239,6 +239,13 @@ interface RericsApi {
   /** 現在のパスマスクを返す（マスク無しは空文字）。 */
   getPathMask(): string;
 
+  /**
+   * カーソルの次の行から巡回して `name` に一致する項目へカーソルを移動し、見つかれば中央へ
+   * 寄せて true を返す（現在行は対象外・大小無視）。`startwith` 既定 true は前方一致、false は
+   * 部分一致。見つからなければカーソルは動かさず false。
+   */
+  incrementalSearch(name: string, startwith?: boolean): boolean;
+
   /** アクティブペインを `path` へ移動する。 */
   navigate(path: string): void;
 

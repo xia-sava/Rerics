@@ -834,6 +834,31 @@ const BOOTSTRAP: &str = r#"
     getSortType: () => ops.op_pane_snapshot(false).sortType,
     getSortReverse: () => ops.op_pane_snapshot(false).sortReverse,
     getPathMask: () => ops.op_pane_snapshot(false).pathMask,
+    // カーソルの次の行から巡回して name に一致する項目へ移動し、見つかれば中央寄せして true。
+    // 現在行は対象外。startwith=true（既定）で前方一致・false で部分一致。大小無視。
+    incrementalSearch: (name, startwith) => {
+      const sw = startwith === undefined ? true : !!startwith;
+      const needle = String(name).toUpperCase();
+      const snap = ops.op_pane_snapshot(false);
+      const items = snap.items;
+      const count = items.length;
+      if (count === 0) return false;
+      const start = snap.cursor;
+      let num = start + 1;
+      for (;;) {
+        if (num >= count) num = 0;
+        if (num === start) break;
+        const text = String(items[num].name).toUpperCase();
+        const hit = sw ? text.startsWith(needle) : text.indexOf(needle) >= 0;
+        if (hit) {
+          rerics.setCursorIndex(num);
+          rerics.centerCursor();
+          return true;
+        }
+        num++;
+      }
+      return false;
+    },
     navigate: (p) => ops.op_navigate(String(p)),
     confirm: (m) => ops.op_confirm(String(m)),
     prompt: (m, d) => {
@@ -1847,6 +1872,50 @@ mod tests {
                 "sel=a.txt,b.txt".to_string(),
                 "cursor=a.txt".to_string(),
                 "opp=C:\\other".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn incremental_search_moves_cursor_and_centers() {
+        let host = Rc::new(MockHost {
+            active_pane: PaneSnapshot {
+                dir: "C:\\work".into(),
+                is_left: true,
+                cursor: 0,
+                items: vec![
+                    item(0, "..", true, false),
+                    item(1, "apple.txt", false, false),
+                    item(2, "banana.txt", false, false),
+                    item(3, "cherry.txt", false, false),
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:isearch",
+            r#"
+              rerics.log("hit=" + rerics.incrementalSearch("ban"));
+              rerics.log("part=" + rerics.incrementalSearch("rry", false));
+              rerics.log("miss=" + rerics.incrementalSearch("zzz"));
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            *host.logs.borrow(),
+            vec!["hit=true".to_string(), "part=true".to_string(), "miss=false".to_string()]
+        );
+        // ヒット 2 回ぶん、カーソル移動＋中央寄せが順に発火（cursor は常に 0＝モックは固定）。
+        assert_eq!(
+            *host.commands.borrow(),
+            vec![
+                ("setCursorIndex".to_string(), vec!["2".to_string()]),
+                ("centerCursor".to_string(), vec![]),
+                ("setCursorIndex".to_string(), vec!["3".to_string()]),
+                ("centerCursor".to_string(), vec![]),
             ]
         );
     }
