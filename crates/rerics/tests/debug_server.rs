@@ -905,6 +905,42 @@ fn nav_path_history_dialog() {
     assert_eq!(now.trim(), parent, "selecting the parent entry should navigate there");
 }
 
+/// selectMaskDialog＝入力モーダルで取ったマスクを no-UI 版 `r.selectMask` へ委譲する。委譲版は
+/// Like パターン＋既存選択をクリアして選び直すので、事前に選んだ非一致項目（b.dat）は外れ、
+/// `*.txt` の 2 件だけが marked になる（＝マッチとクリアの両方を確認）。
+#[test]
+fn select_mask_dialog_delegates_with_clear() {
+    let server = Server::start_with_scripts(&["a.txt", "b.dat", "c.txt"], &[]);
+
+    // 事前にマスク非一致の b.dat を選んでおく（クリアされることの確認用）。
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"rerics.activePane().items.find((it) => it.name === "b.dat").selected = true;"#,
+        )
+        .expect("preselect eval");
+    poll(&server, "/state/panes/left/items", |b| {
+        count_substr(b, "\"marked\":true") == 1
+    });
+
+    // selectMaskDialog で "*.txt" を入力＝委譲先が a.txt/c.txt を選び直し、b.dat はクリアされる。
+    server.req("POST", "/command/selectMaskDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"has_input\":true"), "should open a text-input modal: {modal}");
+    server.req("POST", "/modal/text", "*.txt").unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+
+    let items = poll(&server, "/state/panes/left/items", |b| {
+        count_substr(b, "\"marked\":true") == 2
+    });
+    assert_eq!(
+        count_substr(&items, "\"marked\":true"),
+        2,
+        "only the two .txt files should remain marked (b.dat cleared): {items}"
+    );
+}
+
 /// compareDialog＝比較方法の list_box モーダルで選んだ条件を no-UI 版 `r.compare` へ委譲して
 /// 同名ファイルを選択する。左右とも同じディレクトリで開くので、`名前一致のみ` は各ファイルが
 /// 反対側の同名（自分自身）と一致＝全ファイルが marked になる。

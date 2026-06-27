@@ -30,8 +30,9 @@ impl MainWindow {
         Ok(())
     }
 
-    /// 入力ダイアログでマスクを尋ね、一致するファイルの選択状態を立てる。
-    pub(crate) fn select_mask(&self, is_left: bool) -> w::AnyResult<()> {
+    /// 入力ダイアログでマスクを尋ね、選んだマスクで選択し直す。選択ロジックは UI を持たない
+    /// `r.selectMask`（カンマ区切りの Like パターン・既存選択をクリアして選び直す）へ委譲する。
+    pub(crate) fn select_mask(&self) -> w::AnyResult<()> {
         let input = self.input_with_history(
             "マスクで選択",
             "選択するマスク（カンマ区切り）:",
@@ -45,17 +46,8 @@ impl MainWindow {
         if input.is_empty() {
             return Ok(());
         }
-        {
-            let state = self.view(is_left).state();
-            let mut s = state.borrow_mut();
-            for it in &mut s.items {
-                if !it.is_parent && rerics_core::glob_match(&it.name, input) {
-                    it.selected = true;
-                }
-            }
-        }
-        self.view(is_left).refresh()?;
-        self.update_selected_info(is_left);
+        let arg = serde_json::to_string(input).unwrap_or_else(|_| "\"\"".to_string());
+        self.script_send(crate::script_host::EngineCmd::Eval(format!("r.selectMask({arg})")));
         Ok(())
     }
 
