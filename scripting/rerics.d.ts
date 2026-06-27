@@ -266,6 +266,12 @@ interface RericsApi {
   selectMask(mask: string): boolean;
 
   /**
+   * アクティブペインの表示マスク（パスマスク）を設定して一覧を更新する。空文字または `"*"`
+   * で解除。UI ありの版は `pathMaskDialog`。
+   */
+  pathMask(mask: string): void;
+
+  /**
    * いま押されている修飾キー（Shift/Ctrl/Alt）の状態を返す。キーに割り当てたスクリプト
    * コマンドの中で、押下中の修飾で動作を分けたいときに使う（呼んだ時点の物理キー状態）。
    */

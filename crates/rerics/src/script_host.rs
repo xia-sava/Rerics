@@ -29,6 +29,7 @@ pub enum HostCall {
     GetLog,
     ConfigGet(String),
     ChangeOpposite { kind: String, path: String },
+    SetPathMask(String),
     CurrentDir,
     Navigate(String),
     Confirm(String),
@@ -207,6 +208,15 @@ impl HostApi for GuiHost {
             self.hwnd_ptr,
             SCRIPT_WAKE.raw(),
             HostCall::ChangeOpposite { kind: kind.to_string(), path: path.to_string() },
+        );
+    }
+
+    fn set_path_mask(&self, mask: &str) {
+        let _ = ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::SetPathMask(mask.to_string()),
         );
     }
 
@@ -564,6 +574,14 @@ impl MainWindow {
                         "root" => self.to_root(opposite),
                         _ => self.change_directory(opposite, Some(&path)),
                     };
+                    let _ = tx.send(HostResp::Done);
+                }
+                HostCall::SetPathMask(mask) => {
+                    let is_left = !self.active_right.get();
+                    let m = mask.trim();
+                    *self.mask(is_left).borrow_mut() =
+                        if m.is_empty() || m == "*" { None } else { Some(m.to_owned()) };
+                    let _ = self.reload_side(is_left);
                     let _ = tx.send(HostResp::Done);
                 }
                 HostCall::CurrentDir => {

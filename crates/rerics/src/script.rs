@@ -70,6 +70,8 @@ pub trait HostApi {
     fn config_get(&self, key: &str) -> Option<serde_json::Value>;
     /// 反対ペインを移動する。`kind`＝`"parent"`（親へ）/`"root"`（ルートへ）/その他（`path` へ）。
     fn change_opposite(&self, kind: &str, path: &str);
+    /// アクティブペインの表示マスクを設定する（空 or `"*"` で解除）。設定後に一覧を更新する。
+    fn set_path_mask(&self, mask: &str);
     /// アクティブペインの現在ディレクトリ（絶対パス）を返す。
     fn current_dir(&self) -> String;
     /// アクティブペインを `path` へ移動する。
@@ -257,6 +259,12 @@ fn op_config(state: &mut OpState, #[string] key: &str) -> Vec<serde_json::Value>
 #[op2(fast)]
 fn op_change_opposite(state: &mut OpState, #[string] kind: &str, #[string] path: &str) {
     state.borrow::<Host>().change_opposite(kind, path);
+}
+
+/// アクティブペインの表示マスクを設定する（空 or `"*"` で解除・投げっぱなし）。
+#[op2(fast)]
+fn op_set_path_mask(state: &mut OpState, #[string] mask: &str) {
+    state.borrow::<Host>().set_path_mask(mask);
 }
 
 #[op2]
@@ -679,6 +687,7 @@ extension!(
         op_version,
         op_config,
         op_change_opposite,
+        op_set_path_mask,
         op_current_dir,
         op_navigate,
         op_confirm,
@@ -899,6 +908,7 @@ const BOOTSTRAP: &str = r#"
     changeOppositeDirectory: (path) => ops.op_change_opposite("path", String(path)),
     changeOppositeDirectoryToParent: () => ops.op_change_opposite("parent", ""),
     changeOppositeDirectoryToRoot: () => ops.op_change_opposite("root", ""),
+    pathMask: (mask) => ops.op_set_path_mask(mask == null ? "" : String(mask)),
     // カンマ区切りの各マスク（VB Like）に一致する項目だけを選択し直す（既存選択はクリア）。
     // 1 件でも一致すれば true。大小無視。".." は対象外。
     selectMask: (mask) => {
@@ -1331,6 +1341,8 @@ mod tests {
         config: serde_json::Value,
         /// `change_opposite()` が受けた `(kind, path)` の記録。
         opposite_nav: RefCell<Vec<(String, String)>>,
+        /// `set_path_mask()` が受けたマスクの記録。
+        path_masks: RefCell<Vec<String>>,
     }
 
     impl HostApi for MockHost {
@@ -1345,6 +1357,9 @@ mod tests {
         }
         fn change_opposite(&self, kind: &str, path: &str) {
             self.opposite_nav.borrow_mut().push((kind.to_string(), path.to_string()));
+        }
+        fn set_path_mask(&self, mask: &str) {
+            self.path_masks.borrow_mut().push(mask.to_string());
         }
         fn current_dir(&self) -> String {
             self.dir.clone()
@@ -1980,6 +1995,26 @@ mod tests {
                 (true, vec![(2, true), (4, true)]),
                 (true, vec![(1, false)]),
             ]
+        );
+    }
+
+    #[test]
+    fn path_mask_passes_mask_to_host() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:path-mask",
+            r#"
+              rerics.pathMask("*.txt");
+              rerics.pathMask("*");
+              rerics.pathMask("");
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            *host.path_masks.borrow(),
+            vec!["*.txt".to_string(), "*".to_string(), "".to_string()]
         );
     }
 
