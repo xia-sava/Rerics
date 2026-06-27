@@ -5,6 +5,7 @@
 mod archive;
 mod attrs;
 mod call;
+mod compare;
 mod config;
 mod dts;
 mod file_list;
@@ -44,6 +45,7 @@ pub use file_list::{
     sequence_rename,
 };
 pub use call::Call;
+pub use compare::{CompareCondition, CompareCounts, CompareOptions, directory_compare};
 pub use input::{
     ArgSpec, ArgType, Command, CommandContext, CommandMeta, Invocation, KeyChord, KeyMap, OptSpec,
     vk,
