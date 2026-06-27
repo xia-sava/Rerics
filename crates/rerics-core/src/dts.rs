@@ -14,6 +14,12 @@ const HOST_API_MEMBERS: &[&str] = &[
     "on",
 ];
 
+/// `r`/`rerics` で組込側が優先される名前か（host API メンバー or 組込コマンド token）。
+/// 登録スクリプトコマンドの型生成で、組込と重複する宣言を避けるのに使う。
+pub fn reserved_member(name: &str) -> bool {
+    HOST_API_MEMBERS.contains(&name) || Command::all().any(|c| c.as_token() == name)
+}
+
 /// 引数型を TypeScript 表記へ。`Options`（`{ select: true }` 等）は `r.` 経由では渡せない
 /// （引数は文字列化される）ため `None` を返し、シグネチャから省く。
 fn ts_type(ty: &ArgType) -> Option<String> {

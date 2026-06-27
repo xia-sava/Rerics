@@ -401,6 +401,38 @@ fn write_if_changed(path: &std::path::Path, content: &str) {
     let _ = std::fs::write(path, content);
 }
 
+/// TS の識別子として使える名前か（プロパティをそのまま書けるか）。
+fn is_ts_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
+/// 登録済みスクリプトコマンドを `interface RericsCommands { ... }` へ宣言マージする TS を作る。
+/// 組込・host と同名のもの（`r` に生えない）は除外。識別子にできない名前は引用キーにする。
+fn script_commands_dts(metas: &[ScriptCommand]) -> String {
+    let mut out = String::new();
+    out.push_str("// このファイルは Rerics が起動時に登録スクリプトコマンドから自動生成する。手で編集しない。\n");
+    out.push_str("// 登録コマンドを r.<名前>() で補完するための宣言。\n\n");
+    out.push_str("interface RericsCommands {\n");
+    for m in metas {
+        if rerics_core::reserved_member(&m.name) {
+            continue;
+        }
+        if let Some(doc) = m.summary.as_deref().or(m.label.as_deref()) {
+            out.push_str(&format!("  /** {doc} */\n"));
+        }
+        let key = if is_ts_ident(&m.name) {
+            m.name.clone()
+        } else {
+            format!("{:?}", m.name)
+        };
+        out.push_str(&format!("  {key}(...args: unknown[]): unknown;\n"));
+    }
+    out.push_str("}\n");
+    out
+}
+
 /// スクリプトエンジンを別スレッドに建てる。起動スクリプト（`data_dir()/scripts`）を読み込み、
 /// 以後 [`EngineCmd`] を受けて捌くループに入る。`hwnd_ptr` は UI スレッドを起こす先。
 pub fn spawn_engine(queue: ScriptQueue, hwnd_ptr: isize, cmd_rx: Receiver<EngineCmd>) {
@@ -412,6 +444,11 @@ pub fn spawn_engine(queue: ScriptQueue, hwnd_ptr: isize, cmd_rx: Receiver<Engine
         for (path, msg) in script::load_dir(&mut engine, &scripts) {
             host.log(&format!("スクリプト読込エラー [{}]: {}", path.display(), msg));
         }
+        // 読込後に確定した登録コマンドの型定義を書き出す（補完用）。
+        write_if_changed(
+            &scripts.join("rerics.scripts.d.ts"),
+            &script_commands_dts(&engine.registered_command_metas()),
+        );
         while let Ok(cmd) = cmd_rx.recv() {
             match cmd {
                 EngineCmd::Invoke { name, args } => {
@@ -851,5 +888,38 @@ impl MainWindow {
         let (tx, rx) = channel();
         let _ = self.script.cmd_tx.send(EngineCmd::EvalValue { code, tx });
         rx.recv().unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cmd(name: &str, summary: Option<&str>) -> ScriptCommand {
+        ScriptCommand {
+            name: name.to_string(),
+            label: None,
+            genre: None,
+            summary: summary.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn script_commands_dts_declares_registered_skips_reserved_and_quotes_nonident() {
+        let metas = vec![
+            cmd("actionEnter", Some("書庫は展開・他は実行")),
+            cmd("cursorDown", None),        // 組込 token＝除外
+            cmd("my-cmd", None),            // 識別子不可＝引用キー
+            cmd("plain", None),
+        ];
+        let dts = script_commands_dts(&metas);
+        assert!(dts.contains("interface RericsCommands {"), "{dts}");
+        assert!(dts.contains("actionEnter(...args: unknown[]): unknown;"), "{dts}");
+        assert!(dts.contains("/** 書庫は展開・他は実行 */"), "summary を JSDoc 化: {dts}");
+        assert!(dts.contains("plain(...args: unknown[]): unknown;"), "{dts}");
+        // 組込と同名は r に生えないので出さない。
+        assert!(!dts.contains("cursorDown("), "組込 token は除外: {dts}");
+        // 識別子にできない名前は引用キー。
+        assert!(dts.contains("\"my-cmd\"(...args: unknown[]): unknown;"), "引用キー: {dts}");
     }
 }
