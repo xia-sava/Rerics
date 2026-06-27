@@ -410,28 +410,42 @@ fn op_save_dialog(state: &mut OpState, #[string] title: &str) -> Vec<String> {
     state.borrow::<Host>().save_dialog(title).into_iter().collect()
 }
 
-/// 指定プログラムを起動して即リターンする（投げっぱなし）。起動失敗は例外。GUI に触れないので
-/// ホストを介さずエンジンスレッドから直接起動する。
+/// 指定プログラムを起動して即リターンする（投げっぱなし）。`cwd` が非空ならそこを作業
+/// ディレクトリにする。起動失敗は例外。GUI に触れないのでエンジンスレッドから直接起動する。
 #[op2]
-fn op_spawn(#[string] cmd: String, #[serde] args: Vec<String>) -> Result<(), deno_error::JsErrorBox> {
-    std::process::Command::new(&cmd)
-        .args(&args)
+fn op_spawn(
+    #[string] cmd: String,
+    #[serde] args: Vec<String>,
+    #[string] cwd: &str,
+) -> Result<(), deno_error::JsErrorBox> {
+    let mut command = std::process::Command::new(&cmd);
+    command.args(&args);
+    if !cwd.is_empty() {
+        command.current_dir(cwd);
+    }
+    command
         .spawn()
         .map(|_child| ())
         .map_err(|e| deno_error::JsErrorBox::generic(format!("起動に失敗しました [{cmd}]: {e}")))
 }
 
 /// 指定プログラムを起動して終了まで待ち、結果（終了コード・標準出力・標準エラー）を返す
-/// 非同期 op。重い待ちはブロッキングプールへ逃がす（`op_list_dir` と同じ形）。
+/// 非同期 op。`cwd` が非空ならそこを作業ディレクトリにする。重い待ちはブロッキングプールへ
+/// 逃がす（`op_list_dir` と同じ形）。
 #[op2(async(lazy))]
 #[serde]
 async fn op_run(
     #[string] cmd: String,
     #[serde] args: Vec<String>,
+    #[string] cwd: String,
 ) -> Result<ProcessResult, deno_error::JsErrorBox> {
     tokio::task::spawn_blocking(move || {
-        std::process::Command::new(&cmd)
-            .args(&args)
+        let mut command = std::process::Command::new(&cmd);
+        command.args(&args);
+        if !cwd.is_empty() {
+            command.current_dir(&cwd);
+        }
+        command
             .output()
             .map(|o| ProcessResult {
                 code: o.status.code(),
@@ -689,6 +703,18 @@ const BOOTSTRAP: &str = r#"
   // copy/move：第1引数が配列なら明示(items, dest, opts)、オブジェクトなら選択ベース(opts)。
   const copyLike = (kind, a, b, c) =>
     Array.isArray(a) ? startOp(kind, a, b, c) : startOp(kind, null, null, a);
+  // プロセス起動引数の末尾に { cwd } オプションが乗っていれば取り出す。残りは文字列引数。
+  const splitProcArgs = (rest) => {
+    let cwd = "";
+    if (rest.length) {
+      const last = rest[rest.length - 1];
+      if (last !== null && typeof last === "object" && !Array.isArray(last)) {
+        if (last.cwd != null) cwd = String(last.cwd);
+        rest = rest.slice(0, -1);
+      }
+    }
+    return { args: rest.map(String), cwd };
+  };
   globalThis.rerics = {
     log: (m) => ops.op_log(String(m)),
     currentDir: () => ops.op_current_dir(),
@@ -723,8 +749,14 @@ const BOOTSTRAP: &str = r#"
       const r = ops.op_save_dialog(t == null ? "" : String(t));
       return r.length ? r[0] : null;
     },
-    spawn: (cmd, ...args) => ops.op_spawn(String(cmd), args.map(String)),
-    run: (cmd, ...args) => ops.op_run(String(cmd), args.map(String)),
+    spawn: (cmd, ...rest) => {
+      const { args, cwd } = splitProcArgs(rest);
+      return ops.op_spawn(String(cmd), args, cwd);
+    },
+    run: (cmd, ...rest) => {
+      const { args, cwd } = splitProcArgs(rest);
+      return ops.op_run(String(cmd), args, cwd);
+    },
     // 裏で動く低レベルファイル操作。画面にもログにも触れない（更新は呼び手が navigate 等で明示）。
     // 絶対パス前提。I/O エラーは例外（exists は false 寄せ・stat は不在で null）。
     fs: {
@@ -1289,6 +1321,28 @@ mod tests {
             *host.logs.borrow(),
             vec!["code=0".to_string(), "out=hi-from-run".to_string()]
         );
+    }
+
+    #[test]
+    fn run_honors_cwd_option() {
+        let dir = std::env::temp_dir().join(format!("rerics-cwd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.display().to_string().replace('\\', "/");
+
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        // 末尾の { cwd } で作業ディレクトリを指定。`cmd /c cd` が現在地を出すので、その文字列に
+        // 一意な作業dir名が含まれるかで cwd 反映を確認する。
+        let code = format!(
+            r#"(async () => {{
+                 const r = await rerics.run("cmd", "/c", "cd", {{ cwd: "{p}" }});
+                 rerics.log(r.stdout.toLowerCase().includes("rerics-cwd") ? "in-cwd" : "elsewhere:" + r.stdout.trim());
+               }})();"#
+        );
+        eng.run_to_completion("test:cwd", code).unwrap();
+        assert_eq!(*host.logs.borrow(), vec!["in-cwd".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

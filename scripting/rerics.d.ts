@@ -160,6 +160,22 @@ interface RericsFs {
   stat(path: string): RericsFsStat | null;
 }
 
+/** `rerics.spawn()` / `rerics.run()` の末尾に渡せる起動オプション。 */
+interface RericsProcOptions {
+  /** 作業ディレクトリ（省略時はプロセス既定）。 */
+  cwd?: string;
+}
+
+/** `rerics.run()` が返す外部プロセスの結果。 */
+interface RericsProcessResult {
+  /** 終了コード（シグナル等でコード無しに終わった場合は null）。 */
+  readonly code: number | null;
+  /** 標準出力（UTF-8 として読んだ文字列）。 */
+  readonly stdout: string;
+  /** 標準エラー出力（UTF-8 として読んだ文字列）。 */
+  readonly stderr: string;
+}
+
 /**
  * Rerics 本体が提供するホスト API。グローバル `rerics` から呼ぶ。
  *
@@ -234,6 +250,28 @@ declare const rerics: {
    * ```
    */
   fs: RericsFs;
+
+  /**
+   * 外部プログラムを起動して**待たずに**戻る（投げっぱなし）。引数は文字列で渡し、末尾に
+   * `{ cwd }` を付けると作業ディレクトリを指定できる。起動失敗は例外。
+   *
+   * ```ts
+   * // 現在地で WSL ターミナルを開く
+   * rerics.spawn("wt.exe", "wsl", { cwd: rerics.activePane().dir });
+   * ```
+   */
+  spawn(cmd: string, ...args: (string | RericsProcOptions)[]): void;
+
+  /**
+   * 外部プログラムを起動して**終了まで待ち**、結果（終了コード・標準出力・標準エラー）を返す。
+   * 引数は文字列で渡し、末尾に `{ cwd }` を付けると作業ディレクトリを指定できる。`await` して使う。
+   *
+   * ```ts
+   * const r = await rerics.run("git", "status", "--porcelain", { cwd: rerics.activePane().dir });
+   * if (r.code === 0 && r.stdout.trim()) rerics.log("変更あり");
+   * ```
+   */
+  run(cmd: string, ...args: (string | RericsProcOptions)[]): Promise<RericsProcessResult>;
 
   /**
    * 名前付きコマンドを登録する。`handler` は同期でも `async`（Promise を返す）でもよい。
