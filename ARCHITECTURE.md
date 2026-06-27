@@ -99,6 +99,29 @@ UI を差し替えても実処理は変わらず、同じ処理が UI 側とロ�
 - `crates/rerics-core/src/dts.rs` の `HOST_API_MEMBERS` と `scripting/rerics.d.ts` の両方に
   追加する。
 
+## 結果一覧（検索・比較のペイン）
+
+ペインは通常「1つの実ディレクトリの鏡」だが、ディレクトリ比較・ファイル検索は**複数ディレクトリ
+出身の項目をフラットに並べる結果一覧**を表示する。これは新しい場所種別（`Location`）ではなく、
+`FileListState` の**モードフラグ**で表す：
+
+- `FileListState.find_result: bool` … 結果一覧モードか。`true` の間は情報列（`ColumnKind::Information`）
+  を出し、各項目は出自情報（`FileItem.source: Option<Location>`＝出自ディレクトリ／`info`＝相対サブパス
+  や "追加"/"削除" などの説明）を持つ。項目は通常一覧と同じ `items` に入るので、描画・選択・ソート・
+  `/state` 観測がそのまま効く。
+- 流し込み … 純ロジック（`rerics_core::directory_compare` / `find_file`）をワーカースレッド（`spawn_job`）
+  で回し、完了したら `show_find_result` が `set_find_result` で `items`＋列を差し替える。ペインの現在地
+  （`Pane.loc`）は基準ディレクトリのまま変えない。
+- 抜ける … 結果項目を開く（Enter）と出自（`source` → 無ければ現在地）へ navigate してその名前へカーソルを
+  合わせ、通常のディレクトリへ戻る。先頭の ".." も基準ディレクトリの再読込で抜ける。**いずれの通常移動も
+  `apply_loaded_items` に合流し、そこで `find_result` を解除して設定列（`config.columns`）へ戻す**ので、
+  解除処理は一箇所に集約される。
+
+比較・検索の**条件ごとのロジックは core のユニットテスト**（`compare.rs` / `find.rs`）で、**結果ペインの
+挙動**（情報列・出自ジャンプ・モード解除）は e2e（`directory_compare_*` / `find_file_*`）で担保する。
+ダイアログのラジオ/チェック/個別入力欄は debug-server から駆動できないため、条件別の検証は引数版コマンド
+（`directoryCompare` / `findFile("mask")`）と core テストに寄せる。
+
 ## 観測可能性とテスト
 
 GUI は debug-server（`--debug-server` / `--headless`）から状態を観測し、操作を駆動できる形で
