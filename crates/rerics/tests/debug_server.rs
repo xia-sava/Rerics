@@ -941,6 +941,31 @@ fn select_mask_dialog_delegates_with_clear() {
     );
 }
 
+/// pathMaskDialog＝入力モーダルで取ったマスクを no-UI 版 `r.pathMask` へ委譲する。`*.txt` で
+/// 表示が絞られ（b.dat が消える）、`*` で解除されて戻る（＝委譲と「空/`*` は解除」の正規化を確認）。
+#[test]
+fn path_mask_dialog_delegates_filter_and_clear() {
+    let server = Server::start(&["a.txt", "b.dat"], "");
+    let items0 = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert!(items0.contains("\"name\":\"b.dat\""), "b.dat should be visible initially: {items0}");
+
+    // "*.txt" で絞る＝b.dat が消える。
+    server.req("POST", "/command/pathMaskDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"has_input\":true"), "should open a text-input modal: {modal}");
+    server.req("POST", "/modal/text", "*.txt").unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    let filtered = poll(&server, "/state/panes/left/items", |b| !b.contains("\"name\":\"b.dat\""));
+    assert!(filtered.contains("\"name\":\"a.txt\""), "a.txt should remain under *.txt: {filtered}");
+
+    // "*" で解除＝b.dat が戻る。
+    server.req("POST", "/command/pathMaskDialog", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/text", "*").unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"b.dat\""));
+}
+
 /// compareDialog＝比較方法の list_box モーダルで選んだ条件を no-UI 版 `r.compare` へ委譲して
 /// 同名ファイルを選択する。左右とも同じディレクトリで開くので、`名前一致のみ` は各ファイルが
 /// 反対側の同名（自分自身）と一致＝全ファイルが marked になる。

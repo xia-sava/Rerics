@@ -8,8 +8,10 @@ impl MainWindow {
         if is_left { &self.left_mask } else { &self.right_mask }
     }
 
-    /// 入力ダイアログでパスマスクを尋ね、表示フィルタを設定/解除して一覧を更新する。
-    pub(crate) fn path_mask(&self, is_left: bool) -> w::AnyResult<()> {
+    /// 入力ダイアログでパスマスクを尋ね、no-UI 版 `r.pathMask` へ委譲する。設定/解除の正規化
+    /// （空・`*` は解除）と一覧更新は委譲先（`SetPathMask`）が行う。
+    pub(crate) fn path_mask(&self) -> w::AnyResult<()> {
+        let is_left = !self.active_right.get();
         let cur = self.mask(is_left).borrow().clone().unwrap_or_default();
         let input = self.input_with_history(
             "パスマスク",
@@ -20,13 +22,8 @@ impl MainWindow {
         let Some(input) = input else {
             return Ok(());
         };
-        let input = input.trim();
-        if input.is_empty() || input == "*" {
-            *self.mask(is_left).borrow_mut() = None;
-        } else {
-            *self.mask(is_left).borrow_mut() = Some(input.to_owned());
-        }
-        self.reload_side(is_left)?;
+        let arg = serde_json::to_string(input.trim()).unwrap_or_else(|_| "\"\"".to_string());
+        self.script_send(crate::script_host::EngineCmd::Eval(format!("r.pathMask({arg})")));
         Ok(())
     }
 
