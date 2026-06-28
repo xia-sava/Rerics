@@ -310,6 +310,9 @@ struct MainWindow {
     /// 各ペインの結果一覧を生んだ検索／比較条件。結果モード中だけ `Some`。操作後の
     /// リフレッシュで再実行し、結果一覧を最新化する（ディレクトリ読込へ戻さない）。
     find_query: Rc<RefCell<[Option<FindQuery>; 2]>>,
+    /// 結果一覧を再検索した後、完了時にカーソルを戻す指定（`[左, 右]`）。操作後リフレッシュ・
+    /// リネーム後の追従用。再検索開始時に立て、完了（`FindDone`）で取り出して消費する。
+    find_refocus: Rc<RefCell<[Option<Refocus>; 2]>>,
     /// スクリプト実行を停止（強制終了）するための V8 isolate ハンドル。エンジン起動後に
     /// `ScriptEngineReady` で受け取って保持する。
     script_isolate: Rc<RefCell<Option<deno_core::v8::IsolateHandle>>>,
@@ -372,6 +375,14 @@ enum ReloadCursor {
 enum FindQuery {
     Find(rerics_core::FindOptions),
     Compare(rerics_core::CompareOptions),
+}
+
+/// 結果一覧を再検索した後、完了時にカーソルを戻す指定。リネーム後は新名で追う（`Name`）、
+/// reload・操作後リフレッシュは元のカーソル位置を保つ（`Index`）。結果一覧は同名ファイルが
+/// 別フォルダに複数ありうるため、位置復元を名前一致で行うと先頭側の同名へ飛んでしまう。
+enum Refocus {
+    Name(String),
+    Index(usize),
 }
 
 /// 非同期読込の継続（[`MainWindow::apply_loaded_items`]）へ渡す、読込後処理の計画。
@@ -561,6 +572,7 @@ impl MainWindow {
             next_task_id: Rc::new(Cell::new(0)),
             find_task: Rc::new(RefCell::new([None, None])),
             find_query: Rc::new(RefCell::new([None, None])),
+            find_refocus: Rc::new(RefCell::new([None, None])),
             script_isolate: Rc::new(RefCell::new(None)),
             script_task: Rc::new(RefCell::new(None)),
             script_terminated: Rc::new(Cell::new(false)),

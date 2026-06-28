@@ -1643,6 +1643,32 @@ fn find_result_shortcut_uses_item_source() {
     assert!(!left.join("t.txt.lnk").exists(), "not created in the search base");
 }
 
+/// 結果一覧の reload（End キー等）は、同名ファイルが別フォルダに複数あっても、元のカーソル
+/// 位置（行）を保つ。名前一致で復元すると先頭側の同名へ飛ぶため、位置（index）で復元する。
+#[test]
+fn find_result_reload_keeps_cursor_position() {
+    let server = Server::start(&["note.dat"], "");
+    let s1 = server.base.join("sbx").join("s1");
+    let s2 = server.base.join("sbx").join("s2");
+    std::fs::create_dir_all(&s1).unwrap();
+    std::fs::create_dir_all(&s2).unwrap();
+    std::fs::write(s1.join("x.txt"), b"x").unwrap();
+    std::fs::write(s2.join("x.txt"), b"x").unwrap();
+    std::fs::write(s2.join("y.txt"), b"x").unwrap();
+
+    server.req("POST", "/command/findFile", "[\"*.txt\"]").unwrap();
+    poll(&server, "/state/panes/left/items", |b| count_substr(b, "\"name\":\"x.txt\"") == 2);
+    // 末尾の項目（先頭でない行）へカーソルを置く。
+    server.req("POST", "/command/setCursorIndex", "[\"3\"]").unwrap();
+    let before = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(before.trim(), "3", "cursor moved off the top before reload");
+
+    server.req("POST", "/command/reload", "").unwrap();
+    poll(&server, "/state/panes/left/items", |b| count_substr(b, "\"name\":\"x.txt\"") == 2);
+    let after = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(after.trim(), "3", "reload keeps the cursor at the same row (not back to top)");
+}
+
 /// 結果一覧での再読込（reload・End キー等）は、ディレクトリへ戻らず再検索する。後から増えた
 /// 一致ファイルも拾い、結果モードのまま最新化される。
 #[test]

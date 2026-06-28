@@ -144,56 +144,26 @@ impl MainWindow {
         self.reload_side_now(is_left, crate::ReloadCursor::Reset)
     }
 
-    /// 覚えている検索／比較条件を**同期で**再実行し、結果一覧を作り直す。条件が無ければ
-    /// `false`（呼び側は通常再読込へ）。同期にするのは、操作直後のリフレッシュをその場で画面へ
-    /// 反映するため（タイマ取り込み経由の再描画は反映が遅れる）。元の検索（ユーザ起動）は
-    /// 従来どおり非同期でストリーム表示する。
+    /// 覚えている検索／比較条件を**非同期で**再実行し、結果一覧を作り直す。条件が無ければ
+    /// `false`（呼び側は通常再読込へ）。走査はワーカースレッドで回し、結果は WAKE 取り込みで
+    /// 即時にストリーム反映する（大きな木でも UI スレッドを止めない）。完了時にカーソルを
+    /// `focus`（リネーム後の新名）＞現在のカーソル下＞先頭の名前へ戻す（`find_refocus`）。
     fn research_side(&self, is_left: bool, focus: Option<&str>) -> bool {
-        let query = self.find_query.borrow()[if is_left { 0 } else { 1 }].clone();
-        // 再検索後にカーソルを置く名前：呼び側指定（リネーム後の新名）＞現在のカーソル下＞先頭。
-        let keep = focus.map(str::to_owned).or_else(|| {
-            let state = self.view(is_left).state();
-            let s = state.borrow();
-            s.items.get(s.cursor).filter(|it| !it.is_parent).map(|it| it.name.clone())
-        });
-        let items = match query {
-            Some(crate::FindQuery::Find(opts)) => {
-                let root = self.pane(is_left).borrow().loc().clone();
-                let mut items = vec![rerics_core::FileItem::parent()];
-                {
-                    let mut emit = |it| items.push(it);
-                    let cancelled = || false;
-                    let mut sink = rerics_core::Sink { emit: &mut emit, cancelled: &cancelled };
-                    rerics_core::find_file(&root, &opts, &mut sink);
-                }
-                items
-            }
-            Some(crate::FindQuery::Compare(opts)) => {
-                let src = self.pane(is_left).borrow().loc().clone();
-                let dst = self.pane(!is_left).borrow().loc().clone();
-                let mut items = vec![rerics_core::FileItem::parent()];
-                {
-                    let mut emit = |it| items.push(it);
-                    let cancelled = || false;
-                    let mut sink = rerics_core::Sink { emit: &mut emit, cancelled: &cancelled };
-                    rerics_core::directory_compare(&src, &dst, &opts, &mut sink);
-                }
-                items
-            }
-            None => return false,
+        let idx = if is_left { 0 } else { 1 };
+        let query = self.find_query.borrow()[idx].clone();
+        let Some(query) = query else {
+            return false;
         };
-        let view = self.view(is_left);
-        let pr = view.page_rows();
-        {
-            let state = view.state();
-            let mut s = state.borrow_mut();
-            s.set_find_result(items);
-            if let Some(name) = &keep {
-                s.set_cursor_position(name, pr);
-            }
+        // 再検索後のカーソル：リネームは新名で追い（呼び側指定）、reload・操作後は元の位置を保つ。
+        let refocus = match focus {
+            Some(name) => crate::Refocus::Name(name.to_owned()),
+            None => crate::Refocus::Index(self.view(is_left).state().borrow().cursor),
+        };
+        self.find_refocus.borrow_mut()[idx] = Some(refocus);
+        match query {
+            crate::FindQuery::Find(opts) => self.run_find_file(is_left, opts),
+            crate::FindQuery::Compare(opts) => self.run_directory_compare(is_left, opts),
         }
-        let _ = view.autofit_columns();
-        let _ = view.refresh();
         true
     }
 

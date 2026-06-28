@@ -234,6 +234,21 @@ impl MainWindow {
                         }
                         // 確定後の列幅を内容に合わせる。
                         self.view(is_left).autofit_columns()?;
+                        // 操作後リフレッシュ・リネーム後の再検索では、完了時にカーソルを戻す。
+                        if let Some(refocus) = self.find_refocus.borrow_mut()[idx].take() {
+                            let pr = self.view(is_left).page_rows();
+                            let state = self.view(is_left).state();
+                            let mut s = state.borrow_mut();
+                            match refocus {
+                                crate::Refocus::Name(name) => {
+                                    s.set_cursor_position(&name, pr);
+                                }
+                                crate::Refocus::Index(i) => {
+                                    s.set_cursor(i as isize, pr);
+                                    s.select_start = s.cursor;
+                                }
+                            }
+                        }
                         self.update_selected_info(is_left);
                         find_dirty[idx] = true;
                     }
@@ -278,8 +293,8 @@ impl MainWindow {
         Ok(())
     }
 
-    /// 操作完了に応じて関与した側のペインを再読込・選択解除する。再読込は同期で行い、
-    /// タイマ取り込み待ちで反映が遅れる（コピー先が読込中表示のまま残る等）のを防ぐ。
+    /// 操作完了に応じて関与した側のペインを再読込・選択解除する。結果一覧は再検索（非同期・
+    /// WAKE 取り込みで即時反映）、通常一覧は同期再読込で最新化する。
     pub(crate) fn on_op_done(&self, kind: OpKind, src_dir: &Path, dst_dir: &Path) -> w::AnyResult<()> {
         for is_left in [true, false] {
             let path = self.pane(is_left).borrow().path().to_path_buf();
