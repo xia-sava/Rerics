@@ -266,6 +266,18 @@ impl MainWindow {
             let idx = if is_left { 0 } else { 1 };
             if find_dirty[idx] {
                 self.view(is_left).refresh()?;
+                // 検索/比較が完了したターン（タスク終了済み）は、最後の1回の再描画が画面へ
+                // 反映されないことがある（単発で終わる操作後の再検索など）。子ウィンドウまで
+                // 含めて即時に描き直す。ストリーム中（タスク継続中）は通常の再描画で足りる。
+                if self.find_task.borrow()[idx].is_none()
+                    && let Ok(rc) = self.wnd.hwnd().GetClientRect()
+                {
+                    let _ = self.wnd.hwnd().RedrawWindow(
+                        rc,
+                        &w::HRGN::NULL,
+                        w::co::RDW::INVALIDATE | w::co::RDW::ALLCHILDREN | w::co::RDW::UPDATENOW,
+                    );
+                }
             }
         }
         // 読込中ペインのスピナーを進める（タイマ間隔ごとに1コマ）。
