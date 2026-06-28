@@ -1608,8 +1608,33 @@ impl MainWindow {
     /// ファイル名へ戻す（無ければ元 index 付近・F5 用）、`Recall`＝移動先パスで以前覚えた
     /// カーソル位置へ戻す（無ければ先頭・ディレクトリ移動用）、`Reset`＝常に先頭（在席再読込）。
     fn reload_side_impl(&self, is_left: bool, mode: ReloadCursor) -> w::AnyResult<()> {
-        if self.maybe_start_archive_extract(is_left)? {
+        let Some((read_loc, plan)) = self.prepare_reload(is_left, mode)? else {
             return Ok(());
+        };
+        self.spawn_job(
+            move || read_loc.read().unwrap_or_default(),
+            move |mw, items| mw.apply_loaded_items(is_left, items, plan),
+        );
+        Ok(())
+    }
+
+    /// 再読込を同期実行する（読込もUIスレッドで行い、その場で一覧へ反映する）。ファイル操作の
+    /// 完了直後など、ワーカ完了の取り込み（タイマ駆動）を待たずに確実に反映したい場面で使う。
+    /// 書庫の一括展開が必要な場面は非同期側に委ねる（`prepare_reload` が `None` を返す）。
+    fn reload_side_now(&self, is_left: bool, mode: ReloadCursor) -> w::AnyResult<()> {
+        let Some((read_loc, plan)) = self.prepare_reload(is_left, mode)? else {
+            return Ok(());
+        };
+        let items = read_loc.read().unwrap_or_default();
+        self.apply_loaded_items(is_left, items, plan)
+    }
+
+    /// 再読込の前処理（パスバー等の即時更新・世代/スピナー・読込プランの組立）をまとめる。
+    /// 読み出す `Location` と [`LoadPlan`] を返す。書庫の一括展開を起こした場合は `None`
+    /// （一覧反映は展開完了イベントに委ねる）。
+    fn prepare_reload(&self, is_left: bool, mode: ReloadCursor) -> w::AnyResult<Option<(Location, LoadPlan)>> {
+        if self.maybe_start_archive_extract(is_left)? {
+            return Ok(None);
         }
         let view = self.view(is_left);
         // F5（Keep）のときだけ、再読込前のカーソル下ファイル名とスクロール位置を退避する。
@@ -1651,11 +1676,7 @@ impl MainWindow {
         view.set_loading();
 
         let plan = LoadPlan { mode, keep_name, keep_scroll, keep_idx, recalled, mask, generation };
-        self.spawn_job(
-            move || read_loc.read().unwrap_or_default(),
-            move |mw, items| mw.apply_loaded_items(is_left, items, plan),
-        );
-        Ok(())
+        Ok(Some((read_loc, plan)))
     }
 
     /// 読み出す対象を Send な [`Location`] として確定する。一括展開済み書庫は **temp の実FS** を
@@ -1740,18 +1761,6 @@ impl MainWindow {
         }
         view.autofit_columns()?;
         view.refresh()?;
-        // 非アクティブ側ペインの非同期読込完了は、ペイン単体の InvalidateRect だけだと画面へ
-        // 反映されず待機表示が残ることがある（コピー先など）。子ウィンドウまで含めて即時に
-        // 描き直す。アクティブ側は通常のフォーカス経路で描かれるので対象外。
-        let active_is_left = !self.active_right.get();
-        if is_left != active_is_left
-            && let Ok(rc) = self.wnd.hwnd().GetClientRect() {
-                let _ = self.wnd.hwnd().RedrawWindow(
-                    rc,
-                    &w::HRGN::NULL,
-                    co::RDW::INVALIDATE | co::RDW::ALLCHILDREN | co::RDW::UPDATENOW,
-                );
-            }
         self.update_selected_info(is_left);
         self.cleanup_unreferenced_temps();
         // 一覧確定後に changeDirectory を配る（実際に現在地が変わったときだけ・notify 側で判定）。

@@ -276,7 +276,8 @@ impl MainWindow {
         Ok(())
     }
 
-    /// 操作完了に応じて関与した側のペインを再読込・選択解除する。
+    /// 操作完了に応じて関与した側のペインを再読込・選択解除する。再読込は同期で行い、
+    /// タイマ取り込み待ちで反映が遅れる（コピー先が読込中表示のまま残る等）のを防ぐ。
     pub(crate) fn on_op_done(&self, kind: OpKind, src_dir: &Path, dst_dir: &Path) -> w::AnyResult<()> {
         for is_left in [true, false] {
             let path = self.pane(is_left).borrow().path().to_path_buf();
@@ -285,7 +286,7 @@ impl MainWindow {
             match kind {
                 OpKind::Copy => {
                     if is_dst {
-                        self.reload_side(is_left)?;
+                        self.reload_side_now(is_left, crate::ReloadCursor::Reset)?;
                     } else if is_src {
                         self.view(is_left).state().borrow_mut().clear_all();
                         self.view(is_left).refresh()?;
@@ -293,12 +294,12 @@ impl MainWindow {
                 }
                 OpKind::Move => {
                     if is_src || is_dst {
-                        self.reload_side(is_left)?;
+                        self.reload_side_now(is_left, crate::ReloadCursor::Reset)?;
                     }
                 }
                 OpKind::Delete => {
                     if is_src {
-                        self.reload_side(is_left)?;
+                        self.reload_side_now(is_left, crate::ReloadCursor::Reset)?;
                     }
                 }
             }
