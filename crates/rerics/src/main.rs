@@ -307,6 +307,9 @@ struct MainWindow {
     /// id と一致するイベントだけが行う（同ペインで再検索したとき旧タスクの項目が混ざるのを
     /// 防ぐ）。検索開始時に同期で立て、完了で下ろす。
     find_task: Rc<RefCell<[Option<u64>; 2]>>,
+    /// 各ペインの結果一覧を生んだ検索／比較条件。結果モード中だけ `Some`。操作後の
+    /// リフレッシュで再実行し、結果一覧を最新化する（ディレクトリ読込へ戻さない）。
+    find_query: Rc<RefCell<[Option<FindQuery>; 2]>>,
     /// スクリプト実行を停止（強制終了）するための V8 isolate ハンドル。エンジン起動後に
     /// `ScriptEngineReady` で受け取って保持する。
     script_isolate: Rc<RefCell<Option<deno_core::v8::IsolateHandle>>>,
@@ -361,6 +364,14 @@ enum ReloadCursor {
     /// 読込完了後に指定名へカーソルを置く（無ければ先頭）。`center` で中央寄せ。
     /// ディレクトリ作成・連番リネーム・親移動など「直後に特定行へ寄せたい」操作で使う。
     Focus { name: String, center: bool },
+}
+
+/// 結果一覧（検索／比較）を生んだ条件。操作後のリフレッシュで再実行し、結果モードを保ったまま
+/// 一覧を最新化するために覚えておく。
+#[derive(Clone)]
+enum FindQuery {
+    Find(rerics_core::FindOptions),
+    Compare(rerics_core::CompareOptions),
 }
 
 /// 非同期読込の継続（[`MainWindow::apply_loaded_items`]）へ渡す、読込後処理の計画。
@@ -549,6 +560,7 @@ impl MainWindow {
             tasks: Rc::new(RefCell::new(Vec::new())),
             next_task_id: Rc::new(Cell::new(0)),
             find_task: Rc::new(RefCell::new([None, None])),
+            find_query: Rc::new(RefCell::new([None, None])),
             script_isolate: Rc::new(RefCell::new(None)),
             script_task: Rc::new(RefCell::new(None)),
             script_terminated: Rc::new(Cell::new(false)),
@@ -1718,6 +1730,7 @@ impl MainWindow {
             if s.find_result {
                 s.find_result = false;
                 s.columns = self.config.borrow().columns.clone();
+                self.find_query.borrow_mut()[if is_left { 0 } else { 1 }] = None;
             }
             s.items = items;
             let sort = s.sort_type;

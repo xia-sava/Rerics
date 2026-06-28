@@ -1643,6 +1643,41 @@ fn find_result_shortcut_uses_item_source() {
     assert!(!left.join("t.txt.lnk").exists(), "not created in the search base");
 }
 
+/// 結果一覧で削除すると、ディレクトリへ戻らず**再検索して一覧を最新化**する（結果モード維持）。
+#[test]
+fn find_result_delete_refreshes_in_place() {
+    let server = Server::start_dirs_writable(&[("note.dat", b"z")], &[]);
+    let left = server.base.join("left");
+    std::fs::create_dir_all(left.join("sub")).unwrap();
+    std::fs::write(left.join("sub").join("a.txt"), b"A").unwrap();
+    std::fs::write(left.join("sub").join("b.txt"), b"B").unwrap();
+
+    server.req("POST", "/command/findFile", "[\"*.txt\"]").unwrap();
+    poll(&server, "/state/panes/left/items", |b| {
+        b.contains("\"name\":\"a.txt\"") && b.contains("\"name\":\"b.txt\"")
+    });
+    server
+        .req("POST", "/script/eval", r#"rerics.activePane().items.forEach((it)=>{ if(it.name==="a.txt") it.selected=true; });"#)
+        .unwrap();
+    poll(&server, "/state/panes/left/items", |b| count_substr(b, "\"marked\":true") == 1);
+
+    server.req("POST", "/command/delete", "").unwrap();
+    // 削除確認に「はい」と答える。
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\u{524a}\u{9664}"), "delete confirm: {modal}");
+    server.req("POST", "/modal/command/1", "").unwrap();
+    // 再検索で a.txt が消え b.txt が残る。基準ディレクトリへは戻らない（結果モードのまま）。
+    let items = poll(&server, "/state/panes/left/items", |b| {
+        b.contains("\"name\":\"b.txt\"") && !b.contains("\"name\":\"a.txt\"")
+    });
+    assert!(items.contains("\"name\":\"b.txt\""), "b.txt remains: {items}");
+    assert!(!items.contains("\"name\":\"a.txt\""), "a.txt gone from list: {items}");
+    let fr = server.req("GET", "/state/panes/left/find_result", "").unwrap().1;
+    assert_eq!(fr.trim(), "true", "stays in result mode after delete: {fr}");
+    assert!(!left.join("sub").join("a.txt").exists(), "a.txt deleted on disk");
+    assert!(left.join("sub").join("b.txt").exists(), "b.txt kept on disk");
+}
+
 /// 結果一覧の情報表示（使用量計算）は、出自の異なる項目をまとめて合算する。
 #[test]
 fn find_result_directory_information_sums_sources() {

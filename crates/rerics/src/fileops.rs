@@ -756,9 +756,14 @@ impl MainWindow {
             }
         }
 
-        match cursor_name {
-            Some(n) => self.reload_side_focus(is_left, &n, false)?,
-            None => self.reload_side(is_left)?,
+        // 結果一覧では再検索して一覧を最新化する（結果モードを保つ）。通常は新名へカーソルを寄せる。
+        if self.view(is_left).state().borrow().find_result {
+            self.refresh_side(is_left)?;
+        } else {
+            match cursor_name {
+                Some(n) => self.reload_side_focus(is_left, &n, false)?,
+                None => self.reload_side(is_left)?,
+            }
         }
         Ok(())
     }

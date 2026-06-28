@@ -286,7 +286,7 @@ impl MainWindow {
             match kind {
                 OpKind::Copy => {
                     if is_dst {
-                        self.reload_side_now(is_left, crate::ReloadCursor::Reset)?;
+                        self.refresh_side(is_left)?;
                     } else if is_src {
                         self.view(is_left).state().borrow_mut().clear_all();
                         self.view(is_left).refresh()?;
@@ -294,12 +294,12 @@ impl MainWindow {
                 }
                 OpKind::Move => {
                     if is_src || is_dst {
-                        self.reload_side_now(is_left, crate::ReloadCursor::Reset)?;
+                        self.refresh_side(is_left)?;
                     }
                 }
                 OpKind::Delete => {
                     if is_src {
-                        self.reload_side_now(is_left, crate::ReloadCursor::Reset)?;
+                        self.refresh_side(is_left)?;
                     }
                 }
             }

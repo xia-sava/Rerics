@@ -134,11 +134,40 @@ impl MainWindow {
         Ok(())
     }
 
+    /// その場のリフレッシュ（ファイル操作後・リネーム後など）。結果一覧モードなら元の検索／
+    /// 比較を再実行して一覧を作り直し（結果モードを保つ）、そうでなければ通常の同期再読込。
+    /// 親移動・項目を開く等の「離脱」操作は従来どおり [`reload_side`](Self::reload_side) 系を使う。
+    pub(crate) fn refresh_side(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.view(is_left).state().borrow().find_result && self.research_side(is_left) {
+            return Ok(());
+        }
+        self.reload_side_now(is_left, crate::ReloadCursor::Reset)
+    }
+
+    /// 覚えている検索／比較条件を再実行する。条件が無ければ `false`（呼び側は通常再読込へ）。
+    fn research_side(&self, is_left: bool) -> bool {
+        let query = self.find_query.borrow()[if is_left { 0 } else { 1 }].clone();
+        match query {
+            Some(crate::FindQuery::Find(opts)) => {
+                self.run_find_file(is_left, opts);
+                true
+            }
+            Some(crate::FindQuery::Compare(opts)) => {
+                self.run_directory_compare(is_left, opts);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// 現在地以下を再帰検索し、条件に合うファイルを結果一覧へ出す。検索はタスクとして
     /// ワーカースレッドで回し、見つかった項目を1件ずつ結果ペインへライブ追加する。
     /// タスクマネージャから中止・中断・再開できる。
     pub(crate) fn run_find_file(&self, is_left: bool, opts: rerics_core::FindOptions) {
         let root = self.pane(is_left).borrow().loc().clone();
+        // 操作後のリフレッシュで再検索できるよう条件を覚える（結果モードを保つ）。
+        self.find_query.borrow_mut()[if is_left { 0 } else { 1 }] =
+            Some(crate::FindQuery::Find(opts.clone()));
         self.log.info(&format!("ファイル検索: {}", root.loc_display()));
         let Ok((id, control)) = self.start_find_task(is_left, "ファイル検索", root.loc_display())
         else {
@@ -181,6 +210,9 @@ impl MainWindow {
     pub(crate) fn run_directory_compare(&self, is_left: bool, opts: rerics_core::CompareOptions) {
         let src = self.pane(is_left).borrow().loc().clone();
         let dst = self.pane(!is_left).borrow().loc().clone();
+        // 操作後のリフレッシュで再比較できるよう条件を覚える（結果モードを保つ）。
+        self.find_query.borrow_mut()[if is_left { 0 } else { 1 }] =
+            Some(crate::FindQuery::Compare(opts));
         self.log.info(&format!("ディレクトリ比較: {}", src.loc_display()));
         let Ok((id, control)) = self.start_find_task(is_left, "ディレクトリ比較", src.loc_display())
         else {
