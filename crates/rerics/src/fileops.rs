@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use winsafe::{self as w, co, gui, prelude::*};
-use rerics_core::{LogLevel, messages};
+use rerics_core::{Location, LogLevel, messages};
 use crate::task::{ChannelHost, OpKind, TaskControl, WorkerEvent};
 use crate::{MainWindow, dialog, shell, short_desc};
 
@@ -308,7 +308,16 @@ impl MainWindow {
             return self.add_to_archive(is_left, move_it);
         }
 
-        let names = self.selected_or_cursor_names(is_left);
+        // 結果一覧では項目ごとに出自が異なるので、出自別にまとめて1タスクで処理する。
+        let groups = if self.view(is_left).state().borrow().find_result {
+            Some(self.selected_result_groups(is_left))
+        } else {
+            None
+        };
+        let names: Vec<String> = match &groups {
+            Some(g) => g.iter().flat_map(|(_, n)| n.iter().cloned()).collect(),
+            None => self.selected_or_cursor_names(is_left),
+        };
         if names.is_empty() {
             self.log.error(&messages::not_selected_error());
             return Ok(());
@@ -330,9 +339,17 @@ impl MainWindow {
                 return Ok(());
             }
         }
-        let src_dir = self.pane(is_left).borrow().path().to_path_buf();
         let dst_dir = self.pane(!is_left).borrow().path().to_path_buf();
-        self.start_copy(src_dir, dst_dir, names, move_it)?;
+        match groups {
+            Some(groups) => {
+                let base_src = self.pane(is_left).borrow().path().to_path_buf();
+                self.start_copy_grouped(base_src, groups, dst_dir, move_it)?;
+            }
+            None => {
+                let src_dir = self.pane(is_left).borrow().path().to_path_buf();
+                self.start_copy(src_dir, dst_dir, names, move_it)?;
+            }
+        }
         Ok(())
     }
 
@@ -354,6 +371,29 @@ impl MainWindow {
         } else {
             selected
         }
+    }
+
+    /// 検索・比較の結果一覧で、選択（無ければカーソル）項目を出自ディレクトリ別にまとめる。
+    /// 出自が実FSのものだけを対象にし、`(出自ディレクトリ, 名前リスト)` の組を出現順で返す。
+    /// 結果項目は基準が実FSなら出自も実FS（検索は書庫へ降りない）ため、これで全件を拾える。
+    pub(crate) fn selected_result_groups(&self, is_left: bool) -> Vec<(PathBuf, Vec<String>)> {
+        let state = self.view(is_left).state();
+        let s = state.borrow();
+        let any_selected = s.items.iter().any(|it| it.selected && !it.is_parent);
+        let chosen = s.items.iter().enumerate().filter(|(i, it)| {
+            !it.is_parent && if any_selected { it.selected } else { *i == s.cursor }
+        });
+        let mut groups: Vec<(PathBuf, Vec<String>)> = Vec::new();
+        for (_, it) in chosen {
+            let Some(Location::Real(dir)) = it.source.as_ref() else {
+                continue;
+            };
+            match groups.iter_mut().find(|(d, _)| d == dir) {
+                Some((_, names)) => names.push(it.name.clone()),
+                None => groups.push((dir.clone(), vec![it.name.clone()])),
+            }
+        }
+        groups
     }
 
     /// 書庫からの取り出しをワーカースレッドで起動する。ワーカ内で書庫を開いて
@@ -462,6 +502,61 @@ impl MainWindow {
                 dst_dir,
                 cancelled: sum.cancelled,
                 failed: sum.err > 0,
+            });
+        });
+        Ok(id)
+    }
+
+    /// 検索・比較の結果一覧から、出自ディレクトリ別にまとめた項目を反対側へコピー/移動する。
+    /// 1タスクで各グループを順に処理し、完了は基準ペイン（結果一覧）の場所を `src_dir` として
+    /// 通知する＝[`on_op_done`](Self::on_op_done) がコピーなら選択解除のみ・移動なら基準へ復帰。
+    pub(crate) fn start_copy_grouped(
+        &self,
+        base_src: PathBuf,
+        groups: Vec<(PathBuf, Vec<String>)>,
+        dst_dir: PathBuf,
+        move_it: bool,
+    ) -> w::AnyResult<u64> {
+        let control = Arc::new(TaskControl::new());
+        let copy_opts = {
+            let f = self.config.borrow().file_ops;
+            rerics_core::CopyOptions {
+                copy_attribute: f.copy_attribute,
+                copy_date: f.copy_date,
+            }
+        };
+        let id = self.next_id();
+        let host = ChannelHost::new(
+            self.task_tx.clone(),
+            self.shutdown.clone(),
+            control.clone(),
+            self.progress_seq.clone(),
+        )
+        .with_copy_options(copy_opts)
+        .with_task_id(id);
+        let kind = if move_it { OpKind::Move } else { OpKind::Copy };
+        let text = if move_it { "移動" } else { "コピー" };
+        let all_names: Vec<String> = groups.iter().flat_map(|(_, n)| n.iter().cloned()).collect();
+        let desc = format!("{} -> {}", short_desc(&all_names), dst_dir.display());
+        self.register_task(id, text, desc, control)?;
+        std::thread::spawn(move || {
+            let mut cancelled = false;
+            let mut failed = false;
+            for (src_dir, names) in &groups {
+                let sum = rerics_core::run_copy(&host, src_dir, &dst_dir, names, move_it);
+                failed |= sum.err > 0;
+                if sum.cancelled {
+                    cancelled = true;
+                    break;
+                }
+            }
+            let _ = host.tx.send(WorkerEvent::Done {
+                id,
+                kind,
+                src_dir: base_src,
+                dst_dir,
+                cancelled,
+                failed,
             });
         });
         Ok(id)
@@ -709,23 +804,15 @@ impl MainWindow {
         if self.pane(is_left).borrow().is_archive() {
             return self.delete_in_archive(is_left);
         }
-        let names: Vec<String> = {
-            let state = self.view(is_left).state();
-            let s = state.borrow();
-            let selected: Vec<String> = s
-                .items
-                .iter()
-                .filter(|it| it.selected && !it.is_parent)
-                .map(|it| it.name.clone())
-                .collect();
-            if selected.is_empty() {
-                match s.items.get(s.cursor) {
-                    Some(it) if !it.is_parent => vec![it.name.clone()],
-                    _ => Vec::new(),
-                }
-            } else {
-                selected
-            }
+        // 結果一覧では項目ごとに出自が異なるので、出自別にまとめて1タスクで処理する。
+        let groups = if self.view(is_left).state().borrow().find_result {
+            Some(self.selected_result_groups(is_left))
+        } else {
+            None
+        };
+        let names: Vec<String> = match &groups {
+            Some(g) => g.iter().flat_map(|(_, n)| n.iter().cloned()).collect(),
+            None => self.selected_or_cursor_names(is_left),
         };
         if names.is_empty() {
             self.log.error(&messages::not_selected_error());
@@ -743,8 +830,16 @@ impl MainWindow {
                 return Ok(());
             }
         }
-        let dir = self.pane(is_left).borrow().path().to_path_buf();
-        self.start_delete(dir, names)?;
+        match groups {
+            Some(groups) => {
+                let base_src = self.pane(is_left).borrow().path().to_path_buf();
+                self.start_delete_grouped(base_src, groups)?;
+            }
+            None => {
+                let dir = self.pane(is_left).borrow().path().to_path_buf();
+                self.start_delete(dir, names)?;
+            }
+        }
         Ok(())
     }
 
@@ -1293,6 +1388,48 @@ impl MainWindow {
                 dst_dir: dir,
                 cancelled: sum.cancelled,
                 failed: sum.err > 0,
+            });
+        });
+        Ok(id)
+    }
+
+    /// 検索・比較の結果一覧から、出自ディレクトリ別にまとめた項目を削除する。1タスクで各
+    /// グループを順に処理し、完了は基準ペイン（結果一覧）の場所を通知する＝
+    /// [`on_op_done`](Self::on_op_done) が結果一覧を基準ディレクトリへ復帰させる。
+    pub(crate) fn start_delete_grouped(
+        &self,
+        base_src: PathBuf,
+        groups: Vec<(PathBuf, Vec<String>)>,
+    ) -> w::AnyResult<u64> {
+        let control = Arc::new(TaskControl::new());
+        let id = self.next_id();
+        let host = ChannelHost::new(
+            self.task_tx.clone(),
+            self.shutdown.clone(),
+            control.clone(),
+            self.progress_seq.clone(),
+        )
+        .with_task_id(id);
+        let all_names: Vec<String> = groups.iter().flat_map(|(_, n)| n.iter().cloned()).collect();
+        self.register_task(id, "削除", short_desc(&all_names), control)?;
+        std::thread::spawn(move || {
+            let mut cancelled = false;
+            let mut failed = false;
+            for (dir, names) in &groups {
+                let sum = rerics_core::run_delete(&host, dir, names);
+                failed |= sum.err > 0;
+                if sum.cancelled {
+                    cancelled = true;
+                    break;
+                }
+            }
+            let _ = host.tx.send(WorkerEvent::Done {
+                id,
+                kind: OpKind::Delete,
+                src_dir: base_src.clone(),
+                dst_dir: base_src,
+                cancelled,
+                failed,
             });
         });
         Ok(id)

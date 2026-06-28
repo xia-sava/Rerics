@@ -173,6 +173,13 @@ impl MainWindow {
                     let id = self.start_debug_task();
                     let _ = tx.send(debug_server::Response::Json(id.to_string()));
                 }
+                debug_server::Request::DebugFind { mask } => {
+                    let is_left = !self.active_right.get();
+                    let mut opts = rerics_core::FindOptions::default();
+                    opts.set_masks(&mask);
+                    self.run_find_file(is_left, opts);
+                    let _ = tx.send(debug_server::Response::Json("true".to_string()));
+                }
                 debug_server::Request::KeysState { category } => {
                     let _ = tx.send(self.debug_keys_state(&category));
                 }

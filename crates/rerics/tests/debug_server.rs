@@ -212,6 +212,36 @@ impl Server {
         Server { child, port, base }
     }
 
+    /// `start_dirs` と同じ左右2ディレクトリ構成だが、書込み許可つきで起動する
+    /// （結果一覧からのコピー/移動など、実FS を変更する e2e 用）。
+    fn start_dirs_writable(left_files: &[(&str, &[u8])], right_files: &[(&str, &[u8])]) -> Server {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("rerics_it_{}_{}", std::process::id(), n));
+        let data = base.join("data");
+        let left = base.join("left");
+        let right = base.join("right");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::create_dir_all(&right).unwrap();
+        for (name, body) in left_files {
+            std::fs::write(left.join(name), body).unwrap();
+        }
+        for (name, body) in right_files {
+            std::fs::write(right.join(name), body).unwrap();
+        }
+        std::fs::write(
+            data.join("state.toml"),
+            format!(
+                "active_tab = 0\nsplit_ratio = 0.5\n[[tabs]]\nleft = '{l}'\nright = '{r}'\nactive_right = false\n",
+                l = left.display(),
+                r = right.display(),
+            ),
+        )
+        .unwrap();
+        let (child, port) = spawn_and_wait(&data, true);
+        Server { child, port, base }
+    }
+
     /// HTTP リクエストを投げる。`(status, body)` を返す。
     fn req(&self, method: &str, path: &str, body: &str) -> Option<(u16, String)> {
         req(self.port, method, path, body)
@@ -1491,6 +1521,97 @@ fn find_incremental_search_cancel_restores() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
     let c = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
     assert_eq!(c.trim(), "1", "cancel should restore the original cursor: {c}");
+}
+
+/// 検索結果一覧のビューア：基準直下ではなくサブフォルダ（項目の出自）にある実ファイルを開く。
+/// 出自を見ずに基準直下を引くと「開けません」になるので、ここで出自解決の回帰を防ぐ。
+#[test]
+fn find_result_viewer_opens_item_from_source() {
+    let server = Server::start(&["note.dat"], "");
+    let sub = server.base.join("sbx").join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("target.txt"), b"hello from sub").unwrap();
+
+    // 条件ダイアログは複数 Edit で駆動不可なので、マスク検索だけを直接起こす。
+    server.req("POST", "/debug/find", "*.txt").unwrap();
+    let items = poll(&server, "/state/panes/left/items", |b| {
+        b.contains("\"name\":\"target.txt\"")
+    });
+    assert!(items.contains("\"info\":\"sub\""), "found item carries its source subpath: {items}");
+    let fr = server.req("GET", "/state/panes/left/find_result", "").unwrap().1;
+    assert_eq!(fr.trim(), "true", "result mode active: {fr}");
+
+    // 結果は [.., target.txt]。cursorDown で target.txt（index 1）へ。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+
+    // 出自から実ファイルを読めればテキストビューアが前面に出る（active_view=text）。
+    server.req("POST", "/command/view", "").unwrap();
+    let av = poll(&server, "/state/active_view", |b| b.trim() == "\"text\"");
+    assert_eq!(av.trim(), "\"text\"", "text viewer should open from item source: {av}");
+    let log = server.req("GET", "/state/log/lines", "").unwrap().1;
+    assert!(!log.contains("\u{958b}\u{3051}\u{307e}\u{305b}\u{3093}"), "no open error: {log}");
+}
+
+/// 検索結果一覧での親移動は、実際の親ではなく検索を開始したディレクトリ（基準）へ戻り、
+/// 結果モードを抜ける。
+#[test]
+fn find_result_parent_returns_to_base() {
+    let server = Server::start(&["note.dat"], "");
+    let sub = server.base.join("sbx").join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("target.txt"), b"x").unwrap();
+
+    server.req("POST", "/debug/find", "*.txt").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"target.txt\""));
+
+    // 親移動＝結果一覧を抜けて基準ディレクトリを再表示する（親へは行かない）。
+    server.req("POST", "/command/toParent", "").unwrap();
+    let fr = poll(&server, "/state/panes/left/find_result", |b| b.trim() == "false");
+    assert_eq!(fr.trim(), "false", "should leave result mode: {fr}");
+    let items = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert!(items.contains("\"name\":\"note.dat\""), "back to base listing: {items}");
+    assert!(items.contains("\"name\":\"sub\""), "base shows the subdir: {items}");
+    assert!(!items.contains("\"name\":\"target.txt\""), "no longer in result mode: {items}");
+}
+
+/// 検索結果一覧から反対側へのコピーは、項目を出自ディレクトリ別にまとめて行う。
+/// 異なるサブフォルダで見つけた項目もまとめて反対側へ届く。
+#[test]
+fn find_result_copy_uses_item_source() {
+    let server = Server::start_dirs_writable(&[("note.dat", b"z")], &[]);
+    let left = server.base.join("left");
+    std::fs::create_dir_all(left.join("sub1")).unwrap();
+    std::fs::create_dir_all(left.join("sub2")).unwrap();
+    std::fs::write(left.join("sub1").join("x.txt"), b"X").unwrap();
+    std::fs::write(left.join("sub2").join("y.txt"), b"Y").unwrap();
+
+    server.req("POST", "/debug/find", "*.txt").unwrap();
+    poll(&server, "/state/panes/left/items", |b| {
+        b.contains("\"name\":\"x.txt\"") && b.contains("\"name\":\"y.txt\"")
+    });
+
+    // 両方をマークして反対側へコピーする（選択の反映を待ってから copy する）。
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"rerics.activePane().items.forEach((it) => { if (it.name === "x.txt" || it.name === "y.txt") it.selected = true; });"#,
+        )
+        .unwrap();
+    poll(&server, "/state/panes/left/items", |b| {
+        count_substr(b, "\"marked\":true") == 2
+    });
+    server.req("POST", "/command/copy", "").unwrap();
+
+    let right = poll(&server, "/state/panes/right/items", |b| {
+        b.contains("\"name\":\"x.txt\"") && b.contains("\"name\":\"y.txt\"")
+    });
+    assert!(right.contains("\"name\":\"x.txt\""), "x.txt copied to other pane: {right}");
+    assert!(right.contains("\"name\":\"y.txt\""), "y.txt copied to other pane: {right}");
+    // 出自の違う2ファイルが実体としても届いていること。
+    assert_eq!(std::fs::read(server.base.join("right").join("x.txt")).unwrap(), b"X");
+    assert_eq!(std::fs::read(server.base.join("right").join("y.txt")).unwrap(), b"Y");
 }
 
 /// directoryInformation＝カーソル位置の使用量を計算し結果ダイアログを出す。
