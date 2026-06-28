@@ -169,6 +169,10 @@ impl MainWindow {
                     let json = serde_json::to_string(&value).unwrap_or_else(|_| "\"\"".to_string());
                     let _ = tx.send(debug_server::Response::Json(json));
                 }
+                debug_server::Request::DebugSpawnTask => {
+                    let id = self.start_debug_task();
+                    let _ = tx.send(debug_server::Response::Json(id.to_string()));
+                }
                 debug_server::Request::KeysState { category } => {
                     let _ = tx.send(self.debug_keys_state(&category));
                 }

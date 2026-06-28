@@ -197,6 +197,34 @@ impl MainWindow {
         });
     }
 
+    /// テスト足場：中止まで回り続けるダミーのタスクを起こし、払い出した id を返す。
+    /// タスク制御（中止・中断・再開）をタスクマネージャ越しに確定的に検証するために使う
+    /// （検索・比較と同じ `search_cancelled` で止まる＝同じ制御機構を叩く）。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn start_debug_task(&self) -> u64 {
+        let control = Arc::new(TaskControl::new());
+        let id = self.next_id();
+        let _ = self.register_task(id, "デバッグ", "テスト用タスク".to_string(), control.clone());
+        let tx = self.task_tx.clone();
+        let shutdown = self.shutdown.clone();
+        std::thread::spawn(move || {
+            // 中止（中断→中止／アプリ終了を含む）まで待つ。中断中は search_cancelled が
+            // ブロックして待つ。
+            while !search_cancelled(&control, &shutdown) {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            // 完了通知。id 一致でタスク登録を解除するだけ（find_task は立てていないので
+            // 結果ペインには触れない）。
+            let _ = tx.send(WorkerEvent::FindDone {
+                id,
+                is_left: true,
+                summary: String::new(),
+                cancelled: true,
+            });
+        });
+        id
+    }
+
     /// インクリメンタルサーチ。小さな入力モーダルを出し、打鍵ごとに先頭から一致を
     /// 探してアクティブペインのカーソルを動かす（追従）。OK で確定、中止/Esc で元へ戻す。
     pub(crate) fn incremental_search(&self, is_left: bool) -> w::AnyResult<()> {

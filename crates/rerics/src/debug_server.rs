@@ -425,6 +425,9 @@ pub enum Request {
     /// `POST /menu/<name>/select/<idx>`：解決済みメニューの idx 番目の実行項目（深さ優先の
     /// コマンド葉）の呼び出しを、キー押下と同じ exec 経路へ流す。
     MenuSelect { name: String, idx: usize },
+    /// `POST /debug/spawn-task`：中止まで回り続けるダミーのタスクを起こす（テスト足場）。
+    /// タスク制御（中止・中断・再開）をタスクマネージャ越しに確定的に検証するために使う。
+    DebugSpawnTask,
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -726,6 +729,8 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 let mut code = String::new();
                 let _ = std::io::Read::read_to_string(req.as_reader(), &mut code);
                 Some(Request::ScriptEvalValue { code })
+            } else if path == "/debug/spawn-task" {
+                Some(Request::DebugSpawnTask)
             } else if let Some(rest) = path.strip_prefix("/keys/") {
                 let rest = rest.trim_end_matches('/');
                 if let Some((cat, idx)) = rest.rsplit_once("/select/") {

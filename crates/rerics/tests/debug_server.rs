@@ -2725,6 +2725,63 @@ fn task_manager_dialog_opens_observes_and_closes() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// タスク制御：中止まで回り続けるダミータスク（`/debug/spawn-task`）を起こし、タスク
+/// マネージャ越しに中断→再開→中止を確定的に検証する。検索・比較も同じ `TaskControl` /
+/// `search_cancelled` に乗るので、ここでタスク制御機構そのものを担保する。
+#[test]
+fn task_control_suspend_resume_stop_via_task_manager() {
+    let server = Server::start(&["a.txt"], "");
+    // 中止されるまで終わらないタスクを起こす（待ち窓が無く確定的）。
+    server.req("POST", "/debug/spawn-task", "").expect("spawn-task");
+
+    server.req("POST", "/command/openTaskManager", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"tasks\""), "タスクマネージャが開く: {modal}");
+
+    // 行が出るまで待つ（登録は別スレッド→タイマ取り込みのため）。最新ボタンで取り込む。
+    let row_state = |s: &Server| -> Option<String> {
+        let b = s.req("GET", "/state/modal", "")?.1;
+        let v: serde_json::Value = serde_json::from_str(&b).ok()?;
+        let rows = v["rows"].as_array()?;
+        rows.first()?.as_array()?.get(2)?.as_str().map(str::to_string)
+    };
+    poll(&server, "/state/modal", |b| {
+        serde_json::from_str::<serde_json::Value>(b)
+            .ok()
+            .and_then(|v| v["rows"].as_array().map(|r| !r.is_empty()))
+            .unwrap_or(false)
+    });
+    assert_eq!(row_state(&server).as_deref(), Some("実行中"), "初期は実行中");
+
+    // 行を選んで中断（ctrl_id 101）→「中断」。状態は populate が control から読むので即時。
+    server.req("POST", "/modal/select/0", "").unwrap();
+    server.req("POST", "/modal/command/101", "").unwrap();
+    assert_eq!(row_state(&server).as_deref(), Some("中断"), "中断へ");
+
+    // 再開（102）→「実行中」。
+    server.req("POST", "/modal/command/102", "").unwrap();
+    assert_eq!(row_state(&server).as_deref(), Some("実行中"), "実行中へ戻る");
+
+    // 中止（100）→ ワーカーが次の境界で気付いて完了し、タスク登録が消える。
+    // 「最新」（103）で取り込みつつ行が消えるまで待つ。
+    server.req("POST", "/modal/command/100", "").unwrap();
+    let mut emptied = false;
+    for _ in 0..50 {
+        server.req("POST", "/modal/command/103", "").unwrap();
+        let b = server.req("GET", "/state/modal", "").unwrap().1;
+        let v: serde_json::Value = serde_json::from_str(&b).unwrap();
+        if v["rows"].as_array().map(|r| r.is_empty()).unwrap_or(false) {
+            emptied = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(emptied, "中止でワーカーが終了し、タスク行が消える");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// 画像ビューアの表示モードキー（1=原寸/2=全体/3=幅/4=高/5=大）が、それぞれの
 /// モードへ切り替わるのを debug-server で観測する。0 は原作に無い＝未バインドで不変。
 #[test]
