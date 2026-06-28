@@ -428,10 +428,6 @@ pub enum Request {
     /// `POST /debug/spawn-task`：中止まで回り続けるダミーのタスクを起こす（テスト足場）。
     /// タスク制御（中止・中断・再開）をタスクマネージャ越しに確定的に検証するために使う。
     DebugSpawnTask,
-    /// `POST /debug/find`：本文のファイル名マスクでアクティブ側のファイル検索を起こす（テスト
-    /// 足場）。条件ダイアログは複数 Edit のため駆動できないので、結果一覧モードの挙動を
-    /// 確定的に検証するためにマスク検索だけを直接起こす。
-    DebugFind { mask: String },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -735,10 +731,6 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::ScriptEvalValue { code })
             } else if path == "/debug/spawn-task" {
                 Some(Request::DebugSpawnTask)
-            } else if path == "/debug/find" {
-                let mut mask = String::new();
-                let _ = std::io::Read::read_to_string(req.as_reader(), &mut mask);
-                Some(Request::DebugFind { mask: mask.trim().to_string() })
             } else if let Some(rest) = path.strip_prefix("/keys/") {
                 let rest = rest.trim_end_matches('/');
                 if let Some((cat, idx)) = rest.rsplit_once("/select/") {

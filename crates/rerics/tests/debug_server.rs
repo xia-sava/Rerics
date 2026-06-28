@@ -1533,7 +1533,7 @@ fn find_result_viewer_opens_item_from_source() {
     std::fs::write(sub.join("target.txt"), b"hello from sub").unwrap();
 
     // 条件ダイアログは複数 Edit で駆動不可なので、マスク検索だけを直接起こす。
-    server.req("POST", "/debug/find", "*.txt").unwrap();
+    server.req("POST", "/command/findFile", "[\"*.txt\"]").unwrap();
     let items = poll(&server, "/state/panes/left/items", |b| {
         b.contains("\"name\":\"target.txt\"")
     });
@@ -1562,7 +1562,7 @@ fn find_result_parent_returns_to_base() {
     std::fs::create_dir_all(&sub).unwrap();
     std::fs::write(sub.join("target.txt"), b"x").unwrap();
 
-    server.req("POST", "/debug/find", "*.txt").unwrap();
+    server.req("POST", "/command/findFile", "[\"*.txt\"]").unwrap();
     poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"target.txt\""));
 
     // 親移動＝結果一覧を抜けて基準ディレクトリを再表示する（親へは行かない）。
@@ -1586,7 +1586,7 @@ fn find_result_copy_uses_item_source() {
     std::fs::write(left.join("sub1").join("x.txt"), b"X").unwrap();
     std::fs::write(left.join("sub2").join("y.txt"), b"Y").unwrap();
 
-    server.req("POST", "/debug/find", "*.txt").unwrap();
+    server.req("POST", "/command/findFile", "[\"*.txt\"]").unwrap();
     poll(&server, "/state/panes/left/items", |b| {
         b.contains("\"name\":\"x.txt\"") && b.contains("\"name\":\"y.txt\"")
     });
