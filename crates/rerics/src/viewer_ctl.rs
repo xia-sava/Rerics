@@ -277,6 +277,15 @@ impl MainWindow {
         self.viewer.hwnd().ShowWindow(co::SW::HIDE);
         self.media.hwnd().ShowWindow(co::SW::HIDE);
         self.key_sink.hwnd().SetFocus();
+        // ビューアを隠した跡地を、一覧やパスバー等の子ウィンドウまで含めて即時に描き直す
+        // （非表示にしただけでは子へ再描画が伝わらず表示が乱れることがある）。
+        if let Ok(rc) = self.wnd.hwnd().GetClientRect() {
+            let _ = self.wnd.hwnd().RedrawWindow(
+                rc,
+                &w::HRGN::NULL,
+                co::RDW::INVALIDATE | co::RDW::ERASE | co::RDW::ALLCHILDREN | co::RDW::UPDATENOW,
+            );
+        }
         Ok(())
     }
 
