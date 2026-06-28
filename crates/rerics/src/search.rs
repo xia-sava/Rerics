@@ -25,10 +25,12 @@ impl MainWindow {
     pub(crate) fn path_mask(&self) -> w::AnyResult<()> {
         let is_left = !self.active_right.get();
         let cur = self.mask(is_left).borrow().clone().unwrap_or_default();
-        let input = self.input_with_history(
+        // 現在のマスクを初期値に投入する（未設定なら `*`＝解除）。開いた瞬間に全選択。
+        let initial = if cur.trim().is_empty() { "*".to_owned() } else { cur };
+        let input = self.input_mask(
             "パスマスク",
             "表示するマスク（* で解除・カンマ区切り）:",
-            &cur,
+            &initial,
             "pathmask",
         );
         let Some(input) = input else {
@@ -42,7 +44,8 @@ impl MainWindow {
     /// 入力ダイアログでマスクを尋ね、選んだマスクで選択し直す。選択ロジックは UI を持たない
     /// `r.selectMask`（カンマ区切りの Like パターン・既存選択をクリアして選び直す）へ委譲する。
     pub(crate) fn select_mask(&self) -> w::AnyResult<()> {
-        let input = self.input_with_history(
+        // 初期値は前回の確定値（無ければ `*`）。開いた瞬間に全選択して上書きしやすくする。
+        let input = self.input_mask(
             "マスクで選択",
             "選択するマスク（カンマ区切り）:",
             "",
@@ -111,9 +114,17 @@ impl MainWindow {
     }
 
     /// 条件ダイアログ（名前・日付・サイズ）を出し、OK ならその条件でファイル検索を実行する。
-    /// 検索ロジックは `run_find_file`（Rust 正本）へ委譲する。
+    /// ファイル名マスクの初期値は前回の確定値（無ければ `*`）。検索ロジックは `run_find_file`
+    /// （Rust 正本）へ委譲する。
     pub(crate) fn find_file_dialog(&self, is_left: bool) -> w::AnyResult<()> {
-        if let Some(opts) = crate::dialog::find_file_box(&self.wnd) {
+        let mut hist = rerics_core::InputHistory::load();
+        let initial = hist.get("findfile").first().cloned().unwrap_or_else(|| "*".to_owned());
+        if let Some((opts, raw_name)) = crate::dialog::find_file_box(&self.wnd, &initial) {
+            let raw = raw_name.trim();
+            if !raw.is_empty() {
+                hist.add("findfile", raw);
+                let _ = hist.save();
+            }
             if opts.is_empty() {
                 self.log.warn("検索条件がありません。");
             } else {

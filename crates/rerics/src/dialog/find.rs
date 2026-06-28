@@ -7,8 +7,10 @@ use winsafe::{co, gui, prelude::*};
 use super::*;
 
 /// ファイル検索の条件ダイアログ（原作 frmFindFile の名前・日付・サイズ部のみ。内容検索＝
-/// キーワード/検索方法/抽出条件は対象外）。OK なら [`FindOptions`] を返す。中止/Esc は `None`。
-pub fn find_file_box(parent: &impl GuiParent) -> Option<FindOptions> {
+/// キーワード/検索方法/抽出条件は対象外）。`initial_name` をファイル名欄の初期値にし、開いた
+/// 瞬間に全選択する。OK なら `(条件, 入力したファイル名マスク)` を返す（生のマスクは呼び側が
+/// 次回の既定として覚えるのに使う）。中止/Esc は `None`。
+pub fn find_file_box(parent: &impl GuiParent, initial_name: &str) -> Option<(FindOptions, String)> {
     let (wnd, arm) = modal_window("ファイル検索", 380, 264);
 
     let _ = label(&wnd, "ファイル名(&F)", 16, 12, 348);
@@ -80,7 +82,7 @@ pub fn find_file_box(parent: &impl GuiParent) -> Option<FindOptions> {
         },
     );
 
-    let result: Rc<RefCell<Option<FindOptions>>> = Rc::new(RefCell::new(None));
+    let result: Rc<RefCell<Option<(FindOptions, String)>>> = Rc::new(RefCell::new(None));
 
     arm_modal(
         &arm,
@@ -89,7 +91,17 @@ pub fn find_file_box(parent: &impl GuiParent) -> Option<FindOptions> {
         "ファイル名・日付・サイズの条件",
         true,
         vec![("検索開始".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
-        |_| Ok(()),
+        {
+            let name = name.clone();
+            let initial = initial_name.to_owned();
+            move |_| {
+                name.set_text(&initial)?;
+                let n = initial.encode_utf16().count() as i32;
+                name.set_selection(0, n);
+                name.hwnd().SetFocus();
+                Ok(())
+            }
+        },
     );
     {
         let result = result.clone();
@@ -98,8 +110,9 @@ pub fn find_file_box(parent: &impl GuiParent) -> Option<FindOptions> {
         let (from_size, to_size) = (from_size.clone(), to_size.clone());
         let wnd2 = wnd.clone();
         ok.on().bn_clicked(move || {
+            let raw_name = name.text().unwrap_or_default();
             let mut opts = FindOptions::default();
-            opts.set_masks(&name.text().unwrap_or_default());
+            opts.set_masks(&raw_name);
             let (f, t) = date_range(
                 date_mode.selected_index(),
                 &from_date.text().unwrap_or_default(),
@@ -109,7 +122,7 @@ pub fn find_file_box(parent: &impl GuiParent) -> Option<FindOptions> {
             opts.to_date = t;
             opts.min_size = parse_size(&from_size.text().unwrap_or_default());
             opts.max_size = parse_size(&to_size.text().unwrap_or_default());
-            *result.borrow_mut() = Some(opts);
+            *result.borrow_mut() = Some((opts, raw_name));
             wnd2.close();
             Ok(())
         });

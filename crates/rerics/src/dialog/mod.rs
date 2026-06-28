@@ -726,20 +726,29 @@ fn before_ext_pos(name: &str, is_dir: bool) -> i32 {
     }
 }
 
-/// 入力欄の初期選択。`AsIs`＝明示設定なし（従来）、`BeforeExt`＝拡張子の前にキャレット
-/// （原作 RenameStyle "BeforeExtension"・選択なし）。改名系入力で使う。
+/// 入力欄の初期選択。`AsIs`＝明示設定なし（従来）、`All`＝全選択（既定値を上書きしやすく
+/// する・マスク入力で使う）、`BeforeExt`＝拡張子の前にキャレット（原作 RenameStyle
+/// "BeforeExtension"・選択なし）。改名系入力で使う。
 #[derive(Clone, Copy)]
 pub enum InputSelect {
     AsIs,
+    All,
     BeforeExt { is_dir: bool },
 }
 
 impl InputSelect {
     /// テキスト `text` を持つ `edit` に初期選択を適用する（フォーカス後に呼ぶ）。
     fn apply(self, edit: &gui::Edit, text: &str) {
-        if let InputSelect::BeforeExt { is_dir } = self {
-            let pos = before_ext_pos(text, is_dir);
-            edit.set_selection(pos, pos);
+        match self {
+            InputSelect::All => {
+                let n = text.encode_utf16().count() as i32;
+                edit.set_selection(0, n);
+            }
+            InputSelect::BeforeExt { is_dir } => {
+                let pos = before_ext_pos(text, is_dir);
+                edit.set_selection(pos, pos);
+            }
+            InputSelect::AsIs => {}
         }
     }
 }

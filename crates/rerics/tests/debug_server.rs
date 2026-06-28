@@ -4765,6 +4765,21 @@ fn find_file_dialog_opens_and_cancels() {
     server.req("POST", "/command/findFileDialog", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("ファイル検索"), "検索条件モーダルが開く: {modal}");
+    // ファイル名マスクは既定 `*` で開く（前回値が無い初回）。
+    let input = poll(&server, "/state/modal/input", |b| b.trim() == "\"*\"");
+    assert_eq!(input.trim(), "\"*\"", "name mask defaults to *: {input}");
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
+/// マスクで選択（selectMaskDialog）は既定値 `*` で開く（全選択され上書きしやすい）。
+#[test]
+fn select_mask_dialog_defaults_to_star() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/selectMaskDialog", "").unwrap();
+    wait_modal(&server);
+    let input = poll(&server, "/state/modal/input", |b| b.trim() == "\"*\"");
+    assert_eq!(input.trim(), "\"*\"", "select mask defaults to *: {input}");
     server.req("POST", "/modal/command/cancel", "").unwrap();
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }

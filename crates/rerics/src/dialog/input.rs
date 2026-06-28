@@ -1,6 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use winsafe::msg::lb;
+use winsafe::msg::{cb, lb};
 use winsafe::{co, gui, prelude::*};
 use super::*;
 
@@ -83,6 +83,11 @@ pub fn input_box_full(
         on_create = Box::new(move || {
             let _ = f.hwnd().SetWindowText(&v);
             let _ = f.hwnd().SetFocus();
+            if matches!(select, InputSelect::All) {
+                let _ = unsafe {
+                    f.hwnd().SendMessage(cb::SetEditSel { start_pos: Some(0), end_pos: None })
+                };
+            }
         });
         _keep = Box::new(combo);
     } else {

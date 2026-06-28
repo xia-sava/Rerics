@@ -1525,4 +1525,32 @@ impl MainWindow {
         }
         result
     }
+
+    /// マスク（ワイルドカード）入力。初期値は「呼び側指定 > 直近の確定値 > `*`」で、開いた
+    /// 瞬間に全選択するので上書きしやすい。確定値は用途キー `key` の履歴に積み、次回の既定に
+    /// なる（＝2 回続けて操作すれば前回値を覚えている）。
+    pub(crate) fn input_mask(&self, title: &str, message: &str, value: &str, key: &str) -> Option<String> {
+        let mut hist = rerics_core::InputHistory::load();
+        let items = hist.get(key);
+        let initial = if value.trim().is_empty() {
+            items.first().cloned().unwrap_or_else(|| "*".to_owned())
+        } else {
+            value.to_owned()
+        };
+        let refs: Vec<&str> = items.iter().map(String::as_str).collect();
+        let result = dialog::input_box_full(
+            &self.wnd,
+            title,
+            message,
+            &initial,
+            dialog::InputMode::Plain,
+            dialog::InputSelect::All,
+            Some(&refs),
+        );
+        if let Some(v) = &result {
+            hist.add(key, v);
+            let _ = hist.save();
+        }
+        result
+    }
 }
