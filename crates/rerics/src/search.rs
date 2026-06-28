@@ -1,7 +1,19 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use winsafe::{self as w, co, gui, prelude::*};
 use crate::MainWindow;
+use crate::task::{TaskControl, WorkerEvent};
+
+/// 検索・比較ワーカーが各境界で呼ぶ続行判定。中断中はブロックして待ち、中止または
+/// アプリ終了が要求されていれば `true`（走査を打ち切る）を返す。
+fn search_cancelled(control: &TaskControl, shutdown: &AtomicBool) -> bool {
+    while control.is_suspended() && !shutdown.load(Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    control.is_stopped() || shutdown.load(Ordering::Relaxed)
+}
 
 impl MainWindow {
     pub(crate) fn mask(&self, is_left: bool) -> &Rc<RefCell<Option<String>>> {
@@ -74,23 +86,28 @@ impl MainWindow {
         Ok(())
     }
 
-    /// 指定ペインを検索・比較の結果一覧へ切り替える。`items` は合成項目（各々 `source`/`info`
-    /// を持つ。先頭の ".." は結果モードを抜ける親項目）。一覧だけ差し替え、現在地（パスバー・
-    /// 基準ディレクトリ）は元のままにする。
-    pub(crate) fn show_find_result(
+    /// 検索・比較タスクを起こす。同ペインで前の検索／比較がまだ走っていれば先に止めて
+    /// （結果が混ざらないように）、新しいタスクを登録し、払い出した id と制御を返す。
+    /// `find_task` のスロットは同期で立てるので、直後に別検索が来ても取り違えない。
+    fn start_find_task(
         &self,
         is_left: bool,
-        items: Vec<rerics_core::FileItem>,
-    ) -> w::AnyResult<()> {
-        let view = self.view(is_left);
-        {
-            let state = view.state();
-            state.borrow_mut().set_find_result(items);
+        text: &str,
+        desc: String,
+    ) -> w::AnyResult<(u64, Arc<TaskControl>)> {
+        let idx = if is_left { 0 } else { 1 };
+        let prev = self.find_task.borrow()[idx];
+        if let Some(prev) = prev {
+            let tasks = self.tasks.borrow();
+            if let Some(e) = tasks.iter().find(|e| e.id == prev) {
+                e.control.stop();
+            }
         }
-        view.autofit_columns()?;
-        view.refresh()?;
-        self.update_selected_info(is_left);
-        Ok(())
+        let control = Arc::new(TaskControl::new());
+        let id = self.next_id();
+        self.register_task(id, text, desc, control.clone())?;
+        self.find_task.borrow_mut()[idx] = Some(id);
+        Ok((id, control))
     }
 
     /// 条件ダイアログ（名前・日付・サイズ）を出し、OK ならその条件でファイル検索を実行する。
@@ -106,29 +123,36 @@ impl MainWindow {
         Ok(())
     }
 
-    /// 現在地以下を再帰検索し、条件に合うファイルを結果一覧に出す。検索はワーカースレッドで
-    /// 回し、終わったら結果ペインへ流し込む。
+    /// 現在地以下を再帰検索し、条件に合うファイルを結果一覧へ出す。検索はタスクとして
+    /// ワーカースレッドで回し、見つかった項目を1件ずつ結果ペインへライブ追加する。
+    /// タスクマネージャから中止・中断・再開できる。
     pub(crate) fn run_find_file(&self, is_left: bool, opts: rerics_core::FindOptions) {
         let root = self.pane(is_left).borrow().loc().clone();
         self.log.info(&format!("ファイル検索: {}", root.loc_display()));
-        self.spawn_job(
-            move || {
-                let mut items = Vec::new();
-                let count = rerics_core::find_file(&root, &opts, &mut rerics_core::Sink {
-                    emit: &mut |it| items.push(it),
-                    cancelled: &|| false,
-                });
-                (items, count)
-            },
-            move |mw, (items, count)| {
-                let mut all = Vec::with_capacity(items.len() + 1);
-                all.push(rerics_core::FileItem::parent());
-                all.extend(items);
-                mw.show_find_result(is_left, all)?;
-                mw.log.info(&format!("検索結果 {count}件"));
-                Ok(())
-            },
-        );
+        let Ok((id, control)) = self.start_find_task(is_left, "ファイル検索", root.loc_display())
+        else {
+            return;
+        };
+        let tx = self.task_tx.clone();
+        let shutdown = self.shutdown.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(WorkerEvent::FindBegin { id, is_left });
+            let count = {
+                let mut emit =
+                    |it| { let _ = tx.send(WorkerEvent::FindItem { id, is_left, item: it }); };
+                let cancelled = || search_cancelled(&control, &shutdown);
+                let mut sink =
+                    rerics_core::Sink { emit: &mut emit, cancelled: &cancelled };
+                rerics_core::find_file(&root, &opts, &mut sink)
+            };
+            let cancelled = control.is_stopped() || shutdown.load(Ordering::Relaxed);
+            let summary = if cancelled {
+                format!("検索中止 {count}件")
+            } else {
+                format!("検索結果 {count}件")
+            };
+            let _ = tx.send(WorkerEvent::FindDone { id, is_left, summary, cancelled });
+        });
     }
 
     /// 条件ダイアログ（日付・サイズの比較条件と抽出範囲）を出し、OK ならその条件で
@@ -140,33 +164,37 @@ impl MainWindow {
         Ok(())
     }
 
-    /// アクティブペインと反対ペインのディレクトリを比較し、差分を結果一覧に出す（原作
-    /// ディレクトリ比較）。比較はワーカースレッドで回し、終わったら結果ペインへ流し込む。
+    /// アクティブペインと反対ペインのディレクトリを比較し、差分を結果一覧へ出す（原作
+    /// ディレクトリ比較）。比較はタスクとしてワーカースレッドで回し、見つかった差分項目を
+    /// 1件ずつ結果ペインへライブ追加する。タスクマネージャから中止・中断・再開できる。
     pub(crate) fn run_directory_compare(&self, is_left: bool, opts: rerics_core::CompareOptions) {
         let src = self.pane(is_left).borrow().loc().clone();
         let dst = self.pane(!is_left).borrow().loc().clone();
         self.log.info(&format!("ディレクトリ比較: {}", src.loc_display()));
-        self.spawn_job(
-            move || {
-                let mut items = Vec::new();
-                let counts = rerics_core::directory_compare(&src, &dst, &opts, &mut rerics_core::Sink {
-                    emit: &mut |it| items.push(it),
-                    cancelled: &|| false,
-                });
-                (items, counts)
-            },
-            move |mw, (items, counts)| {
-                let mut all = Vec::with_capacity(items.len() + 1);
-                all.push(rerics_core::FileItem::parent());
-                all.extend(items);
-                mw.show_find_result(is_left, all)?;
-                mw.log.info(&format!(
-                    "比較結果 一致:{} 不一致:{} 追加:{} 削除:{}",
-                    counts.equals, counts.not_equals, counts.adds, counts.deletes
-                ));
-                Ok(())
-            },
-        );
+        let Ok((id, control)) = self.start_find_task(is_left, "ディレクトリ比較", src.loc_display())
+        else {
+            return;
+        };
+        let tx = self.task_tx.clone();
+        let shutdown = self.shutdown.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(WorkerEvent::FindBegin { id, is_left });
+            let counts = {
+                let mut emit =
+                    |it| { let _ = tx.send(WorkerEvent::FindItem { id, is_left, item: it }); };
+                let cancelled = || search_cancelled(&control, &shutdown);
+                let mut sink =
+                    rerics_core::Sink { emit: &mut emit, cancelled: &cancelled };
+                rerics_core::directory_compare(&src, &dst, &opts, &mut sink)
+            };
+            let cancelled = control.is_stopped() || shutdown.load(Ordering::Relaxed);
+            let head = if cancelled { "比較中止" } else { "比較結果" };
+            let summary = format!(
+                "{head} 一致:{} 不一致:{} 追加:{} 削除:{}",
+                counts.equals, counts.not_equals, counts.adds, counts.deletes
+            );
+            let _ = tx.send(WorkerEvent::FindDone { id, is_left, summary, cancelled });
+        });
     }
 
     /// インクリメンタルサーチ。小さな入力モーダルを出し、打鍵ごとに先頭から一致を

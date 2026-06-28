@@ -96,6 +96,9 @@ impl MainWindow {
         if self.in_dialog.get() {
             return Ok(());
         }
+        // 検索・比較のライブ追加は1取り込みぶんをまとめて1回だけ再描画する（項目ごとの
+        // 再描画を避ける）。この取り込みで項目が増えた側を覚えておく。
+        let mut find_dirty = [false, false];
         while let Ok(ev) = self.task_rx.try_recv() {
             match ev {
                 WorkerEvent::Log { level, text } => match level {
@@ -189,6 +192,46 @@ impl MainWindow {
                     dialog::message_box(&self.wnd, "情報", &msg, dialog::MessageStyle::OkOnly);
                     self.in_dialog.set(false);
                 }
+                WorkerEvent::FindBegin { id, is_left } => {
+                    let idx = if is_left { 0 } else { 1 };
+                    // 現役タスクの開始だけがペインを結果モードへ切り替える（追い越された
+                    // 旧タスクの開始通知は無視する）。
+                    if self.find_task.borrow()[idx] == Some(id) {
+                        self.view(is_left).state().borrow_mut().begin_find_result();
+                        find_dirty[idx] = true;
+                    }
+                }
+                WorkerEvent::FindItem { id, is_left, item } => {
+                    let idx = if is_left { 0 } else { 1 };
+                    if self.find_task.borrow()[idx] == Some(id) {
+                        self.view(is_left).state().borrow_mut().push_find_result(item);
+                        find_dirty[idx] = true;
+                    }
+                }
+                WorkerEvent::FindDone { id, is_left, summary, cancelled } => {
+                    // タスク登録解除は id 一致で必ず行う（追い越された旧タスクの後始末も）。
+                    self.tasks.borrow_mut().retain(|e| e.id != id);
+                    let idx = if is_left { 0 } else { 1 };
+                    if self.find_task.borrow()[idx] == Some(id) {
+                        self.find_task.borrow_mut()[idx] = None;
+                        if cancelled {
+                            self.log.warn(&summary);
+                        } else {
+                            self.log.info(&summary);
+                        }
+                        // 確定後の列幅を内容に合わせる。
+                        self.view(is_left).autofit_columns()?;
+                        self.update_selected_info(is_left);
+                        find_dirty[idx] = true;
+                    }
+                    self.maybe_kill_task_timer();
+                }
+            }
+        }
+        for is_left in [true, false] {
+            let idx = if is_left { 0 } else { 1 };
+            if find_dirty[idx] {
+                self.view(is_left).refresh()?;
             }
         }
         // 読込中ペインのスピナーを進める（タイマ間隔ごとに1コマ）。

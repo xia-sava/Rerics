@@ -4368,12 +4368,24 @@ fn directory_compare_shows_diff_result_pane() {
         &[("common.txt", b"b"), ("only_right.txt", b"y")],
     );
 
-    // 比較実行（ワーカー→結果ペイン）。find_result が立つまで待つ。
+    // 比較実行（ワーカー→結果ペインへライブ追加）。結果モードに入り、期待項目が
+    // 出揃うまで待つ（項目は1件ずつ流れてくるため、件数の確定を待つ）。
     server.req("POST", "/command/directoryCompare", "").unwrap();
     let body = poll(&server, "/state", |b| {
         serde_json::from_str::<serde_json::Value>(b)
             .ok()
-            .and_then(|v| v["panes"]["left"]["find_result"].as_bool())
+            .map(|v| {
+                let p = &v["panes"]["left"];
+                p["find_result"].as_bool().unwrap_or(false)
+                    && p["items"]
+                        .as_array()
+                        .map(|items| {
+                            ["common.txt", "only_left.txt", "only_right.txt"]
+                                .iter()
+                                .all(|n| items.iter().any(|it| it["name"] == *n))
+                        })
+                        .unwrap_or(false)
+            })
             .unwrap_or(false)
     });
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -4442,7 +4454,18 @@ fn directory_compare_dialog_opens_and_runs() {
     let body = poll(&server, "/state", |b| {
         serde_json::from_str::<serde_json::Value>(b)
             .ok()
-            .and_then(|v| v["panes"]["left"]["find_result"].as_bool())
+            .map(|v| {
+                let p = &v["panes"]["left"];
+                p["find_result"].as_bool().unwrap_or(false)
+                    && p["items"]
+                        .as_array()
+                        .map(|items| {
+                            ["only_left.txt", "only_right.txt"]
+                                .iter()
+                                .all(|n| items.iter().any(|it| it["name"] == *n))
+                        })
+                        .unwrap_or(false)
+            })
             .unwrap_or(false)
     });
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -4466,7 +4489,18 @@ fn find_file_command_lists_matches_recursively() {
     let body = poll(&server, "/state", |b| {
         serde_json::from_str::<serde_json::Value>(b)
             .ok()
-            .and_then(|v| v["panes"]["left"]["find_result"].as_bool())
+            .map(|v| {
+                let p = &v["panes"]["left"];
+                p["find_result"].as_bool().unwrap_or(false)
+                    && p["items"]
+                        .as_array()
+                        .map(|items| {
+                            ["a.txt", "c.txt"]
+                                .iter()
+                                .all(|n| items.iter().any(|it| it["name"] == *n))
+                        })
+                        .unwrap_or(false)
+            })
             .unwrap_or(false)
     });
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();

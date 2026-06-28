@@ -303,6 +303,10 @@ struct MainWindow {
     ui_jobs: Rc<RefCell<std::collections::HashMap<u64, UiJobDone>>>,
     tasks: Rc<RefCell<Vec<TaskEntry>>>,
     next_task_id: Rc<Cell<u64>>,
+    /// ライブ検索／比較の現役タスク id（`[左, 右]`）。結果ペインへの追記・完了処理は、この
+    /// id と一致するイベントだけが行う（同ペインで再検索したとき旧タスクの項目が混ざるのを
+    /// 防ぐ）。検索開始時に同期で立て、完了で下ろす。
+    find_task: Rc<RefCell<[Option<u64>; 2]>>,
     progress_seq: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
     in_dialog: Rc<Cell<bool>>,
@@ -536,6 +540,7 @@ impl MainWindow {
             ui_jobs: Rc::new(RefCell::new(std::collections::HashMap::new())),
             tasks: Rc::new(RefCell::new(Vec::new())),
             next_task_id: Rc::new(Cell::new(0)),
+            find_task: Rc::new(RefCell::new([None, None])),
             progress_seq: Arc::new(AtomicU64::new(0)),
             shutdown: Arc::new(AtomicBool::new(false)),
             in_dialog: Rc::new(Cell::new(false)),

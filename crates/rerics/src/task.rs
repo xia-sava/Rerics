@@ -166,6 +166,12 @@ pub enum WorkerEvent {
         files: u64,
         dirs: u64,
     },
+    /// 検索・比較の開始。指定ペインを結果モード（".." のみ）へ切り替える。
+    FindBegin { id: u64, is_left: bool },
+    /// 検索・比較で見つかった項目を1件、結果一覧へ追記する。
+    FindItem { id: u64, is_left: bool, item: rerics_core::FileItem },
+    /// 検索・比較の完了。件数サマリをログに出し、タスクを登録解除する。
+    FindDone { id: u64, is_left: bool, summary: String, cancelled: bool },
 }
 
 /// [`OperationHost`] の GUI 実装。ログをチャネルへ送り、共有フラグで中止を伝え、
