@@ -877,6 +877,22 @@ impl FileListState {
         self.select_start = 0;
     }
 
+    /// 検索・比較の結果一覧を空（先頭の ".." のみ）で開始する。以降は [`push_find_result`]
+    /// で見つかった項目を1件ずつ追記していく（ライブ追加）。
+    ///
+    /// [`push_find_result`]: Self::push_find_result
+    pub fn begin_find_result(&mut self) {
+        self.set_find_result(vec![FileItem::parent()]);
+    }
+
+    /// ライブ追加中の結果一覧へ項目を1件足す（末尾へ追記・並べ替えはしない）。
+    /// 結果モードでないときは何もしない。
+    pub fn push_find_result(&mut self, item: FileItem) {
+        if self.find_result {
+            self.items.push(item);
+        }
+    }
+
     /// 表示できる最終行。
     pub fn scroll_bottom(&self, page_rows: usize) -> usize {
         let count = self.count();
@@ -1490,6 +1506,34 @@ mod tests {
         assert_eq!(s.cursor, 0);
         assert_eq!(s.count(), 2);
         assert!(s.columns.iter().any(|c| c.kind == ColumnKind::Information));
+    }
+
+    #[test]
+    fn begin_then_push_appends_live() {
+        let mut s = FileListState::new();
+        s.cursor = 3;
+        s.begin_find_result();
+        // 開始直後は ".." のみ・結果モード・情報列あり・カーソル先頭。
+        assert!(s.find_result);
+        assert_eq!(s.cursor, 0);
+        assert_eq!(s.count(), 1);
+        assert!(s.items[0].is_parent);
+        assert!(s.columns.iter().any(|c| c.kind == ColumnKind::Information));
+        // 1件ずつ追記すると末尾に積まれる。
+        s.push_find_result(file("a.txt"));
+        s.push_find_result(file("b.txt"));
+        assert_eq!(s.count(), 3);
+        assert_eq!(s.items[1].name, "a.txt");
+        assert_eq!(s.items[2].name, "b.txt");
+    }
+
+    #[test]
+    fn push_find_result_ignored_outside_result_mode() {
+        let mut s = FileListState::new();
+        let before = s.count();
+        s.push_find_result(file("x.txt"));
+        assert!(!s.find_result);
+        assert_eq!(s.count(), before, "結果モードでなければ追記しない");
     }
 
     #[test]
