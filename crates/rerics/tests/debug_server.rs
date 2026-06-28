@@ -1614,6 +1614,35 @@ fn find_result_copy_uses_item_source() {
     assert_eq!(std::fs::read(server.base.join("right").join("y.txt")).unwrap(), b"Y");
 }
 
+/// 結果一覧のパス系操作（ショートカット作成）も項目の出自から解決する。.lnk は基準直下では
+/// なく出自サブフォルダの実ファイルの隣に作られる。
+#[test]
+fn find_result_shortcut_uses_item_source() {
+    let server = Server::start_dirs_writable(&[("note.dat", b"z")], &[]);
+    let left = server.base.join("left");
+    std::fs::create_dir_all(left.join("sub")).unwrap();
+    std::fs::write(left.join("sub").join("t.txt"), b"x").unwrap();
+
+    server.req("POST", "/command/findFile", "[\"*.txt\"]").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"t.txt\""));
+    // 結果は [.., t.txt]。cursorDown で t.txt（index 1）へ。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+
+    server.req("POST", "/command/createShortcut", "").unwrap();
+    let made = left.join("sub").join("t.txt.lnk");
+    let mut ok = false;
+    for _ in 0..40 {
+        if made.exists() {
+            ok = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(ok, "shortcut should be created next to the source file (in sub)");
+    assert!(!left.join("t.txt.lnk").exists(), "not created in the search base");
+}
+
 /// directoryInformation＝カーソル位置の使用量を計算し結果ダイアログを出す。
 #[test]
 fn info_directory_information() {

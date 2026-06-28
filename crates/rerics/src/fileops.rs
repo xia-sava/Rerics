@@ -373,24 +373,44 @@ impl MainWindow {
         }
     }
 
-    /// 検索・比較の結果一覧で、選択（無ければカーソル）項目を出自ディレクトリ別にまとめる。
-    /// 出自が実FSのものだけを対象にし、`(出自ディレクトリ, 名前リスト)` の組を出現順で返す。
-    /// 結果項目は基準が実FSなら出自も実FS（検索は書庫へ降りない）ため、これで全件を拾える。
-    pub(crate) fn selected_result_groups(&self, is_left: bool) -> Vec<(PathBuf, Vec<String>)> {
+    /// 選択（無ければカーソル）項目を `(出自Location, 名前)` の組で返す。`..` は除外。通常モードは
+    /// 全項目がペイン現在地、検索・比較の結果一覧は各項目の出自（`source`）。すべてのファイル操作が
+    /// 「現在地基準の名前」ではなくこの単一の入口で対象を解決すれば、結果一覧でも自然に動く。
+    pub(crate) fn selected_targets(&self, is_left: bool) -> Vec<(Location, String)> {
+        let base = self.pane(is_left).borrow().loc().clone();
         let state = self.view(is_left).state();
         let s = state.borrow();
         let any_selected = s.items.iter().any(|it| it.selected && !it.is_parent);
-        let chosen = s.items.iter().enumerate().filter(|(i, it)| {
-            !it.is_parent && if any_selected { it.selected } else { *i == s.cursor }
-        });
+        s.items
+            .iter()
+            .enumerate()
+            .filter(|(i, it)| {
+                !it.is_parent && if any_selected { it.selected } else { *i == s.cursor }
+            })
+            .map(|(_, it)| (it.source.clone().unwrap_or_else(|| base.clone()), it.name.clone()))
+            .collect()
+    }
+
+    /// [`selected_targets`](Self::selected_targets) のうち実FS出自のものを `(実パス, 名前)` で返す。
+    /// 書庫内出自は除外する。ゴミ箱送り・クリップボード・ショートカット等、実パスを要する操作で使う。
+    pub(crate) fn selected_real_targets(&self, is_left: bool) -> Vec<(PathBuf, String)> {
+        self.selected_targets(is_left)
+            .into_iter()
+            .filter_map(|(loc, name)| loc.as_real_path().map(|d| (d.join(&name), name)))
+            .collect()
+    }
+
+    /// 結果一覧のコピー/移動/削除用に、選択（無ければカーソル）項目を出自ディレクトリ別にまとめる。
+    /// `(出自ディレクトリ, 名前リスト)` の組を出現順で返す（実FS出自のみ）。
+    pub(crate) fn selected_result_groups(&self, is_left: bool) -> Vec<(PathBuf, Vec<String>)> {
         let mut groups: Vec<(PathBuf, Vec<String>)> = Vec::new();
-        for (_, it) in chosen {
-            let Some(Location::Real(dir)) = it.source.as_ref() else {
+        for (loc, name) in self.selected_targets(is_left) {
+            let Location::Real(dir) = loc else {
                 continue;
             };
-            match groups.iter_mut().find(|(d, _)| d == dir) {
-                Some((_, names)) => names.push(it.name.clone()),
-                None => groups.push((dir.clone(), vec![it.name.clone()])),
+            match groups.iter_mut().find(|(d, _)| *d == dir) {
+                Some((_, names)) => names.push(name),
+                None => groups.push((dir, vec![name])),
             }
         }
         groups
@@ -849,12 +869,13 @@ impl MainWindow {
             self.log.warn("書庫内ではゴミ箱送りは未対応です。");
             return Ok(());
         }
-        let names = self.selected_or_cursor_names(is_left);
-        if names.is_empty() {
+        let targets = self.selected_real_targets(is_left);
+        if targets.is_empty() {
             self.log.error(&messages::not_selected_error());
             return Ok(());
         }
         if self.config.borrow().file_ops.ask_before_delete {
+            let names: Vec<String> = targets.iter().map(|(_, n)| n.clone()).collect();
             let short = short_desc(&names);
             let ans = dialog::message_box(
                 &self.wnd,
@@ -866,11 +887,9 @@ impl MainWindow {
                 return Ok(());
             }
         }
-        let dir = self.pane(is_left).borrow().path().to_path_buf();
-        for name in &names {
+        for (path, name) in &targets {
             self.log.normal(&messages::send_to_recycled(name));
-            let path = dir.join(name);
-            if let Err(e) = shell::send_to_recycle(std::slice::from_ref(&path)) {
+            if let Err(e) = shell::send_to_recycle(std::slice::from_ref(path)) {
                 self.log.error(&messages::send_to_recycled_failure(name, &e));
             }
         }
@@ -884,17 +903,15 @@ impl MainWindow {
             self.log.warn("書庫内ではショートカット作成は未対応です。");
             return Ok(());
         }
-        let names = self.selected_or_cursor_names(is_left);
-        if names.is_empty() {
+        let targets = self.selected_real_targets(is_left);
+        if targets.is_empty() {
             self.log.error(&messages::not_selected_error());
             return Ok(());
         }
-        let dir = self.pane(is_left).borrow().path().to_path_buf();
         let mut ok = 0usize;
-        for name in &names {
-            let target = dir.join(name);
-            let lnk = dir.join(format!("{name}.lnk"));
-            match shell::create_shortcut(&target, &lnk) {
+        for (target, name) in &targets {
+            let lnk = target.with_file_name(format!("{name}.lnk"));
+            match shell::create_shortcut(target, &lnk) {
                 Ok(()) => ok += 1,
                 Err(e) => self.log.error(&format!("ショートカット作成に失敗しました（{name}）：{e}")),
             }
@@ -912,17 +929,16 @@ impl MainWindow {
             self.log.warn("書庫内ではクリップボード操作は未対応です。");
             return Ok(());
         }
-        let names = self.selected_or_cursor_names(is_left);
-        if names.is_empty() {
+        let targets = self.selected_real_targets(is_left);
+        if targets.is_empty() {
             self.log.error(&messages::not_selected_error());
             return Ok(());
         }
-        let dir = self.pane(is_left).borrow().path().to_path_buf();
-        let paths: Vec<PathBuf> = names.iter().map(|n| dir.join(n)).collect();
+        let paths: Vec<PathBuf> = targets.iter().map(|(p, _)| p.clone()).collect();
         match shell::clip_copy_files(self.wnd.hwnd(), &paths, move_it) {
             Ok(()) => {
                 let verb = if move_it { "切り取り" } else { "コピー" };
-                self.log.normal(&format!("クリップボードへ{verb}: {} 件", names.len()));
+                self.log.normal(&format!("クリップボードへ{verb}: {} 件", paths.len()));
             }
             Err(e) => self.log.error(&format!("クリップボード操作に失敗しました: {e}")),
         }
@@ -1491,7 +1507,10 @@ impl MainWindow {
                 _ => return Ok(()),
             }
         };
-        let path = self.pane(is_left).borrow().path().join(&name);
+        let Some(dir) = self.cursor_dir(is_left).as_real_path().map(|p| p.to_path_buf()) else {
+            return Ok(());
+        };
+        let path = dir.join(&name);
         if let Err(e) = shell::show_properties(self.wnd.hwnd(), &path) {
             self.log.error(&e);
         }
