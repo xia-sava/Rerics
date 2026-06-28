@@ -687,6 +687,15 @@ impl MainWindow {
             Ok(0)
         });
 
+        // 検索・比較ワーカーからの起床通知。送信のたびに取り込んで、検索終了でアイドルになり
+        // 取り込みタイマが止まっても末尾の結果と完了通知を取りこぼさず即時に反映する。
+        let this = self.clone();
+        let task_wake = winutil::msg::TASK_WAKE;
+        self.wnd.on().wm(task_wake, move |_| {
+            let _ = this.pump_tasks();
+            Ok(0)
+        });
+
         let this = self.clone();
         self.splitter.on_drag(move |splitter_left| {
             let _ = this.drag_splitter(splitter_left);

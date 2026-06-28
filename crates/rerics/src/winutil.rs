@@ -44,6 +44,8 @@ pub mod msg {
     pub const CONFIG_WARN: co::WM = unsafe { co::WM::from_raw(0x8003) };
     /// スクリプトエンジンスレッドが UI スレッドを起こす。
     pub const SCRIPT_WAKE: co::WM = unsafe { co::WM::from_raw(0x8004) };
+    /// 検索・比較ワーカーが UI スレッドを起こす（イベント送信ごとに取り込ませる）。
+    pub const TASK_WAKE: co::WM = unsafe { co::WM::from_raw(0x8005) };
 }
 
 // 共通ツールチップ（標準コモンコントロール `tooltips_class32`）。winsafe は TTM_* メッセージを
@@ -65,8 +67,17 @@ unsafe extern "system" {
         param: *mut c_void,
     ) -> *mut c_void;
     fn SendMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> isize;
+    fn PostMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> i32;
     #[cfg(feature = "debug-server")]
     fn GetWindowLongW(hwnd: *mut c_void, index: i32) -> i32;
+}
+
+/// ワーカースレッドから UI スレッドへアプリ専用メッセージを投げて起こす。`HWND` は `Send` で
+/// ないので、生ポインタ（`HWND::ptr()` の `isize`）を渡してワーカーから安全に呼べる経路にする。
+pub(crate) fn post_app_message(hwnd: isize, msg: co::WM) {
+    unsafe {
+        PostMessageW(hwnd as *mut c_void, msg.raw(), 0, 0);
+    }
 }
 
 const WM_USER: u32 = 0x0400;

@@ -212,11 +212,15 @@ impl MainWindow {
         };
         let tx = self.task_tx.clone();
         let shutdown = self.shutdown.clone();
+        let wake = self.wnd.hwnd().ptr() as isize;
         std::thread::spawn(move || {
             let _ = tx.send(WorkerEvent::FindBegin { id, is_left });
+            crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
             let count = {
-                let mut emit =
-                    |it| { let _ = tx.send(WorkerEvent::FindItem { id, is_left, item: it }); };
+                let mut emit = |it| {
+                    let _ = tx.send(WorkerEvent::FindItem { id, is_left, item: it });
+                    crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
+                };
                 let cancelled = || search_cancelled(&control, &shutdown);
                 let mut sink =
                     rerics_core::Sink { emit: &mut emit, cancelled: &cancelled };
@@ -229,6 +233,7 @@ impl MainWindow {
                 format!("検索結果 {count}件")
             };
             let _ = tx.send(WorkerEvent::FindDone { id, is_left, summary, cancelled });
+            crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
         });
     }
 
@@ -257,11 +262,15 @@ impl MainWindow {
         };
         let tx = self.task_tx.clone();
         let shutdown = self.shutdown.clone();
+        let wake = self.wnd.hwnd().ptr() as isize;
         std::thread::spawn(move || {
             let _ = tx.send(WorkerEvent::FindBegin { id, is_left });
+            crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
             let counts = {
-                let mut emit =
-                    |it| { let _ = tx.send(WorkerEvent::FindItem { id, is_left, item: it }); };
+                let mut emit = |it| {
+                    let _ = tx.send(WorkerEvent::FindItem { id, is_left, item: it });
+                    crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
+                };
                 let cancelled = || search_cancelled(&control, &shutdown);
                 let mut sink =
                     rerics_core::Sink { emit: &mut emit, cancelled: &cancelled };
@@ -274,6 +283,7 @@ impl MainWindow {
                 counts.equals, counts.not_equals, counts.adds, counts.deletes
             );
             let _ = tx.send(WorkerEvent::FindDone { id, is_left, summary, cancelled });
+            crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
         });
     }
 

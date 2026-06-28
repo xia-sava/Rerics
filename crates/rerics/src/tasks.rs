@@ -270,18 +270,6 @@ impl MainWindow {
                 self.view(is_left).refresh()?;
             }
         }
-        // 検索・比較のライブ追加中は取り込みタイマが連続発火して WM_PAINT が後回しにされ、
-        // カーソルを動かすまで結果が増えて見えない。変化があったターンは子ウィンドウまで含めて
-        // 即時に描き直し、リアルタイムに増えていくようにする。
-        if (find_dirty[0] || find_dirty[1])
-            && let Ok(rc) = self.wnd.hwnd().GetClientRect()
-        {
-            let _ = self.wnd.hwnd().RedrawWindow(
-                rc,
-                &w::HRGN::NULL,
-                w::co::RDW::INVALIDATE | w::co::RDW::ALLCHILDREN | w::co::RDW::UPDATENOW,
-            );
-        }
         // 読込中ペインのスピナーを進める（タイマ間隔ごとに1コマ）。
         for is_left in [true, false] {
             self.view(is_left).tick_loading();
