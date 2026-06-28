@@ -178,7 +178,12 @@ impl MainWindow {
     }
 
     /// 親ディレクトリへ移動し、元ディレクトリ名にカーソルを置きセンタリングする。
+    /// 検索・比較の結果一覧では、検索を開始したディレクトリへ戻る（結果モードを抜けて
+    /// 基準ディレクトリを再表示する＝実際の親へは移動しない）。
     pub(crate) fn to_parent(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.view(is_left).state().borrow().find_result {
+            return self.reload_side(is_left);
+        }
         self.remember_cursor_for_nav(is_left);
         let prev = self.pane(is_left).borrow_mut().to_parent();
         let Some(prev_name) = prev else {
