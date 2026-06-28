@@ -588,33 +588,30 @@ impl MainWindow {
             return self.rename_in_archive(is_left);
         }
         // 対象＝選択（無ければカーソル）。1件なら名前編集つき単一、複数なら属性/日時/名前変換の一括。
-        // 名前変換のため (名前, ディレクトリか) を持つ。
-        let targets: Vec<(String, bool)> = {
-            let state = self.view(is_left).state();
-            let s = state.borrow();
-            let selected: Vec<(String, bool)> = s
-                .items
-                .iter()
-                .filter(|it| it.selected && !it.is_parent)
-                .map(|it| (it.name.clone(), it.is_dir))
-                .collect();
-            if selected.is_empty() {
-                match s.items.get(s.cursor) {
-                    Some(it) if !it.is_parent => vec![(it.name.clone(), it.is_dir)],
-                    _ => Vec::new(),
-                }
-            } else {
-                selected
-            }
-        };
+        // 各対象は出自ディレクトリを併せ持つ（結果一覧では項目ごとに出自が異なる）＝`(出自dir, 名前, dirか)`。
+        let targets: Vec<(PathBuf, String, bool)> = self
+            .selected_targets(is_left)
+            .into_iter()
+            .filter_map(|(loc, name)| {
+                let is_dir = self
+                    .view(is_left)
+                    .state()
+                    .borrow()
+                    .items
+                    .iter()
+                    .find(|it| it.name == name)
+                    .map(|it| it.is_dir)
+                    .unwrap_or(false);
+                loc.as_real_path().map(|d| (d.to_path_buf(), name, is_dir))
+            })
+            .collect();
         if targets.is_empty() {
             return Ok(());
         }
-        let dir = self.pane(is_left).borrow().path().to_path_buf();
 
         let (single, single_is_dir, attrs, modified, created) = if targets.len() == 1 {
-            let (name, is_dir) = &targets[0];
-            let p = dir.join(name);
+            let (dir0, name, is_dir) = &targets[0];
+            let p = dir0.join(name);
             (
                 Some(name.clone()),
                 *is_dir,
@@ -638,10 +635,11 @@ impl MainWindow {
             return Ok(());
         };
 
-        // 名前変更を先に処理し、以降の属性/日時は新パスへ適用する。
-        let mut paths: Vec<std::path::PathBuf> = targets.iter().map(|(n, _)| dir.join(n)).collect();
+        // 名前変更を先に処理し、以降の属性/日時は新パスへ適用する。各対象は自分の出自ディレクトリで改名する。
+        let mut paths: Vec<std::path::PathBuf> = targets.iter().map(|(d, n, _)| d.join(n)).collect();
         let mut cursor_name = single.clone();
         if let (Some(old), Some(new)) = (single.as_ref(), res.name.as_ref()) {
+            let dir = &targets[0].0;
             let new = new.trim();
             if !new.is_empty() && new != old.as_str() {
                 if let Err(e) = std::fs::rename(dir.join(old), dir.join(new)) {
@@ -661,11 +659,11 @@ impl MainWindow {
             }
         }
 
-        // 複数一括の名前変換（大文字/小文字・拡張子）。各ファイルへ適用して新パスへ差し替える。
+        // 複数一括の名前変換（大文字/小文字・拡張子）。各ファイルを自分の出自で改名し新パスへ差し替える。
         if single.is_none() && res.name_case != rerics_core::NameCase::None {
             let mut new_paths = Vec::with_capacity(targets.len());
             let mut rename_errors = 0usize;
-            for (name, is_dir) in &targets {
+            for (dir, name, is_dir) in &targets {
                 let new_name = res.name_case.apply(name, *is_dir);
                 if new_name == *name {
                     new_paths.push(dir.join(name));
@@ -1459,6 +1457,15 @@ impl MainWindow {
             self.log.warn("書庫内では使用量計算は未対応です。");
             return Ok(());
         }
+        // 結果一覧では項目ごとに出自が異なるので、出自別にまとめて1タスクで合算する。
+        if self.view(is_left).state().borrow().find_result {
+            let groups = self.selected_result_groups(is_left);
+            if groups.is_empty() {
+                self.log.error(&messages::not_selected_error());
+                return Ok(());
+            }
+            return self.start_dir_info_grouped(groups);
+        }
         let names = self.selected_or_cursor_names(is_left);
         if names.is_empty() {
             self.log.error(&messages::not_selected_error());
@@ -1488,6 +1495,32 @@ impl MainWindow {
                 files: info.files,
                 dirs: info.dirs,
             });
+        });
+        Ok(())
+    }
+
+    /// 結果一覧用に、出自ディレクトリ別にまとめた項目の使用量を1タスクで合算する。
+    pub(crate) fn start_dir_info_grouped(&self, groups: Vec<(PathBuf, Vec<String>)>) -> w::AnyResult<()> {
+        let control = Arc::new(TaskControl::new());
+        let host = ChannelHost::new(
+            self.task_tx.clone(),
+            self.shutdown.clone(),
+            control.clone(),
+            self.progress_seq.clone(),
+        );
+        let id = self.next_id();
+        let all_names: Vec<String> = groups.iter().flat_map(|(_, n)| n.iter().cloned()).collect();
+        let label = short_desc(&all_names);
+        self.register_task(id, "情報", label.clone(), control)?;
+        std::thread::spawn(move || {
+            let (mut bytes, mut files, mut dirs) = (0u64, 0u64, 0u64);
+            for (dir, names) in &groups {
+                let info = rerics_core::run_calc_size(&host, dir, names);
+                bytes += info.bytes;
+                files += info.files;
+                dirs += info.dirs;
+            }
+            let _ = host.tx.send(WorkerEvent::DirInfoDone { id, label, bytes, files, dirs });
         });
         Ok(())
     }

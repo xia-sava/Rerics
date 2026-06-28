@@ -1643,6 +1643,33 @@ fn find_result_shortcut_uses_item_source() {
     assert!(!left.join("t.txt.lnk").exists(), "not created in the search base");
 }
 
+/// 結果一覧の情報表示（使用量計算）は、出自の異なる項目をまとめて合算する。
+#[test]
+fn find_result_directory_information_sums_sources() {
+    let server = Server::start(&["note.dat"], "");
+    let sbx = server.base.join("sbx");
+    std::fs::create_dir_all(sbx.join("a")).unwrap();
+    std::fs::create_dir_all(sbx.join("b")).unwrap();
+    std::fs::write(sbx.join("a").join("p.txt"), b"12345").unwrap(); // 5 バイト
+    std::fs::write(sbx.join("b").join("q.txt"), b"678").unwrap(); // 3 バイト
+
+    server.req("POST", "/command/findFile", "[\"*.txt\"]").unwrap();
+    poll(&server, "/state/panes/left/items", |b| {
+        b.contains("\"name\":\"p.txt\"") && b.contains("\"name\":\"q.txt\"")
+    });
+    server
+        .req("POST", "/script/eval", r#"rerics.activePane().items.forEach((it)=>{ if(it.name==="p.txt"||it.name==="q.txt") it.selected=true; });"#)
+        .unwrap();
+    poll(&server, "/state/panes/left/items", |b| count_substr(b, "\"marked\":true") == 2);
+
+    server.req("POST", "/command/directoryInformation", "").unwrap();
+    let modal = wait_modal(&server);
+    // 別々のサブフォルダの 5+3 バイトが合算される。
+    assert!(modal.contains("8 \u{30d0}\u{30a4}\u{30c8}"), "should sum to 8 bytes: {modal}");
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// directoryInformation＝カーソル位置の使用量を計算し結果ダイアログを出す。
 #[test]
 fn info_directory_information() {
