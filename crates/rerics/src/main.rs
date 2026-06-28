@@ -1740,6 +1740,18 @@ impl MainWindow {
         }
         view.autofit_columns()?;
         view.refresh()?;
+        // 非アクティブ側ペインの非同期読込完了は、ペイン単体の InvalidateRect だけだと画面へ
+        // 反映されず待機表示が残ることがある（コピー先など）。子ウィンドウまで含めて即時に
+        // 描き直す。アクティブ側は通常のフォーカス経路で描かれるので対象外。
+        let active_is_left = !self.active_right.get();
+        if is_left != active_is_left
+            && let Ok(rc) = self.wnd.hwnd().GetClientRect() {
+                let _ = self.wnd.hwnd().RedrawWindow(
+                    rc,
+                    &w::HRGN::NULL,
+                    co::RDW::INVALIDATE | co::RDW::ALLCHILDREN | co::RDW::UPDATENOW,
+                );
+            }
         self.update_selected_info(is_left);
         self.cleanup_unreferenced_temps();
         // 一覧確定後に changeDirectory を配る（実際に現在地が変わったときだけ・notify 側で判定）。
