@@ -215,6 +215,28 @@ mod tests {
     }
 
     #[test]
+    fn cancel_stops_walk_early() {
+        let t = TempDir::new();
+        t.write("a.txt", "1");
+        t.write("b.txt", "2");
+        t.write("c.txt", "3");
+        let mut opts = FindOptions::default();
+        opts.set_masks("*.txt");
+        // 最初の1件を流した直後に中止を告げる。
+        let seen = std::cell::Cell::new(0usize);
+        let mut items = Vec::new();
+        let count = find_file(&t.loc(), &opts, &mut Sink {
+            emit: &mut |it| {
+                items.push(it);
+                seen.set(seen.get() + 1);
+            },
+            cancelled: &|| seen.get() >= 1,
+        });
+        assert_eq!(items.len(), 1, "最初の1件で打ち切る: {:?}", names(&items));
+        assert_eq!(count, 1);
+    }
+
+    #[test]
     fn exclude_mask_filters_out() {
         let t = TempDir::new();
         t.write("keep.txt", "1");

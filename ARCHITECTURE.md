@@ -109,9 +109,16 @@ UI を差し替えても実処理は変わらず、同じ処理が UI 側とロ�
   を出し、各項目は出自情報（`FileItem.source: Option<Location>`＝出自ディレクトリ／`info`＝相対サブパス
   や "追加"/"削除" などの説明）を持つ。項目は通常一覧と同じ `items` に入るので、描画・選択・ソート・
   `/state` 観測がそのまま効く。
-- 流し込み … 純ロジック（`rerics_core::directory_compare` / `find_file`）をワーカースレッド（`spawn_job`）
-  で回し、完了したら `show_find_result` が `set_find_result` で `items`＋列を差し替える。ペインの現在地
-  （`Pane.loc`）は基準ディレクトリのまま変えない。
+- 流し込み（ライブ追加）… 純ロジック（`rerics_core::directory_compare` / `find_file`）は、走査結果を
+  ため込まず `rerics_core::Sink`（`emit`＝項目を1件ずつ渡す／`cancelled`＝各境界で打ち切り判定。
+  中断中はこの中でブロックして待つ）経由で逐次返す。GUI 側はこれを**タスク**として回し（コピー等と同じ
+  `TaskControl`＋`register_task`）、ワーカーが `WorkerEvent::FindBegin`／`FindItem`／`FindDone` を送る。
+  取り込みは `pump_tasks` が担い、`FindBegin` で結果モードへ切替（`begin_find_result`）・`FindItem` で
+  追記（`push_find_result`）・`FindDone` で件数ログと列幅調整を行う。**項目ごとの再描画は避け、1取り込み
+  ぶんをまとめて1回だけ再描画する**。ペインの現在地（`Pane.loc`）は基準ディレクトリのまま変えない。
+- タスク制御 … 検索・比較はタスクマネージャに並び、中止／中断／再開できる（`TaskControl`）。中止はそれまでに
+  出た結果を残したまま打ち切る。同じペインで再検索したときは、`MainWindow.find_task`（`[左, 右]` の現役
+  タスク id）で取り違えを防ぎ、旧タスクを止めてから新タスクの項目だけを追記する。
 - 抜ける … 結果項目を開く（Enter）と出自（`source` → 無ければ現在地）へ navigate してその名前へカーソルを
   合わせ、通常のディレクトリへ戻る。先頭の ".." も基準ディレクトリの再読込で抜ける。**いずれの通常移動も
   `apply_loaded_items` に合流し、そこで `find_result` を解除して設定列（`config.columns`）へ戻す**ので、

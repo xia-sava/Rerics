@@ -453,6 +453,27 @@ mod tests {
     }
 
     #[test]
+    fn cancel_stops_compare_early() {
+        let src = TempDir::new();
+        let dst = TempDir::new();
+        src.write("a.txt", "x");
+        src.write("b.txt", "x");
+        src.write("c.txt", "x"); // dst は空＝全て「追加」
+        let opts = CompareOptions { show_added: true, ..Default::default() };
+        // 最初の1件を流した直後に中止を告げる。
+        let seen = std::cell::Cell::new(0usize);
+        let mut items = Vec::new();
+        directory_compare(&src.loc(), &dst.loc(), &opts, &mut Sink {
+            emit: &mut |it| {
+                items.push(it);
+                seen.set(seen.get() + 1);
+            },
+            cancelled: &|| seen.get() >= 1,
+        });
+        assert_eq!(items.len(), 1, "最初の1件で打ち切る: {:?}", names_info(&items));
+    }
+
+    #[test]
     fn matched_files_count_equals_vs_not_equals() {
         let src = TempDir::new();
         let dst = TempDir::new();
