@@ -14,6 +14,18 @@ impl MainWindow {
         if is_left { self.left.list() } else { self.right.list() }
     }
 
+    /// カーソル下の項目が実在するディレクトリ。検索・比較の結果一覧では項目の出自
+    /// （`source`）が実際の場所なのでそれを、通常はペインの現在地を返す。ビューアや
+    /// ファイル操作が「名前」を実パスへ解決する起点に使う。
+    pub(crate) fn cursor_dir(&self, is_left: bool) -> Location {
+        let state = self.view(is_left).state();
+        let s = state.borrow();
+        s.items
+            .get(s.cursor)
+            .and_then(|it| it.source.clone())
+            .unwrap_or_else(|| self.pane(is_left).borrow().loc().clone())
+    }
+
     /// カーソル下のファイルを種別に応じたビューアで開く（ディレクトリ/親は無視）。
     /// 原作 `View` 相当。引数なし＝親へ戻る/ディレクトリ・書庫へ潜る/それ以外は内蔵ビューア
     /// （拡張子で text/media 振り分け）。`type` 指定時はディレクトリでは何もせず、ファイルを
@@ -91,6 +103,11 @@ impl MainWindow {
     pub(crate) fn view_media(&self, is_left: bool, _kind: MediaKind, name: &str) -> w::AnyResult<()> {
         // 別メディアを開くので、前回の書庫プリフェッチがあれば止める。
         self.cancel_media_prefetch();
+        // 検索・比較の結果一覧は項目ごとに出自ディレクトリが異なるため、前後送りはせず
+        // カーソル下の1ファイルだけを開く（出自から実パスを解決し、書庫内なら一時展開）。
+        if self.view(is_left).state().borrow().find_result {
+            return self.view_media_single(is_left, name);
+        }
         let loc = self.pane(is_left).borrow().loc().clone();
         match loc {
             Location::Real(dir) => {
@@ -201,6 +218,30 @@ impl MainWindow {
                     }
                 });
                 self.media.open_nav(n, index, resolver);
+            }
+        }
+        self.show_viewer(ActiveView::Media)
+    }
+
+    /// 結果一覧のカーソル下メディアを単一表示で開く（前後送りなし）。実FS は出自ディレクトリ
+    /// 直下の実パスを、書庫内は一時展開した実パスを、単一要素としてメディアビューアへ渡す。
+    fn view_media_single(&self, is_left: bool, name: &str) -> w::AnyResult<()> {
+        match self.cursor_dir(is_left) {
+            Location::Real(dir) => {
+                self.media.open(vec![dir.join(name)], 0);
+            }
+            Location::Archive { archive, inner } => {
+                self.register_archive_temp(&archive);
+                let inner_file = join_inner_path(&inner, name);
+                let password = self.ensure_media_password(&archive, Some(&inner_file));
+                match Self::extract_entry_to_temp(&archive, &inner_file, password.as_deref()) {
+                    Ok(p) => self.media.open(vec![p], 0),
+                    Err(e) => {
+                        self.log
+                            .error(&format!("書庫内メディアを展開できません: {}: {}", name, e));
+                        return Ok(());
+                    }
+                }
             }
         }
         self.show_viewer(ActiveView::Media)

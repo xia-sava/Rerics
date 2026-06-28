@@ -18,10 +18,11 @@ impl MainWindow {
         }
     }
 
-    /// 現在ペインのカーソル下ファイル `name` の bytes を取得する（実FS/書庫内 両対応）。
+    /// カーソル下ファイル `name` の bytes を取得する（実FS/書庫内 両対応）。解決の起点は
+    /// [`cursor_dir`](Self::cursor_dir)＝結果一覧では項目の出自、通常はペイン現在地。
     /// `cap` を超える分は切り詰め、超過していたら `truncated=true` を返す。
     pub(crate) fn read_pane_file(&self, is_left: bool, name: &str, cap: usize) -> std::io::Result<(Vec<u8>, bool)> {
-        let loc = self.pane(is_left).borrow().loc().clone();
+        let loc = self.cursor_dir(is_left);
         match loc {
             Location::Real(dir) => read_capped(&dir.join(name), cap),
             Location::Archive { archive, inner } => {
