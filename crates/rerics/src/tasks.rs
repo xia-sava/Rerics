@@ -265,19 +265,11 @@ impl MainWindow {
         for is_left in [true, false] {
             let idx = if is_left { 0 } else { 1 };
             if find_dirty[idx] {
+                // 列幅は流れてくる項目に合わせて毎回詰める＝ストリーム中（再描画が効くうち）に
+                // 確定幅へ寄せる。完了時にまとめて詰めると最後の再描画が遅れて、カーソル移動で
+                // 初めて幅が変わって見えるのを防ぐ。
+                self.view(is_left).autofit_columns()?;
                 self.view(is_left).refresh()?;
-                // 検索/比較が完了したターン（タスク終了済み）は、最後の1回の再描画が画面へ
-                // 反映されないことがある（単発で終わる操作後の再検索など）。子ウィンドウまで
-                // 含めて即時に描き直す。ストリーム中（タスク継続中）は通常の再描画で足りる。
-                if self.find_task.borrow()[idx].is_none()
-                    && let Ok(rc) = self.wnd.hwnd().GetClientRect()
-                {
-                    let _ = self.wnd.hwnd().RedrawWindow(
-                        rc,
-                        &w::HRGN::NULL,
-                        w::co::RDW::INVALIDATE | w::co::RDW::ALLCHILDREN | w::co::RDW::UPDATENOW,
-                    );
-                }
             }
         }
         // 読込中ペインのスピナーを進める（タイマ間隔ごとに1コマ）。
