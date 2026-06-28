@@ -1643,6 +1643,29 @@ fn find_result_shortcut_uses_item_source() {
     assert!(!left.join("t.txt.lnk").exists(), "not created in the search base");
 }
 
+/// 結果一覧での再読込（reload・End キー等）は、ディレクトリへ戻らず再検索する。後から増えた
+/// 一致ファイルも拾い、結果モードのまま最新化される。
+#[test]
+fn find_result_reload_researches() {
+    let server = Server::start(&["note.dat"], "");
+    let sub = server.base.join("sbx").join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("a.txt"), b"x").unwrap();
+
+    server.req("POST", "/command/findFile", "[\"*.txt\"]").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"a.txt\""));
+
+    // 後から一致ファイルを足し、reload で再検索が拾うことを見る。
+    std::fs::write(sub.join("c.txt"), b"y").unwrap();
+    server.req("POST", "/command/reload", "").unwrap();
+    let items = poll(&server, "/state/panes/left/items", |b| {
+        b.contains("\"name\":\"a.txt\"") && b.contains("\"name\":\"c.txt\"")
+    });
+    assert!(items.contains("\"name\":\"c.txt\""), "reload re-searches and picks up c.txt: {items}");
+    let fr = server.req("GET", "/state/panes/left/find_result", "").unwrap().1;
+    assert_eq!(fr.trim(), "true", "stays in result mode after reload: {fr}");
+}
+
 /// 結果一覧で削除すると、ディレクトリへ戻らず**再検索して一覧を最新化**する（結果モード維持）。
 #[test]
 fn find_result_delete_refreshes_in_place() {

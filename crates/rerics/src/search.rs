@@ -144,20 +144,43 @@ impl MainWindow {
         self.reload_side_now(is_left, crate::ReloadCursor::Reset)
     }
 
-    /// 覚えている検索／比較条件を再実行する。条件が無ければ `false`（呼び側は通常再読込へ）。
+    /// 覚えている検索／比較条件を**同期で**再実行し、結果一覧を作り直す。条件が無ければ
+    /// `false`（呼び側は通常再読込へ）。同期にするのは、操作直後のリフレッシュをその場で画面へ
+    /// 反映するため（タイマ取り込み経由の再描画は反映が遅れる）。元の検索（ユーザ起動）は
+    /// 従来どおり非同期でストリーム表示する。
     fn research_side(&self, is_left: bool) -> bool {
         let query = self.find_query.borrow()[if is_left { 0 } else { 1 }].clone();
-        match query {
+        let items = match query {
             Some(crate::FindQuery::Find(opts)) => {
-                self.run_find_file(is_left, opts);
-                true
+                let root = self.pane(is_left).borrow().loc().clone();
+                let mut items = vec![rerics_core::FileItem::parent()];
+                {
+                    let mut emit = |it| items.push(it);
+                    let cancelled = || false;
+                    let mut sink = rerics_core::Sink { emit: &mut emit, cancelled: &cancelled };
+                    rerics_core::find_file(&root, &opts, &mut sink);
+                }
+                items
             }
             Some(crate::FindQuery::Compare(opts)) => {
-                self.run_directory_compare(is_left, opts);
-                true
+                let src = self.pane(is_left).borrow().loc().clone();
+                let dst = self.pane(!is_left).borrow().loc().clone();
+                let mut items = vec![rerics_core::FileItem::parent()];
+                {
+                    let mut emit = |it| items.push(it);
+                    let cancelled = || false;
+                    let mut sink = rerics_core::Sink { emit: &mut emit, cancelled: &cancelled };
+                    rerics_core::directory_compare(&src, &dst, &opts, &mut sink);
+                }
+                items
             }
-            None => false,
-        }
+            None => return false,
+        };
+        let view = self.view(is_left);
+        view.state().borrow_mut().set_find_result(items);
+        let _ = view.autofit_columns();
+        let _ = view.refresh();
+        true
     }
 
     /// 現在地以下を再帰検索し、条件に合うファイルを結果一覧へ出す。検索はタスクとして
