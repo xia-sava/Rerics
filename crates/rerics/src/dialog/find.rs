@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
 
-use rerics_core::{FindOptions, parse_local};
+use rerics_core::{FindOptions, format_local, parse_local};
 use winsafe::{co, gui, prelude::*};
 use super::*;
 
@@ -21,15 +21,34 @@ pub fn find_file_box(parent: &impl GuiParent) -> Option<FindOptions> {
         &[
             radio("すべて", 16, 94, true),
             radio("日付指定", 88, 94, false),
-            radio("過去1日", 16, 140, false),
-            radio("過去1週間", 100, 140, false),
-            radio("過去1ヶ月", 196, 140, false),
         ],
     );
     let from_date = edit(&wnd, 170, 92, 76);
     let _ = label(&wnd, "～", 250, 95, 16);
     let to_date = edit(&wnd, 266, 92, 76);
     let _ = label(&wnd, "(yyyy/mm/dd)", 170, 116, 180);
+    // 日付クイック設定：押すと from 欄へ当該日付が入り「日付指定」モードへ切り替わる。
+    let presets = [
+        ("今日", 16, DateShortcut::Today, 11u16),
+        ("1日前", 90, DateShortcut::Day, 12),
+        ("1週間前", 164, DateShortcut::Week, 13),
+        ("1ヶ月前", 238, DateShortcut::Month, 14),
+    ];
+    let date_btns: Vec<gui::Button> = presets
+        .into_iter()
+        .map(|(text, x, which, ctrl_id)| {
+            let btn = date_button(&wnd, text, x, 136, 70, ctrl_id);
+            let from = from_date.clone();
+            let mode = date_mode.clone();
+            btn.on().bn_clicked(move || {
+                from.set_text(&shortcut_date(SystemTime::now(), which))?;
+                mode[1].select(true);
+                mode[0].select(false);
+                Ok(())
+            });
+            btn
+        })
+        .collect();
 
     let _ = label(&wnd, "サイズ", 16, 166, 320);
     let from_size = edit(&wnd, 16, 184, 90);
@@ -104,7 +123,7 @@ pub fn find_file_box(parent: &impl GuiParent) -> Option<FindOptions> {
     }
 
     let _ = wnd.show_modal(parent);
-    let _ = (ok, cancel);
+    let _ = (ok, cancel, date_btns);
 
     result.borrow_mut().take()
 }
@@ -133,21 +152,49 @@ fn radio(text: &str, x: i32, y: i32, selected: bool) -> gui::RadioButtonOpts<'_>
     gui::RadioButtonOpts { text, position: gui::dpi(x, y), size: gui::dpi(80, 18), selected, ..Default::default() }
 }
 
-/// 日付ラジオの選択と入力欄から、更新日時の下限・上限を求める。
-/// 0＝すべて（絞らない）、1＝日付指定（from/to をパース）、2/3/4＝過去1日/週/月（下限のみ）。
+fn date_button(wnd: &gui::WindowModal, text: &str, x: i32, y: i32, w: i32, ctrl_id: u16) -> gui::Button {
+    gui::Button::new(
+        wnd,
+        gui::ButtonOpts {
+            text,
+            ctrl_id,
+            position: gui::dpi(x, y),
+            width: gui::dpi_x(w),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    )
+}
+
+/// 日付クイック設定の種別（from 欄へ流し込む基準日）。
+#[derive(Clone, Copy)]
+enum DateShortcut {
+    Today,
+    Day,
+    Week,
+    Month,
+}
+
+/// ショートカットが指す日付を `yyyy/mm/dd` で返す。今日＝当日、ほかは現在から 1 日/1 週間/
+/// 1 ヶ月（30 日）前。範囲外は UNIX 元期に丸める。
+fn shortcut_date(now: SystemTime, which: DateShortcut) -> String {
+    let back = match which {
+        DateShortcut::Today => Duration::ZERO,
+        DateShortcut::Day => Duration::from_secs(86_400),
+        DateShortcut::Week => Duration::from_secs(7 * 86_400),
+        DateShortcut::Month => Duration::from_secs(30 * 86_400),
+    };
+    let t = now.checked_sub(back).unwrap_or(SystemTime::UNIX_EPOCH);
+    format_local(t).split(' ').next().unwrap_or("").to_owned()
+}
+
+/// 日付モードの選択と入力欄から、更新日時の下限・上限を求める。
+/// 0＝すべて（絞らない）、1＝日付指定（from/to をパース）。
 fn date_range(mode: Option<usize>, from: &str, to: &str) -> (Option<SystemTime>, Option<SystemTime>) {
     match mode {
         Some(1) => (parse_date(from), parse_date(to)),
-        Some(2) => (Some(ago(Duration::from_secs(86_400))), None),
-        Some(3) => (Some(ago(Duration::from_secs(7 * 86_400))), None),
-        Some(4) => (Some(ago(Duration::from_secs(30 * 86_400))), None),
         _ => (None, None),
     }
-}
-
-/// 現在時刻から `d` だけ過去の時刻。
-fn ago(d: Duration) -> SystemTime {
-    SystemTime::now().checked_sub(d).unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
 /// `yyyy/mm/dd` を当日 00:00:00 の `SystemTime` へ。空・解釈不能は `None`。
@@ -176,4 +223,36 @@ fn parse_size(s: &str) -> Option<u64> {
         (upper.as_str(), 1024)
     };
     num.trim().parse::<u64>().ok().map(|v| v * mult)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixed_now() -> SystemTime {
+        // ローカル真夜中跨ぎを避けるため、ある日の正午あたりを基準にする。
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000)
+    }
+
+    #[test]
+    fn shortcut_today_matches_format_local_date_part() {
+        let now = fixed_now();
+        let today = shortcut_date(now, DateShortcut::Today);
+        assert_eq!(today, format_local(now).split(' ').next().unwrap());
+        // `yyyy/mm/dd` 形（10 文字・区切り 2 個）で from 欄へそのまま入る。
+        assert_eq!(today.len(), 10, "{today}");
+        assert_eq!(today.matches('/').count(), 2, "{today}");
+        // 入力欄の解釈（parse_date）に往復で乗る。
+        assert!(parse_date(&today).is_some(), "{today}");
+    }
+
+    #[test]
+    fn shortcut_past_presets_go_back_in_time() {
+        let now = fixed_now();
+        let today = parse_date(&shortcut_date(now, DateShortcut::Today)).unwrap();
+        for which in [DateShortcut::Day, DateShortcut::Week, DateShortcut::Month] {
+            let past = parse_date(&shortcut_date(now, which)).unwrap();
+            assert!(past < today, "{:?} should be before today", which as u8);
+        }
+    }
 }
