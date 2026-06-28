@@ -17,6 +17,7 @@ use winsafe::prelude::*;
 use crate::MainWindow;
 use crate::dialog::{InputMode, MessageResult, MessageStyle, input_box, list_box, message_box};
 use crate::shell;
+use crate::task::WorkerEvent;
 use rerics_core::{Call, Command, LogLevel};
 
 use crate::script::{self, HostApi, PaneItem, PaneSnapshot, ScriptCommand, ScriptOp};
@@ -510,10 +511,19 @@ fn script_commands_dts(metas: &[ScriptCommand]) -> String {
 
 /// スクリプトエンジンを別スレッドに建てる。起動スクリプト（`data_dir()/scripts`）を読み込み、
 /// 以後 [`EngineCmd`] を受けて捌くループに入る。`hwnd_ptr` は UI スレッドを起こす先。
-pub fn spawn_engine(queue: ScriptQueue, hwnd_ptr: isize, cmd_rx: Receiver<EngineCmd>) {
+pub fn spawn_engine(
+    queue: ScriptQueue,
+    hwnd_ptr: isize,
+    cmd_rx: Receiver<EngineCmd>,
+    task_tx: Sender<WorkerEvent>,
+) {
     std::thread::spawn(move || {
         let host: Rc<dyn HostApi> = Rc::new(GuiHost { queue, hwnd_ptr });
         let mut engine = script::Engine::new(host.clone());
+        // 停止（強制終了）に使う isolate ハンドルを UI へ渡す。タスク取り込みタイマがまだ
+        // 走っていなくても処理されるよう、送ったら UI を起こす。
+        let _ = task_tx.send(WorkerEvent::ScriptEngineReady { handle: engine.isolate_handle() });
+        ui_marshal::post_wake(hwnd_ptr, SCRIPT_WAKE.raw());
         let scripts = rerics_core::data_dir().join("scripts");
         ensure_script_type_files(&scripts);
         for (path, msg) in script::load_dir(&mut engine, &scripts) {
@@ -527,33 +537,39 @@ pub fn spawn_engine(queue: ScriptQueue, hwnd_ptr: isize, cmd_rx: Receiver<Engine
         while let Ok(cmd) = cmd_rx.recv() {
             match cmd {
                 EngineCmd::Invoke { name, args } => {
-                    if let Err(e) = engine.invoke_command(&name, &args) {
-                        host.log(LogLevel::Error, &format!("コマンド実行エラー [{name}]: {e}"));
-                    }
+                    run_script_task(&mut engine, &task_tx, hwnd_ptr, format!("コマンド {name}"), |engine| {
+                        if let Err(e) = engine.invoke_command(&name, &args) {
+                            host.log(LogLevel::Error, &format!("コマンド実行エラー [{name}]: {e}"));
+                        }
+                    });
                 }
                 EngineCmd::Eval(code) => {
-                    if let Err(e) = engine.run_ts(
-                        "rerics:eval",
-                        "file:///eval.ts",
-                        deno_ast::MediaType::TypeScript,
-                        code,
-                    ) {
-                        host.log(LogLevel::Error, &format!("eval エラー: {e}"));
-                    }
-                }
-                EngineCmd::EvalValue { code, tx } => {
-                    let value = engine
-                        .eval_to_string(
+                    run_script_task(&mut engine, &task_tx, hwnd_ptr, "eval".to_owned(), |engine| {
+                        if let Err(e) = engine.run_ts(
                             "rerics:eval",
                             "file:///eval.ts",
                             deno_ast::MediaType::TypeScript,
                             code,
-                        )
-                        .unwrap_or_else(|e| {
+                        ) {
                             host.log(LogLevel::Error, &format!("eval エラー: {e}"));
-                            String::new()
-                        });
-                    let _ = tx.send(value);
+                        }
+                    });
+                }
+                EngineCmd::EvalValue { code, tx } => {
+                    run_script_task(&mut engine, &task_tx, hwnd_ptr, "eval".to_owned(), |engine| {
+                        let value = engine
+                            .eval_to_string(
+                                "rerics:eval",
+                                "file:///eval.ts",
+                                deno_ast::MediaType::TypeScript,
+                                code,
+                            )
+                            .unwrap_or_else(|e| {
+                                host.log(LogLevel::Error, &format!("eval エラー: {e}"));
+                                String::new()
+                            });
+                        let _ = tx.send(value);
+                    });
                 }
                 EngineCmd::ListCommands(tx) => {
                     let _ = tx.send(engine.registered_command_metas());
@@ -565,13 +581,34 @@ pub fn spawn_engine(queue: ScriptQueue, hwnd_ptr: isize, cmd_rx: Receiver<Engine
                     let _ = tx.send(engine.registered_menus());
                 }
                 EngineCmd::FireEvent { event, arg } => {
-                    if let Err(e) = engine.fire_event(&event, &arg) {
-                        host.log(LogLevel::Error, &format!("イベント発火エラー [{event}]: {e}"));
-                    }
+                    run_script_task(&mut engine, &task_tx, hwnd_ptr, format!("イベント {event}"), |engine| {
+                        if let Err(e) = engine.fire_event(&event, &arg) {
+                            host.log(LogLevel::Error, &format!("イベント発火エラー [{event}]: {e}"));
+                        }
+                    });
                 }
             }
         }
     });
+}
+
+/// ユーザースクリプトの実行を、停止可能なタスクとして UI へ知らせて回す。開始通知 →
+/// 直前の停止フラグ解除 → 実行 → 終了通知、の順。停止（中止）は UI 側が isolate を
+/// terminate することで実現する（暴走 JS も止められる）。
+fn run_script_task(
+    engine: &mut script::Engine,
+    task_tx: &Sender<WorkerEvent>,
+    hwnd_ptr: isize,
+    description: String,
+    body: impl FnOnce(&mut script::Engine),
+) {
+    // 開始を知らせて UI を起こす（取り込みタイマがまだ走っていなくても登録される）。
+    let _ = task_tx.send(WorkerEvent::ScriptBegin { text: "スクリプト".to_owned(), description });
+    ui_marshal::post_wake(hwnd_ptr, SCRIPT_WAKE.raw());
+    engine.clear_terminate();
+    body(engine);
+    let _ = task_tx.send(WorkerEvent::ScriptEnd);
+    ui_marshal::post_wake(hwnd_ptr, SCRIPT_WAKE.raw());
 }
 
 impl MainWindow {
@@ -978,7 +1015,7 @@ impl MainWindow {
     pub(crate) fn start_script_engine(&self) {
         if let Some(cmd_rx) = self.script.take_rx() {
             let hwnd_ptr = self.wnd.hwnd().ptr() as isize;
-            spawn_engine(self.script.queue.clone(), hwnd_ptr, cmd_rx);
+            spawn_engine(self.script.queue.clone(), hwnd_ptr, cmd_rx, self.task_tx.clone());
         }
     }
 

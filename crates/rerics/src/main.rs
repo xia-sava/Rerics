@@ -307,6 +307,14 @@ struct MainWindow {
     /// id と一致するイベントだけが行う（同ペインで再検索したとき旧タスクの項目が混ざるのを
     /// 防ぐ）。検索開始時に同期で立て、完了で下ろす。
     find_task: Rc<RefCell<[Option<u64>; 2]>>,
+    /// スクリプト実行を停止（強制終了）するための V8 isolate ハンドル。エンジン起動後に
+    /// `ScriptEngineReady` で受け取って保持する。
+    script_isolate: Rc<RefCell<Option<deno_core::v8::IsolateHandle>>>,
+    /// 現在走行中のスクリプトタスク id（直列実行＝高々1つ）。`ScriptBegin` で立て
+    /// `ScriptEnd` で下ろす。中止されたらこの id を見て isolate を terminate する。
+    script_task: Rc<RefCell<Option<u64>>>,
+    /// 現在のスクリプトタスクへ既に terminate を発行したか（多重発行を防ぐ）。
+    script_terminated: Rc<Cell<bool>>,
     progress_seq: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
     in_dialog: Rc<Cell<bool>>,
@@ -541,6 +549,9 @@ impl MainWindow {
             tasks: Rc::new(RefCell::new(Vec::new())),
             next_task_id: Rc::new(Cell::new(0)),
             find_task: Rc::new(RefCell::new([None, None])),
+            script_isolate: Rc::new(RefCell::new(None)),
+            script_task: Rc::new(RefCell::new(None)),
+            script_terminated: Rc::new(Cell::new(false)),
             progress_seq: Arc::new(AtomicU64::new(0)),
             shutdown: Arc::new(AtomicBool::new(false)),
             in_dialog: Rc::new(Cell::new(false)),
@@ -639,6 +650,9 @@ impl MainWindow {
             let wake = winutil::msg::SCRIPT_WAKE;
             self.wnd.on().wm(wake, move |_| {
                 this.drain_script_requests();
+                // エンジンが送ったスクリプトタスクのイベント（開始/終了）も取り込む。取り込み
+                // タイマがまだ走っていないとき（最初のスクリプトタスク登録）に必要。
+                let _ = this.pump_tasks();
                 Ok(0)
             });
         }

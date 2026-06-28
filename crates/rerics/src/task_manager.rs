@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use winsafe::{self as w, gui, prelude::*};
 
-use crate::task::TaskEntry;
+use crate::task::{TaskEntry, TaskKind};
 
 type Registry = Rc<RefCell<Vec<TaskEntry>>>;
 
@@ -161,7 +161,8 @@ pub fn show(parent: &impl GuiParent, tasks: &Registry) {
         let list = list.clone();
         let tasks = tasks.clone();
         stop.on().bn_clicked(move || {
-            act_on_selected(&list, &tasks, |c| c.stop());
+            // 中止は種別を問わず効く（スクリプトは UI 側が isolate を terminate する）。
+            act_on_selected(&list, &tasks, |e| e.control.stop());
             Ok(())
         });
     }
@@ -170,7 +171,12 @@ pub fn show(parent: &impl GuiParent, tasks: &Registry) {
         let list = list.clone();
         let tasks = tasks.clone();
         suspend.on().bn_clicked(move || {
-            act_on_selected(&list, &tasks, |c| c.suspend());
+            // スクリプトタスクは中断できない（V8 の制約）＝無反応。
+            act_on_selected(&list, &tasks, |e| {
+                if e.kind != TaskKind::Script {
+                    e.control.suspend();
+                }
+            });
             Ok(())
         });
     }
@@ -179,7 +185,11 @@ pub fn show(parent: &impl GuiParent, tasks: &Registry) {
         let list = list.clone();
         let tasks = tasks.clone();
         resume.on().bn_clicked(move || {
-            act_on_selected(&list, &tasks, |c| c.resume());
+            act_on_selected(&list, &tasks, |e| {
+                if e.kind != TaskKind::Script {
+                    e.control.resume();
+                }
+            });
             Ok(())
         });
     }
@@ -228,15 +238,11 @@ fn relayout(
 }
 
 /// 選択行のタスクに `action`（中止/中断/再開）を適用し、一覧を再描画する。
-fn act_on_selected(
-    list: &gui::ListView<u64>,
-    tasks: &Registry,
-    action: impl Fn(&crate::task::TaskControl),
-) {
+fn act_on_selected(list: &gui::ListView<u64>, tasks: &Registry, action: impl Fn(&TaskEntry)) {
     if let Some(item) = list.items().iter_selected().next() {
         let id = *item.data().borrow();
         if let Some(entry) = tasks.borrow().iter().find(|e| e.id == id) {
-            action(&entry.control);
+            action(entry);
         }
     }
     populate(list, tasks);

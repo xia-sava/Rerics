@@ -33,6 +33,15 @@ pub enum OpKind {
     Delete,
 }
 
+/// タスクの種別。タスクマネージャでの制御の効き方を出し分ける。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskKind {
+    /// 通常のワーカータスク（コピー/移動/削除/検索/比較など）。中止・中断・再開すべて効く。
+    Normal,
+    /// スクリプト実行タスク。V8 の制約で中断/再開はできず、中止のみ（isolate の強制終了）。
+    Script,
+}
+
 /// ワーカーと UI（タスクマネージャ）で共有する1タスクの制御状態。
 pub struct TaskControl {
     state: AtomicU8,
@@ -101,6 +110,8 @@ pub struct TaskEntry {
     pub description: String,
     pub control: Arc<TaskControl>,
     pub start: Instant,
+    /// 制御の効き方の区別（通常／スクリプト）。
+    pub kind: TaskKind,
 }
 
 /// 衝突ダイアログの回答（解決方法＋「すべてに適用」）。
@@ -172,6 +183,13 @@ pub enum WorkerEvent {
     FindItem { id: u64, is_left: bool, item: rerics_core::FileItem },
     /// 検索・比較の完了。件数サマリをログに出し、タスクを登録解除する。
     FindDone { id: u64, is_left: bool, summary: String, cancelled: bool },
+    /// スクリプトエンジン起動完了。停止（強制終了）に使う isolate ハンドルを UI へ渡す。
+    ScriptEngineReady { handle: deno_core::v8::IsolateHandle },
+    /// スクリプト実行の開始。指定の表示名でスクリプトタスクを登録する（直列実行＝同時に
+    /// 走るのは1つなので、UI 側は「現在のスクリプトタスク」を1つだけ覚える）。
+    ScriptBegin { text: String, description: String },
+    /// スクリプト実行の終了。現在のスクリプトタスクを登録解除する。
+    ScriptEnd,
 }
 
 /// [`OperationHost`] の GUI 実装。ログをチャネルへ送り、共有フラグで中止を伝え、

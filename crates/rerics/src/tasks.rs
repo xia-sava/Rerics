@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use winsafe::{self as w, prelude::*};
 use rerics_core::{LogLevel, messages};
-use crate::task::{self, ArchiveOutcome, OpKind, TaskControl, TaskEntry, WorkerEvent};
+use crate::task::{self, ArchiveOutcome, OpKind, TaskControl, TaskEntry, TaskKind, WorkerEvent};
 use crate::{MainWindow, dialog, task_manager};
 
 impl MainWindow {
@@ -14,13 +14,25 @@ impl MainWindow {
         n
     }
 
-    /// タスクをレジストリに登録し、最初の1件なら取り込みタイマを起動する。
+    /// 通常タスクをレジストリに登録し、最初の1件なら取り込みタイマを起動する。
     pub(crate) fn register_task(
         &self,
         id: u64,
         text: &str,
         description: String,
         control: Arc<TaskControl>,
+    ) -> w::AnyResult<()> {
+        self.register_task_kind(id, text, description, control, TaskKind::Normal)
+    }
+
+    /// 種別を指定してタスクを登録する。最初の1件なら取り込みタイマを起動する。
+    pub(crate) fn register_task_kind(
+        &self,
+        id: u64,
+        text: &str,
+        description: String,
+        control: Arc<TaskControl>,
+        kind: TaskKind,
     ) -> w::AnyResult<()> {
         let was_empty = self.tasks.borrow().is_empty();
         self.tasks.borrow_mut().push(TaskEntry {
@@ -29,6 +41,7 @@ impl MainWindow {
             description,
             control,
             start: Instant::now(),
+            kind,
         });
         if was_empty {
             self.wnd
@@ -226,8 +239,29 @@ impl MainWindow {
                     }
                     self.maybe_kill_task_timer();
                 }
+                WorkerEvent::ScriptEngineReady { handle } => {
+                    *self.script_isolate.borrow_mut() = Some(handle);
+                }
+                WorkerEvent::ScriptBegin { text, description } => {
+                    // スクリプトは直列実行＝同時に走るのは1つ。新しい id で登録し直す。
+                    let id = self.next_id();
+                    let control = Arc::new(TaskControl::new());
+                    let _ = self.register_task_kind(id, &text, description, control, TaskKind::Script);
+                    *self.script_task.borrow_mut() = Some(id);
+                    self.script_terminated.set(false);
+                }
+                WorkerEvent::ScriptEnd => {
+                    if let Some(id) = self.script_task.borrow_mut().take() {
+                        self.tasks.borrow_mut().retain(|e| e.id != id);
+                    }
+                    self.script_terminated.set(false);
+                    self.maybe_kill_task_timer();
+                }
             }
         }
+        // 中止されたスクリプトタスクは、V8 isolate を強制終了して止める（暴走 JS も止められる）。
+        // terminate は一度だけ。エンジンが巻き戻ると ScriptEnd が届いて登録解除される。
+        self.terminate_script_if_stopped();
         for is_left in [true, false] {
             let idx = if is_left { 0 } else { 1 };
             if find_dirty[idx] {
@@ -270,6 +304,27 @@ impl MainWindow {
             }
         }
         Ok(())
+    }
+
+    /// 現在のスクリプトタスクが中止されていれば、V8 isolate を強制終了して実行中の
+    /// スクリプトを止める。terminate は現在のタスクにつき一度だけ発行する（多重発行防止）。
+    /// 終了後はエンジンが巻き戻って `ScriptEnd` を送り、タスクが登録解除される。
+    fn terminate_script_if_stopped(&self) {
+        if self.script_terminated.get() {
+            return;
+        }
+        let Some(id) = *self.script_task.borrow() else {
+            return;
+        };
+        let stopped = self.tasks.borrow().iter().any(|e| e.id == id && e.control.is_stopped());
+        if !stopped {
+            return;
+        }
+        if let Some(handle) = self.script_isolate.borrow().as_ref() {
+            let _ = handle.terminate_execution();
+            self.script_terminated.set(true);
+            self.log.warn("スクリプトを停止しました");
+        }
     }
 
     /// タスク・汎用ジョブとも空で、かつどちらのペインも読込中でなければ取り込みタイマを止める。

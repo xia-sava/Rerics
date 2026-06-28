@@ -1454,6 +1454,20 @@ impl Engine {
         Self { runtime, tokio_rt }
     }
 
+    /// V8 アイソレートをスレッド外から制御するためのハンドル。スクリプト実行の強制停止
+    /// （[`terminate_execution`]）に使う。Send+Sync なので UI スレッドへ渡して保持できる。
+    ///
+    /// [`terminate_execution`]: deno_core::v8::IsolateHandle::terminate_execution
+    pub fn isolate_handle(&mut self) -> deno_core::v8::IsolateHandle {
+        self.runtime.v8_isolate().thread_safe_handle()
+    }
+
+    /// 直前の停止要求（terminate）を解除し、アイソレートを次のスクリプトが走れる状態へ戻す。
+    /// スクリプト実行の前に毎回呼び、前回の停止フラグが残って次の実行を巻き込むのを防ぐ。
+    pub fn clear_terminate(&mut self) {
+        self.runtime.v8_isolate().thread_safe_handle().cancel_terminate_execution();
+    }
+
     /// 現在登録されているコマンド名（JS 側 Map のキー＝登録順・同名は後勝ちで一意）。
     /// 本体は名前＋メタの [`Engine::registered_command_metas`] を使うので、これは検証用。
     #[cfg(test)]

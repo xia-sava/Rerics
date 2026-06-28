@@ -2782,6 +2782,70 @@ fn task_control_suspend_resume_stop_via_task_manager() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// スクリプトのタスク化：暴走スクリプト（無限ループ）がスクリプトタスクとして出て、中断は
+/// 無反応（V8 制約・実行中のまま）、中止で isolate が強制終了され消える。停止後もエンジンは
+/// 復帰して次の評価に応える。
+#[test]
+fn script_task_stop_terminates_runaway_via_task_manager() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    // 暴走スクリプトを投げる（投げっぱなしで即返り、エンジンスレッドは無限ループに入る）。
+    server.req("POST", "/script/eval", "while(true){}").unwrap();
+
+    server.req("POST", "/command/openTaskManager", "").unwrap();
+    wait_modal(&server);
+
+    // スクリプトタスク行の状態（列0="スクリプト"・列2=状態）を取る。
+    let script_state = |s: &Server| -> Option<String> {
+        let b = s.req("GET", "/state/modal", "")?.1;
+        let v: serde_json::Value = serde_json::from_str(&b).ok()?;
+        let rows = v["rows"].as_array()?;
+        let row = rows.iter().find(|r| {
+            r.as_array()
+                .and_then(|c| c.first())
+                .and_then(|x| x.as_str())
+                == Some("スクリプト")
+        })?;
+        row.as_array()?.get(2)?.as_str().map(str::to_string)
+    };
+
+    // 「最新」で取り込みつつ、スクリプトタスクが「実行中」で出るまで待つ。
+    let mut appeared = false;
+    for _ in 0..50 {
+        server.req("POST", "/modal/command/103", "").unwrap();
+        if script_state(&server).as_deref() == Some("実行中") {
+            appeared = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(appeared, "暴走スクリプトがスクリプトタスクとして出る");
+
+    // 中断（101）は無反応＝状態は「実行中」のまま（種別で無効化）。
+    server.req("POST", "/modal/select/0", "").unwrap();
+    server.req("POST", "/modal/command/101", "").unwrap();
+    assert_eq!(script_state(&server).as_deref(), Some("実行中"), "スクリプトは中断できない");
+
+    // 中止（100）→ pump が isolate を terminate → エンジンが巻き戻り行が消える。
+    server.req("POST", "/modal/command/100", "").unwrap();
+    let mut gone = false;
+    for _ in 0..60 {
+        server.req("POST", "/modal/command/103", "").unwrap();
+        if script_state(&server).is_none() {
+            gone = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(gone, "中止でスクリプトが強制終了され、タスク行が消える");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+
+    // 停止後もエンジンは復帰している＝同期評価に応える。
+    let (_, body) = server.req("POST", "/script/eval-value", "1+1").expect("eval-value");
+    assert!(body.contains('2'), "停止後もエンジンが評価できる: {body}");
+}
+
 /// 画像ビューアの表示モードキー（1=原寸/2=全体/3=幅/4=高/5=大）が、それぞれの
 /// モードへ切り替わるのを debug-server で観測する。0 は原作に無い＝未バインドで不変。
 #[test]
