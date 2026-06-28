@@ -137,8 +137,8 @@ impl MainWindow {
     /// その場のリフレッシュ（ファイル操作後・リネーム後など）。結果一覧モードなら元の検索／
     /// 比較を再実行して一覧を作り直し（結果モードを保つ）、そうでなければ通常の同期再読込。
     /// 親移動・項目を開く等の「離脱」操作は従来どおり [`reload_side`](Self::reload_side) 系を使う。
-    pub(crate) fn refresh_side(&self, is_left: bool) -> w::AnyResult<()> {
-        if self.view(is_left).state().borrow().find_result && self.research_side(is_left) {
+    pub(crate) fn refresh_side(&self, is_left: bool, focus: Option<&str>) -> w::AnyResult<()> {
+        if self.view(is_left).state().borrow().find_result && self.research_side(is_left, focus) {
             return Ok(());
         }
         self.reload_side_now(is_left, crate::ReloadCursor::Reset)
@@ -148,8 +148,14 @@ impl MainWindow {
     /// `false`（呼び側は通常再読込へ）。同期にするのは、操作直後のリフレッシュをその場で画面へ
     /// 反映するため（タイマ取り込み経由の再描画は反映が遅れる）。元の検索（ユーザ起動）は
     /// 従来どおり非同期でストリーム表示する。
-    fn research_side(&self, is_left: bool) -> bool {
+    fn research_side(&self, is_left: bool, focus: Option<&str>) -> bool {
         let query = self.find_query.borrow()[if is_left { 0 } else { 1 }].clone();
+        // 再検索後にカーソルを置く名前：呼び側指定（リネーム後の新名）＞現在のカーソル下＞先頭。
+        let keep = focus.map(str::to_owned).or_else(|| {
+            let state = self.view(is_left).state();
+            let s = state.borrow();
+            s.items.get(s.cursor).filter(|it| !it.is_parent).map(|it| it.name.clone())
+        });
         let items = match query {
             Some(crate::FindQuery::Find(opts)) => {
                 let root = self.pane(is_left).borrow().loc().clone();
@@ -177,7 +183,15 @@ impl MainWindow {
             None => return false,
         };
         let view = self.view(is_left);
-        view.state().borrow_mut().set_find_result(items);
+        let pr = view.page_rows();
+        {
+            let state = view.state();
+            let mut s = state.borrow_mut();
+            s.set_find_result(items);
+            if let Some(name) = &keep {
+                s.set_cursor_position(name, pr);
+            }
+        }
         let _ = view.autofit_columns();
         let _ = view.refresh();
         true

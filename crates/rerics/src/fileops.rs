@@ -756,9 +756,9 @@ impl MainWindow {
             }
         }
 
-        // 結果一覧では再検索して一覧を最新化する（結果モードを保つ）。通常は新名へカーソルを寄せる。
+        // 結果一覧では再検索して一覧を最新化する（結果モードを保ち、改名後の新名へカーソルを寄せる）。
         if self.view(is_left).state().borrow().find_result {
-            self.refresh_side(is_left)?;
+            self.refresh_side(is_left, cursor_name.as_deref())?;
         } else {
             match cursor_name {
                 Some(n) => self.reload_side_focus(is_left, &n, false)?,

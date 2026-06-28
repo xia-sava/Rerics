@@ -1145,7 +1145,7 @@ impl MainWindow {
                 // 結果一覧は再検索して最新化（結果モードを保つ）、通常はカーソル位置を保って再読込。
                 for side in [true, false] {
                     if self.view(side).state().borrow().find_result {
-                        self.refresh_side(side)?;
+                        self.refresh_side(side, None)?;
                     } else {
                         self.reload_side_impl(side, ReloadCursor::Keep)?;
                     }

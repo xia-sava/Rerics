@@ -265,12 +265,22 @@ impl MainWindow {
         for is_left in [true, false] {
             let idx = if is_left { 0 } else { 1 };
             if find_dirty[idx] {
-                // 列幅は流れてくる項目に合わせて毎回詰める＝ストリーム中（再描画が効くうち）に
-                // 確定幅へ寄せる。完了時にまとめて詰めると最後の再描画が遅れて、カーソル移動で
-                // 初めて幅が変わって見えるのを防ぐ。
+                // 列幅は流れてくる項目に合わせて毎回詰める（完了時にまとめて詰めない）。
                 self.view(is_left).autofit_columns()?;
                 self.view(is_left).refresh()?;
             }
+        }
+        // 検索・比較のライブ追加中は取り込みタイマが連続発火して WM_PAINT が後回しにされ、
+        // カーソルを動かすまで結果が増えて見えない。変化があったターンは子ウィンドウまで含めて
+        // 即時に描き直し、リアルタイムに増えていくようにする。
+        if (find_dirty[0] || find_dirty[1])
+            && let Ok(rc) = self.wnd.hwnd().GetClientRect()
+        {
+            let _ = self.wnd.hwnd().RedrawWindow(
+                rc,
+                &w::HRGN::NULL,
+                w::co::RDW::INVALIDATE | w::co::RDW::ALLCHILDREN | w::co::RDW::UPDATENOW,
+            );
         }
         // 読込中ペインのスピナーを進める（タイマ間隔ごとに1コマ）。
         for is_left in [true, false] {
@@ -290,7 +300,7 @@ impl MainWindow {
             match kind {
                 OpKind::Copy => {
                     if is_dst {
-                        self.refresh_side(is_left)?;
+                        self.refresh_side(is_left, None)?;
                     } else if is_src {
                         self.view(is_left).state().borrow_mut().clear_all();
                         self.view(is_left).refresh()?;
@@ -298,12 +308,12 @@ impl MainWindow {
                 }
                 OpKind::Move => {
                     if is_src || is_dst {
-                        self.refresh_side(is_left)?;
+                        self.refresh_side(is_left, None)?;
                     }
                 }
                 OpKind::Delete => {
                     if is_src {
-                        self.refresh_side(is_left)?;
+                        self.refresh_side(is_left, None)?;
                     }
                 }
             }
