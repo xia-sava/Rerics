@@ -18,6 +18,7 @@ mod menu;
 mod naming;
 pub mod messages;
 mod operation;
+mod sink;
 mod spinner;
 mod status;
 mod vfs;
@@ -48,6 +49,7 @@ pub use file_list::{
 pub use call::Call;
 pub use compare::{CompareCondition, CompareCounts, CompareOptions, directory_compare};
 pub use find::{FindOptions, find_file};
+pub use sink::Sink;
 pub use input::{
     ArgSpec, ArgType, Command, CommandContext, CommandMeta, Invocation, KeyChord, KeyMap, OptSpec,
     vk,

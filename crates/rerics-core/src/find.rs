@@ -8,6 +8,7 @@
 use std::time::SystemTime;
 
 use crate::FileItem;
+use crate::Sink;
 use crate::file_list::glob_match;
 use crate::vfs::Location;
 
@@ -58,17 +59,17 @@ impl FindOptions {
     }
 }
 
-/// `root` 配下を再帰検索し、条件に合う項目（`source`/`info` 付き）と件数を返す。
-pub fn find_file(root: &Location, opts: &FindOptions) -> (Vec<FileItem>, usize) {
+/// `root` 配下を再帰検索し、条件に合う項目（`source`/`info` 付き）を `sink` へ1件ずつ
+/// 流す。見つかった件数を返す。`sink` が中止を告げたら走査を打ち切る。
+pub fn find_file(root: &Location, opts: &FindOptions, sink: &mut Sink) -> usize {
     let base = root.loc_display();
-    let mut out = Vec::new();
     let mut count = 0;
-    walk(root, opts, &base, &mut out, &mut count);
-    (out, count)
+    walk(root, opts, &base, sink, &mut count);
+    count
 }
 
-/// 1ディレクトリを走査し、一致項目を加えつつサブディレクトリへ降りる。
-fn walk(dir: &Location, opts: &FindOptions, base: &str, out: &mut Vec<FileItem>, count: &mut usize) {
+/// 1ディレクトリを走査し、一致項目を流しつつサブディレクトリへ降りる。
+fn walk(dir: &Location, opts: &FindOptions, base: &str, sink: &mut Sink, count: &mut usize) {
     let Ok(mut items) = dir.read() else {
         return;
     };
@@ -76,15 +77,18 @@ fn walk(dir: &Location, opts: &FindOptions, base: &str, out: &mut Vec<FileItem>,
     items.sort_by_key(|it| it.name.to_uppercase());
     let rel = relative_from(base, &dir.loc_display());
     for it in &items {
+        if sink.is_cancelled() {
+            return;
+        }
         if matches(it, opts) {
             *count += 1;
             let mut item = it.clone();
             item.info = Some(rel.clone());
             item.source = Some(dir.clone());
-            out.push(item);
+            sink.push(item);
         }
         if it.is_dir {
-            walk(&dir.loc_join(&it.name), opts, base, out, count);
+            walk(&dir.loc_join(&it.name), opts, base, sink, count);
         }
     }
 }
@@ -173,6 +177,16 @@ mod tests {
         items.iter().map(|it| it.name.clone()).collect()
     }
 
+    /// 走査を最後まで回し、流れてきた項目と件数を集める（中止しない）。
+    fn collect(root: &Location, opts: &FindOptions) -> (Vec<FileItem>, usize) {
+        let mut items = Vec::new();
+        let count = find_file(root, opts, &mut Sink {
+            emit: &mut |it| items.push(it),
+            cancelled: &|| false,
+        });
+        (items, count)
+    }
+
     #[test]
     fn mask_matches_recursively_with_relative_info() {
         let t = TempDir::new();
@@ -183,7 +197,7 @@ mod tests {
 
         let mut opts = FindOptions::default();
         opts.set_masks("*.txt");
-        let (items, count) = find_file(&t.loc(), &opts);
+        let (items, count) = collect(&t.loc(), &opts);
         let got = names(&items);
         assert!(got.contains(&"a.txt".to_owned()));
         assert!(got.contains(&"c.txt".to_owned()));
@@ -207,7 +221,7 @@ mod tests {
         t.write("skip.txt", "2");
         let mut opts = FindOptions::default();
         opts.set_masks("*.txt !skip*");
-        let (items, _) = find_file(&t.loc(), &opts);
+        let (items, _) = collect(&t.loc(), &opts);
         let got = names(&items);
         assert!(got.contains(&"keep.txt".to_owned()), "{got:?}");
         assert!(!got.contains(&"skip.txt".to_owned()), "{got:?}");
@@ -224,7 +238,7 @@ mod tests {
             from_date: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(5_000)),
             ..Default::default()
         };
-        let (items, _) = find_file(&t.loc(), &opts);
+        let (items, _) = collect(&t.loc(), &opts);
         assert_eq!(names(&items), vec!["new.txt".to_owned()]);
     }
 
@@ -238,7 +252,7 @@ mod tests {
             min_size: Some(4),
             ..Default::default()
         };
-        let (items, _) = find_file(&t.loc(), &opts);
+        let (items, _) = collect(&t.loc(), &opts);
         let got = names(&items);
         assert!(got.contains(&"big.txt".to_owned()), "{got:?}");
         assert!(!got.contains(&"small.txt".to_owned()), "{got:?}");

@@ -112,7 +112,14 @@ impl MainWindow {
         let root = self.pane(is_left).borrow().loc().clone();
         self.log.info(&format!("ファイル検索: {}", root.loc_display()));
         self.spawn_job(
-            move || rerics_core::find_file(&root, &opts),
+            move || {
+                let mut items = Vec::new();
+                let count = rerics_core::find_file(&root, &opts, &mut rerics_core::Sink {
+                    emit: &mut |it| items.push(it),
+                    cancelled: &|| false,
+                });
+                (items, count)
+            },
             move |mw, (items, count)| {
                 let mut all = Vec::with_capacity(items.len() + 1);
                 all.push(rerics_core::FileItem::parent());
@@ -140,7 +147,14 @@ impl MainWindow {
         let dst = self.pane(!is_left).borrow().loc().clone();
         self.log.info(&format!("ディレクトリ比較: {}", src.loc_display()));
         self.spawn_job(
-            move || rerics_core::directory_compare(&src, &dst, &opts),
+            move || {
+                let mut items = Vec::new();
+                let counts = rerics_core::directory_compare(&src, &dst, &opts, &mut rerics_core::Sink {
+                    emit: &mut |it| items.push(it),
+                    cancelled: &|| false,
+                });
+                (items, counts)
+            },
             move |mw, (items, counts)| {
                 let mut all = Vec::with_capacity(items.len() + 1);
                 all.push(rerics_core::FileItem::parent());

@@ -8,6 +8,7 @@
 use std::cmp::Ordering;
 
 use crate::FileItem;
+use crate::Sink;
 use crate::vfs::Location;
 
 /// 日付・サイズそれぞれに適用する比較条件（原作 DirectoryCompareOption 相当）。
@@ -69,18 +70,19 @@ pub struct CompareCounts {
     pub deletes: usize,
 }
 
-/// `src` と `dst` を比較し、結果項目（`source`/`info` 付き）と集計を返す。
-/// `info` の相対サブパスは `src` の表示パスを基準に算出する。
+/// `src` と `dst` を比較し、結果項目（`source`/`info` 付き）を `sink` へ1件ずつ流す。
+/// 集計を返す。`info` の相対サブパスは `src` の表示パスを基準に算出する。`sink` が
+/// 中止を告げたら走査を打ち切る（それまでの集計を返す）。
 pub fn directory_compare(
     src: &Location,
     dst: &Location,
     opts: &CompareOptions,
-) -> (Vec<FileItem>, CompareCounts) {
+    sink: &mut Sink,
+) -> CompareCounts {
     let base = src.loc_display();
-    let mut out = Vec::new();
     let mut counts = CompareCounts::default();
-    compare_dir(Some(src), Some(dst), opts, &base, &mut out, &mut counts);
-    (out, counts)
+    compare_dir(Some(src), Some(dst), opts, &base, sink, &mut counts);
+    counts
 }
 
 /// 片側ディレクトリ同士の突き合わせ（再帰）。`src`/`dst` の一方が `None` のときは、
@@ -90,13 +92,16 @@ fn compare_dir(
     dst: Option<&Location>,
     opts: &CompareOptions,
     base: &str,
-    out: &mut Vec<FileItem>,
+    sink: &mut Sink,
     counts: &mut CompareCounts,
 ) {
     let a = read_sorted(src);
     let b = read_sorted(dst);
     let (mut i, mut j) = (0usize, 0usize);
     loop {
+        if sink.is_cancelled() {
+            return;
+        }
         match (a.get(i), b.get(j)) {
             (None, None) => break,
             (Some(fa), Some(fb)) => {
@@ -108,60 +113,60 @@ fn compare_dir(
                             if opts.recurse {
                                 let cs = src.map(|l| l.loc_join(&fa.name));
                                 let cd = dst.map(|l| l.loc_join(&fb.name));
-                                compare_dir(cs.as_ref(), cd.as_ref(), opts, base, out, counts);
+                                compare_dir(cs.as_ref(), cd.as_ref(), opts, base, sink, counts);
                             }
                         } else {
-                            compare_files(fa, fb, opts, src, base, out, counts);
+                            compare_files(fa, fb, opts, src, base, sink, counts);
                         }
                         i += 1;
                         j += 1;
                     }
                     Ordering::Equal => {
                         // 同名だがディレクトリ属性が食い違う。
-                        add_item(out, fa, "ディレクトリ属性不一致", src, base, false);
+                        add_item(sink, fa, "ディレクトリ属性不一致", src, base, false);
                         counts.not_equals += 1;
                         if opts.recurse && fa.is_dir {
                             let cs = src.map(|l| l.loc_join(&fa.name));
-                            compare_dir(cs.as_ref(), None, opts, base, out, counts);
+                            compare_dir(cs.as_ref(), None, opts, base, sink, counts);
                         }
                         if opts.recurse && fb.is_dir {
                             let cd = dst.map(|l| l.loc_join(&fb.name));
-                            compare_dir(None, cd.as_ref(), opts, base, out, counts);
+                            compare_dir(None, cd.as_ref(), opts, base, sink, counts);
                         }
                         i += 1;
                         j += 1;
                     }
                     Ordering::Less => {
-                        added(out, fa, opts, src, base, counts);
+                        added(sink, fa, opts, src, base, counts);
                         if opts.recurse && fa.is_dir {
                             let cs = src.map(|l| l.loc_join(&fa.name));
-                            compare_dir(cs.as_ref(), None, opts, base, out, counts);
+                            compare_dir(cs.as_ref(), None, opts, base, sink, counts);
                         }
                         i += 1;
                     }
                     Ordering::Greater => {
-                        deleted(out, fb, opts, dst, base, counts);
+                        deleted(sink, fb, opts, dst, base, counts);
                         if opts.recurse && fb.is_dir {
                             let cd = dst.map(|l| l.loc_join(&fb.name));
-                            compare_dir(None, cd.as_ref(), opts, base, out, counts);
+                            compare_dir(None, cd.as_ref(), opts, base, sink, counts);
                         }
                         j += 1;
                     }
                 }
             }
             (Some(fa), None) => {
-                added(out, fa, opts, src, base, counts);
+                added(sink, fa, opts, src, base, counts);
                 if opts.recurse && fa.is_dir {
                     let cs = src.map(|l| l.loc_join(&fa.name));
-                    compare_dir(cs.as_ref(), None, opts, base, out, counts);
+                    compare_dir(cs.as_ref(), None, opts, base, sink, counts);
                 }
                 i += 1;
             }
             (None, Some(fb)) => {
-                deleted(out, fb, opts, dst, base, counts);
+                deleted(sink, fb, opts, dst, base, counts);
                 if opts.recurse && fb.is_dir {
                     let cd = dst.map(|l| l.loc_join(&fb.name));
-                    compare_dir(None, cd.as_ref(), opts, base, out, counts);
+                    compare_dir(None, cd.as_ref(), opts, base, sink, counts);
                 }
                 j += 1;
             }
@@ -179,7 +184,7 @@ fn read_sorted(loc: Option<&Location>) -> Vec<FileItem> {
 
 /// src 側にのみ在る項目を「追加」として記録する。
 fn added(
-    out: &mut Vec<FileItem>,
+    sink: &mut Sink,
     item: &FileItem,
     opts: &CompareOptions,
     src: Option<&Location>,
@@ -187,14 +192,14 @@ fn added(
     counts: &mut CompareCounts,
 ) {
     if opts.show_added {
-        add_item(out, item, "追加", src, base, false);
+        add_item(sink, item, "追加", src, base, false);
     }
     counts.adds += 1;
 }
 
 /// dst 側にのみ在る項目を「削除」として記録する（情報列は dst の絶対ディレクトリを出す）。
 fn deleted(
-    out: &mut Vec<FileItem>,
+    sink: &mut Sink,
     item: &FileItem,
     opts: &CompareOptions,
     dst: Option<&Location>,
@@ -202,7 +207,7 @@ fn deleted(
     counts: &mut CompareCounts,
 ) {
     if opts.show_deleted {
-        add_item(out, item, "削除", dst, base, true);
+        add_item(sink, item, "削除", dst, base, true);
     }
     counts.deletes += 1;
 }
@@ -214,7 +219,7 @@ fn compare_files(
     opts: &CompareOptions,
     src: Option<&Location>,
     base: &str,
-    out: &mut Vec<FileItem>,
+    sink: &mut Sink,
     counts: &mut CompareCounts,
 ) {
     // どちらの軸も比較しない設定なら、両側に在る一致候補は無条件で出す。
@@ -293,7 +298,7 @@ fn compare_files(
             (true, false) => size_desc.to_owned(),
             (true, true) => String::new(),
         };
-        add_item(out, fa, &desc, src, base, false);
+        add_item(sink, fa, &desc, src, base, false);
     }
 }
 
@@ -301,7 +306,7 @@ fn compare_files(
 /// 説明（"追加" 等）と出自サブパスを合わせて入れる。`fullpath` のときは相対化せず
 /// 出自ディレクトリの絶対表示を入れる（削除項目＝dst 側に使う）。
 fn add_item(
-    out: &mut Vec<FileItem>,
+    sink: &mut Sink,
     item: &FileItem,
     desc: &str,
     loc: Option<&Location>,
@@ -322,7 +327,7 @@ fn add_item(
     let mut it = item.clone();
     it.info = Some(info);
     it.source = loc.cloned();
-    out.push(it);
+    sink.push(it);
 }
 
 /// 説明と相対/絶対パスを ":" で連結する（説明が空ならパスのみ・パスが空なら説明のみ）。
@@ -405,6 +410,16 @@ mod tests {
             .collect()
     }
 
+    /// 比較を最後まで回し、流れてきた項目と集計を集める（中止しない）。
+    fn collect(src: &Location, dst: &Location, opts: &CompareOptions) -> (Vec<FileItem>, CompareCounts) {
+        let mut items = Vec::new();
+        let counts = directory_compare(src, dst, opts, &mut Sink {
+            emit: &mut |it| items.push(it),
+            cancelled: &|| false,
+        });
+        (items, counts)
+    }
+
     #[test]
     fn added_and_deleted_only_when_flagged() {
         let src = TempDir::new();
@@ -414,14 +429,14 @@ mod tests {
 
         // フラグ無し：差分は出ないがカウントはされる。
         let opts = CompareOptions::default();
-        let (items, counts) = directory_compare(&src.loc(), &dst.loc(), &opts);
+        let (items, counts) = collect(&src.loc(), &dst.loc(), &opts);
         assert_eq!(items.len(), 0);
         assert_eq!(counts.adds, 1);
         assert_eq!(counts.deletes, 1);
 
         // フラグ有り：追加・削除が出る。
         let opts = CompareOptions { show_added: true, show_deleted: true, ..Default::default() };
-        let (items, counts) = directory_compare(&src.loc(), &dst.loc(), &opts);
+        let (items, counts) = collect(&src.loc(), &dst.loc(), &opts);
         let got = names_info(&items);
         assert!(got.contains(&("only_src.txt".to_owned(), "追加".to_owned())), "{got:?}");
         // 削除項目の情報列は dst の絶対ディレクトリを含む。
@@ -449,7 +464,7 @@ mod tests {
         dst.write("diff.txt", "bb"); // サイズ違い
 
         let opts = CompareOptions::default();
-        let (_items, counts) = directory_compare(&src.loc(), &dst.loc(), &opts);
+        let (_items, counts) = collect(&src.loc(), &dst.loc(), &opts);
         assert_eq!(counts.equals, 1, "same.txt は一致");
         assert_eq!(counts.not_equals, 1, "diff.txt はサイズ違い");
     }
@@ -466,7 +481,7 @@ mod tests {
         dst.write("equal.txt", "yy");
 
         let opts = CompareOptions { size: CompareCondition::NotEquals, ..Default::default() };
-        let (items, _counts) = directory_compare(&src.loc(), &dst.loc(), &opts);
+        let (items, _counts) = collect(&src.loc(), &dst.loc(), &opts);
         let got = names_info(&items);
         // equal.txt は出ない。
         assert!(!got.iter().any(|(n, _)| n == "equal.txt"), "{got:?}");
@@ -485,7 +500,7 @@ mod tests {
 
         // Less＝src>dst（src が新しい）で出す。
         let opts = CompareOptions { date: CompareCondition::Less, ..Default::default() };
-        let (items, _counts) = directory_compare(&src.loc(), &dst.loc(), &opts);
+        let (items, _counts) = collect(&src.loc(), &dst.loc(), &opts);
         let got = names_info(&items);
         assert_eq!(got, vec![("f.txt".to_owned(), "新しい".to_owned())]);
     }
@@ -499,7 +514,7 @@ mod tests {
         std::fs::create_dir_all(dst.path.join("sub")).unwrap();
 
         let opts = CompareOptions { recurse: true, show_added: true, ..Default::default() };
-        let (items, counts) = directory_compare(&src.loc(), &dst.loc(), &opts);
+        let (items, counts) = collect(&src.loc(), &dst.loc(), &opts);
         let only = items.iter().find(|it| it.name == "only.txt").unwrap();
         let info = only.info.clone().unwrap();
         // 情報列は "追加:sub"（base からの相対サブパス）。
