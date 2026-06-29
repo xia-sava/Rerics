@@ -185,6 +185,7 @@ pub enum Command {
     CursorOpposite,
     SelectFile,
     Refresh,
+    ThumbnailMode,
     Nop,
     MaximizeCurrent,
     MaximizeWindow,
@@ -413,6 +414,7 @@ impl Command {
             (CursorOpposite, "cursorOpposite", "反対側パスへ移動", "反対側ペインへフォーカスを移す"),
             (SelectFile, "selectFile", "ファイルを選択（カーソル位置）", "カーソル位置のファイルを選択する"),
             (Refresh, "refresh", "表示を更新", "表示を再描画する"),
+            (ThumbnailMode, "thumbnailMode", "サムネイル表示切替", "アクティブペインのファイル一覧で、画像をサムネイルとして大きく表示する状態を切り替える"),
             (Nop, "nop", "無効コマンド", "何もしない（キー割り当ての無効化に使う）"),
             (MaximizeCurrent, "maximizeCurrent", "現在のリストを最大化", "現在のペインを最大化する"),
             (MaximizeWindow, "maximizeWindow", "ウィンドウの最大化", "ウィンドウを最大化する"),
@@ -501,6 +503,7 @@ impl Command {
             "CD" => Command::ChangeDirectory,
             "RegisteredPathDialog" => Command::JumpDialog,
             "UnPack" => Command::Extract,
+            "ThumbnailMode" => Command::ThumbnailMode,
             _ => return None,
         })
     }
@@ -1216,6 +1219,16 @@ mod tests {
         assert_eq!(Command::from_token("commandDirect"), Some(Command::CommandDirect));
         assert_eq!(Command::CommandDirect.as_token(), "commandDirect");
         assert_eq!(Command::CommandDirect.display_name(), "任意のコマンドを実行");
+    }
+
+    #[test]
+    fn thumbnail_mode_token_roundtrip() {
+        assert_eq!(Command::from_token("thumbnailMode"), Some(Command::ThumbnailMode));
+        assert_eq!(Command::ThumbnailMode.as_token(), "thumbnailMode");
+        // 原作トークン名も別名として受け付ける。
+        assert_eq!(Command::from_token("ThumbnailMode"), Some(Command::ThumbnailMode));
+        // ファイラー文脈のコマンド（既定分類）。
+        assert!(Command::ThumbnailMode.available_in(CommandContext::Filer));
     }
 
     #[test]

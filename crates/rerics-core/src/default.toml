@@ -243,6 +243,7 @@ zoom_step_percent = 25
 [icons]
 show = true
 size = "auto"
+thumbnail_size = 48
 
 [file_ops]
 ask_before_copy = false

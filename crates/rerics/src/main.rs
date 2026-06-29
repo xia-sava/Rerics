@@ -1389,6 +1389,10 @@ impl MainWindow {
                 self.view(false).refresh()?;
                 return Ok(());
             }
+            Command::ThumbnailMode => {
+                self.view(is_left).toggle_thumbnail();
+                return Ok(());
+            }
             Command::CopyLog => {
                 self.log.copy_all()?;
                 return Ok(());

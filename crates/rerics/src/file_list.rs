@@ -14,7 +14,14 @@ use rerics_core::{
 };
 use winsafe::{self as w, co, gui, prelude::*};
 
-use crate::icons::{ICON_LOGICAL, IconCache};
+use crate::icons::{ICON_LOGICAL, IconBox, IconCache};
+
+/// サムネイル表示時、画像でないファイルのシェルアイコンを描く一辺の上限（論理 px）。
+/// 大アイコン相当に抑えてサムネイル枠の中央へ置く。
+const THUMB_SHELL_ICON_LOGICAL: i32 = 32;
+
+/// サムネイル表示の行間の隙間（物理 px）。画像を行ピッチより，この分だけ小さく描く。
+const THUMB_ROW_GAP_PX: i32 = 1;
 
 /// FileItem の更新時刻を per-file アイコンキャッシュのキー用 u64 秒へ。取得不能は 0。
 fn item_mtime(it: &FileItem) -> u64 {
@@ -78,6 +85,10 @@ struct Inner {
     icon_show: Cell<bool>,
     /// アイコンの表示サイズ（設定）。
     icon_size: Cell<IconSize>,
+    /// サムネイル表示（行高を広げ画像を大きく見せる）が有効か。ペインごとに独立。
+    thumbnail: Cell<bool>,
+    /// サムネイル表示時の行高＝サムネイルの一辺（論理 px・設定）。
+    thumbnail_size: Cell<i32>,
     /// ファイルサイズ列の表記スタイル（設定）。
     size_format: Cell<SizeFormat>,
     /// 列幅を内容に合わせて自動調整するか（設定）。off なら設定幅を保つ。
@@ -137,6 +148,8 @@ impl FileListView {
             icon_cache: RefCell::new(None),
             icon_show: Cell::new(cfg.icons.show),
             icon_size: Cell::new(cfg.icons.size),
+            thumbnail: Cell::new(false),
+            thumbnail_size: Cell::new(cfg.icons.thumbnail_size),
             size_format: Cell::new(cfg.size_format),
             auto_adjust: Cell::new(cfg.auto_adjust_columns),
             dir: RefCell::new(None),
@@ -170,12 +183,33 @@ impl FileListView {
         self.inner.icon_show.get() && self.inner.icon_cache.borrow().is_some()
     }
 
+    /// サムネイル表示の行ピッチ＝サムネイルの一辺（物理 px・DPI スケール済み）。
+    fn thumbnail_box_px(&self) -> i32 {
+        gui::dpi_x(self.inner.thumbnail_size.get().max(1))
+    }
+
     /// アイコンの描画サイズ（物理 px・DPI スケール済み）。
     fn icon_px(&self) -> i32 {
+        if self.inner.thumbnail.get() {
+            // サムネイル表示：画像は行ピッチより `THUMB_ROW_GAP_PX` 小さく描く。下に隙間が
+            // 残り、行と行が地続きにならず読みやすくなる。
+            return (self.thumbnail_box_px() - THUMB_ROW_GAP_PX).max(1);
+        }
         match self.inner.icon_size.get().logical_px() {
             // 自動：行（フォント基準の高さ）に収まるサイズへ抑える。
             0 => gui::dpi_x(ICON_LOGICAL).min(self.font_height()),
             logical => gui::dpi_x(logical),
+        }
+    }
+
+    /// シェルアイコンを描く一辺の上限（px）。サムネイル表示では枠が大きいので、画像以外の
+    /// シェルアイコンは大アイコン相当に抑えて枠の中央へ置く（引き伸ばしのぼやけを避ける）。
+    /// 通常表示では枠サイズと同じで、従来どおり枠いっぱいに描く。
+    fn icon_cap(&self) -> i32 {
+        if self.inner.thumbnail.get() {
+            gui::dpi_x(THUMB_SHELL_ICON_LOGICAL)
+        } else {
+            self.icon_px()
         }
     }
 
@@ -206,6 +240,22 @@ impl FileListView {
     pub fn refresh(&self) -> w::AnyResult<()> {
         self.hwnd().InvalidateRect(None, false)?;
         Ok(())
+    }
+
+    /// サムネイル表示（行高を広げ画像を大きく見せる）を切り替える。切替後の有効状態を返す。
+    /// 行高が変わると 1 ページに収まる行数も変わるので、測り直してスクロール位置を範囲内へ
+    /// 収めてから再描画する。
+    pub fn toggle_thumbnail(&self) -> bool {
+        let on = !self.inner.thumbnail.get();
+        self.inner.thumbnail.set(on);
+        let pr = self.page_rows();
+        {
+            let mut s = self.inner.state.borrow_mut();
+            let top = s.scroll_top as isize;
+            s.set_scroll_top(top, pr);
+        }
+        let _ = self.refresh();
+        on
     }
 
     /// 待機スピナーを仕込む（読込・展開の共通）。設定の遅延（`progress_delay`）を過ぎてから
@@ -256,6 +306,7 @@ impl FileListView {
         self.inner.scrollbar_width.set(cfg.layout.scrollbar_width);
         self.inner.icon_show.set(cfg.icons.show);
         self.inner.icon_size.set(cfg.icons.size);
+        self.inner.thumbnail_size.set(cfg.icons.thumbnail_size);
         self.inner.size_format.set(cfg.size_format);
         self.inner.auto_adjust.set(cfg.auto_adjust_columns);
         self.inner.progress_delay.set(Duration::from_millis(cfg.progress_delay_ms));
@@ -353,6 +404,7 @@ impl FileListView {
             "header_height": self.header_height(),
             "item_height": self.item_height(),
             "scrollbar_width": self.inner.scrollbar_width.get(),
+            "thumbnail": self.inner.thumbnail.get(),
         })
     }
 
@@ -424,7 +476,15 @@ impl FileListView {
         // 行高はフォント基準で詰める。アイコンを表示中で、かつアイコンがフォントより
         // 大きい（中/大サイズを選んだ）ときだけ、その分だけ行を伸ばす。
         let base = self.font_height();
-        if self.icons_visible() { base.max(self.icon_px()) } else { base }
+        if !self.icons_visible() {
+            return base;
+        }
+        if self.inner.thumbnail.get() {
+            // サムネイル表示の行ピッチはサムネイルの一辺。画像はこれより小さく描く（icon_px）
+            // ので、差のぶんが行間の隙間になる。
+            return self.thumbnail_box_px();
+        }
+        base.max(self.icon_px())
     }
 
     /// フォントを生成する（設定のファミリ・サイズ）。
@@ -1007,6 +1067,7 @@ impl FileListView {
         let icon_cache = self.inner.icon_cache.borrow();
         let show_icons = self.inner.icon_show.get();
         let icon_px = self.icon_px();
+        let icon_cap = self.icon_cap();
         let dir = self.inner.dir.borrow();
         for i in s.scroll_top..=bottom {
             if i >= s.count() {
@@ -1052,7 +1113,9 @@ impl FileListView {
                             && let Some(d) = dir.as_ref() {
                                 let full = d.join(&item.name);
                                 let mtime = item_mtime(item);
-                                if cache.draw_file(dc, &full, mtime, text_left, iy, icon_px) {
+                                let dest =
+                                    IconBox { x: text_left, y: iy, size: icon_px, cap: icon_cap };
+                                if cache.draw_file(dc, &full, mtime, dest) {
                                     drawn = true;
                                 } else {
                                     let thumb = matches!(
@@ -1063,11 +1126,14 @@ impl FileListView {
                                 }
                             }
                         if !drawn {
-                            cache.draw_generic(
-                                dc, item.is_dir, &item.extension, text_left, iy, icon_px,
-                            );
+                            let dest = IconBox { x: text_left, y: iy, size: icon_px, cap: icon_cap };
+                            cache.draw_generic(dc, item.is_dir, &item.extension, dest);
                             if item.is_parent {
-                                let _ = draw_parent_arrow(dc, text_left, iy, icon_px);
+                                // ".." の矢印もシェルアイコン同様に枠の中央へ原寸寄りで置く。
+                                let s = icon_px.min(icon_cap.max(1));
+                                let ox = text_left + (icon_px - s) / 2;
+                                let oy = iy + (icon_px - s) / 2;
+                                let _ = draw_parent_arrow(dc, ox, oy, s);
                             }
                         }
                         text_left += icon_px + gui::dpi_x(2);

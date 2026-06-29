@@ -115,8 +115,29 @@ const STRETCH_HALFTONE: i32 = 4;
 /// アイコンの既定論理サイズ。自動サイズ時の上限（行に収める基準）で、描画時に DPI スケールする。
 pub const ICON_LOGICAL: i32 = 16;
 
-/// サムネイルをデコードする物理 px（大アイコン×高DPIでもボケない上限）。描画時に表示枠へ縮小する。
-const THUMB_DECODE_PX: u32 = 64;
+/// サムネイルをデコードする物理 px（サムネイル表示の既定 128 px を等倍で出せる解像度）。
+/// 描画時は表示枠へ縮小する。
+const THUMB_DECODE_PX: u32 = 128;
+
+/// アイコン／サムネイルの描画先。`size` 角の枠で、左上が `(x, y)`。シェルアイコンは
+/// `cap` を一辺の上限に原寸寄りで枠の中央へ置く（`cap >= size` で枠いっぱい）。画像
+/// サムネイルは縦横比を保って枠いっぱいに拡縮するので `cap` は効かない。
+#[derive(Clone, Copy)]
+pub struct IconBox {
+    pub x: i32,
+    pub y: i32,
+    pub size: i32,
+    pub cap: i32,
+}
+
+impl IconBox {
+    /// 枠内へ、一辺を `cap` 以下に抑えた正方形を中央寄せした `(原点x, 原点y, 一辺)` を返す。
+    /// `cap >= size` なら枠いっぱい（中央寄せのオフセットは 0）。
+    fn center_capped(self) -> (i32, i32, i32) {
+        let s = self.size.min(self.cap.max(1));
+        (self.x + (self.size - s) / 2, self.y + (self.size - s) / 2, s)
+    }
+}
 
 /// サムネイル生成を諦めるファイルサイズ上限（巨大画像で OOM/遅延を避ける）。
 const THUMB_MAX_BYTES: u64 = 32 * 1024 * 1024;
@@ -296,12 +317,15 @@ impl IconCache {
         h
     }
 
-    /// 汎用アイコン（ディレクトリ／拡張子別）を (x,y) に size px 角で描く。
-    pub fn draw_generic(&self, dc: &w::HDC, is_dir: bool, ext: &str, x: i32, y: i32, size: i32) {
+    /// 汎用アイコン（ディレクトリ／拡張子別）を `dest` の枠に描く。シェルアイコンは
+    /// 引き伸ばすとぼやけるので `dest.cap` を上限に原寸寄りで枠の中央へ置く（サムネイル
+    /// 表示で枠が大きいとき用。通常表示は `cap == size` で従来どおり枠いっぱいに描く）。
+    pub fn draw_generic(&self, dc: &w::HDC, is_dir: bool, ext: &str, dest: IconBox) {
         let h = self.generic_handle(is_dir, ext);
         if !h.is_null() {
+            let (ox, oy, s) = dest.center_capped();
             unsafe {
-                DrawIconEx(dc.ptr(), x, y, h, size, size, 0, std::ptr::null_mut(), DI_NORMAL);
+                DrawIconEx(dc.ptr(), ox, oy, h, s, s, 0, std::ptr::null_mut(), DI_NORMAL);
             }
         }
     }
@@ -313,9 +337,7 @@ impl IconCache {
         dc: &w::HDC,
         path: &std::path::Path,
         mtime: u64,
-        x: i32,
-        y: i32,
-        size: i32,
+        dest: IconBox,
     ) -> bool {
         let map = self.per_file.borrow();
         let Some((m, Some(drawable))) = map.get(path) else {
@@ -324,9 +346,13 @@ impl IconCache {
         if *m != mtime {
             return false;
         }
+        let IconBox { x, y, size, .. } = dest;
         match drawable {
+            // シェルアイコンは枠が大きいとき原寸寄りで中央へ（サムネイル表示用）。画像サムネは
+            // 縦横比を保って枠いっぱいに拡縮するので `cap` の対象外。
             Drawable::Icon(icon) => unsafe {
-                DrawIconEx(dc.ptr(), x, y, icon.0, size, size, 0, std::ptr::null_mut(), DI_NORMAL);
+                let (ox, oy, s) = dest.center_capped();
+                DrawIconEx(dc.ptr(), ox, oy, icon.0, s, s, 0, std::ptr::null_mut(), DI_NORMAL);
             },
             Drawable::Thumb { w, h, bgra } => {
                 let (iw, ih) = (*w as i32, *h as i32);
@@ -416,5 +442,31 @@ impl IconCache {
 impl Default for IconCache {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IconBox;
+
+    #[test]
+    fn center_capped_fills_frame_when_cap_not_smaller() {
+        // cap が枠以上なら枠いっぱい・オフセット 0（通常表示と同じ振る舞い）。
+        assert_eq!(IconBox { x: 10, y: 20, size: 32, cap: 32 }.center_capped(), (10, 20, 32));
+        assert_eq!(IconBox { x: 10, y: 20, size: 32, cap: 64 }.center_capped(), (10, 20, 32));
+    }
+
+    #[test]
+    fn center_capped_centers_when_cap_smaller() {
+        // cap が枠より小さいと cap 角を枠の中央へ（サムネイル表示でシェルアイコンを原寸寄りに）。
+        assert_eq!(IconBox { x: 0, y: 0, size: 128, cap: 32 }.center_capped(), (48, 48, 32));
+        assert_eq!(IconBox { x: 100, y: 200, size: 128, cap: 32 }.center_capped(), (148, 248, 32));
+    }
+
+    #[test]
+    fn center_capped_guards_nonpositive_cap() {
+        // cap が 0 以下でも一辺は 1 px 以上を保つ。
+        let (_, _, s) = IconBox { x: 0, y: 0, size: 128, cap: 0 }.center_capped();
+        assert_eq!(s, 1);
     }
 }

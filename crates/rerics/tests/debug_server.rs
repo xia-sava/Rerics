@@ -5046,3 +5046,45 @@ fn select_mask_dialog_defaults_to_star() {
     server.req("POST", "/modal/command/cancel", "").unwrap();
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
+
+/// サムネイル表示切替（thumbnailMode）はアクティブペインだけの行高をサムネイルサイズへ
+/// 広げ、再度の切替で元へ戻す。反対ペインは独立して通常表示のまま。
+#[test]
+fn thumbnail_mode_toggles_active_pane_row_height() {
+    let server = Server::start(&["a.txt", "pic.png"], "");
+
+    let item_height = |side: &str| -> i32 {
+        server
+            .req("GET", &format!("/presentation/panes/{side}/item_height"), "")
+            .expect("item_height")
+            .1
+            .trim()
+            .parse()
+            .expect("item_height int")
+    };
+    let thumbnail = |side: &str| -> String {
+        server
+            .req("GET", &format!("/presentation/panes/{side}/thumbnail"), "")
+            .expect("thumbnail")
+            .1
+            .trim()
+            .to_string()
+    };
+
+    let h0 = item_height("left");
+    assert_eq!(thumbnail("left"), "false", "初期はサムネイル表示オフ");
+
+    // アクティブ（左）ペインをサムネイル表示へ。
+    server.req("POST", "/command/thumbnailMode", "").expect("thumbnailMode on");
+    assert_eq!(thumbnail("left"), "true", "切替でサムネイル表示オン");
+    let h1 = item_height("left");
+    assert!(h1 > h0, "サムネイル表示で行高が広がる: {h0} -> {h1}");
+
+    // 反対（右）ペインは独立＝影響を受けない。
+    assert_eq!(thumbnail("right"), "false", "反対ペインは通常表示のまま");
+
+    // もう一度切り替えると元の行高へ戻る。
+    server.req("POST", "/command/thumbnailMode", "").expect("thumbnailMode off");
+    assert_eq!(thumbnail("left"), "false", "再切替でサムネイル表示オフ");
+    assert_eq!(item_height("left"), h0, "行高が元へ戻る");
+}

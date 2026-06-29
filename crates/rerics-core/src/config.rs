@@ -278,11 +278,13 @@ pub struct IconSettings {
     pub show: bool,
     /// アイコンの表示サイズ。
     pub size: IconSize,
+    /// サムネイル表示（`thumbnailMode`）時の 1 行の高さ＝サムネイルの一辺（論理 px）。
+    pub thumbnail_size: i32,
 }
 
 impl Default for IconSettings {
     fn default() -> Self {
-        Self { show: true, size: IconSize::Auto }
+        Self { show: true, size: IconSize::Auto, thumbnail_size: 48 }
     }
 }
 
