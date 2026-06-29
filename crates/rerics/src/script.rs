@@ -127,6 +127,12 @@ pub trait HostApi {
     fn set_clipboard(&self, text: &str);
     /// `r.clipboard.getText()`：クリップボードのテキストを取得する（テキストが無ければ空文字）。
     fn get_clipboard(&self) -> String;
+    /// 並列ワーカーのアイソレートを停止対象として登録する（ワーカースレッド内から呼ぶ）。`id` は
+    /// ワーカーごとに一意。スクリプト停止時に UI 側がこのハンドルを terminate し、暴走ワーカー
+    /// （無限ループ等）も止められるようにする。既定は何もしない（GUI 実装だけが配線する）。
+    fn register_worker(&self, _id: u64, _handle: deno_core::v8::IsolateHandle) {}
+    /// 登録した並列ワーカーを停止対象から外す（ワーカー完了時にワーカースレッド内から呼ぶ）。
+    fn unregister_worker(&self, _id: u64) {}
 }
 
 /// 外部プロセスを終了まで待った結果（`rerics.run` の戻り）。JS では camelCase で見える。
@@ -243,6 +249,9 @@ struct WorkerSupport {
     factory: WorkerHostFactory,
     limit: Arc<tokio::sync::Semaphore>,
 }
+
+/// 並列ワーカーの一意な id を採番する（停止対象レジストリの鍵）。プロセス内で単調増加。
+static NEXT_WORKER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// ログレベル名（`info`/`warning`/`error`）を [`rerics_core::LogLevel`] へ。未知は `Normal`。
 fn parse_log_level(name: &str) -> rerics_core::LogLevel {
@@ -807,18 +816,23 @@ async fn op_unpack(
 /// 返す。別アイソレートなので捕捉変数は渡らず引数のみが渡る（`fn.toString()` のソースと JSON 化
 /// した引数を結合して評価する）。戻り値は `undefined` を `null` に寄せてから JSON 化する。
 fn run_worker(host: Host, fn_source: &str, arg_json: &str) -> Result<String, String> {
-    let mut engine = Engine::new(host);
+    let mut engine = Engine::new(host.clone());
+    // 停止時に止められるよう、このワーカーのアイソレートを UI 側へ登録する（完了で外す）。
+    let worker_id = NEXT_WORKER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    host.register_worker(worker_id, engine.isolate_handle());
     let code = format!(
         "(async () => {{ const __arg = ({arg_json}); const __fn = ({fn_source}); \
          const __r = await __fn(__arg); \
          return JSON.stringify(__r === undefined ? null : __r); }})()"
     );
-    engine.eval_to_string(
+    let result = engine.eval_to_string(
         "rerics:worker",
         "file:///worker.ts",
         deno_ast::MediaType::TypeScript,
         code,
-    )
+    );
+    host.unregister_worker(worker_id);
+    result
 }
 
 /// 関数を別スレッド＋別アイソレートで本当に並列に走らせる非同期 op。`fn_source` は実行する関数の

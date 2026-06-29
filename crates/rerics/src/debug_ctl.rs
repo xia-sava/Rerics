@@ -1488,6 +1488,7 @@ impl MainWindow {
             "tab_bar": { "active": self.active.get(), "labels": self.tab_bar.labels() },
             "tabs": { "active": self.active.get(), "count": tabs.len(), "items": tabs },
             "log": { "lines": log_lines },
+            "script": { "workers": self.script_worker_isolates.lock().unwrap().len() },
         })
     }
 

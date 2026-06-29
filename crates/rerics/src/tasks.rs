@@ -336,6 +336,10 @@ impl MainWindow {
         }
         if let Some(handle) = self.script_isolate.borrow().as_ref() {
             let _ = handle.terminate_execution();
+            // 走行中の並列ワーカーも止める（メインを止めるだけだとワーカースレッドは回り続ける）。
+            for (_, worker) in self.script_worker_isolates.lock().unwrap().iter() {
+                let _ = worker.terminate_execution();
+            }
             self.script_terminated.set(true);
             self.log.warn("スクリプトを停止しました");
         }

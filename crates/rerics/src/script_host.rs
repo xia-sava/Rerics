@@ -10,6 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
 
 use winsafe::co;
 use winsafe::prelude::*;
@@ -59,6 +60,11 @@ pub enum HostCall {
     SetClipboard(String),
     GetClipboard,
 }
+
+/// 走行中の並列ワーカーの `(id, アイソレートハンドル)` を共有する登録簿。ワーカースレッドが直接
+/// ロックして自身を積み下ろしし（UI 往復なし＝同期 eval 中でもデッドロックしない）、UI スレッドは
+/// 停止時に全 terminate・観測時に件数を読む。`IsolateHandle` は Send+Sync。
+pub type WorkerIsolates = Arc<Mutex<Vec<(u64, deno_core::v8::IsolateHandle)>>>;
 
 /// UI スレッド → エンジンスレッドへの応答。
 pub enum HostResp {
@@ -179,6 +185,7 @@ impl Default for ScriptBridge {
 struct GuiHost {
     queue: ScriptQueue,
     hwnd_ptr: isize,
+    worker_isolates: WorkerIsolates,
 }
 
 impl HostApi for GuiHost {
@@ -472,6 +479,14 @@ impl HostApi for GuiHost {
             _ => String::new(),
         }
     }
+
+    fn register_worker(&self, id: u64, handle: deno_core::v8::IsolateHandle) {
+        self.worker_isolates.lock().unwrap().push((id, handle));
+    }
+
+    fn unregister_worker(&self, id: u64) {
+        self.worker_isolates.lock().unwrap().retain(|(wid, _)| *wid != id);
+    }
 }
 
 /// エディタ補完用の型ファイルを `scripts/` に整備する。`rerics.d.ts`（ホスト API）と
@@ -539,15 +554,22 @@ pub fn spawn_engine(
     hwnd_ptr: isize,
     cmd_rx: Receiver<EngineCmd>,
     task_tx: Sender<WorkerEvent>,
+    worker_isolates: WorkerIsolates,
 ) {
     std::thread::spawn(move || {
         let factory_queue = queue.clone();
-        let host: Rc<dyn HostApi> = Rc::new(GuiHost { queue, hwnd_ptr });
+        let factory_workers = worker_isolates.clone();
+        let host: Rc<dyn HostApi> =
+            Rc::new(GuiHost { queue, hwnd_ptr, worker_isolates });
         let mut engine = script::Engine::new(host.clone());
-        // 並列ワーカーは各スレッド内で UI へマーシャルするホストを建て直す（queue は Arc・
+        // 並列ワーカーは各スレッド内で UI へマーシャルするホストを建て直す（queue・登録簿とも Arc・
         // hwnd_ptr は isize でいずれも Send なので、生成器ごとスレッドへ渡せる）。
         engine.set_worker_factory(std::sync::Arc::new(move || -> script::Host {
-            Rc::new(GuiHost { queue: factory_queue.clone(), hwnd_ptr })
+            Rc::new(GuiHost {
+                queue: factory_queue.clone(),
+                hwnd_ptr,
+                worker_isolates: factory_workers.clone(),
+            })
         }));
         // 停止（強制終了）に使う isolate ハンドルを UI へ渡す。タスク取り込みタイマがまだ
         // 走っていなくても処理されるよう、送ったら UI を起こす。
@@ -1071,7 +1093,13 @@ impl MainWindow {
     pub(crate) fn start_script_engine(&self) {
         if let Some(cmd_rx) = self.script.take_rx() {
             let hwnd_ptr = self.wnd.hwnd().ptr() as isize;
-            spawn_engine(self.script.queue.clone(), hwnd_ptr, cmd_rx, self.task_tx.clone());
+            spawn_engine(
+                self.script.queue.clone(),
+                hwnd_ptr,
+                cmd_rx,
+                self.task_tx.clone(),
+                self.script_worker_isolates.clone(),
+            );
         }
     }
 

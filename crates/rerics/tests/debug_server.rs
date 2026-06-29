@@ -3158,6 +3158,67 @@ fn script_task_stop_terminates_runaway_via_task_manager() {
     assert!(body.contains('2'), "停止後もエンジンが評価できる: {body}");
 }
 
+/// 並列ワーカーの停止：暴走ワーカー（無限ループ）はメインを止めるだけでは回り続けるので、
+/// 停止時にワーカーのアイソレートも terminate する。生存ワーカー数（`/state/script/workers`）が
+/// 起動で 1 になり、中止で 0 に戻ることで、ワーカーが実際に止まって登録解除されたことを見る。
+#[test]
+fn script_stop_terminates_runaway_parallel_worker() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    let workers = |s: &Server| -> u64 {
+        s.req("GET", "/state/script/workers", "")
+            .and_then(|(_, b)| b.trim().parse().ok())
+            .unwrap_or(0)
+    };
+
+    // メインが await でブロックする形で、無限ループのワーカーを 1 つ起動する。
+    server
+        .req("POST", "/script/eval", "(async () => { await rerics.parallel(() => { while (true) {} }); })();")
+        .unwrap();
+
+    // ワーカーが登録されるまで待つ（生存ワーカー数 = 1）。
+    let mut started = false;
+    for _ in 0..60 {
+        if workers(&server) == 1 {
+            started = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(started, "並列ワーカーが起動して登録される");
+
+    // タスクマネージャからスクリプトを中止する。
+    server.req("POST", "/command/openTaskManager", "").unwrap();
+    wait_modal(&server);
+    let mut appeared = false;
+    for _ in 0..50 {
+        server.req("POST", "/modal/command/103", "").unwrap();
+        let b = server.req("GET", "/state/modal", "").unwrap().1;
+        if b.contains("スクリプト") {
+            appeared = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(appeared, "スクリプトタスクが出る");
+    server.req("POST", "/modal/select/0", "").unwrap();
+    server.req("POST", "/modal/command/100", "").unwrap();
+
+    // 中止でワーカーの isolate が terminate され、登録解除されて 0 へ戻る。
+    let mut stopped = false;
+    for _ in 0..80 {
+        server.req("POST", "/modal/command/103", "").unwrap();
+        if workers(&server) == 0 {
+            stopped = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(stopped, "中止で暴走ワーカーが止まり、生存ワーカー数が 0 へ戻る");
+
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+}
+
 /// 無圧縮 24bpp の 1x1 BMP（白画素）。デコード可能な実画像が要るテスト用の最小 fixture。
 const TINY_BMP: &[u8] = &[
     0x42, 0x4D, 0x3A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36, 0x00, 0x00, 0x00, // file header

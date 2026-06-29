@@ -316,6 +316,10 @@ struct MainWindow {
     /// スクリプト実行を停止（強制終了）するための V8 isolate ハンドル。エンジン起動後に
     /// `ScriptEngineReady` で受け取って保持する。
     script_isolate: Rc<RefCell<Option<deno_core::v8::IsolateHandle>>>,
+    /// 走行中の並列ワーカー（`r.parallel`）の `(id, アイソレートハンドル)` を共有する登録簿。
+    /// ワーカースレッドが起動時/完了時に自身を直接積み下ろしする。スクリプト停止時はメインに
+    /// 加えてこれら全ワーカーも terminate し、暴走ワーカー（無限ループ等）を止める。
+    script_worker_isolates: script_host::WorkerIsolates,
     /// 現在走行中のスクリプトタスク id（直列実行＝高々1つ）。`ScriptBegin` で立て
     /// `ScriptEnd` で下ろす。中止されたらこの id を見て isolate を terminate する。
     script_task: Rc<RefCell<Option<u64>>>,
@@ -574,6 +578,7 @@ impl MainWindow {
             find_query: Rc::new(RefCell::new([None, None])),
             find_refocus: Rc::new(RefCell::new([None, None])),
             script_isolate: Rc::new(RefCell::new(None)),
+            script_worker_isolates: Arc::new(std::sync::Mutex::new(Vec::new())),
             script_task: Rc::new(RefCell::new(None)),
             script_terminated: Rc::new(Cell::new(false)),
             progress_seq: Arc::new(AtomicU64::new(0)),
