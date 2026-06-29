@@ -1332,7 +1332,18 @@ const BOOTSTRAP: &str = r#"
   };
   globalThis.__commandNames = () => [...commands.keys()];
   // 補完候補＝`r.` で呼べるもの（組込メンバー＋公開済み登録コマンド）の名前を昇順で返す。
-  globalThis.__memberNames = () => Object.keys(globalThis.rerics).sort();
+  // 名前空間（fs/str/env 等のオブジェクト）の中身も `key.sub` の形で加え、2 階層補完を支える。
+  globalThis.__memberNames = () => {
+    const out = [];
+    for (const key of Object.keys(globalThis.rerics)) {
+      out.push(key);
+      const val = globalThis.rerics[key];
+      if (val && typeof val === "object") {
+        for (const sub of Object.keys(val)) out.push(key + "." + sub);
+      }
+    }
+    return out.sort();
+  };
   globalThis.__commandMetas = () =>
     [...commands.entries()].map(([name, e]) => ({
       name,

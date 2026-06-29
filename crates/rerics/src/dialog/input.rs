@@ -194,21 +194,36 @@ fn completion_prefix(before: &str) -> Option<(usize, String)> {
         let rev: String = s.chars().rev().take_while(|c| is_ident(*c)).collect();
         rev.chars().rev().collect()
     };
-    let prefix = trailing_ident(before);
-    // prefix は ASCII 識別子なのでバイト長＝文字数＝末尾位置の境界は妥当。
-    let head = before[..before.len() - prefix.len()].strip_suffix('.')?;
-    // ドットの手前が `r` か `rerics` ちょうど＝別名そのものを指すときだけ補完する。
-    if matches!(trailing_ident(head).as_str(), "r" | "rerics") {
-        Some((prefix.encode_utf16().count(), prefix))
-    } else {
-        None
+    let root_is = |s: &str| matches!(s, "r" | "rerics");
+    // 末尾の識別子。ASCII 識別子なのでバイト長＝文字数＝末尾位置の境界は妥当。
+    let ident = trailing_ident(before);
+    let head = before[..before.len() - ident.len()].strip_suffix('.')?;
+    // `r.<ident>`：ドットの手前が `r`/`rerics` そのもの＝1 階層のメンバアクセス。
+    let ns = trailing_ident(head);
+    if root_is(&ns) {
+        return Some((ident.encode_utf16().count(), ident));
     }
+    // `r.<ns>.<ident>`：名前空間 ns の手前が `r`/`rerics` そのもの＝2 階層。`fs.read` のように
+    // 名前空間込みの prefix を返し、候補（`fs.readText` 等）と前方一致させる。
+    let head2 = head[..head.len() - ns.len()].strip_suffix('.')?;
+    if ns.is_empty() || !root_is(&trailing_ident(head2)) {
+        return None;
+    }
+    let prefix = format!("{ns}.{ident}");
+    Some((prefix.encode_utf16().count(), prefix))
 }
 
 /// `members` から `prefix` に前方一致する候補を返す（大小無視・元の順序を保つ）。空 prefix は全件。
+/// 名前空間（`fs.readText` 等のドット付き）は prefix と同じ階層だけを返す＝prefix のドット数に
+/// 一致する候補へ絞る。これで `r.`（prefix 空）はトップレベルのみ、`r.fs.` は `fs.` 配下のみが出る。
 fn completion_candidates(members: &[String], prefix: &str) -> Vec<String> {
     let p = prefix.to_lowercase();
-    members.iter().filter(|m| m.to_lowercase().starts_with(&p)).cloned().collect()
+    let depth = prefix.matches('.').count();
+    members
+        .iter()
+        .filter(|m| m.to_lowercase().starts_with(&p) && m.matches('.').count() == depth)
+        .cloned()
+        .collect()
 }
 
 /// Edit のカレット位置（UTF-16 オフセット）を返す。winsafe の `em::GetSel` はポインタ出力の
@@ -1085,6 +1100,34 @@ mod tests {
         assert_eq!(completion_prefix("=current"), None);
         // r だけ（ドット未入力）はまだメンバアクセスでない。
         assert_eq!(completion_prefix("=r"), None);
+    }
+
+    #[test]
+    fn prefix_detects_namespace_member_access() {
+        // `r.<名前空間>.<識別子>` は名前空間込みの prefix を返す。
+        assert_eq!(completion_prefix("=r.fs.read"), Some((7, "fs.read".into())));
+        assert_eq!(completion_prefix("=r.fs."), Some((3, "fs.".into())));
+        assert_eq!(completion_prefix("=rerics.env.doc"), Some((7, "env.doc".into())));
+        // 名前空間の手前が r/rerics でなければ補完しない。
+        assert_eq!(completion_prefix("=foo.bar.baz"), None);
+    }
+
+    #[test]
+    fn candidates_keep_same_hierarchy_only() {
+        let members = vec![
+            "clipboard".to_string(),
+            "clipboard.getText".to_string(),
+            "clipboard.setText".to_string(),
+            "clearAll".to_string(),
+        ];
+        // トップレベル（prefix にドット無し）はドット付きメンバを含めない。
+        assert_eq!(completion_candidates(&members, "cl"), vec!["clipboard", "clearAll"]);
+        // 名前空間配下（prefix にドット）はその階層だけ。
+        assert_eq!(
+            completion_candidates(&members, "clipboard."),
+            vec!["clipboard.getText", "clipboard.setText"]
+        );
+        assert_eq!(completion_candidates(&members, "clipboard.s"), vec!["clipboard.setText"]);
     }
 
     #[test]

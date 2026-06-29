@@ -3481,6 +3481,32 @@ fn completion_popup_lists_members_and_inserts_on_accept() {
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
 
+/// 式エディタの補完は名前空間の中身まで降りる（2 階層）。`r.fs.` で `fs.readText` 等が候補に出て、
+/// 確定すると名前空間込みのメンバ名が挿入される。
+#[test]
+fn completion_descends_into_namespace_members() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
+    wait_modal(&server);
+    server.req("POST", "/settings/nav/5", "").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/openexpr", "").unwrap();
+    server.req("POST", "/modal/text", "").unwrap();
+
+    // `=r.fs.read` で名前空間 fs 配下の readText が候補に出る（トップレベルの混入はしない）。
+    server.req("POST", "/completion/keystrokes", "=r.fs.read").unwrap();
+    let comp = poll(&server, "/completion", |b| b.contains("fs.readText"));
+    assert!(comp.contains("fs.readText"), "名前空間メンバが補完候補に出る: {comp}");
+
+    // 確定＝prefix `fs.read` が名前空間込みのメンバ名 `fs.readText` へ置換される。
+    server.req("POST", "/completion/accept/0", "").unwrap();
+    let comp2 = poll(&server, "/completion", |b| b.contains(r#""text":"=r.fs.readText"#));
+    assert!(comp2.contains(r#""text":"=r.fs.readText"#), "確定で名前空間込み挿入: {comp2}");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
 /// 式エディタの `r.` 補完は、組込コマンドのメンバに引数シグネチャ＋説明（メタデータ由来）を
 /// 添えて見せる。非組込（host API・スクリプト関数）には付かない。
 #[test]
