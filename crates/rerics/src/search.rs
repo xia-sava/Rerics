@@ -11,6 +11,11 @@ use crate::task::{TaskControl, WorkerEvent};
 /// （完了時は件数に関わらず最終サマリへ確定する）。項目ごとの再描画を避けつつ進捗を出す。
 const SCAN_REPORT_EVERY: usize = 256;
 
+/// ライブ追加の起床通知を間引く件数の間隔。これだけ項目が増えるごとに `TASK_WAKE` を撒く
+/// （pump は1回で全 drain するので項目ごとに撒く必要はない）。中間項目は取り込みタイマ
+/// （50ms）が backstop になり、最後の取りこぼしは完了時の無条件 WAKE が確実に拾う。
+const WAKE_EVERY: usize = 64;
+
 /// 検索・比較ワーカーが各境界で呼ぶ続行判定。中断中はブロックして待ち、中止または
 /// アプリ終了が要求されていれば `true`（走査を打ち切る）を返す。
 fn search_cancelled(control: &TaskControl, shutdown: &AtomicBool) -> bool {
@@ -219,9 +224,12 @@ impl MainWindow {
             let found = std::cell::Cell::new(0usize);
             let count = {
                 let mut emit = |it| {
-                    found.set(found.get() + 1);
+                    let n = found.get() + 1;
+                    found.set(n);
                     let _ = tx.send(WorkerEvent::FindItem { id, is_left, item: it });
-                    crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
+                    if n.is_multiple_of(WAKE_EVERY) {
+                        crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
+                    }
                 };
                 let mut tick = || {
                     let n = scanned.get() + 1;
@@ -292,9 +300,12 @@ impl MainWindow {
             let found = std::cell::Cell::new(0usize);
             let counts = {
                 let mut emit = |it| {
-                    found.set(found.get() + 1);
+                    let n = found.get() + 1;
+                    found.set(n);
                     let _ = tx.send(WorkerEvent::FindItem { id, is_left, item: it });
-                    crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
+                    if n.is_multiple_of(WAKE_EVERY) {
+                        crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
+                    }
                 };
                 let mut tick = || {
                     let n = scanned.get() + 1;
