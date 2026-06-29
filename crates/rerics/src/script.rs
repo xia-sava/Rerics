@@ -70,8 +70,12 @@ pub struct Modifiers {
 /// テストはモックで記録する。`&self` で受けるのは V8 アイソレートと同一スレッドから
 /// 同期的に呼ばれるため。
 pub trait HostApi {
-    /// アプリのログ欄（実装依存）に指定レベルでメッセージを出す。
-    fn log(&self, level: rerics_core::LogLevel, msg: &str);
+    /// アプリのログ欄（実装依存）に指定レベルでメッセージを出し、その行の id を返す。id は
+    /// [`HostApi::log_update`] でその行をインプレース更新するのに使う（進捗の 1 行更新など）。
+    fn log(&self, level: rerics_core::LogLevel, msg: &str) -> u64;
+    /// [`HostApi::log`] が返した id の行を書き換える。`level` が `Some` なら表示色も差し替える
+    /// （`None` は据え置き）。投げっぱなしで、反映はタイマ駆動（同期往復しない＝連射でも詰まらない）。
+    fn log_update(&self, id: u64, level: Option<rerics_core::LogLevel>, msg: &str);
     /// ログ欄の全文を返す（行は `\r\n` 区切り・末尾にも改行）。
     fn log_text(&self) -> String;
     /// 設定値をドット区切りキーで読む（未知キーは `None`）。
@@ -275,8 +279,15 @@ fn parse_log_level(name: &str) -> rerics_core::LogLevel {
 }
 
 #[op2(fast)]
-fn op_log(state: &mut OpState, #[string] level: &str, #[string] msg: &str) {
-    state.borrow::<Host>().log(parse_log_level(level), msg);
+fn op_log(state: &mut OpState, #[string] level: &str, #[string] msg: &str) -> f64 {
+    state.borrow::<Host>().log(parse_log_level(level), msg) as f64
+}
+
+/// `op_log` が返した id の行をインプレース更新する。`level` が空文字なら色は据え置き。
+#[op2(fast)]
+fn op_log_update(state: &mut OpState, id: f64, #[string] level: &str, #[string] msg: &str) {
+    let level = if level.is_empty() { None } else { Some(parse_log_level(level)) };
+    state.borrow::<Host>().log_update(id as u64, level, msg);
 }
 
 #[op2]
@@ -1013,6 +1024,7 @@ extension!(
     rerics_ext,
     ops = [
         op_log,
+        op_log_update,
         op_log_text,
         op_version,
         op_str_conv,
@@ -1209,11 +1221,22 @@ const BOOTSTRAP: &str = r#"
     }
     return new RegExp(re + "$");
   };
+  // log/info/warning/error は出した行のハンドルを返す。普段は戻り値を捨てるが、受け取って
+  // update(text, level?) を呼ぶとその行をインプレースで書き換えられる（進捗の 1 行更新など）。
+  // 第2引数を渡すと表示色（レベル）も差し替える。反映はタイマ駆動で、連射でも詰まらない。
+  const logLine = (level, m) => {
+    const id = ops.op_log(level, String(m));
+    return {
+      update: (text, lvl) => {
+        ops.op_log_update(id, lvl == null ? "" : String(lvl), String(text));
+      },
+    };
+  };
   globalThis.rerics = {
-    log: (m) => ops.op_log("normal", String(m)),
-    info: (m) => ops.op_log("info", String(m)),
-    warning: (m) => ops.op_log("warning", String(m)),
-    error: (m) => ops.op_log("error", String(m)),
+    log: (m) => logLine("normal", m),
+    info: (m) => logLine("info", m),
+    warning: (m) => logLine("warning", m),
+    error: (m) => logLine("error", m),
     getLog: () => ops.op_log_text(),
     version: () => ops.op_version(),
     config: (key) => {
@@ -1825,11 +1848,21 @@ mod tests {
         clipboard: RefCell<String>,
         /// 直近の `prompt()` が受けた `select_all`（オプション伝播の検証用）。
         prompt_select_all: std::cell::Cell<bool>,
+        /// `log()` が次に払い出す行 id（呼ぶたびに増える）。
+        log_id_seq: std::cell::Cell<u64>,
+        /// `log_update()` が受けた `(id, text)` の記録（インプレース更新の検証用）。
+        log_updates: RefCell<Vec<(u64, String)>>,
     }
 
     impl HostApi for MockHost {
-        fn log(&self, _level: rerics_core::LogLevel, m: &str) {
+        fn log(&self, _level: rerics_core::LogLevel, m: &str) -> u64 {
             self.logs.borrow_mut().push(m.to_string());
+            let id = self.log_id_seq.get();
+            self.log_id_seq.set(id + 1);
+            id
+        }
+        fn log_update(&self, id: u64, _level: Option<rerics_core::LogLevel>, m: &str) {
+            self.log_updates.borrow_mut().push((id, m.to_string()));
         }
         fn log_text(&self) -> String {
             self.logs.borrow().iter().map(|l| format!("{l}\r\n")).collect()
@@ -3254,6 +3287,25 @@ mod tests {
         eng.run_to_completion("test:unpack-progress", code).unwrap();
         assert_eq!(*host.logs.borrow(), vec!["n=2".to_string(), "progress=2".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn log_returns_handle_and_update_rewrites_line() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:log-update",
+            r#"
+              const line = rerics.log("a");
+              line.update("b");
+              rerics.info("c");
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        // 出力された行は a（id 0）と c（id 1）。update は a の行（id 0）を b へ書き換える。
+        assert_eq!(*host.logs.borrow(), vec!["a".to_string(), "c".to_string()]);
+        assert_eq!(*host.log_updates.borrow(), vec![(0u64, "b".to_string())]);
     }
 
     #[test]

@@ -4382,6 +4382,22 @@ fn parallel_worker_can_call_host_and_return() {
     assert!(log.contains("MAIN-GOT-42"), "ワーカーの戻り値がメインへ返るはず: {log}");
 }
 
+/// ログ行ハンドル：`r.log` が返すハンドルの `update` が、その行をインプレースで書き換える。
+/// 追記ではなく書き換えなので、更新後は元の本文が消えて新しい本文だけが残る。
+#[test]
+fn log_line_handle_update_rewrites_in_place() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"rerics.log("LOGLINE-before").update("LOGLINE-after");"#,
+        )
+        .expect("eval");
+    let log = poll(&server, "/state/log", |b| b.contains("LOGLINE-after"));
+    assert!(!log.contains("LOGLINE-before"), "同じ行が書き換わり元の本文は残らない: {log}");
+}
+
 /// キーバインド経路：登録コマンドの呼び出し式（`r.goUp()`）が `exec` からエンジンへ流れ、実行される。
 /// 登録コマンドがアクティブペインを移動させ、UI に反映されることで配線を検証する。
 #[test]

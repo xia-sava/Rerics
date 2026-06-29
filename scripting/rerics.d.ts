@@ -263,20 +263,41 @@ interface RericsProcessResult {
 type CommandResult = string | number | boolean | null;
 
 /**
+ * ログ行のレベル（表示色）。`RericsLogLine.update` の第2引数で使う。
+ */
+type RericsLogLevel = "normal" | "info" | "warning" | "error";
+
+/**
+ * `log` / `info` / `warning` / `error` が返すログ行のハンドル。普段は受け取らずに捨ててよい。
+ * 受け取って `update` を呼ぶと、その行を**インプレースで書き換える**（追記ではない）。進捗の
+ * 1 行更新などに使う。反映はタイマ駆動で、連続更新でも描画が詰まらない。
+ *
+ * ```ts
+ * const line = r.log("展開中…");
+ * await r.unpack(src, dst, { onProgress: (p) => line.update("展開中: " + p.text) });
+ * r.info("展開終了"); // 終了は別の行として出す
+ * ```
+ */
+interface RericsLogLine {
+  /** この行の本文を書き換える。`level` を渡すと表示色（レベル）も差し替える。 */
+  update(text: string, level?: RericsLogLevel): void;
+}
+
+/**
  * Rerics 本体が提供するホスト API（グローバル `rerics`／短縮 `r`）。
  */
 interface RericsApi {
-  /** アプリのログ欄へ通常レベルで出す。 */
-  log(message: string): void;
+  /** アプリのログ欄へ通常レベルで出し、その行のハンドルを返す（`RericsLogLine`）。 */
+  log(message: string): RericsLogLine;
 
-  /** ログ欄へ情報レベルで出す（太字）。 */
-  info(message: string): void;
+  /** ログ欄へ情報レベルで出す（太字）。行のハンドルを返す。 */
+  info(message: string): RericsLogLine;
 
-  /** ログ欄へ警告レベルで出す。 */
-  warning(message: string): void;
+  /** ログ欄へ警告レベルで出す。行のハンドルを返す。 */
+  warning(message: string): RericsLogLine;
 
-  /** ログ欄へエラーレベルで出す（太字）。 */
-  error(message: string): void;
+  /** ログ欄へエラーレベルで出す（太字）。行のハンドルを返す。 */
+  error(message: string): RericsLogLine;
 
   /** ログ欄の全文を返す（行は `\r\n` 区切り・末尾にも改行）。 */
   getLog(): string;

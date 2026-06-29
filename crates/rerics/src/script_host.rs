@@ -9,6 +9,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
@@ -30,7 +31,7 @@ use crate::winutil::msg::SCRIPT_WAKE;
 
 /// エンジンスレッド → UI スレッドへの要求（[`HostApi`] の各操作）。
 pub enum HostCall {
-    Log { level: LogLevel, text: String },
+    Log { id: u64, level: LogLevel, text: String },
     GetLog,
     ConfigGet(String),
     ChangeOpposite { kind: String, path: String },
@@ -186,16 +187,26 @@ struct GuiHost {
     queue: ScriptQueue,
     hwnd_ptr: isize,
     worker_isolates: WorkerIsolates,
+    task_tx: Sender<WorkerEvent>,
+    /// ログ行 id の採番元（本体の進捗行と id 空間を共有して衝突を避ける）。
+    progress_seq: Arc<AtomicU64>,
 }
 
 impl HostApi for GuiHost {
-    fn log(&self, level: LogLevel, msg: &str) {
+    fn log(&self, level: LogLevel, msg: &str) -> u64 {
+        let id = self.progress_seq.fetch_add(1, Ordering::Relaxed);
         let _ = ui_marshal::call(
             &self.queue,
             self.hwnd_ptr,
             SCRIPT_WAKE.raw(),
-            HostCall::Log { level, text: msg.to_string() },
+            HostCall::Log { id, level, text: msg.to_string() },
         );
+        id
+    }
+
+    fn log_update(&self, id: u64, level: Option<LogLevel>, msg: &str) {
+        // 投げっぱなしでタスクタイマ経由に流す（本体の update_progress と同じ経路・同期往復しない）。
+        let _ = self.task_tx.send(WorkerEvent::LogUpdate { id, level, text: msg.to_string() });
     }
 
     fn log_text(&self) -> String {
@@ -555,20 +566,30 @@ pub fn spawn_engine(
     cmd_rx: Receiver<EngineCmd>,
     task_tx: Sender<WorkerEvent>,
     worker_isolates: WorkerIsolates,
+    progress_seq: Arc<AtomicU64>,
 ) {
     std::thread::spawn(move || {
         let factory_queue = queue.clone();
         let factory_workers = worker_isolates.clone();
-        let host: Rc<dyn HostApi> =
-            Rc::new(GuiHost { queue, hwnd_ptr, worker_isolates });
+        let factory_tx = task_tx.clone();
+        let factory_seq = progress_seq.clone();
+        let host: Rc<dyn HostApi> = Rc::new(GuiHost {
+            queue,
+            hwnd_ptr,
+            worker_isolates,
+            task_tx: task_tx.clone(),
+            progress_seq,
+        });
         let mut engine = script::Engine::new(host.clone());
-        // 並列ワーカーは各スレッド内で UI へマーシャルするホストを建て直す（queue・登録簿とも Arc・
-        // hwnd_ptr は isize でいずれも Send なので、生成器ごとスレッドへ渡せる）。
+        // 並列ワーカーは各スレッド内で UI へマーシャルするホストを建て直す（queue・登録簿・送信口・
+        // 採番元はいずれも Arc/Sender で Send なので、生成器ごとスレッドへ渡せる）。
         engine.set_worker_factory(std::sync::Arc::new(move || -> script::Host {
             Rc::new(GuiHost {
                 queue: factory_queue.clone(),
                 hwnd_ptr,
                 worker_isolates: factory_workers.clone(),
+                task_tx: factory_tx.clone(),
+                progress_seq: factory_seq.clone(),
             })
         }));
         // 停止（強制終了）に使う isolate ハンドルを UI へ渡す。タスク取り込みタイマがまだ
@@ -669,13 +690,8 @@ impl MainWindow {
             let item = self.script.queue.lock().unwrap().pop_front();
             let Some((req, tx)) = item else { break };
             match req {
-                HostCall::Log { level, text } => {
-                    match level {
-                        LogLevel::Normal => self.log.normal(&text),
-                        LogLevel::Info => self.log.info(&text),
-                        LogLevel::Warning => self.log.warn(&text),
-                        LogLevel::Error => self.log.error(&text),
-                    }
+                HostCall::Log { id, level, text } => {
+                    self.log.push_with_id(id, level, &text);
                     let _ = tx.send(HostResp::Done);
                 }
                 HostCall::GetLog => {
@@ -1099,6 +1115,7 @@ impl MainWindow {
                 cmd_rx,
                 self.task_tx.clone(),
                 self.script_worker_isolates.clone(),
+                self.progress_seq.clone(),
             );
         }
     }
