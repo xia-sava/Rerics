@@ -111,11 +111,28 @@ impl MainWindow {
                 e.control.stop();
             }
         }
+        // 旧タスクの復元位置を引き継がない（追い越された再検索の refocus が新検索へ漏れて
+        // カーソルを誤誘導するのを防ぐ）。再検索で残したい場合は呼び側が起動後に再設定する。
+        self.find_refocus.borrow_mut()[idx] = None;
         let control = Arc::new(TaskControl::new());
         let id = self.next_id();
         self.register_task(id, text, desc, control.clone())?;
         self.find_task.borrow_mut()[idx] = Some(id);
         Ok((id, control))
+    }
+
+    /// 指定側で走行中の検索／比較タスクがあれば止め、結果一覧まわりのスロットを片付ける。
+    /// 結果一覧から実ディレクトリへ離脱したときに呼ぶ。これを怠ると、遅れて届く
+    /// `FindDone`/`FindBegin` が通常一覧へ干渉する（カーソル飛び・列詰め・結果モード復帰）。
+    pub(crate) fn cancel_find_task(&self, is_left: bool) {
+        let idx = if is_left { 0 } else { 1 };
+        if let Some(id) = self.find_task.borrow_mut()[idx].take() {
+            let tasks = self.tasks.borrow();
+            if let Some(e) = tasks.iter().find(|e| e.id == id) {
+                e.control.stop();
+            }
+        }
+        self.find_refocus.borrow_mut()[idx] = None;
     }
 
     /// 条件ダイアログ（名前・日付・サイズ）を出し、OK ならその条件でファイル検索を実行する。
@@ -164,11 +181,12 @@ impl MainWindow {
             Some(name) => crate::Refocus::Name(name.to_owned()),
             None => crate::Refocus::Index(self.view(is_left).state().borrow().cursor),
         };
-        self.find_refocus.borrow_mut()[idx] = Some(refocus);
+        // 退避はタスク起動後に行う（start_find_task が refocus をリセットするため、その後に置く）。
         match query {
             crate::FindQuery::Find(opts) => self.run_find_file(is_left, opts),
             crate::FindQuery::Compare(opts) => self.run_directory_compare(is_left, opts),
         }
+        self.find_refocus.borrow_mut()[idx] = Some(refocus);
         true
     }
 

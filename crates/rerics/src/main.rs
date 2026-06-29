@@ -1750,6 +1750,7 @@ impl MainWindow {
             None => items,
         };
         let pr = view.page_rows();
+        let mut left_find_result = false;
         {
             let state = view.state();
             let mut s = state.borrow_mut();
@@ -1758,6 +1759,7 @@ impl MainWindow {
                 s.find_result = false;
                 s.columns = self.config.borrow().columns.clone();
                 self.find_query.borrow_mut()[if is_left { 0 } else { 1 }] = None;
+                left_find_result = true;
             }
             s.items = items;
             let sort = s.sort_type;
@@ -1798,6 +1800,11 @@ impl MainWindow {
                     }
                 }
             }
+        }
+        // 結果一覧から実ディレクトリへ離脱した側は、走行中の検索タスクを止めてスロットを
+        // 片付ける（遅れて届く FindDone/FindBegin が通常一覧へ干渉しないように）。
+        if left_find_result {
+            self.cancel_find_task(is_left);
         }
         view.autofit_columns()?;
         view.refresh()?;

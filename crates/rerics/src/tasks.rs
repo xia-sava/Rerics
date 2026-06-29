@@ -241,9 +241,9 @@ impl MainWindow {
                                 }
                                 crate::Refocus::Index(i) => {
                                     s.set_cursor(i as isize, pr);
-                                    s.select_start = s.cursor;
                                 }
                             }
+                            s.select_start = s.cursor;
                         }
                         self.update_selected_info(is_left);
                         find_dirty[idx] = true;
