@@ -238,10 +238,23 @@ pub fn open_archive(path: &Path) -> io::Result<Box<dyn ArchiveBackend>> {
 /// 無ければ作る。エントリ名は [`ArchiveBackend::extract_all`] の `safe_join` で zip-slip を
 /// 弾く。UI も確認も伴わない programmatic な一括展開（スクリプトの `unpack` の実体）。
 pub fn extract_all_to(backend: &dyn ArchiveBackend, dest: &Path) -> io::Result<u64> {
+    extract_all_to_progress(backend, dest, &mut |_, _, _| {})
+}
+
+/// 書庫の全エントリを `dest` 配下へ展開し、展開した件数を返す。各エントリの取り出しごとに
+/// `on_entry(name, done, total)` を呼ぶ（`name`＝書庫内パス・`done`/`total`＝backend が数えられた
+/// 場合の進捗で、順次 tar 等の事前に総数を数えられない backend では `total` は 0）。進捗が要らない
+/// なら [`extract_all_to`]。
+pub fn extract_all_to_progress(
+    backend: &dyn ArchiveBackend,
+    dest: &Path,
+    on_entry: &mut dyn FnMut(&str, u64, u64),
+) -> io::Result<u64> {
     std::fs::create_dir_all(dest)?;
     let mut count = 0u64;
-    backend.extract_all(dest, &mut |_inner, _done, _total| {
+    backend.extract_all(dest, &mut |inner, done, total| {
         count += 1;
+        on_entry(inner, done, total);
         true
     })?;
     Ok(count)

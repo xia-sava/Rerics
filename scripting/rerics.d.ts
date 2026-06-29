@@ -527,15 +527,20 @@ interface RericsApi {
    * 返す（UI も確認も出さない裏処理）。`dst` は無ければ作る。`..` を含む細工エントリは弾く
    * （zip-slip 対策）。対応形式は本体と同じ（zip / 7z / tar 系 / 単体圧縮 など）。`await` して使う。
    *
+   * 既定では何もログを出さない。`options.onProgress` を渡すと、エントリを 1 つ取り出すごとに
+   * 進捗（`text`＝書庫内のエントリ名）が来るので、出したいログは自分で出せる（copy/move と同じ形）。
+   *
    * 選択した項目を画面付きで取り出したいときは内蔵コマンド `extract` を使う。
    *
    * ```ts
-   * const n = await rerics.unpack("C:\\dl\\pkg.zip", rerics.activePane().dir + "\\pkg");
+   * const n = await rerics.unpack("C:\\dl\\pkg.zip", rerics.activePane().dir + "\\pkg", {
+   *   onProgress: (p) => rerics.info("展開中: " + p.text),
+   * });
    * rerics.log(`${n} 件展開した`);
    * rerics.navigate(rerics.activePane().dir); // 表示を更新したいなら明示的に
    * ```
    */
-  unpack(src: string, dst: string): Promise<number>;
+  unpack(src: string, dst: string, options?: RericsOpOptions): Promise<number>;
 
   /**
    * 関数 `fn` を別スレッド＋別 V8 アイソレートで本当に並列に実行し、戻り値を `await` で受け取る。

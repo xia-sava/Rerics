@@ -29,16 +29,23 @@ pub struct JobEvent {
     pub error: Option<String>,
     /// 進捗イベントの本文（`done=false` 時のみ）。
     pub progress: Option<ProgressInfo>,
+    /// 完了イベントが運ぶ結果件数（`unpack` の展開件数など・持たない操作は None）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<u64>,
 }
 
 impl JobEvent {
     /// 進捗イベント。
     pub fn progress(text: String) -> Self {
-        Self { done: false, error: None, progress: Some(ProgressInfo { text }) }
+        Self { done: false, error: None, progress: Some(ProgressInfo { text }), count: None }
     }
     /// 完了イベント（`err`＝失敗/中止の理由・成功は None）。
     pub fn done(err: Option<String>) -> Self {
-        Self { done: true, error: err, progress: None }
+        Self { done: true, error: err, progress: None, count: None }
+    }
+    /// 結果件数付きの完了イベント（成功・`unpack` 用）。
+    pub fn done_count(count: u64) -> Self {
+        Self { done: true, error: None, progress: None, count: Some(count) }
     }
 }
 
@@ -252,6 +259,10 @@ struct WorkerSupport {
 
 /// 並列ワーカーの一意な id を採番する（停止対象レジストリの鍵）。プロセス内で単調増加。
 static NEXT_WORKER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// `unpack` のジョブトークンを採番する。`JobReceivers` は copy/move/delete のホスト発トークン
+/// （タスク id・低位から増える）と鍵を共有するので、衝突しないよう最上位ビット側から採番する。
+static NEXT_UNPACK_TOKEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x8000_0000);
 
 /// ログレベル名（`info`/`warning`/`error`）を [`rerics_core::LogLevel`] へ。未知は `Normal`。
 fn parse_log_level(name: &str) -> rerics_core::LogLevel {
@@ -792,24 +803,35 @@ async fn op_run(
     .map_err(deno_error::JsErrorBox::generic)
 }
 
-/// 書庫 `src` の全エントリを `dst` 配下へ展開し、展開したファイル数を返す非同期 op。UI も
-/// 確認も伴わず、`dst` は無ければ作る（zip-slip 防御は extract_all 側）。重い展開はブロッキング
-/// プールへ逃がす（`op_list_dir` と同じ形）。GUI に触れないのでホストを介さない。
-#[op2(async(lazy), nofast)]
-async fn op_unpack(
-    #[string] src: String,
-    #[string] dst: String,
-) -> Result<u32, deno_error::JsErrorBox> {
-    tokio::task::spawn_blocking(move || {
-        let backend = rerics_core::open_archive(std::path::Path::new(&src))
-            .map_err(|e| format!("書庫を開けません [{src}]: {e}"))?;
-        rerics_core::extract_all_to(&*backend, std::path::Path::new(&dst))
-            .map(|n| n as u32)
+/// 書庫 `src` の全エントリを `dst` 配下へ展開する操作を起動する同期 op。展開はワーカースレッドで
+/// 走らせ、エントリごとに進捗イベントを、完了時に展開件数付きの完了イベントを `JobReceivers` へ流す
+/// （`op_op_next` で 1 件ずつ取り出す＝copy/move/delete と同じストリーム）。返すトークンは
+/// ホストのタスク id と衝突しないよう高位側（最上位ビット）から採番する。UI も確認も伴わず、`dst`
+/// は無ければ作る（zip-slip 防御は extract_all 側）。GUI に触れないのでホストを介さない。
+#[op2(fast)]
+fn op_unpack_start(state: &mut OpState, #[string] src: String, #[string] dst: String) -> u32 {
+    let token = NEXT_UNPACK_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<JobEvent>();
+    state.borrow::<JobReceivers>().borrow_mut().insert(token as u64, rx);
+    std::thread::spawn(move || {
+        let result = (|| {
+            let backend = rerics_core::open_archive(std::path::Path::new(&src))
+                .map_err(|e| format!("書庫を開けません [{src}]: {e}"))?;
+            rerics_core::extract_all_to_progress(
+                &*backend,
+                std::path::Path::new(&dst),
+                &mut |name, _done, _total| {
+                    let _ = tx.send(JobEvent::progress(name.to_string()));
+                },
+            )
             .map_err(|e| format!("展開に失敗しました [{src}]: {e}"))
-    })
-    .await
-    .map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?
-    .map_err(deno_error::JsErrorBox::generic)
+        })();
+        let _ = tx.send(match result {
+            Ok(count) => JobEvent::done_count(count),
+            Err(message) => JobEvent::done(Some(message)),
+        });
+    });
+    token
 }
 
 /// ワーカースレッドの中身：専有のアイソレートで関数ソースを引数付きに実行し、戻り値の JSON を
@@ -1027,7 +1049,7 @@ extension!(
         op_spawn,
         op_execute,
         op_run,
-        op_unpack,
+        op_unpack_start,
         op_parallel,
         op_fs_read_text,
         op_fs_write_text,
@@ -1118,26 +1140,29 @@ const BOOTSTRAP: &str = r#"
   // 例外にし、op_op_next を完了まで回す（進捗は onProgress へ・失敗/中止は reject）。
   // items が配列なら明示ベース（items＝パス配列・dest＝行き先）、null なら選択ベース。
   // opts.onProgress があれば進捗ごとに呼ぶ。
+  // トークンの操作のイベントを完了まで吸い出す。進捗は onProgress へ渡し、失敗/中止は reject、
+  // 完了で resolve（完了イベントの count を返す＝unpack の件数・持たない操作は undefined）。
+  const drainJob = async (token, onProgress) => {
+    for (;;) {
+      const ev = await ops.op_op_next(token);
+      if (!ev.done) {
+        if (onProgress && ev.progress) {
+          try {
+            onProgress(ev.progress);
+          } catch (e) {
+            rerics.log("onProgress error: " + ((e && e.stack) || e));
+          }
+        }
+        continue;
+      }
+      if (ev.error != null) throw new Error(ev.error);
+      return ev.count;
+    }
+  };
   const startOp = (kind, items, dest, opts) => {
     const onProgress = opts && typeof opts.onProgress === "function" ? opts.onProgress : null;
     const token = ops.op_op_start(kind, (items || []).map(String), dest == null ? "" : String(dest));
-    const job = (async () => {
-      for (;;) {
-        const ev = await ops.op_op_next(token);
-        if (!ev.done) {
-          if (onProgress && ev.progress) {
-            try {
-              onProgress(ev.progress);
-            } catch (e) {
-              rerics.log("onProgress error: " + ((e && e.stack) || e));
-            }
-          }
-          continue;
-        }
-        if (ev.error != null) throw new Error(ev.error);
-        return;
-      }
-    })();
+    const job = drainJob(token, onProgress);
     job.cancel = () => ops.op_op_cancel(token);
     return job;
   };
@@ -1339,7 +1364,11 @@ const BOOTSTRAP: &str = r#"
     },
     execute: (path, params) =>
       ops.op_execute(String(path), params == null ? "" : String(params), ops.op_current_dir()),
-    unpack: (src, dst) => ops.op_unpack(String(src), String(dst)),
+    unpack: (src, dst, opts) => {
+      const onProgress = opts && typeof opts.onProgress === "function" ? opts.onProgress : null;
+      const token = ops.op_unpack_start(String(src), String(dst));
+      return drainJob(token, onProgress);
+    },
     // 関数を別スレッド＋別アイソレートで本当に並列に実行する。fn は関数か関数ソース文字列で、
     // 捕捉した外側の変数は渡らず arg だけが渡る（別アイソレートのため・worker_threads と同じ制約）。
     // arg は JSON 化して渡し、戻り値も JSON 化されて返る（JSON 化できない値は失われる）。await で
@@ -3199,6 +3228,31 @@ mod tests {
             *host.logs.borrow(),
             vec!["n=2".to_string(), "a=AAA".to_string(), "c=CCC".to_string()]
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unpack_reports_progress_per_entry() {
+        let dir = std::env::temp_dir().join(format!("rerics-unpack-prog-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let zip = dir.join("arc.zip");
+        write_stored_zip(&zip, &[("a.txt", b"AAA"), ("sub/c.txt", b"CCC")]);
+        let zip_p = zip.display().to_string().replace('\\', "/");
+        let dst_p = dir.join("out").display().to_string().replace('\\', "/");
+
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        let code = format!(
+            r#"(async () => {{
+                 const seen = [];
+                 const n = await rerics.unpack("{zip_p}", "{dst_p}", {{ onProgress: (p) => seen.push(p.text) }});
+                 rerics.log("n=" + n);
+                 rerics.log("progress=" + seen.length);
+               }})();"#
+        );
+        eng.run_to_completion("test:unpack-progress", code).unwrap();
+        assert_eq!(*host.logs.borrow(), vec!["n=2".to_string(), "progress=2".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
