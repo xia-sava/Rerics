@@ -79,11 +79,15 @@ impl LogState {
     }
 
     /// `id` 付きの行の本文を書き換える（[`Self::push_with_id`] で追加した行）。
+    /// `level` が `Some` ならレベル（表示色）も差し替える（`None` は据え置き）。
     /// 該当行が無ければ（トリムで消えた等）何もしない。
-    pub fn update(&mut self, id: u64, text: &str) {
+    pub fn update(&mut self, id: u64, level: Option<LogLevel>, text: &str) {
         let body = text.trim_end_matches('\r').trim_end().to_owned();
         if let Some(line) = self.lines.iter_mut().rev().find(|l| l.id == Some(id)) {
             line.text = body;
+            if let Some(level) = level {
+                line.level = level;
+            }
         }
     }
 
@@ -186,18 +190,21 @@ mod tests {
         let mut s = LogState::new();
         s.push(LogLevel::Normal, "Copy a.bin");
         s.push_with_id(7, LogLevel::Normal, "Copy b.bin");
-        s.update(7, "Copy b.bin 50%");
+        s.update(7, None, "Copy b.bin 50%");
         assert_eq!(s.lines[0].text, "Copy a.bin");
         assert_eq!(s.lines[1].text, "Copy b.bin 50%");
-        s.update(7, "Copy b.bin");
+        s.update(7, None, "Copy b.bin");
         assert_eq!(s.lines[1].text, "Copy b.bin");
+        // level を与えると表示色（レベル）も差し替わる。
+        s.update(7, Some(LogLevel::Warning), "Copy b.bin 中止");
+        assert_eq!(s.lines[1].level, LogLevel::Warning);
     }
 
     #[test]
     fn update_missing_id_is_noop() {
         let mut s = LogState::new();
         s.push(LogLevel::Normal, "Copy a.bin");
-        s.update(99, "ignored");
+        s.update(99, None, "ignored");
         assert_eq!(s.count(), 1);
         assert_eq!(s.lines[0].text, "Copy a.bin");
     }

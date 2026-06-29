@@ -136,8 +136,9 @@ pub enum WorkerEvent {
     Log { level: LogLevel, text: String },
     /// インプレース更新できる `id` 付きの行を追記する（進捗行の開始）。
     LogLine { id: u64, level: LogLevel, text: String },
-    /// `id` 付き行の本文を書き換える（進捗の更新・確定）。
-    LogUpdate { id: u64, text: String },
+    /// `id` 付き行の本文を書き換える（進捗の更新・確定）。`level` が `Some` のとき
+    /// レベル（表示色）も差し替える（`None` は据え置き）。
+    LogUpdate { id: u64, level: Option<LogLevel>, text: String },
     /// 同名衝突の解決を UI に問い合わせる（回答を `reply` で受け取る）。
     AskConflict { name: String, reply: Sender<ConflictReply> },
     /// 属性付きファイルの削除可否を UI に問い合わせる。
@@ -181,8 +182,9 @@ pub enum WorkerEvent {
     FindBegin { id: u64, is_left: bool },
     /// 検索・比較で見つかった項目を1件、結果一覧へ追記する。
     FindItem { id: u64, is_left: bool, item: rerics_core::FileItem },
-    /// 検索・比較の完了。件数サマリをログに出し、タスクを登録解除する。
-    FindDone { id: u64, is_left: bool, summary: String, cancelled: bool },
+    /// 検索・比較の完了。タスクを登録解除する。件数サマリはワーカーが進捗行
+    /// （`LogLine`/`LogUpdate`）を最終サマリへ確定させて表示する。
+    FindDone { id: u64, is_left: bool },
     /// スクリプトエンジン起動完了。停止（強制終了）に使う isolate ハンドルを UI へ渡す。
     ScriptEngineReady { handle: deno_core::v8::IsolateHandle },
     /// スクリプト実行の開始。指定の表示名でスクリプトタスクを登録する（直列実行＝同時に
@@ -275,7 +277,11 @@ impl OperationHost for ChannelHost {
     }
 
     fn update_progress(&self, handle: ProgressHandle, text: &str) {
-        let _ = self.tx.send(WorkerEvent::LogUpdate { id: handle.0, text: text.to_owned() });
+        let _ = self.tx.send(WorkerEvent::LogUpdate {
+            id: handle.0,
+            level: None,
+            text: text.to_owned(),
+        });
         self.emit_script_progress(text);
     }
 

@@ -102,6 +102,7 @@ fn compare_dir(
         if sink.is_cancelled() {
             return;
         }
+        sink.tick();
         match (a.get(i), b.get(j)) {
             (None, None) => break,
             (Some(fa), Some(fb)) => {
@@ -416,6 +417,7 @@ mod tests {
         let counts = directory_compare(src, dst, opts, &mut Sink {
             emit: &mut |it| items.push(it),
             cancelled: &|| false,
+            progress: &mut || {},
         });
         (items, counts)
     }
@@ -469,6 +471,7 @@ mod tests {
                 seen.set(seen.get() + 1);
             },
             cancelled: &|| seen.get() >= 1,
+            progress: &mut || {},
         });
         assert_eq!(items.len(), 1, "最初の1件で打ち切る: {:?}", names_info(&items));
     }

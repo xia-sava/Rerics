@@ -123,8 +123,8 @@ impl MainWindow {
                 WorkerEvent::LogLine { id, level, text } => {
                     self.log.push_with_id(id, level, &text);
                 }
-                WorkerEvent::LogUpdate { id, text } => {
-                    self.log.update(id, &text);
+                WorkerEvent::LogUpdate { id, level, text } => {
+                    self.log.update(id, level, &text);
                 }
                 WorkerEvent::AskConflict { name, reply } => {
                     self.in_dialog.set(true);
@@ -221,17 +221,13 @@ impl MainWindow {
                         find_dirty[idx] = true;
                     }
                 }
-                WorkerEvent::FindDone { id, is_left, summary, cancelled } => {
+                WorkerEvent::FindDone { id, is_left } => {
                     // タスク登録解除は id 一致で必ず行う（追い越された旧タスクの後始末も）。
                     self.tasks.borrow_mut().retain(|e| e.id != id);
                     let idx = if is_left { 0 } else { 1 };
                     if self.find_task.borrow()[idx] == Some(id) {
                         self.find_task.borrow_mut()[idx] = None;
-                        if cancelled {
-                            self.log.warn(&summary);
-                        } else {
-                            self.log.info(&summary);
-                        }
+                        // 件数サマリはワーカーが進捗行を確定させて表示済み。
                         // 確定後の列幅を内容に合わせる。
                         self.view(is_left).autofit_columns()?;
                         // 操作後リフレッシュ・リネーム後の再検索では、完了時にカーソルを戻す。

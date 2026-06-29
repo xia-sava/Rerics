@@ -80,6 +80,7 @@ fn walk(dir: &Location, opts: &FindOptions, base: &str, sink: &mut Sink, count: 
         if sink.is_cancelled() {
             return;
         }
+        sink.tick();
         if matches(it, opts) {
             *count += 1;
             let mut item = it.clone();
@@ -183,6 +184,7 @@ mod tests {
         let count = find_file(root, opts, &mut Sink {
             emit: &mut |it| items.push(it),
             cancelled: &|| false,
+            progress: &mut || {},
         });
         (items, count)
     }
@@ -231,6 +233,7 @@ mod tests {
                 seen.set(seen.get() + 1);
             },
             cancelled: &|| seen.get() >= 1,
+            progress: &mut || {},
         });
         assert_eq!(items.len(), 1, "最初の1件で打ち切る: {:?}", names(&items));
         assert_eq!(count, 1);

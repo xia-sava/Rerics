@@ -3,8 +3,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use winsafe::{self as w, co, gui, prelude::*};
+use rerics_core::LogLevel;
 use crate::MainWindow;
 use crate::task::{TaskControl, WorkerEvent};
+
+/// 進捗行を更新する走査件数の間隔。これだけ走査するごとに「走査N件…」を書き換える
+/// （完了時は件数に関わらず最終サマリへ確定する）。項目ごとの再描画を避けつつ進捗を出す。
+const SCAN_REPORT_EVERY: usize = 256;
 
 /// 検索・比較ワーカーが各境界で呼ぶ続行判定。中断中はブロックして待ち、中止または
 /// アプリ終了が要求されていれば `true`（走査を打ち切る）を返す。
@@ -183,26 +188,49 @@ impl MainWindow {
         let tx = self.task_tx.clone();
         let shutdown = self.shutdown.clone();
         let wake = self.wnd.hwnd().ptr() as isize;
+        let pid = self.progress_seq.fetch_add(1, Ordering::Relaxed);
         std::thread::spawn(move || {
             let _ = tx.send(WorkerEvent::FindBegin { id, is_left });
+            let _ = tx.send(WorkerEvent::LogLine {
+                id: pid,
+                level: LogLevel::Info,
+                text: "ファイル検索中… 走査 0件 該当 0件".to_owned(),
+            });
             crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
+            let scanned = std::cell::Cell::new(0usize);
+            let found = std::cell::Cell::new(0usize);
             let count = {
                 let mut emit = |it| {
+                    found.set(found.get() + 1);
                     let _ = tx.send(WorkerEvent::FindItem { id, is_left, item: it });
                     crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
                 };
+                let mut tick = || {
+                    let n = scanned.get() + 1;
+                    scanned.set(n);
+                    if n.is_multiple_of(SCAN_REPORT_EVERY) {
+                        let _ = tx.send(WorkerEvent::LogUpdate {
+                            id: pid,
+                            level: None,
+                            text: format!("ファイル検索中… 走査 {n}件 該当 {}件", found.get()),
+                        });
+                        crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
+                    }
+                };
                 let cancelled = || search_cancelled(&control, &shutdown);
-                let mut sink =
-                    rerics_core::Sink { emit: &mut emit, cancelled: &cancelled };
+                let mut sink = rerics_core::Sink {
+                    emit: &mut emit,
+                    cancelled: &cancelled,
+                    progress: &mut tick,
+                };
                 rerics_core::find_file(&root, &opts, &mut sink)
             };
             let cancelled = control.is_stopped() || shutdown.load(Ordering::Relaxed);
-            let summary = if cancelled {
-                format!("検索中止 {count}件")
-            } else {
-                format!("検索結果 {count}件")
-            };
-            let _ = tx.send(WorkerEvent::FindDone { id, is_left, summary, cancelled });
+            let head = if cancelled { "検索中止" } else { "検索結果" };
+            let summary = format!("{head} {count}件（走査 {}件）", scanned.get());
+            let level = if cancelled { Some(LogLevel::Warning) } else { None };
+            let _ = tx.send(WorkerEvent::LogUpdate { id: pid, level, text: summary });
+            let _ = tx.send(WorkerEvent::FindDone { id, is_left });
             crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
         });
     }
@@ -233,26 +261,52 @@ impl MainWindow {
         let tx = self.task_tx.clone();
         let shutdown = self.shutdown.clone();
         let wake = self.wnd.hwnd().ptr() as isize;
+        let pid = self.progress_seq.fetch_add(1, Ordering::Relaxed);
         std::thread::spawn(move || {
             let _ = tx.send(WorkerEvent::FindBegin { id, is_left });
+            let _ = tx.send(WorkerEvent::LogLine {
+                id: pid,
+                level: LogLevel::Info,
+                text: "ディレクトリ比較中… 走査 0件 差分 0件".to_owned(),
+            });
             crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
+            let scanned = std::cell::Cell::new(0usize);
+            let found = std::cell::Cell::new(0usize);
             let counts = {
                 let mut emit = |it| {
+                    found.set(found.get() + 1);
                     let _ = tx.send(WorkerEvent::FindItem { id, is_left, item: it });
                     crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
                 };
+                let mut tick = || {
+                    let n = scanned.get() + 1;
+                    scanned.set(n);
+                    if n.is_multiple_of(SCAN_REPORT_EVERY) {
+                        let _ = tx.send(WorkerEvent::LogUpdate {
+                            id: pid,
+                            level: None,
+                            text: format!("ディレクトリ比較中… 走査 {n}件 差分 {}件", found.get()),
+                        });
+                        crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
+                    }
+                };
                 let cancelled = || search_cancelled(&control, &shutdown);
-                let mut sink =
-                    rerics_core::Sink { emit: &mut emit, cancelled: &cancelled };
+                let mut sink = rerics_core::Sink {
+                    emit: &mut emit,
+                    cancelled: &cancelled,
+                    progress: &mut tick,
+                };
                 rerics_core::directory_compare(&src, &dst, &opts, &mut sink)
             };
             let cancelled = control.is_stopped() || shutdown.load(Ordering::Relaxed);
             let head = if cancelled { "比較中止" } else { "比較結果" };
             let summary = format!(
-                "{head} 一致:{} 不一致:{} 追加:{} 削除:{}",
-                counts.equals, counts.not_equals, counts.adds, counts.deletes
+                "{head} 一致:{} 不一致:{} 追加:{} 削除:{}（走査 {}件）",
+                counts.equals, counts.not_equals, counts.adds, counts.deletes, scanned.get()
             );
-            let _ = tx.send(WorkerEvent::FindDone { id, is_left, summary, cancelled });
+            let level = if cancelled { Some(LogLevel::Warning) } else { None };
+            let _ = tx.send(WorkerEvent::LogUpdate { id: pid, level, text: summary });
+            let _ = tx.send(WorkerEvent::FindDone { id, is_left });
             crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
         });
     }
@@ -275,12 +329,7 @@ impl MainWindow {
             }
             // 完了通知。id 一致でタスク登録を解除するだけ（find_task は立てていないので
             // 結果ペインには触れない）。
-            let _ = tx.send(WorkerEvent::FindDone {
-                id,
-                is_left: true,
-                summary: String::new(),
-                cancelled: true,
-            });
+            let _ = tx.send(WorkerEvent::FindDone { id, is_left: true });
         });
         id
     }

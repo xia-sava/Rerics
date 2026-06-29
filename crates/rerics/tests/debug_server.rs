@@ -1669,6 +1669,22 @@ fn find_result_reload_keeps_cursor_position() {
     assert_eq!(after.trim(), "3", "reload keeps the cursor at the same row (not back to top)");
 }
 
+/// 検索の完了サマリは走査件数つきでログに出る。進捗行（「検索中…」）がインプレースで
+/// 「検索結果 N件（走査 M件）」へ確定する＝完了後に「検索中」行が残らない。
+#[test]
+fn find_reports_scan_progress_summary() {
+    let server = Server::start(&["note.dat"], "");
+    let sub = server.base.join("sbx").join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("a.txt"), b"1").unwrap();
+    std::fs::write(sub.join("b.txt"), b"2").unwrap();
+
+    server.req("POST", "/command/findFile", "[\"*.txt\"]").unwrap();
+    let log = poll(&server, "/state/log", |b| b.contains("検索結果"));
+    assert!(log.contains("走査"), "完了サマリに走査件数が出る: {log}");
+    assert!(!log.contains("検索中"), "進捗行が最終サマリへ確定し「検索中」行は残らない: {log}");
+}
+
 /// 結果一覧での再読込（reload・End キー等）は、ディレクトリへ戻らず再検索する。後から増えた
 /// 一致ファイルも拾い、結果モードのまま最新化される。
 #[test]

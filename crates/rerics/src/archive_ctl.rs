@@ -282,6 +282,7 @@ impl MainWindow {
                                 last_pct = pct;
                                 let _ = tx.send(WorkerEvent::LogUpdate {
                                     id: pid,
+                                    level: None,
                                     text: messages::archive_extract_progress(&name, pct),
                                 });
                             }
@@ -308,7 +309,11 @@ impl MainWindow {
                 }
             };
             // 進捗行から % を落として確定する（成否に依らず）。
-            let _ = tx.send(WorkerEvent::LogUpdate { id: pid, text: messages::archive_extract(&name) });
+            let _ = tx.send(WorkerEvent::LogUpdate {
+                id: pid,
+                level: None,
+                text: messages::archive_extract(&name),
+            });
             let _ = tx.send(WorkerEvent::ArchiveDone {
                 id,
                 archive,

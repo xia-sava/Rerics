@@ -17,6 +17,9 @@ pub struct Sink<'a> {
     pub emit: &'a mut dyn FnMut(FileItem),
     /// 続行可否の問い合わせ。`true` なら走査を打ち切る。
     pub cancelled: &'a dyn Fn() -> bool,
+    /// 項目を1つ走査するたびに呼ぶ進捗報告（該当の有無を問わず）。呼び側が件数を数えて
+    /// 間引いて表示する。途中経過の要らない呼び出しでは何もしない `&mut || {}` を渡す。
+    pub progress: &'a mut dyn FnMut(),
 }
 
 impl Sink<'_> {
@@ -28,5 +31,10 @@ impl Sink<'_> {
     /// 走査を打ち切るべきか（中断中はこの中でブロックし得る）。
     pub(crate) fn is_cancelled(&self) -> bool {
         (self.cancelled)()
+    }
+
+    /// 項目を1つ走査したことを報告する（該当・非該当を問わず1件ぶん）。
+    pub(crate) fn tick(&mut self) {
+        (self.progress)();
     }
 }

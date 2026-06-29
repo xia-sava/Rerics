@@ -130,8 +130,9 @@ impl LogView {
     }
 
     /// `id` 付き行の本文を書き換えて再描画する（スクロール位置は変えない）。
-    pub fn update(&self, id: u64, text: &str) {
-        self.inner.state.borrow_mut().update(id, text);
+    /// `level` が `Some` ならレベル（表示色）も差し替える（`None` は据え置き）。
+    pub fn update(&self, id: u64, level: Option<LogLevel>, text: &str) {
+        self.inner.state.borrow_mut().update(id, level, text);
         let _ = self.refresh();
     }
 
