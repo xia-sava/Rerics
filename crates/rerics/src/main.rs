@@ -1545,13 +1545,56 @@ impl MainWindow {
             let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
             let shift = w::GetAsyncKeyState(co::VK::SHIFT);
             let chord = KeyChord::new(p.vkey_code.raw(), ctrl, shift, p.has_alt_key);
-            let resolved = this.keymap.borrow().resolve_call(&chord);
-            if let Some(call) = resolved {
-                let is_left = !this.active_right.get();
-                let _ = this.exec(is_left, &call);
-            }
+            this.dispatch_filer_chord(chord);
             Ok(())
         });
+
+        // Alt 併用キー（WM_SYSKEYDOWN）：バインドがあればそれを優先実行して消費し、無ければ
+        // 既定処理（メニューバーのニーモニック）へ通す。ファイラ表示中のみ扱う。
+        let this = self.clone();
+        self.key_sink.on().wm(co::WM::SYSKEYDOWN, move |p| {
+            if !matches!(this.active_view.get(), ActiveView::None) {
+                return Ok(unsafe { this.key_sink.hwnd().DefWindowProc(p) });
+            }
+            let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
+            let shift = w::GetAsyncKeyState(co::VK::SHIFT);
+            let chord = KeyChord::new(p.wparam as u16, ctrl, shift, true);
+            if this.dispatch_filer_chord(chord) {
+                return Ok(0);
+            }
+            Ok(unsafe { this.key_sink.hwnd().DefWindowProc(p) })
+        });
+
+        // 上の Alt 併用キーに続く WM_SYSCHAR を、バインド済みなら食ってメニューバーのニーモニック
+        // 発火を防ぐ（消費しないと TranslateMessage 由来の SYSCHAR がメニューへ貫通する）。
+        let this = self.clone();
+        self.key_sink.on().wm(co::WM::SYSCHAR, move |p| {
+            if !matches!(this.active_view.get(), ActiveView::None) {
+                return Ok(unsafe { this.key_sink.hwnd().DefWindowProc(p) });
+            }
+            let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
+            let shift = w::GetAsyncKeyState(co::VK::SHIFT);
+            let vk = (p.wparam as u8 as char).to_ascii_uppercase() as u16;
+            let chord = KeyChord::new(vk, ctrl, shift, true);
+            if this.keymap.borrow().resolve_call(&chord).is_some() {
+                return Ok(0);
+            }
+            Ok(unsafe { this.key_sink.hwnd().DefWindowProc(p) })
+        });
+    }
+
+    /// ファイラ用キーチョードを解決して実行する。バインドがあれば実行して `true`、無ければ
+    /// 何もせず `false`（呼び出し側が既定処理＝メニューニーモニック等へ委ねる）を返す。
+    fn dispatch_filer_chord(&self, chord: KeyChord) -> bool {
+        let resolved = self.keymap.borrow().resolve_call(&chord);
+        match resolved {
+            Some(call) => {
+                let is_left = !self.active_right.get();
+                let _ = self.exec(is_left, &call);
+                true
+            }
+            None => false,
+        }
     }
 
     fn bar(&self, is_left: bool) -> &PathBarView {
