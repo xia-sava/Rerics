@@ -222,6 +222,17 @@ interface RericsEnv {
   get(name: string): string;
 }
 
+/**
+ * クリップボードのテキスト読み書き（`rerics.clipboard`）。Windows 標準の CF_UNICODETEXT で
+ * やり取りする。
+ */
+interface RericsClipboard {
+  /** クリップボードへテキストを設定する。 */
+  setText(text: string): void;
+  /** クリップボードのテキストを返す（テキストが無ければ空文字）。 */
+  getText(): string;
+}
+
 /** `rerics.spawn()` / `rerics.run()` の末尾に渡せる起動オプション。 */
 interface RericsProcOptions {
   /** 作業ディレクトリ（省略時はプロセス既定）。 */
@@ -459,6 +470,16 @@ interface RericsApi {
    * ```
    */
   env: RericsEnv;
+
+  /**
+   * クリップボードのテキスト読み書き。詳細は {@link RericsClipboard}。
+   *
+   * ```ts
+   * rerics.clipboard.setText(rerics.activePane().dir);
+   * const text = rerics.clipboard.getText();
+   * ```
+   */
+  clipboard: RericsClipboard;
 
   /**
    * 外部プログラムを起動して**待たずに**戻る（投げっぱなし）。引数は文字列で渡し、末尾に

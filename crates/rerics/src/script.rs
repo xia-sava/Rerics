@@ -121,6 +121,10 @@ pub trait HostApi {
     /// いま押されている修飾キー（Shift/Ctrl/Alt）の状態を返す。物理キー状態なので UI スレッド
     /// 往復は不要（実装は直接読む）。
     fn modifiers(&self) -> Modifiers;
+    /// `r.clipboard.setText()`：クリップボードへテキストを設定する。
+    fn set_clipboard(&self, text: &str);
+    /// `r.clipboard.getText()`：クリップボードのテキストを取得する（テキストが無ければ空文字）。
+    fn get_clipboard(&self) -> String;
 }
 
 /// 外部プロセスを終了まで待った結果（`rerics.run` の戻り）。JS では camelCase で見える。
@@ -669,6 +673,19 @@ fn op_modifiers(state: &mut OpState) -> Modifiers {
     state.borrow::<Host>().modifiers()
 }
 
+/// クリップボードへテキストを設定する。
+#[op2(fast)]
+fn op_set_clipboard(state: &mut OpState, #[string] text: &str) {
+    state.borrow::<Host>().set_clipboard(text);
+}
+
+/// クリップボードのテキストを返す（テキストが無ければ空文字）。
+#[op2]
+#[string]
+fn op_get_clipboard(state: &mut OpState) -> String {
+    state.borrow::<Host>().get_clipboard()
+}
+
 /// 指定プログラムを起動して即リターンする（投げっぱなし）。`cwd` が非空ならそこを作業
 /// ディレクトリにする。起動失敗は例外。GUI に触れないのでエンジンスレッドから直接起動する。
 #[op2]
@@ -912,6 +929,8 @@ extension!(
         op_open_dialog,
         op_save_dialog,
         op_modifiers,
+        op_set_clipboard,
+        op_get_clipboard,
         op_spawn,
         op_execute,
         op_run,
@@ -1265,6 +1284,11 @@ const BOOTSTRAP: &str = r#"
       domainName: () => ops.op_env_var("USERDOMAIN"),
       machineName: () => ops.op_env_var("COMPUTERNAME"),
       get: (name) => ops.op_env_var(String(name)),
+    },
+    // クリップボードのテキスト読み書き（CF_UNICODETEXT）。
+    clipboard: {
+      setText: (t) => ops.op_set_clipboard(t == null ? "" : String(t)),
+      getText: () => ops.op_get_clipboard(),
     },
     registerCommand: (name, fn, opts) => {
       if (typeof fn !== "function") throw new TypeError("registerCommand: fn must be a function");
@@ -1655,6 +1679,8 @@ mod tests {
         created_dirs: RefCell<Vec<String>>,
         /// `compress()` が受けた `(kind, archive, files)` の記録。
         compressed: RefCell<Vec<(String, String, Vec<String>)>>,
+        /// クリップボードのテキスト（set で更新・get で返す）。
+        clipboard: RefCell<String>,
     }
 
     impl HostApi for MockHost {
@@ -1757,6 +1783,12 @@ mod tests {
         }
         fn modifiers(&self) -> Modifiers {
             self.modifiers
+        }
+        fn set_clipboard(&self, text: &str) {
+            *self.clipboard.borrow_mut() = text.to_string();
+        }
+        fn get_clipboard(&self) -> String {
+            self.clipboard.borrow().clone()
         }
     }
 

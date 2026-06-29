@@ -53,6 +53,8 @@ pub enum HostCall {
     FolderDialog(String),
     OpenDialog(String),
     SaveDialog(String),
+    SetClipboard(String),
+    GetClipboard,
 }
 
 /// UI スレッド → エンジンスレッドへの応答。
@@ -449,6 +451,23 @@ impl HostApi for GuiHost {
             _ => None,
         }
     }
+
+    fn set_clipboard(&self, text: &str) {
+        let _ = ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::SetClipboard(text.to_string()),
+        );
+    }
+
+    fn get_clipboard(&self) -> String {
+        match ui_marshal::call(&self.queue, self.hwnd_ptr, SCRIPT_WAKE.raw(), HostCall::GetClipboard)
+        {
+            Ok(HostResp::Text(Some(s))) => s,
+            _ => String::new(),
+        }
+    }
 }
 
 /// エディタ補完用の型ファイルを `scripts/` に整備する。`rerics.d.ts`（ホスト API）と
@@ -749,6 +768,22 @@ impl MainWindow {
                     let picked = shell::choose_file(self.wnd.hwnd().ptr(), &title, true)
                         .map(|p| p.to_string_lossy().into_owned());
                     let _ = tx.send(HostResp::Text(picked));
+                }
+                HostCall::SetClipboard(text) => {
+                    if let Err(e) = shell::clip_set_text(self.wnd.hwnd(), &text) {
+                        self.log.error(&e);
+                    }
+                    let _ = tx.send(HostResp::Done);
+                }
+                HostCall::GetClipboard => {
+                    let text = match shell::clip_get_text(self.wnd.hwnd()) {
+                        Ok(text) => text,
+                        Err(e) => {
+                            self.log.error(&e);
+                            None
+                        }
+                    };
+                    let _ = tx.send(HostResp::Text(text));
                 }
             }
         }

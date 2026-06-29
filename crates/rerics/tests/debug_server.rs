@@ -3809,6 +3809,22 @@ fn script_select_opens_list_and_returns_index() {
     assert!(log.contains("idx=1"), "select should return chosen index: {log}");
 }
 
+/// scripting：`rerics.clipboard` の setText→getText がラウンドトリップする（CF_UNICODETEXT
+/// の実クリップボードへ書いて読み戻す host 往復）。
+#[test]
+fn script_clipboard_round_trips_text() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"rerics.clipboard.setText("clip-rt-7"); rerics.log("clip=" + rerics.clipboard.getText());"#,
+        )
+        .expect("eval");
+    let log = poll(&server, "/state/log", |b| b.contains("clip=clip-rt-7"));
+    assert!(log.contains("clip=clip-rt-7"), "clipboard text should round-trip: {log}");
+}
+
 /// scripting：`rerics.activePane()` が実ペインの項目・選択・カーソルを読み取れる
 /// （オブジェクトモデルの実 GUI 経路＝スナップショットが UI スレッドから組み上がる）。
 #[test]

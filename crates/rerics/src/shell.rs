@@ -242,6 +242,35 @@ pub fn clip_paste_files(owner: &w::HWND) -> Result<(Vec<PathBuf>, bool), String>
     Ok((paths, move_it))
 }
 
+/// テキストをクリップボードへ設定する（CF_UNICODETEXT・null 終端付き UTF-16）。
+pub fn clip_set_text(owner: &w::HWND, text: &str) -> Result<(), String> {
+    let mut u16s: Vec<u16> = text.encode_utf16().collect();
+    u16s.push(0);
+    let bytes: Vec<u8> = u16s.iter().flat_map(|u| u.to_le_bytes()).collect();
+    let clip = open_clipboard_retry(owner)?;
+    clip.EmptyClipboard().map_err(|e| e.to_string())?;
+    clip.SetClipboardData(co::CF::UNICODETEXT, &bytes).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// クリップボードのテキストを取り出す（CF_UNICODETEXT）。クリップボードを開けない等の
+/// システム的失敗は `Err`。テキスト形式のデータが無い場合は `None` を `Ok` で返す
+/// ＝正常な「テキスト無し」とシステム失敗を区別する。
+pub fn clip_get_text(owner: &w::HWND) -> Result<Option<String>, String> {
+    let clip = open_clipboard_retry(owner)?;
+    let bytes = match clip.GetClipboardData(co::CF::UNICODETEXT) {
+        Ok(bytes) => bytes,
+        // UNICODETEXT 形式が無い＝ファイルのみ/空など。システム失敗ではないので None。
+        Err(_) => return Ok(None),
+    };
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .take_while(|&u| u != 0)
+        .collect();
+    Ok(Some(String::from_utf16_lossy(&units)))
+}
+
 /// フォルダ選択ダイアログ（COM `IFileOpenDialog`＋`FOS_PICKFOLDERS`）を開き、選んだパスを返す。
 /// キャンセル/失敗は `None`。`owner` はモーダルの親窓の生ハンドル。
 pub fn choose_folder(owner: *mut c_void, title: &str) -> Option<PathBuf> {
