@@ -1518,14 +1518,14 @@ impl MainWindow {
         let label = short_desc(&all_names);
         self.register_task(id, "情報", label.clone(), control)?;
         std::thread::spawn(move || {
-            let (mut bytes, mut files, mut dirs) = (0u64, 0u64, 0u64);
-            for (dir, names) in &groups {
-                let info = rerics_core::run_calc_size(&host, dir, names);
-                bytes += info.bytes;
-                files += info.files;
-                dirs += info.dirs;
-            }
-            let _ = host.tx.send(WorkerEvent::DirInfoDone { id, label, bytes, files, dirs });
+            let info = rerics_core::run_calc_size_groups(&host, &groups);
+            let _ = host.tx.send(WorkerEvent::DirInfoDone {
+                id,
+                label,
+                bytes: info.bytes,
+                files: info.files,
+                dirs: info.dirs,
+            });
         });
         Ok(())
     }

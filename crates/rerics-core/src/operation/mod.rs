@@ -21,7 +21,7 @@ pub use extract::run_extract;
 pub use compress::run_compress;
 pub use archive_ops::{run_archive_add, run_archive_rebuild, run_archive_delete, run_archive_rename};
 pub use delete::run_delete;
-pub use calc::run_calc_size;
+pub use calc::{run_calc_size, run_calc_size_groups};
 
 /// 同名ファイルが存在したときの解決方法。原作 `frmCopyOption` の選択肢に対応する。
 #[derive(Debug, Clone, PartialEq, Eq)]

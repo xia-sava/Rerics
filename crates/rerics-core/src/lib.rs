@@ -67,7 +67,7 @@ pub use operation::{
     ConflictResolution, CopyOptions, DeleteWarnChoice, DirInfo, OpSummary, OperationHost,
     ProgressHandle,
     run_archive_add, run_archive_delete, run_archive_rebuild, run_archive_rename, run_calc_size,
-    run_compress, run_copy, run_delete, run_extract,
+    run_calc_size_groups, run_compress, run_copy, run_delete, run_extract,
 };
 pub use spinner::{SPINNER_FRAMES, Spinner};
 pub use status::{format_drive, format_selected, format_size};

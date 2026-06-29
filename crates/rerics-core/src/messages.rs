@@ -226,3 +226,13 @@ pub fn directory_name_question() -> String {
 pub fn directory_information(target: &str, bytes: u64, files: u64, dirs: u64) -> String {
     format!("{target} : {bytes} バイト（{files} ファイル / {dirs} フォルダ）")
 }
+
+/// 使用量計算の進捗（走査済み件数。インプレース更新行）。
+pub fn calc_size_progress(scanned: u64) -> String {
+    format!("使用量計算中… {scanned} 件")
+}
+
+/// 使用量計算の完了（インプレース更新行を確定させる）。
+pub fn calc_size_done(scanned: u64) -> String {
+    format!("使用量計算 完了（{scanned} 件）")
+}

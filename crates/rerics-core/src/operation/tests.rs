@@ -198,6 +198,23 @@
     }
 
     #[test]
+    fn calc_size_groups_accumulates_across_dirs() {
+        let d1 = TempDir::new();
+        d1.write_file("a.txt", "12345"); // 5 bytes
+        let d2 = TempDir::new();
+        d2.write_file("b.txt", "xyz"); // 3 bytes
+        let host = FakeHost::new();
+        let groups = vec![
+            (d1.path.clone(), vec!["a.txt".to_owned()]),
+            (d2.path.clone(), vec!["b.txt".to_owned()]),
+        ];
+        let info = run_calc_size_groups(&host, &groups);
+        assert_eq!(info.files, 2, "両ディレクトリのファイルを合算");
+        assert_eq!(info.dirs, 0, "ファイルのみ＝フォルダは数えない");
+        assert_eq!(info.bytes, 8, "5 + 3 バイトを合算");
+    }
+
+    #[test]
     fn copy_missing_source_reports_error() {
         let src = TempDir::new();
         let dst = TempDir::new();
