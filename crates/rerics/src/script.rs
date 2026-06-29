@@ -7,6 +7,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use deno_core::{JsRuntime, OpState, RuntimeOptions, extension, op2};
 
@@ -228,7 +229,20 @@ pub struct PaneItem {
     pub is_virtual: bool,
 }
 
-type Host = Rc<dyn HostApi>;
+pub type Host = Rc<dyn HostApi>;
+
+/// 並列ワーカー（`r.parallel`）が新しいアイソレートを建てるときに使うホスト生成器。スレッドを
+/// またぐので `Send + Sync`。各ワーカースレッドの中で呼ばれ、そのスレッド専有の [`Host`] を作る
+/// （[`Host`] 自体は `!Send` なので、生成はワーカースレッド内で行う）。
+pub type WorkerHostFactory = Arc<dyn Fn() -> Host + Send + Sync>;
+
+/// 並列ワーカーを起動するための土台（OpState に常駐）。`factory` で各ワーカーのホストを作り、
+/// `limit` で同時実行数を CPU 数ぶんに絞る。メインエンジンだけに置き、ワーカー自身のエンジンには
+/// 置かない＝入れ子の `parallel` は使えない（容易に枠を食い潰すのを防ぐ）。
+struct WorkerSupport {
+    factory: WorkerHostFactory,
+    limit: Arc<tokio::sync::Semaphore>,
+}
 
 /// ログレベル名（`info`/`warning`/`error`）を [`rerics_core::LogLevel`] へ。未知は `Normal`。
 fn parse_log_level(name: &str) -> rerics_core::LogLevel {
@@ -789,6 +803,65 @@ async fn op_unpack(
     .map_err(deno_error::JsErrorBox::generic)
 }
 
+/// ワーカースレッドの中身：専有のアイソレートで関数ソースを引数付きに実行し、戻り値の JSON を
+/// 返す。別アイソレートなので捕捉変数は渡らず引数のみが渡る（`fn.toString()` のソースと JSON 化
+/// した引数を結合して評価する）。戻り値は `undefined` を `null` に寄せてから JSON 化する。
+fn run_worker(host: Host, fn_source: &str, arg_json: &str) -> Result<String, String> {
+    let mut engine = Engine::new(host);
+    let code = format!(
+        "(async () => {{ const __arg = ({arg_json}); const __fn = ({fn_source}); \
+         const __r = await __fn(__arg); \
+         return JSON.stringify(__r === undefined ? null : __r); }})()"
+    );
+    engine.eval_to_string(
+        "rerics:worker",
+        "file:///worker.ts",
+        deno_ast::MediaType::TypeScript,
+        code,
+    )
+}
+
+/// 関数を別スレッド＋別アイソレートで本当に並列に走らせる非同期 op。`fn_source` は実行する関数の
+/// ソース（`fn.toString()`）、`arg_json` は唯一の引数を JSON 化したもの。戻り値は関数の戻り値を
+/// JSON 化した文字列で、呼び手（bootstrap）が parse する。同時実行数は [`WorkerSupport`] の
+/// セマフォで CPU 数に絞る（枠が空くまで `await` で待つ）。`WorkerSupport` が無いエンジン
+/// （＝ワーカー自身）からは使えず、入れ子の並列はエラーになる。
+#[op2(async(lazy), nofast)]
+#[string]
+async fn op_parallel(
+    state: Rc<RefCell<OpState>>,
+    #[string] fn_source: String,
+    #[string] arg_json: String,
+) -> Result<String, deno_error::JsErrorBox> {
+    let support = state
+        .borrow()
+        .try_borrow::<WorkerSupport>()
+        .map(|s| (s.factory.clone(), s.limit.clone()));
+    let Some((factory, limit)) = support else {
+        return Err(deno_error::JsErrorBox::generic(
+            "parallel はワーカー内（入れ子）からは使えません",
+        ));
+    };
+    let permit = limit
+        .acquire_owned()
+        .await
+        .map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        // 完了まで同時実行枠を保持する（ここで drop されると次の待ちワーカーが起動する）。
+        let _permit = permit;
+        let host = factory();
+        let _ = tx.send(run_worker(host, &fn_source, &arg_json));
+    });
+    match rx.await {
+        Ok(Ok(json)) => Ok(json),
+        Ok(Err(message)) => Err(deno_error::JsErrorBox::generic(message)),
+        Err(_) => Err(deno_error::JsErrorBox::generic(
+            "ワーカースレッドが結果を返さずに終了しました",
+        )),
+    }
+}
+
 /// `rerics.fs.stat()` が返すメタデータ。存在しなければ JS 側で null に畳む。JS では camelCase で見える。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -941,6 +1014,7 @@ extension!(
         op_execute,
         op_run,
         op_unpack,
+        op_parallel,
         op_fs_read_text,
         op_fs_write_text,
         op_fs_copy_file,
@@ -1252,6 +1326,15 @@ const BOOTSTRAP: &str = r#"
     execute: (path, params) =>
       ops.op_execute(String(path), params == null ? "" : String(params), ops.op_current_dir()),
     unpack: (src, dst) => ops.op_unpack(String(src), String(dst)),
+    // 関数を別スレッド＋別アイソレートで本当に並列に実行する。fn は関数か関数ソース文字列で、
+    // 捕捉した外側の変数は渡らず arg だけが渡る（別アイソレートのため・worker_threads と同じ制約）。
+    // arg は JSON 化して渡し、戻り値も JSON 化されて返る（JSON 化できない値は失われる）。await で
+    // 結果を受け、Promise.all で複数を本当に並列に走らせられる。同時実行数は CPU 数で絞られる。
+    parallel: (fn, arg) => {
+      const src = typeof fn === "function" ? fn.toString() : String(fn);
+      const argJson = arg === undefined ? "undefined" : (JSON.stringify(arg) ?? "null");
+      return ops.op_parallel(src, argJson).then((s) => JSON.parse(s));
+    },
     // 裏で動く低レベルファイル操作。画面にもログにも触れない（更新は呼び手が navigate 等で明示）。
     // 絶対パス前提。I/O エラーは例外（exists は false 寄せ・stat は不在で null）。
     fs: {
@@ -1507,6 +1590,16 @@ impl Engine {
     /// スクリプト実行の前に毎回呼び、前回の停止フラグが残って次の実行を巻き込むのを防ぐ。
     pub fn clear_terminate(&mut self) {
         self.runtime.v8_isolate().thread_safe_handle().cancel_terminate_execution();
+    }
+
+    /// 並列ワーカー（`r.parallel`）を有効にする。`factory` は各ワーカースレッドの中で呼ばれ、
+    /// そのスレッド専有のホストを作る。同時に走るワーカー数は CPU 数で絞る。メインエンジンだけに
+    /// 設定し、ワーカー自身のエンジンには設定しない（入れ子の並列を防ぐ）。
+    pub fn set_worker_factory(&mut self, factory: WorkerHostFactory) {
+        let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let support =
+            WorkerSupport { factory, limit: Arc::new(tokio::sync::Semaphore::new(cpus)) };
+        self.runtime.op_state().borrow_mut().put::<WorkerSupport>(support);
     }
 
     /// 現在登録されているコマンド名（JS 側 Map のキー＝登録順・同名は後勝ちで一意）。
@@ -3144,5 +3237,92 @@ mod tests {
         )
         .unwrap();
         assert_eq!(*host.logs.borrow(), vec!["caught".to_string()]);
+    }
+
+    #[test]
+    fn parallel_runs_function_with_arg_and_returns_result() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.set_worker_factory(Arc::new(|| -> Host { Rc::new(MockHost::default()) }));
+        eng.run_to_completion(
+            "test:parallel",
+            r#"
+              (async () => {
+                const r1 = await rerics.parallel((x) => x * 2, 21);
+                const r2 = await rerics.parallel((o) => o.a + o.b, { a: 3, b: 4 });
+                rerics.log(String(r1) + "," + String(r2));
+              })();
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(*host.logs.borrow(), vec!["42,7".to_string()]);
+    }
+
+    #[test]
+    fn parallel_all_collects_results() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.set_worker_factory(Arc::new(|| -> Host { Rc::new(MockHost::default()) }));
+        eng.run_to_completion(
+            "test:parallel-all",
+            r#"
+              (async () => {
+                const rs = await Promise.all(
+                  [1, 2, 3, 4].map((n) => rerics.parallel((x) => x * x, n))
+                );
+                rerics.log(rs.join(","));
+              })();
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(*host.logs.borrow(), vec!["1,4,9,16".to_string()]);
+    }
+
+    #[test]
+    fn parallel_propagates_worker_error() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.set_worker_factory(Arc::new(|| -> Host { Rc::new(MockHost::default()) }));
+        eng.run_to_completion(
+            "test:parallel-throw",
+            r#"
+              (async () => {
+                try {
+                  await rerics.parallel(() => { throw new Error("boom"); });
+                  rerics.log("no-throw");
+                } catch (e) {
+                  rerics.log("caught:" + (e.message.includes("boom") ? "boom" : "other"));
+                }
+              })();
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(*host.logs.borrow(), vec!["caught:boom".to_string()]);
+    }
+
+    #[test]
+    fn parallel_rejects_when_nested() {
+        // ワーカー用 factory を設定していないエンジンでは parallel は使えない（入れ子の代理）。
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:parallel-nested",
+            r#"
+              (async () => {
+                try {
+                  await rerics.parallel(() => 1);
+                  rerics.log("no-throw");
+                } catch (e) {
+                  rerics.log("rejected");
+                }
+              })();
+            "#
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(*host.logs.borrow(), vec!["rejected".to_string()]);
     }
 }

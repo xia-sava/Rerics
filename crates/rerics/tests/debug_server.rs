@@ -4282,6 +4282,45 @@ fn run_executes_process_and_returns_result() {
     assert!(log.contains("rerics-run-9"), "run は stdout を返すはず: {log}");
 }
 
+/// 並列 op：`rerics.parallel` が別スレッド＋別アイソレートで関数を走らせ、結果を await で返す。
+/// `Promise.all` で複数を同時に投げても全件正しく集まる（実バイナリのワーカー factory 経由）。
+#[test]
+fn parallel_runs_functions_and_collects_results() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    let body = |code: &str| server.req("POST", "/script/eval-value", code).expect("eval-value").1;
+    assert_eq!(
+        body("rerics.parallel((x) => x * 2, 21)").trim(),
+        "\"42\"",
+        "1 件の並列実行が引数付きで結果を返す"
+    );
+    assert_eq!(
+        body(r#"Promise.all([1,2,3,4].map((n) => rerics.parallel((x) => x * x, n))).then((a) => a.join(","))"#)
+            .trim(),
+        "\"1,4,9,16\"",
+        "Promise.all で複数ワーカーの結果が全件集まる"
+    );
+}
+
+/// 並列 op：ワーカースレッドからのホスト呼び出し（`rerics.log`）が UI スレッドへマーシャルされ、
+/// 同時に戻り値もメインへ返る（別スレッド→UI スレッドの往復が成立する）。
+#[test]
+fn parallel_worker_can_call_host_and_return() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"(async () => {
+                 const r = await rerics.parallel((n) => { rerics.log("WORKER-LOG-" + n); return n + 1; }, 41);
+                 rerics.log("MAIN-GOT-" + r);
+               })();"#,
+        )
+        .expect("eval");
+    let log = poll(&server, "/state/log", |b| b.contains("MAIN-GOT-"));
+    assert!(log.contains("WORKER-LOG-41"), "ワーカーからの log が UI へ届くはず: {log}");
+    assert!(log.contains("MAIN-GOT-42"), "ワーカーの戻り値がメインへ返るはず: {log}");
+}
+
 /// キーバインド経路：登録コマンドの呼び出し式（`r.goUp()`）が `exec` からエンジンへ流れ、実行される。
 /// 登録コマンドがアクティブペインを移動させ、UI に反映されることで配線を検証する。
 #[test]

@@ -541,8 +541,14 @@ pub fn spawn_engine(
     task_tx: Sender<WorkerEvent>,
 ) {
     std::thread::spawn(move || {
+        let factory_queue = queue.clone();
         let host: Rc<dyn HostApi> = Rc::new(GuiHost { queue, hwnd_ptr });
         let mut engine = script::Engine::new(host.clone());
+        // 並列ワーカーは各スレッド内で UI へマーシャルするホストを建て直す（queue は Arc・
+        // hwnd_ptr は isize でいずれも Send なので、生成器ごとスレッドへ渡せる）。
+        engine.set_worker_factory(std::sync::Arc::new(move || -> script::Host {
+            Rc::new(GuiHost { queue: factory_queue.clone(), hwnd_ptr })
+        }));
         // 停止（強制終了）に使う isolate ハンドルを UI へ渡す。タスク取り込みタイマがまだ
         // 走っていなくても処理されるよう、送ったら UI を起こす。
         let _ = task_tx.send(WorkerEvent::ScriptEngineReady { handle: engine.isolate_handle() });

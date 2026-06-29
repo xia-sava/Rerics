@@ -538,6 +538,35 @@ interface RericsApi {
   unpack(src: string, dst: string): Promise<number>;
 
   /**
+   * 関数 `fn` を別スレッド＋別 V8 アイソレートで本当に並列に実行し、戻り値を `await` で受け取る。
+   * CPU を使う重い処理（ハッシュ計算・大量の文字列処理など）を UI もメインのスクリプト実行も
+   * 止めずに走らせられる。`Promise.all` で複数を同時に投げれば、CPU のコア数まで本当に並列に動く
+   * （それを超える分は枠が空くまで待つ）。
+   *
+   * `fn` は別アイソレートへソースとして渡るため、**外側で捕捉した変数・関数は見えない**。必要な値は
+   * `arg` で渡すこと（`worker_threads` と同じ制約）。`arg` と戻り値は JSON で受け渡すので、関数・
+   * `undefined`・循環参照などシリアライズできない値は失われる。`fn` の中では `rerics.log` などの
+   * ホスト API は使えるが、`rerics.parallel` の入れ子（ワーカーからさらにワーカー）はできない。
+   *
+   * ```ts
+   * // 1 件を重い処理に回す（関数の中だけで完結させる）。
+   * const total = await rerics.parallel((n) => {
+   *   let acc = 0;
+   *   for (let i = 0; i < n; i++) acc += i;
+   *   return acc;
+   * }, 1_000_000);
+   * // 複数をコア数まで本当に並列に。
+   * const squares = await Promise.all(
+   *   [1, 2, 3, 4].map((n) => rerics.parallel((x) => x * x, n)),
+   * );
+   * ```
+   */
+  parallel<R = unknown, A = unknown>(
+    fn: ((arg: A) => R | Promise<R>) | string,
+    arg?: A,
+  ): Promise<R>;
+
+  /**
    * 名前付きコマンドを登録する。`handler` は同期でも `async`（Promise を返す）でもよい。
    * 同名で再登録すると後勝ちで上書きする。`options` で設定 UI・補完に出すメタ情報を添えられる
    * （`label`＝機能名・`genre`＝機能順の見出しグループ・`summary`＝補完やヘルプに出す 1 行説明）。
