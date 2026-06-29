@@ -304,6 +304,10 @@ pub enum Request {
     /// `POST /exec`：body の式（機能欄の式そのもの）を [`Call::parse`] し、アクティブ側ペインで
     /// キー押下と同じ `exec` を通す。スクリプト式（[`Call::Script`]）はエンジンへ流れる。
     Exec { expr: String },
+    /// `POST /filer/syskey/<key>`：ファイラの key_sink へ `WM_SYSKEYDOWN` を送る（Alt+<key> 相当）。
+    /// 実キーの Alt 併用は SYSKEYDOWN で届くので、メニューより先にキーバインドへ回る経路
+    /// （main の SYSKEYDOWN ハンドラ）をそのまま駆動できる。ctrl/shift は載せず Alt 単独＋<key>。
+    FilerSysKey { key: String },
     /// `POST /view/key/<action>`：重ね表示中ビューアの操作（next/prev/close）。
     ViewKey { action: String },
     /// `POST /view/search`：テキストビューアのインライン検索バーへ文字列を入れて即時検索（値は body）。
@@ -691,6 +695,8 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 let mut value = String::new();
                 let _ = std::io::Read::read_to_string(req.as_reader(), &mut value);
                 Some(Request::ViewSearch { value })
+            } else if let Some(key) = path.strip_prefix("/filer/syskey/") {
+                Some(Request::FilerSysKey { key: key.trim_end_matches('/').to_string() })
             } else if let Some(action) = path.strip_prefix("/view/key/") {
                 Some(Request::ViewKey { action: action.trim_end_matches('/').to_string() })
             } else if let Some(key) = path.strip_prefix("/modal/key/") {

@@ -63,6 +63,9 @@ impl MainWindow {
                     };
                     let _ = tx.send(r);
                 }
+                debug_server::Request::FilerSysKey { key } => {
+                    let _ = tx.send(self.debug_filer_syskey(&key));
+                }
                 debug_server::Request::ViewKey { action } => {
                     let _ = tx.send(self.debug_view_key(&action));
                 }
@@ -844,6 +847,29 @@ impl MainWindow {
                     lparam: 0,
                 });
             }
+        }
+        debug_server::Response::Json(self.debug_state_value().to_string())
+    }
+
+    /// `POST /filer/syskey/<key>`：ファイラの key_sink へ `WM_SYSKEYDOWN` を送る（Alt+<key> 相当）。
+    /// SYSKEYDOWN ハンドラは ctrl/shift を `GetAsyncKeyState` で読み alt を真固定にするので、
+    /// 物理修飾を伴わない headless でも「Alt 単独＋<key>」のチョードを忠実に再現できる。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn debug_filer_syskey(&self, key: &str) -> debug_server::Response {
+        let lk = key.to_ascii_lowercase();
+        let vk: u16 = match lk.as_str() {
+            s if s.len() == 1 && s.as_bytes()[0].is_ascii_alphabetic() => {
+                s.as_bytes()[0].to_ascii_uppercase() as u16
+            }
+            s if s.len() == 1 && s.as_bytes()[0].is_ascii_digit() => s.as_bytes()[0] as u16,
+            _ => return debug_server::Response::BadRequest(format!("unknown filer key: {key}")),
+        };
+        unsafe {
+            let _ = self.key_sink.hwnd().PostMessage(w::msg::WndMsg {
+                msg_id: co::WM::SYSKEYDOWN,
+                wparam: vk as usize,
+                lparam: 0,
+            });
         }
         debug_server::Response::Json(self.debug_state_value().to_string())
     }

@@ -1328,6 +1328,16 @@ fn view_command_opens_internal_viewer_for_file() {
     assert_eq!(av2.trim(), "\"none\"", "closing the viewer returns to the list");
 }
 
+/// Alt 併用キーが WM_SYSKEYDOWN 経由でキーバインドへ回る（メニューに食われない）。
+/// `/filer/syskey/G` は key_sink へ実 SYSKEYDOWN を送り、Alt+G に割り当てた式を発火させる。
+#[test]
+fn filer_alt_keybind_runs_via_syskeydown() {
+    let server = Server::start(&["a.txt"], "[keybinds]\n\"Alt+G\" = 'r.log(\"alt-fired\")'\n");
+    server.req("POST", "/filer/syskey/G", "").expect("syskey");
+    let log = poll(&server, "/state/log", |b| b.contains("alt-fired"));
+    assert!(log.contains("alt-fired"), "Alt+G バインドが SYSKEYDOWN 経由で実行される: {log}");
+}
+
 /// テキストビューア表示中はビューア用コマンドがビューア文脈で実行される。
 #[test]
 fn viewer_commands_dispatch_in_text_context() {
