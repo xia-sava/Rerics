@@ -1164,7 +1164,8 @@ impl MainWindow {
             }
             Command::Reload => {
                 // 結果一覧は再検索して最新化（結果モードを保つ）、通常はカーソル位置を保って再読込。
-                for side in [true, false] {
+                // side 引数で対象を選べる（無指定/both＝両方・active/opposite/left/right）。
+                for side in Self::arg_sides(is_left, args.str(0)) {
                     if self.view(side).state().borrow().find_result {
                         self.refresh_side(side, None)?;
                     } else {
@@ -1646,6 +1647,19 @@ impl MainWindow {
     ///
     /// 対象が「未展開の非ランダムアクセス書庫」なら、ここで一括展開を非同期に開始し
     /// （スピナー表示）、一覧反映は展開完了イベントに委ねて早期 return する。
+    /// ペイン操作コマンドの side 引数を、対象ペインの列へ解決する。`active_is_left` はアクティブ側。
+    /// `None`/`""`/`"both"`/未知＝両ペイン、`active`/`opposite`(`opp`)/`left`/`right`＝該当 1 ペイン。
+    /// ペイン操作系が side 指定を受けるときの共通規約として使う（アクティブ専用にしない）。
+    fn arg_sides(active_is_left: bool, arg: Option<&str>) -> Vec<bool> {
+        match arg.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+            Some("active") => vec![active_is_left],
+            Some("opposite") | Some("opp") => vec![!active_is_left],
+            Some("left") => vec![true],
+            Some("right") => vec![false],
+            _ => vec![true, false],
+        }
+    }
+
     fn reload_side(&self, is_left: bool) -> w::AnyResult<()> {
         self.reload_side_impl(is_left, ReloadCursor::Reset)
     }
@@ -1986,4 +2000,30 @@ fn normalize_path(path: &str, fallback: &str) -> String {
         return path.to_owned();
     }
     fallback.to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arg_sides_resolves_pane_targets() {
+        // 無指定・both・空・未知＝両ペイン（左→右の順）。
+        for arg in [None, Some("both"), Some(""), Some("typo")] {
+            assert_eq!(MainWindow::arg_sides(true, arg), vec![true, false], "{arg:?}");
+        }
+        // アクティブ＝左：active/opposite はそれを基準に解決、left/right は固定。
+        assert_eq!(MainWindow::arg_sides(true, Some("active")), vec![true]);
+        assert_eq!(MainWindow::arg_sides(true, Some("opposite")), vec![false]);
+        assert_eq!(MainWindow::arg_sides(true, Some("opp")), vec![false]);
+        assert_eq!(MainWindow::arg_sides(true, Some("left")), vec![true]);
+        assert_eq!(MainWindow::arg_sides(true, Some("right")), vec![false]);
+        // アクティブ＝右：active/opposite が反転、left/right は不変。
+        assert_eq!(MainWindow::arg_sides(false, Some("active")), vec![false]);
+        assert_eq!(MainWindow::arg_sides(false, Some("opposite")), vec![true]);
+        assert_eq!(MainWindow::arg_sides(false, Some("left")), vec![true]);
+        assert_eq!(MainWindow::arg_sides(false, Some("right")), vec![false]);
+        // 大文字・前後空白も解釈する。
+        assert_eq!(MainWindow::arg_sides(true, Some(" Opposite ")), vec![false]);
+    }
 }

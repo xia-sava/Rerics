@@ -1338,6 +1338,31 @@ fn filer_alt_keybind_runs_via_syskeydown() {
     assert!(log.contains("alt-fired"), "Alt+G バインドが SYSKEYDOWN 経由で実行される: {log}");
 }
 
+/// reload は side 引数で対象ペインを選べる（無指定＝両方・left/right/opposite/active＝1ペイン）。
+/// FS 監視は無いので、起動後にディスクへ足したファイルは明示 reload まで一覧に出ない＝決定的。
+#[test]
+fn reload_targets_pane_by_side_arg() {
+    let server = Server::start(&["a.txt"], "");
+    std::fs::write(server.base.join("sbx").join("b.txt"), b"x").unwrap();
+    let has_b = |side: &str, s: &Server| {
+        s.req("GET", &format!("/state/panes/{side}/items"), "")
+            .unwrap()
+            .1
+            .contains("\"name\":\"b.txt\"")
+    };
+
+    // reload("left") は左だけ更新＝左に b.txt が出て、右はまだ出ない。
+    server.req("POST", "/command/reload", r#"["left"]"#).expect("reload left");
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"b.txt\""));
+    assert!(has_b("left", &server), "reload(\"left\") で左に b.txt");
+    assert!(!has_b("right", &server), "右は未 reload なので b.txt は出ない");
+
+    // 無指定 reload() は両方更新＝右にも b.txt。
+    server.req("POST", "/command/reload", "").expect("reload both");
+    poll(&server, "/state/panes/right/items", |b| b.contains("\"name\":\"b.txt\""));
+    assert!(has_b("right", &server), "無指定 reload で右にも b.txt");
+}
+
 /// テキストビューア表示中はビューア用コマンドがビューア文脈で実行される。
 #[test]
 fn viewer_commands_dispatch_in_text_context() {
