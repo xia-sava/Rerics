@@ -11,6 +11,12 @@ impl MainWindow {
         if index >= self.tabs.borrow().len() || index == self.active.get() {
             return Ok(());
         }
+        // どちらかのペインが非同期読込中はタブ切替を抑止する（読込前の古い一覧をスナップ
+        // ショットへ固めると、戻ったとき誤った内容が残り続けるため）。キー経路は exec が
+        // 読込中を抑止するが、タブ帯のマウスクリックはそこを通らないのでここで揃える。
+        if self.view(true).is_loading() || self.view(false).is_loading() {
+            return Ok(());
+        }
         self.save_active();
         self.active.set(index);
         let snap = self.tabs.borrow()[index].clone();
