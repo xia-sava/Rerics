@@ -194,6 +194,16 @@ pub enum WorkerEvent {
     ScriptEnd,
 }
 
+/// スクリプトのログ出力（追記・インプレース更新）を運ぶイベント。`WorkerEvent` とは別チャネルで
+/// 流し、`getLog` がこのチャネルだけを drain して読むことで、モーダル等の制御イベントに触れずに
+/// スクリプト自身の書き込みを読み戻せる（read-your-writes）ようにする。
+pub enum LogEvent {
+    /// インプレース更新できる `id` 付きの行を追記する。
+    Line { id: u64, level: LogLevel, text: String },
+    /// `id` 付き行の本文を書き換える。`level` が `Some` のときレベル（表示色）も差し替える。
+    Update { id: u64, level: Option<LogLevel>, text: String },
+}
+
 /// [`OperationHost`] の GUI 実装。ログをチャネルへ送り、共有フラグで中止を伝え、
 /// 衝突は UI へ往復で問い合わせる。「すべてに適用」の選択はここでキャッシュする。
 pub struct ChannelHost {

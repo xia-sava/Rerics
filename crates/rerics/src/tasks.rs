@@ -109,6 +109,8 @@ impl MainWindow {
         if self.in_dialog.get() {
             return Ok(());
         }
+        // スクリプトのログ出力（追記・更新）はこの取り込みでまとめて反映する。
+        self.drain_log_events();
         // 検索・比較のライブ追加は1取り込みぶんをまとめて1回だけ再描画する（項目ごとの
         // 再描画を避ける）。この取り込みで項目が増えた側を覚えておく。
         let mut find_dirty = [false, false];

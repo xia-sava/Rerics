@@ -296,6 +296,10 @@ struct MainWindow {
     right_mask: Rc<RefCell<Option<String>>>,
     task_tx: Sender<WorkerEvent>,
     task_rx: Rc<Receiver<WorkerEvent>>,
+    /// スクリプトのログ出力レーン。制御イベントの `task_*` と分け、`getLog` がこちらだけを
+    /// drain して読めるようにする（read-your-writes・モーダル等に触れない）。
+    log_tx: Sender<task::LogEvent>,
+    log_rx: Rc<Receiver<task::LogEvent>>,
     /// 汎用ジョブのワーカー → UI レーン。レガシーの `task_*` と別建てで、`in_dialog` 中も
     /// 配達する（モーダルを後追いで埋めるため）。`ui_jobs` は id → 継続の対応表。
     ui_job_tx: Sender<(u64, UiJobResult)>,
@@ -536,6 +540,7 @@ impl MainWindow {
         let (menu_bar, menu_cmds) = menu::build().expect("メニューバーの構築");
 
         let (task_tx, task_rx) = std::sync::mpsc::channel();
+        let (log_tx, log_rx) = std::sync::mpsc::channel();
         let (ui_job_tx, ui_job_rx) = std::sync::mpsc::channel();
 
         Self {
@@ -569,6 +574,8 @@ impl MainWindow {
             right_mask: Rc::new(RefCell::new(None)),
             task_tx,
             task_rx: Rc::new(task_rx),
+            log_tx,
+            log_rx: Rc::new(log_rx),
             ui_job_tx,
             ui_job_rx: Rc::new(ui_job_rx),
             ui_jobs: Rc::new(RefCell::new(std::collections::HashMap::new())),

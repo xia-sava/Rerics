@@ -4398,6 +4398,53 @@ fn log_line_handle_update_rewrites_in_place() {
     assert!(!log.contains("LOGLINE-before"), "同じ行が書き換わり元の本文は残らない: {log}");
 }
 
+/// ログは投げっぱなしで流すが、`getLog` は読む前にログレーンを汲み切るので、直前の `log` を
+/// 確実に読み戻せる（read-your-writes）。汲み切らないと `RYW-MISS` になる。
+#[test]
+fn get_log_reads_back_just_written_lines() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"
+                rerics.log("RYW-a");
+                rerics.log("RYW-b");
+                const seen = rerics.getLog();
+                const ok = seen.includes("RYW-a") && seen.includes("RYW-b");
+                rerics.log(ok ? "RYW-OK" : "RYW-MISS");
+            "#,
+        )
+        .expect("eval");
+    let log = poll(&server, "/state/log", |b| {
+        b.contains("RYW-OK") || b.contains("RYW-MISS")
+    });
+    assert!(log.contains("RYW-OK"), "getLog が直前の追記を読み戻すはず: {log}");
+}
+
+/// 追記を投げっぱなし化しても連射で行が落ちない。`/state/log` は可視ウィンドウしか返さないので、
+/// 全文を `getLog` で取り、先頭行と末尾行が両方そろっていることを確認する。
+#[test]
+fn rapid_log_appends_keep_all_lines() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"
+                for (let i = 0; i < 100; i++) rerics.log("burst-" + i);
+                const all = rerics.getLog();
+                const ok = all.includes("burst-0\r\n") && all.includes("burst-99\r\n");
+                rerics.log(ok ? "BURST-OK" : "BURST-MISS");
+            "#,
+        )
+        .expect("eval");
+    let log = poll(&server, "/state/log", |b| {
+        b.contains("BURST-OK") || b.contains("BURST-MISS")
+    });
+    assert!(log.contains("BURST-OK"), "連射した先頭・末尾の行が全文に残るはず: {log}");
+}
+
 /// キーバインド経路：登録コマンドの呼び出し式（`r.goUp()`）が `exec` からエンジンへ流れ、実行される。
 /// 登録コマンドがアクティブペインを移動させ、UI に反映されることで配線を検証する。
 #[test]

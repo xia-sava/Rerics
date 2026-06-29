@@ -22,7 +22,7 @@ use crate::dialog::{
     message_box,
 };
 use crate::shell;
-use crate::task::WorkerEvent;
+use crate::task::{LogEvent, WorkerEvent};
 use rerics_core::{Call, Command, LogLevel};
 
 use crate::script::{self, HostApi, PaneItem, PaneSnapshot, ScriptCommand, ScriptOp};
@@ -31,7 +31,6 @@ use crate::winutil::msg::SCRIPT_WAKE;
 
 /// エンジンスレッド → UI スレッドへの要求（[`HostApi`] の各操作）。
 pub enum HostCall {
-    Log { id: u64, level: LogLevel, text: String },
     GetLog,
     ConfigGet(String),
     ChangeOpposite { kind: String, path: String },
@@ -187,7 +186,9 @@ struct GuiHost {
     queue: ScriptQueue,
     hwnd_ptr: isize,
     worker_isolates: WorkerIsolates,
-    task_tx: Sender<WorkerEvent>,
+    /// ログ専用レーン。追記も更新も投げっぱなしで流し、タスクタイマ取り込み＋WM_PAINT 合体で
+    /// 連射しても詰まらない。`getLog` はこのチャネルだけを drain して読み戻す。
+    log_tx: Sender<LogEvent>,
     /// ログ行 id の採番元（本体の進捗行と id 空間を共有して衝突を避ける）。
     progress_seq: Arc<AtomicU64>,
 }
@@ -195,18 +196,12 @@ struct GuiHost {
 impl HostApi for GuiHost {
     fn log(&self, level: LogLevel, msg: &str) -> u64 {
         let id = self.progress_seq.fetch_add(1, Ordering::Relaxed);
-        let _ = ui_marshal::call(
-            &self.queue,
-            self.hwnd_ptr,
-            SCRIPT_WAKE.raw(),
-            HostCall::Log { id, level, text: msg.to_string() },
-        );
+        let _ = self.log_tx.send(LogEvent::Line { id, level, text: msg.to_string() });
         id
     }
 
     fn log_update(&self, id: u64, level: Option<LogLevel>, msg: &str) {
-        // 投げっぱなしでタスクタイマ経由に流す（本体の update_progress と同じ経路・同期往復しない）。
-        let _ = self.task_tx.send(WorkerEvent::LogUpdate { id, level, text: msg.to_string() });
+        let _ = self.log_tx.send(LogEvent::Update { id, level, text: msg.to_string() });
     }
 
     fn log_text(&self) -> String {
@@ -565,19 +560,20 @@ pub fn spawn_engine(
     hwnd_ptr: isize,
     cmd_rx: Receiver<EngineCmd>,
     task_tx: Sender<WorkerEvent>,
+    log_tx: Sender<LogEvent>,
     worker_isolates: WorkerIsolates,
     progress_seq: Arc<AtomicU64>,
 ) {
     std::thread::spawn(move || {
         let factory_queue = queue.clone();
         let factory_workers = worker_isolates.clone();
-        let factory_tx = task_tx.clone();
+        let factory_log_tx = log_tx.clone();
         let factory_seq = progress_seq.clone();
         let host: Rc<dyn HostApi> = Rc::new(GuiHost {
             queue,
             hwnd_ptr,
             worker_isolates,
-            task_tx: task_tx.clone(),
+            log_tx,
             progress_seq,
         });
         let mut engine = script::Engine::new(host.clone());
@@ -588,7 +584,7 @@ pub fn spawn_engine(
                 queue: factory_queue.clone(),
                 hwnd_ptr,
                 worker_isolates: factory_workers.clone(),
-                task_tx: factory_tx.clone(),
+                log_tx: factory_log_tx.clone(),
                 progress_seq: factory_seq.clone(),
             })
         }));
@@ -690,11 +686,10 @@ impl MainWindow {
             let item = self.script.queue.lock().unwrap().pop_front();
             let Some((req, tx)) = item else { break };
             match req {
-                HostCall::Log { id, level, text } => {
-                    self.log.push_with_id(id, level, &text);
-                    let _ = tx.send(HostResp::Done);
-                }
                 HostCall::GetLog => {
+                    // 先にログレーンを汲み切ってからスナップショットを返す（スクリプト自身の
+                    // 直前の log/update を確実に読み戻す）。
+                    self.drain_log_events();
                     let _ = tx.send(HostResp::LogText(self.log.text()));
                 }
                 HostCall::ConfigGet(key) => {
@@ -1114,9 +1109,21 @@ impl MainWindow {
                 hwnd_ptr,
                 cmd_rx,
                 self.task_tx.clone(),
+                self.log_tx.clone(),
                 self.script_worker_isolates.clone(),
                 self.progress_seq.clone(),
             );
+        }
+    }
+
+    /// スクリプトのログレーンを汲み切ってログ窓へ反映する。タスクタイマ取り込みと `getLog` の
+    /// 双方から呼ばれる（どちらも UI スレッド）。
+    pub(crate) fn drain_log_events(&self) {
+        while let Ok(ev) = self.log_rx.try_recv() {
+            match ev {
+                LogEvent::Line { id, level, text } => self.log.push_with_id(id, level, &text),
+                LogEvent::Update { id, level, text } => self.log.update(id, level, &text),
+            }
         }
     }
 
