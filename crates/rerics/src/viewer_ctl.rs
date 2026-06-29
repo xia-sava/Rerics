@@ -174,7 +174,7 @@ impl MainWindow {
                         p.is_file().then_some(p)
                     });
                     self.media.open_nav(n, index, resolver);
-                    return self.show_viewer(ActiveView::Media);
+                    return self.show_media_or_text(is_left, name);
                 }
 
                 // 暗号化メディアなら開く前にパスワードを確保して resolver で使い回す（平文は None）。
@@ -220,7 +220,17 @@ impl MainWindow {
                 self.media.open_nav(n, index, resolver);
             }
         }
-        self.show_viewer(ActiveView::Media)
+        self.show_media_or_text(is_left, name)
+    }
+
+    /// メディアが表示フレームを得られていれば前面へ、デコードできなければ（コーデック非対応・
+    /// 壊れ・テキストの拡張子衝突など）テキスト/バイナリビューアへ退避する。
+    fn show_media_or_text(&self, is_left: bool, name: &str) -> w::AnyResult<()> {
+        if self.media.current_loaded() {
+            return self.show_viewer(ActiveView::Media);
+        }
+        self.cancel_media_prefetch();
+        self.view_text(is_left, name)
     }
 
     /// 結果一覧のカーソル下メディアを単一表示で開く（前後送りなし）。実FS は出自ディレクトリ
@@ -244,7 +254,7 @@ impl MainWindow {
                 }
             }
         }
-        self.show_viewer(ActiveView::Media)
+        self.show_media_or_text(is_left, name)
     }
 
     /// 指定ビューアを最前面に出し、もう一方を隠してキー入力を奪う。

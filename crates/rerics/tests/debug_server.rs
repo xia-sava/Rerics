@@ -3123,13 +3123,24 @@ fn script_task_stop_terminates_runaway_via_task_manager() {
     assert!(body.contains('2'), "停止後もエンジンが評価できる: {body}");
 }
 
+/// 無圧縮 24bpp の 1x1 BMP（白画素）。デコード可能な実画像が要るテスト用の最小 fixture。
+const TINY_BMP: &[u8] = &[
+    0x42, 0x4D, 0x3A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x36, 0x00, 0x00, 0x00, // file header
+    0x28, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x18, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // info header
+    0xFF, 0xFF, 0xFF, 0x00, // 1px white + padding
+];
+
 /// 画像ビューアの表示モードキー（1=原寸/2=全体/3=幅/4=高/5=大）が、それぞれの
 /// モードへ切り替わるのを debug-server で観測する。0 は原作に無い＝未バインドで不変。
 #[test]
 fn image_viewer_display_modes_switch_by_keys() {
-    let server = Server::start(&["pic.png"], "");
+    let server = Server::start(&["pic.bmp"], "");
+    // 既定 placeholder("x") はデコードできずテキストへ退避するので、実デコード可能な画像へ差し替える。
+    std::fs::write(server.base.join("sbx").join("pic.bmp"), TINY_BMP).unwrap();
 
-    // 左 items は [.., pic.png]。cursorDown×1 で pic.png にカーソルを置いて開く。
+    // 左 items は [.., pic.bmp]。cursorDown×1 で pic.bmp にカーソルを置いて開く。
     server.req("POST", "/command/cursorDown", "").unwrap();
     server.req("POST", "/command/viewFile", "").expect("viewFile");
     poll(&server, "/state/active_view", |b| b.trim().trim_matches('"') == "media");
@@ -3157,6 +3168,25 @@ fn image_viewer_display_modes_switch_by_keys() {
     // 0 は画像ビューアでは未バインド＝直前の fit_large のまま変わらない。
     server.req("POST", "/view/key/0", "").expect("view key 0");
     assert_eq!(mode(&server), "fit_large", "0 は未バインドでモード不変");
+}
+
+/// メディア拡張子でも中身がデコードできなければテキスト/バイナリビューアへ退避する。
+/// TypeScript の `.ts` は動画拡張子（MPEG-TS）と衝突するが、テキストとして開ける。
+#[test]
+fn view_falls_back_to_text_for_undecodable_media() {
+    let server = Server::start(&["app.ts"], "");
+    // `.ts` は MediaKind::Video に分類されるが、中身は TypeScript テキスト＝動画デコードは失敗する。
+    std::fs::write(
+        server.base.join("sbx").join("app.ts"),
+        "export const greet = (name: string): string => `hi ${name}`;\n",
+    )
+    .unwrap();
+
+    // app.ts にカーソルを置いて開く＝メディアにならずテキストビューアが前面に出る。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/viewFile", "").expect("viewFile");
+    let av = poll(&server, "/state/active_view", |b| b.trim().trim_matches('"') == "text");
+    assert_eq!(av.trim().trim_matches('"'), "text", "デコード不可の .ts はテキストへ退避: {av}");
 }
 
 /// テキストビューアの検索が、可視範囲の全一致を桁単位で捉え、N で一致箇所単位に

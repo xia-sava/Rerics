@@ -413,6 +413,12 @@ impl MediaView {
         !self.inner.bgra.borrow().is_empty()
     }
 
+    /// 直近に開いたメディアが表示可能なフレームを得られたか。デコード不可・コーデック
+    /// 非対応・壊れたファイルでは偽になり、呼び出し側がテキスト/バイナリ表示へ退避できる。
+    pub fn current_loaded(&self) -> bool {
+        self.has_image()
+    }
+
     /// ホイール 1 ノッチでズームする（上＝拡大）。
     pub fn on_wheel(&self, distance: i16) -> w::AnyResult<()> {
         self.zoom(distance > 0)
