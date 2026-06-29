@@ -83,8 +83,9 @@ pub trait HostApi {
     fn navigate(&self, path: &str);
     /// 確認ダイアログ（Yes/No）を出し、Yes なら true。
     fn confirm(&self, message: &str) -> bool;
-    /// 入力ダイアログを出し、OK なら入力文字列・キャンセルなら None。
-    fn prompt(&self, message: &str, default: &str) -> Option<String>;
+    /// 入力ダイアログを出し、OK なら入力文字列・キャンセルなら None。`select_all` が真なら
+    /// 初期テキストを全選択して開く（すぐ上書き入力できる）。
+    fn prompt(&self, message: &str, default: &str, select_all: bool) -> Option<String>;
     /// 一覧から 1 つ選ばせ、選んだ行の index・キャンセルなら None。
     fn select(&self, title: &str, items: &[String]) -> Option<usize>;
     /// ペイン（`opposite=false` でアクティブ・`true` で反対側）の現在状態を一括取得する。
@@ -461,10 +462,15 @@ fn op_confirm(state: &mut OpState, #[string] message: &str) -> bool {
 /// `Option` を直に返せないため、JS 側で長さ 0/1 を `null`/値へ畳む。
 #[op2]
 #[serde]
-fn op_prompt(state: &mut OpState, #[string] message: &str, #[string] default: &str) -> Vec<String> {
+fn op_prompt(
+    state: &mut OpState,
+    #[string] message: &str,
+    #[string] default: &str,
+    select_all: bool,
+) -> Vec<String> {
     state
         .borrow::<Host>()
-        .prompt(message, default)
+        .prompt(message, default, select_all)
         .into_iter()
         .collect()
 }
@@ -1205,8 +1211,8 @@ const BOOTSTRAP: &str = r#"
     },
     navigate: (p) => ops.op_navigate(String(p)),
     confirm: (m) => ops.op_confirm(String(m)),
-    prompt: (m, d) => {
-      const r = ops.op_prompt(String(m), d == null ? "" : String(d));
+    prompt: (m, d, opts) => {
+      const r = ops.op_prompt(String(m), d == null ? "" : String(d), !!(opts && opts.selectAll));
       return r.length ? r[0] : null;
     },
     select: (t, items) => {
@@ -1681,6 +1687,8 @@ mod tests {
         compressed: RefCell<Vec<(String, String, Vec<String>)>>,
         /// クリップボードのテキスト（set で更新・get で返す）。
         clipboard: RefCell<String>,
+        /// 直近の `prompt()` が受けた `select_all`（オプション伝播の検証用）。
+        prompt_select_all: std::cell::Cell<bool>,
     }
 
     impl HostApi for MockHost {
@@ -1721,7 +1729,8 @@ mod tests {
         fn confirm(&self, _message: &str) -> bool {
             self.confirm_reply
         }
-        fn prompt(&self, _message: &str, _default: &str) -> Option<String> {
+        fn prompt(&self, _message: &str, _default: &str, select_all: bool) -> Option<String> {
+            self.prompt_select_all.set(select_all);
             self.prompt_reply.clone()
         }
         fn select(&self, _title: &str, _items: &[String]) -> Option<usize> {
@@ -2384,6 +2393,23 @@ mod tests {
             *host.logs.borrow(),
             vec!["c=true".to_string(), "p=typed".to_string(), "s=2".to_string()]
         );
+    }
+
+    #[test]
+    fn prompt_forwards_select_all_option() {
+        let host = Rc::new(MockHost { prompt_reply: Some("x".into()), ..Default::default() });
+        let mut eng = Engine::new(host.clone());
+        // オプション無し＝全選択しない。
+        eng.run_to_completion("t1", r#"rerics.prompt("a");"#.to_string()).unwrap();
+        assert!(!host.prompt_select_all.get(), "オプション無しでは全選択しない");
+        // {selectAll:true} でフラグが立つ。
+        eng.run_to_completion("t2", r#"rerics.prompt("a", "d", { selectAll: true });"#.to_string())
+            .unwrap();
+        assert!(host.prompt_select_all.get(), "selectAll:true で全選択フラグが立つ");
+        // 明示 false で戻る。
+        eng.run_to_completion("t3", r#"rerics.prompt("a", "d", { selectAll: false });"#.to_string())
+            .unwrap();
+        assert!(!host.prompt_select_all.get(), "selectAll:false で全選択しない");
     }
 
     #[test]

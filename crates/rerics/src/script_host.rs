@@ -15,7 +15,10 @@ use winsafe::co;
 use winsafe::prelude::*;
 
 use crate::MainWindow;
-use crate::dialog::{InputMode, MessageResult, MessageStyle, input_box, list_box, message_box};
+use crate::dialog::{
+    InputMode, InputSelect, MessageResult, MessageStyle, input_box, input_box_select, list_box,
+    message_box,
+};
 use crate::shell;
 use crate::task::WorkerEvent;
 use rerics_core::{Call, Command, LogLevel};
@@ -36,7 +39,7 @@ pub enum HostCall {
     CurrentDir,
     Navigate(String),
     Confirm(String),
-    Prompt { message: String, default: String },
+    Prompt { message: String, default: String, select_all: bool },
     Select { title: String, items: Vec<String> },
     PaneSnapshot { opposite: bool },
     SetSelected { is_left: bool, index: usize, selected: bool },
@@ -283,7 +286,7 @@ impl HostApi for GuiHost {
         )
     }
 
-    fn prompt(&self, message: &str, default: &str) -> Option<String> {
+    fn prompt(&self, message: &str, default: &str, select_all: bool) -> Option<String> {
         match ui_marshal::call(
             &self.queue,
             self.hwnd_ptr,
@@ -291,6 +294,7 @@ impl HostApi for GuiHost {
             HostCall::Prompt {
                 message: message.to_string(),
                 default: default.to_string(),
+                select_all,
             },
         ) {
             Ok(HostResp::Text(text)) => text,
@@ -701,8 +705,19 @@ impl MainWindow {
                     let result = message_box(&self.wnd, "確認", &message, MessageStyle::YesNo);
                     let _ = tx.send(HostResp::Bool(result == MessageResult::Yes));
                 }
-                HostCall::Prompt { message, default } => {
-                    let text = input_box(&self.wnd, "入力", &message, &default, InputMode::Plain);
+                HostCall::Prompt { message, default, select_all } => {
+                    let text = if select_all {
+                        input_box_select(
+                            &self.wnd,
+                            "入力",
+                            &message,
+                            &default,
+                            InputMode::Plain,
+                            InputSelect::All,
+                        )
+                    } else {
+                        input_box(&self.wnd, "入力", &message, &default, InputMode::Plain)
+                    };
                     let _ = tx.send(HostResp::Text(text));
                 }
                 HostCall::Select { title, items } => {

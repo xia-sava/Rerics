@@ -394,8 +394,15 @@ interface RericsApi {
   /** 確認ダイアログ（はい/いいえ）を出す。「はい」なら true。 */
   confirm(message: string): boolean;
 
-  /** 入力ダイアログを出す。OK なら入力文字列、キャンセルなら null。 */
-  prompt(message: string, defaultValue?: string): string | null;
+  /**
+   * 入力ダイアログを出す。OK なら入力文字列、キャンセルなら null。
+   * `options.selectAll` が真なら初期テキストを全選択して開く（すぐ上書き入力できる）。
+   */
+  prompt(
+    message: string,
+    defaultValue?: string,
+    options?: { selectAll?: boolean },
+  ): string | null;
 
   /** 一覧から 1 つ選ばせる。選んだ行の index、キャンセルなら null。 */
   select(title: string, items: string[]): number | null;
