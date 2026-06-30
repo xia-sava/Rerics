@@ -271,6 +271,86 @@ pub fn clip_get_text(owner: &w::HWND) -> Result<Option<String>, String> {
     Ok(Some(String::from_utf16_lossy(&units)))
 }
 
+/// 画像ファイル `path` を読み込み、クリップボードへ画像（CF_DIB）として設定する。透過は
+/// 失われる（24bpp BGR・ボトムアップで格納）。デコードやクリップボード操作の失敗は `Err`。
+pub fn clip_set_image(owner: &w::HWND, path: &Path) -> Result<(), String> {
+    let img = image::open(path).map_err(|e| e.to_string())?.to_rgb8();
+    let (width, height) = (img.width() as usize, img.height() as usize);
+    if width == 0 || height == 0 {
+        return Err("画像のサイズが不正です".to_string());
+    }
+    // CF_DIB は BITMAPINFOHEADER＋ボトムアップの BGR ピクセル列。各行を 4 バイト境界へ詰める。
+    let stride = (width * 3 + 3) & !3;
+    let mut dib = Vec::with_capacity(40 + stride * height);
+    dib.extend_from_slice(&40u32.to_le_bytes()); // biSize
+    dib.extend_from_slice(&(width as i32).to_le_bytes()); // biWidth
+    dib.extend_from_slice(&(height as i32).to_le_bytes()); // biHeight（正＝ボトムアップ）
+    dib.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
+    dib.extend_from_slice(&24u16.to_le_bytes()); // biBitCount
+    dib.extend_from_slice(&0u32.to_le_bytes()); // biCompression = BI_RGB
+    dib.extend_from_slice(&((stride * height) as u32).to_le_bytes()); // biSizeImage
+    dib.extend_from_slice(&0i32.to_le_bytes()); // biXPelsPerMeter
+    dib.extend_from_slice(&0i32.to_le_bytes()); // biYPelsPerMeter
+    dib.extend_from_slice(&0u32.to_le_bytes()); // biClrUsed
+    dib.extend_from_slice(&0u32.to_le_bytes()); // biClrImportant
+    for y in (0..height).rev() {
+        let row_start = dib.len();
+        for x in 0..width {
+            let p = img.get_pixel(x as u32, y as u32);
+            dib.push(p[2]); // B
+            dib.push(p[1]); // G
+            dib.push(p[0]); // R
+        }
+        dib.resize(row_start + stride, 0);
+    }
+    let clip = open_clipboard_retry(owner)?;
+    clip.EmptyClipboard().map_err(|e| e.to_string())?;
+    clip.SetClipboardData(co::CF::DIB, &dib).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// クリップボードの画像（CF_DIB）を取り出し、`dest`（拡張子で形式を決める）へ保存する。
+/// 画像形式が無ければ `Ok(false)`。クリップボードを開けない・保存に失敗等のシステム的失敗は `Err`。
+pub fn clip_get_image(owner: &w::HWND, dest: &Path) -> Result<bool, String> {
+    let dib: Vec<u8> = {
+        let clip = open_clipboard_retry(owner)?;
+        match clip.GetClipboardData(co::CF::DIB) {
+            Ok(bytes) => bytes.to_vec(),
+            // CF_DIB 形式が無い＝画像はクリップボードに無い。システム失敗ではないので false。
+            Err(_) => return Ok(false),
+        }
+    };
+    if dib.len() < 40 {
+        return Err("クリップボードの画像データが不正です".to_string());
+    }
+    // BITMAPINFOHEADER の手前に 14 バイトの BITMAPFILEHEADER を被せて BMP として復元し、
+    // image でデコードする（DIB の各種変種は BMP デコーダに任せる）。ピクセル先頭の位置は
+    // ヘッダ＋色マスク（BI_BITFIELDS）＋パレットのバイト数から求める。
+    let header_size = u32::from_le_bytes([dib[0], dib[1], dib[2], dib[3]]) as usize;
+    let bit_count = u16::from_le_bytes([dib[14], dib[15]]) as usize;
+    let compression = u32::from_le_bytes([dib[16], dib[17], dib[18], dib[19]]);
+    let clr_used = u32::from_le_bytes([dib[32], dib[33], dib[34], dib[35]]) as usize;
+    let mask_bytes = if compression == 3 && header_size == 40 { 12 } else { 0 };
+    let palette_entries = if bit_count <= 8 {
+        if clr_used != 0 { clr_used } else { 1usize << bit_count }
+    } else {
+        clr_used
+    };
+    let pixel_offset = 14 + header_size + mask_bytes + palette_entries * 4;
+    let file_size = 14 + dib.len();
+    let mut bmp = Vec::with_capacity(file_size);
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&(file_size as u32).to_le_bytes());
+    bmp.extend_from_slice(&0u16.to_le_bytes()); // bfReserved1
+    bmp.extend_from_slice(&0u16.to_le_bytes()); // bfReserved2
+    bmp.extend_from_slice(&(pixel_offset as u32).to_le_bytes()); // bfOffBits
+    bmp.extend_from_slice(&dib);
+    let img = image::load_from_memory_with_format(&bmp, image::ImageFormat::Bmp)
+        .map_err(|e| e.to_string())?;
+    img.save(dest).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 /// フォルダ選択ダイアログ（COM `IFileOpenDialog`＋`FOS_PICKFOLDERS`）を開き、選んだパスを返す。
 /// キャンセル/失敗は `None`。`owner` はモーダルの親窓の生ハンドル。
 pub fn choose_folder(owner: *mut c_void, title: &str) -> Option<PathBuf> {

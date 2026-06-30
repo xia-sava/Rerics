@@ -3951,6 +3951,32 @@ fn script_clipboard_round_trips_text() {
     assert!(log.contains("clip=clip-rt-7"), "clipboard text should round-trip: {log}");
 }
 
+/// scripting：`rerics.clipboard` の setImage→getImage が画像をラウンドトリップする（CF_DIB の
+/// 実クリップボードへ書いて読み戻し、寸法が保たれる host 往復）。
+#[test]
+fn script_clipboard_round_trips_image() {
+    let dir = std::env::temp_dir().join(format!("rerics_clipimg_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("src.png");
+    let dst = dir.join("dst.png");
+    let img = image::RgbImage::from_fn(3, 2, |x, y| image::Rgb([(x * 80) as u8, (y * 120) as u8, 200]));
+    img.save(&src).unwrap();
+
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    let js = format!(
+        r#"rerics.clipboard.setImage("{}"); rerics.log("imgrt=" + rerics.clipboard.getImage("{}"));"#,
+        src.display().to_string().replace('\\', "/"),
+        dst.display().to_string().replace('\\', "/"),
+    );
+    server.req("POST", "/script/eval", &js).expect("eval");
+    let log = poll(&server, "/state/log", |b| b.contains("imgrt="));
+    assert!(log.contains("imgrt=true"), "clipboard image should round-trip: {log}");
+
+    let out = image::open(&dst).expect("saved image decodes");
+    assert_eq!((out.width(), out.height()), (3, 2), "dimensions preserved");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// scripting：`rerics.activePane()` が実ペインの項目・選択・カーソルを読み取れる
 /// （オブジェクトモデルの実 GUI 経路＝スナップショットが UI スレッドから組み上がる）。
 #[test]

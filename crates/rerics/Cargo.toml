@@ -6,7 +6,7 @@ edition.workspace = true
 [features]
 # 開発専用のローカル制御サーバ（既定 off・リリースには載せない）。
 # serde_json は常時依存（応答 JSON を組む純粋関数を feature 無しで常時ビルド＆テストするため）。
-debug-server = ["dep:tiny_http", "dep:image"]
+debug-server = ["dep:tiny_http"]
 # rar 読取（unrar crate・既定 off）。core の rar feature を引き継ぐ。
 rar = ["rerics-core/rar"]
 
@@ -17,7 +17,7 @@ windows = { version = "0.62.2", features = ["Win32_Media_MediaFoundation", "Win3
 winsafe.workspace = true
 serde_json = "1"
 tiny_http = { version = "0.12", optional = true }
-image = { version = "0.25", optional = true }
+image = { version = "0.25" }
 # TS/JS スクリプト基盤（deno_core ＝ V8 埋め込み）。リリースに載る本機能なので常時ビルド。
 deno_core = "0.404.0"
 tokio = { version = "1.52.3", features = ["rt"] }

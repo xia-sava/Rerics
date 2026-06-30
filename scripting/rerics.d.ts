@@ -227,14 +227,18 @@ interface RericsEnv {
 }
 
 /**
- * クリップボードのテキスト読み書き（`rerics.clipboard`）。Windows 標準の CF_UNICODETEXT で
- * やり取りする。
+ * クリップボードのテキスト・画像の読み書き（`rerics.clipboard`）。テキストは Windows 標準の
+ * CF_UNICODETEXT、画像は CF_DIB でやり取りする。
  */
 interface RericsClipboard {
   /** クリップボードへテキストを設定する。 */
   setText(text: string): void;
   /** クリップボードのテキストを返す（テキストが無ければ空文字）。 */
   getText(): string;
+  /** 画像ファイルを読み込み、クリップボードへ画像（CF_DIB）として設定する。成功で true。透過は失われる。 */
+  setImage(path: string): boolean;
+  /** クリップボードの画像を dest（拡張子で形式を決める）へ保存する。画像があり保存できたら true。 */
+  getImage(dest: string): boolean;
 }
 
 /** `rerics.spawn()` / `rerics.run()` の末尾に渡せる起動オプション。 */

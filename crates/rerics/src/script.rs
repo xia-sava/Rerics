@@ -165,6 +165,10 @@ pub trait HostApi {
     fn set_clipboard(&self, text: &str);
     /// `r.clipboard.getText()`：クリップボードのテキストを取得する（テキストが無ければ空文字）。
     fn get_clipboard(&self) -> String;
+    /// `r.clipboard.setImage()`：画像ファイルをクリップボードへ画像として設定する。成功で true。
+    fn set_clipboard_image(&self, path: &str) -> bool;
+    /// `r.clipboard.getImage()`：クリップボードの画像を dest へ保存する。保存できたら true。
+    fn get_clipboard_image(&self, dest: &str) -> bool;
     /// 並列ワーカーのアイソレートを停止対象として登録する（ワーカースレッド内から呼ぶ）。`id` は
     /// ワーカーごとに一意。スクリプト停止時に UI 側がこのハンドルを terminate し、暴走ワーカー
     /// （無限ループ等）も止められるようにする。既定は何もしない（GUI 実装だけが配線する）。
@@ -782,6 +786,18 @@ fn op_get_clipboard(state: &mut OpState) -> String {
     state.borrow::<Host>().get_clipboard()
 }
 
+/// 画像ファイルをクリップボードへ画像（CF_DIB）として設定する。成功で true。
+#[op2(fast)]
+fn op_set_clipboard_image(state: &mut OpState, #[string] path: &str) -> bool {
+    state.borrow::<Host>().set_clipboard_image(path)
+}
+
+/// クリップボードの画像を dest へ保存する。画像があり保存できたら true。
+#[op2(fast)]
+fn op_get_clipboard_image(state: &mut OpState, #[string] dest: &str) -> bool {
+    state.borrow::<Host>().get_clipboard_image(dest)
+}
+
 /// 指定プログラムを起動して即リターンする（投げっぱなし）。`cwd` が非空ならそこを作業
 /// ディレクトリにする。起動失敗は例外。GUI に触れないのでエンジンスレッドから直接起動する。
 #[op2]
@@ -1106,6 +1122,8 @@ extension!(
         op_modifiers,
         op_set_clipboard,
         op_get_clipboard,
+        op_set_clipboard_image,
+        op_get_clipboard_image,
         op_spawn,
         op_execute,
         op_run,
@@ -1501,6 +1519,8 @@ const BOOTSTRAP: &str = r#"
     clipboard: {
       setText: (t) => ops.op_set_clipboard(t == null ? "" : String(t)),
       getText: () => ops.op_get_clipboard(),
+      setImage: (p) => ops.op_set_clipboard_image(p == null ? "" : String(p)),
+      getImage: (p) => ops.op_get_clipboard_image(p == null ? "" : String(p)),
     },
     registerCommand: (name, fn, opts) => {
       if (typeof fn !== "function") throw new TypeError("registerCommand: fn must be a function");
@@ -2027,6 +2047,12 @@ mod tests {
         }
         fn get_clipboard(&self) -> String {
             self.clipboard.borrow().clone()
+        }
+        fn set_clipboard_image(&self, _path: &str) -> bool {
+            false
+        }
+        fn get_clipboard_image(&self, _dest: &str) -> bool {
+            false
         }
     }
 

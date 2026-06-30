@@ -59,6 +59,8 @@ pub enum HostCall {
     SaveDialog(String),
     SetClipboard(String),
     GetClipboard,
+    SetClipboardImage(String),
+    GetClipboardImage(String),
 }
 
 /// 走行中の並列ワーカーの `(id, アイソレートハンドル)` を共有する登録簿。ワーカースレッドが直接
@@ -498,6 +500,30 @@ impl HostApi for GuiHost {
         }
     }
 
+    fn set_clipboard_image(&self, path: &str) -> bool {
+        matches!(
+            ui_marshal::call(
+                &self.queue,
+                self.hwnd_ptr,
+                SCRIPT_WAKE.raw(),
+                HostCall::SetClipboardImage(path.to_string()),
+            ),
+            Ok(HostResp::Bool(true))
+        )
+    }
+
+    fn get_clipboard_image(&self, dest: &str) -> bool {
+        matches!(
+            ui_marshal::call(
+                &self.queue,
+                self.hwnd_ptr,
+                SCRIPT_WAKE.raw(),
+                HostCall::GetClipboardImage(dest.to_string()),
+            ),
+            Ok(HostResp::Bool(true))
+        )
+    }
+
     fn register_worker(&self, id: u64, handle: deno_core::v8::IsolateHandle) {
         self.worker_isolates.lock().unwrap().push((id, handle));
     }
@@ -850,6 +876,26 @@ impl MainWindow {
                         }
                     };
                     let _ = tx.send(HostResp::Text(text));
+                }
+                HostCall::SetClipboardImage(path) => {
+                    let ok = match shell::clip_set_image(self.wnd.hwnd(), std::path::Path::new(&path)) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            self.log.error(&e);
+                            false
+                        }
+                    };
+                    let _ = tx.send(HostResp::Bool(ok));
+                }
+                HostCall::GetClipboardImage(dest) => {
+                    let ok = match shell::clip_get_image(self.wnd.hwnd(), std::path::Path::new(&dest)) {
+                        Ok(saved) => saved,
+                        Err(e) => {
+                            self.log.error(&e);
+                            false
+                        }
+                    };
+                    let _ = tx.send(HostResp::Bool(ok));
                 }
             }
         }
