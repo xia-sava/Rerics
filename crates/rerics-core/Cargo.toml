@@ -16,7 +16,8 @@ syntect = { version = "5.2", default-features = false, features = ["default-fanc
 zip = { version = "8", default-features = false, features = ["deflate", "aes-crypto"] }
 sevenz-rust2 = "0.21"
 tar = "0.4"
-flate2 = "1"
+# deflate 復号は zlib-rs バックエンド（純Rust・miniz_oxide より速い）。zip crate と同実装。
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 bzip2 = "0.6"
 lzma-rust2 = { version = "0.16", features = ["xz"] }
 ruzstd = "0.8"
