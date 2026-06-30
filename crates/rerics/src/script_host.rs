@@ -9,7 +9,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
@@ -593,6 +593,7 @@ fn script_commands_dts(metas: &[ScriptCommand]) -> String {
 
 /// スクリプトエンジンを別スレッドに建てる。起動スクリプト（`data_dir()/scripts`）を読み込み、
 /// 以後 [`EngineCmd`] を受けて捌くループに入る。`hwnd_ptr` は UI スレッドを起こす先。
+#[allow(clippy::too_many_arguments)] // スレッド起動時に複数のチャネル・共有状態を束ねて渡す。
 pub fn spawn_engine(
     queue: ScriptQueue,
     hwnd_ptr: isize,
@@ -601,6 +602,7 @@ pub fn spawn_engine(
     log_tx: Sender<LogEvent>,
     worker_isolates: WorkerIsolates,
     progress_seq: Arc<AtomicU64>,
+    pool_stopped: Arc<AtomicBool>,
 ) {
     std::thread::spawn(move || {
         let factory_queue = queue.clone();
@@ -617,15 +619,18 @@ pub fn spawn_engine(
         let mut engine = script::Engine::new(host.clone());
         // 並列ワーカーは各スレッド内で UI へマーシャルするホストを建て直す（queue・登録簿・送信口・
         // 採番元はいずれも Arc/Sender で Send なので、生成器ごとスレッドへ渡せる）。
-        engine.set_worker_factory(std::sync::Arc::new(move || -> script::Host {
-            Rc::new(GuiHost {
-                queue: factory_queue.clone(),
-                hwnd_ptr,
-                worker_isolates: factory_workers.clone(),
-                log_tx: factory_log_tx.clone(),
-                progress_seq: factory_seq.clone(),
-            })
-        }));
+        engine.set_worker_factory(
+            std::sync::Arc::new(move || -> script::Host {
+                Rc::new(GuiHost {
+                    queue: factory_queue.clone(),
+                    hwnd_ptr,
+                    worker_isolates: factory_workers.clone(),
+                    log_tx: factory_log_tx.clone(),
+                    progress_seq: factory_seq.clone(),
+                })
+            }),
+            pool_stopped,
+        );
         // 停止（強制終了）に使う isolate ハンドルを UI へ渡す。タスク取り込みタイマがまだ
         // 走っていなくても処理されるよう、送ったら UI を起こす。
         let _ = task_tx.send(WorkerEvent::ScriptEngineReady { handle: engine.isolate_handle() });
@@ -1170,6 +1175,7 @@ impl MainWindow {
                 self.log_tx.clone(),
                 self.script_worker_isolates.clone(),
                 self.progress_seq.clone(),
+                self.script_pool_stopped.clone(),
             );
         }
     }

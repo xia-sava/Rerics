@@ -346,6 +346,8 @@ impl MainWindow {
             for (_, worker) in self.script_worker_isolates.lock().unwrap().iter() {
                 let _ = worker.terminate_execution();
             }
+            // terminate 済みアイソレートは再利用しない。次の parallel() でプールを畳んで作り直させる。
+            self.script_pool_stopped.store(true, std::sync::atomic::Ordering::Release);
             self.script_terminated.set(true);
             self.log.warn("スクリプトを停止しました");
         }

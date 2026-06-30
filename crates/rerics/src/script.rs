@@ -5,9 +5,10 @@
 //! テストはモックの [`HostApi`] で同期的に検証する。
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 use deno_core::{JsRuntime, OpState, RuntimeOptions, extension, op2};
 
@@ -285,11 +286,114 @@ pub type Host = Rc<dyn HostApi>;
 pub type WorkerHostFactory = Arc<dyn Fn() -> Host + Send + Sync>;
 
 /// 並列ワーカーを起動するための土台（OpState に常駐）。`factory` で各ワーカーのホストを作り、
-/// `limit` で同時実行数を CPU 数ぶんに絞る。メインエンジンだけに置き、ワーカー自身のエンジンには
-/// 置かない＝入れ子の `parallel` は使えない（容易に枠を食い潰すのを防ぐ）。
+/// CPU 数ぶんの常駐ワーカーからなるプールを遅延生成する。常駐ワーカーは温めたアイソレートを
+/// 使い回すので、`parallel()` ごとに `Engine::new`（V8 アイソレート生成＋bootstrap）を払わずに済む。
+/// メインエンジンだけに置き、ワーカー自身のエンジンには置かない＝入れ子の `parallel` は使えない。
 struct WorkerSupport {
     factory: WorkerHostFactory,
-    limit: Arc<tokio::sync::Semaphore>,
+    /// UI 側が停止時に立てるフラグ。次の `parallel()` でプールを作り直す合図（停止で畳む）。
+    pool_stopped: Arc<AtomicBool>,
+    /// 同時実行数＝常駐ワーカー数（CPU 数）。
+    workers: usize,
+    /// 遅延生成する常駐ワーカープール。停止後は破棄して作り直す。
+    pool: RefCell<Option<WorkerPool>>,
+}
+
+impl WorkerSupport {
+    /// プールを用意して共有キューを返す。停止フラグが立っていたら旧プールを畳んで作り直す。
+    fn ensure_pool(&self) -> Arc<PoolShared> {
+        if self.pool_stopped.swap(false, Ordering::AcqRel) {
+            // 停止で terminate 済みのアイソレートは再利用しない。旧プールを drop して畳む
+            //（drop で残りのワーカーへ退出を通知する）。
+            *self.pool.borrow_mut() = None;
+        }
+        let mut pool = self.pool.borrow_mut();
+        let pool = pool.get_or_insert_with(|| {
+            WorkerPool::spawn(self.factory.clone(), self.pool_stopped.clone(), self.workers)
+        });
+        pool.shared.clone()
+    }
+}
+
+/// プールのワーカーへ渡す 1 タスク。関数ソース・引数 JSON・結果（JSON 文字列か失敗）の返し口。
+struct PoolTask {
+    fn_source: String,
+    arg_json: String,
+    reply: tokio::sync::oneshot::Sender<Result<String, String>>,
+}
+
+/// 常駐ワーカーが共有するタスクキュー。`available` で空き待ちし、`shutdown` で退出する。
+struct PoolShared {
+    queue: Mutex<VecDeque<PoolTask>>,
+    available: Condvar,
+    shutdown: AtomicBool,
+}
+
+/// CPU 数ぶんの常駐ワーカー。Drop で全ワーカーへ退出を通知する（プールを畳む）。
+struct WorkerPool {
+    shared: Arc<PoolShared>,
+}
+
+impl WorkerPool {
+    fn spawn(factory: WorkerHostFactory, pool_stopped: Arc<AtomicBool>, workers: usize) -> Self {
+        let shared = Arc::new(PoolShared {
+            queue: Mutex::new(VecDeque::new()),
+            available: Condvar::new(),
+            shutdown: AtomicBool::new(false),
+        });
+        for _ in 0..workers.max(1) {
+            let shared = shared.clone();
+            let factory = factory.clone();
+            let pool_stopped = pool_stopped.clone();
+            std::thread::Builder::new()
+                .name("script-worker".to_owned())
+                .spawn(move || worker_pool_thread(shared, factory, pool_stopped))
+                .ok();
+        }
+        Self { shared }
+    }
+}
+
+impl Drop for WorkerPool {
+    fn drop(&mut self) {
+        self.shared.shutdown.store(true, Ordering::Release);
+        self.shared.available.notify_all();
+    }
+}
+
+/// 常駐ワーカーの本体：温めたアイソレートでタスクを次々に実行する。着手時にアイソレートを停止
+/// 対象として登録し、完了で外す（`/state/script/workers` ＝実行中数）。`shutdown`（プールを畳む
+/// とき）か、自分のタスクが停止で terminate された後（`pool_stopped`）に退出する。
+fn worker_pool_thread(
+    shared: Arc<PoolShared>,
+    factory: WorkerHostFactory,
+    pool_stopped: Arc<AtomicBool>,
+) {
+    let host = factory();
+    let mut engine = Engine::new(host.clone());
+    let worker_id = NEXT_WORKER_ID.fetch_add(1, Ordering::Relaxed);
+    loop {
+        let task = {
+            let mut queue = shared.queue.lock().unwrap();
+            loop {
+                if shared.shutdown.load(Ordering::Acquire) {
+                    return;
+                }
+                if let Some(task) = queue.pop_front() {
+                    break task;
+                }
+                queue = shared.available.wait(queue).unwrap();
+            }
+        };
+        host.register_worker(worker_id, engine.isolate_handle());
+        let result = run_worker_task(&mut engine, &task.fn_source, &task.arg_json);
+        host.unregister_worker(worker_id);
+        let _ = task.reply.send(result);
+        // 停止でこのアイソレートが terminate されていたら、もう再利用できないので退出する。
+        if pool_stopped.load(Ordering::Acquire) {
+            return;
+        }
+    }
 }
 
 /// 並列ワーカーの一意な id を採番する（停止対象レジストリの鍵）。プロセス内で単調増加。
@@ -906,34 +1010,29 @@ fn op_unpack_start(state: &mut OpState, #[string] src: String, #[string] dst: St
     token
 }
 
-/// ワーカースレッドの中身：専有のアイソレートで関数ソースを引数付きに実行し、戻り値の JSON を
-/// 返す。別アイソレートなので捕捉変数は渡らず引数のみが渡る（`fn.toString()` のソースと JSON 化
-/// した引数を結合して評価する）。戻り値は `undefined` を `null` に寄せてから JSON 化する。
-fn run_worker(host: Host, fn_source: &str, arg_json: &str) -> Result<String, String> {
-    let mut engine = Engine::new(host.clone());
-    // 停止時に止められるよう、このワーカーのアイソレートを UI 側へ登録する（完了で外す）。
-    let worker_id = NEXT_WORKER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    host.register_worker(worker_id, engine.isolate_handle());
+/// ワーカーのアイソレートで関数ソースを引数付きに実行し、戻り値の JSON を返す。別アイソレート
+/// なので捕捉変数は渡らず引数のみが渡る（`fn.toString()` のソースと JSON 化した引数を結合して
+/// 評価する）。戻り値は `undefined` を `null` に寄せてから JSON 化する。
+fn run_worker_task(engine: &mut Engine, fn_source: &str, arg_json: &str) -> Result<String, String> {
     let code = format!(
         "(async () => {{ const __arg = ({arg_json}); const __fn = ({fn_source}); \
          const __r = await __fn(__arg); \
          return JSON.stringify(__r === undefined ? null : __r); }})()"
     );
-    let result = engine.eval_to_string(
+    engine.eval_to_string(
         "rerics:worker",
         "file:///worker.ts",
         deno_ast::MediaType::TypeScript,
         code,
-    );
-    host.unregister_worker(worker_id);
-    result
+    )
 }
 
-/// 関数を別スレッド＋別アイソレートで本当に並列に走らせる非同期 op。`fn_source` は実行する関数の
-/// ソース（`fn.toString()`）、`arg_json` は唯一の引数を JSON 化したもの。戻り値は関数の戻り値を
-/// JSON 化した文字列で、呼び手（bootstrap）が parse する。同時実行数は [`WorkerSupport`] の
-/// セマフォで CPU 数に絞る（枠が空くまで `await` で待つ）。`WorkerSupport` が無いエンジン
-/// （＝ワーカー自身）からは使えず、入れ子の並列はエラーになる。
+/// 関数を常駐ワーカー（別スレッド＋別アイソレート）で本当に並列に走らせる非同期 op。`fn_source`
+/// は実行する関数のソース（`fn.toString()`）、`arg_json` は唯一の引数を JSON 化したもの。戻り値は
+/// 関数の戻り値を JSON 化した文字列で、呼び手（bootstrap）が parse する。タスクは [`WorkerSupport`]
+/// のプール（CPU 数の常駐ワーカー）へ積み、空いたワーカーが順に処理する（全員塞がっていれば空くまで
+/// `await` で待つ）。`WorkerSupport` が無いエンジン（＝ワーカー自身）からは使えず、入れ子の並列は
+/// エラーになる。
 #[op2(async(lazy), nofast)]
 #[string]
 async fn op_parallel(
@@ -941,27 +1040,22 @@ async fn op_parallel(
     #[string] fn_source: String,
     #[string] arg_json: String,
 ) -> Result<String, deno_error::JsErrorBox> {
-    let support = state
-        .borrow()
-        .try_borrow::<WorkerSupport>()
-        .map(|s| (s.factory.clone(), s.limit.clone()));
-    let Some((factory, limit)) = support else {
-        return Err(deno_error::JsErrorBox::generic(
-            "parallel はワーカー内（入れ子）からは使えません",
-        ));
+    let shared = {
+        let st = state.borrow();
+        let Some(support) = st.try_borrow::<WorkerSupport>() else {
+            return Err(deno_error::JsErrorBox::generic(
+                "parallel はワーカー内（入れ子）からは使えません",
+            ));
+        };
+        support.ensure_pool()
     };
-    let permit = limit
-        .acquire_owned()
-        .await
-        .map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    std::thread::spawn(move || {
-        // 完了まで同時実行枠を保持する（ここで drop されると次の待ちワーカーが起動する）。
-        let _permit = permit;
-        let host = factory();
-        let _ = tx.send(run_worker(host, &fn_source, &arg_json));
-    });
-    match rx.await {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    {
+        let mut queue = shared.queue.lock().unwrap();
+        queue.push_back(PoolTask { fn_source, arg_json, reply: reply_tx });
+        shared.available.notify_one();
+    }
+    match reply_rx.await {
         Ok(Ok(json)) => Ok(json),
         Ok(Err(message)) => Err(deno_error::JsErrorBox::generic(message)),
         Err(_) => Err(deno_error::JsErrorBox::generic(
@@ -1736,12 +1830,12 @@ impl Engine {
     }
 
     /// 並列ワーカー（`r.parallel`）を有効にする。`factory` は各ワーカースレッドの中で呼ばれ、
-    /// そのスレッド専有のホストを作る。同時に走るワーカー数は CPU 数で絞る。メインエンジンだけに
-    /// 設定し、ワーカー自身のエンジンには設定しない（入れ子の並列を防ぐ）。
-    pub fn set_worker_factory(&mut self, factory: WorkerHostFactory) {
-        let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-        let support =
-            WorkerSupport { factory, limit: Arc::new(tokio::sync::Semaphore::new(cpus)) };
+    /// そのスレッド専有のホストを作る。常駐ワーカー数（＝同時実行数）は CPU 数。`pool_stopped` は
+    /// UI 側が停止時に立てるフラグで、次の `parallel()` でプールを畳んで作り直す。メインエンジン
+    /// だけに設定し、ワーカー自身のエンジンには設定しない（入れ子の並列を防ぐ）。
+    pub fn set_worker_factory(&mut self, factory: WorkerHostFactory, pool_stopped: Arc<AtomicBool>) {
+        let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let support = WorkerSupport { factory, pool_stopped, workers, pool: RefCell::new(None) };
         self.runtime.op_state().borrow_mut().put::<WorkerSupport>(support);
     }
 
@@ -3456,7 +3550,10 @@ mod tests {
     fn parallel_runs_function_with_arg_and_returns_result() {
         let host = Rc::new(MockHost::default());
         let mut eng = Engine::new(host.clone());
-        eng.set_worker_factory(Arc::new(|| -> Host { Rc::new(MockHost::default()) }));
+        eng.set_worker_factory(
+            Arc::new(|| -> Host { Rc::new(MockHost::default()) }),
+            Arc::new(AtomicBool::new(false)),
+        );
         eng.run_to_completion(
             "test:parallel",
             r#"
@@ -3476,7 +3573,10 @@ mod tests {
     fn parallel_all_collects_results() {
         let host = Rc::new(MockHost::default());
         let mut eng = Engine::new(host.clone());
-        eng.set_worker_factory(Arc::new(|| -> Host { Rc::new(MockHost::default()) }));
+        eng.set_worker_factory(
+            Arc::new(|| -> Host { Rc::new(MockHost::default()) }),
+            Arc::new(AtomicBool::new(false)),
+        );
         eng.run_to_completion(
             "test:parallel-all",
             r#"
@@ -3497,7 +3597,10 @@ mod tests {
     fn parallel_propagates_worker_error() {
         let host = Rc::new(MockHost::default());
         let mut eng = Engine::new(host.clone());
-        eng.set_worker_factory(Arc::new(|| -> Host { Rc::new(MockHost::default()) }));
+        eng.set_worker_factory(
+            Arc::new(|| -> Host { Rc::new(MockHost::default()) }),
+            Arc::new(AtomicBool::new(false)),
+        );
         eng.run_to_completion(
             "test:parallel-throw",
             r#"

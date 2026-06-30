@@ -324,6 +324,9 @@ struct MainWindow {
     /// ワーカースレッドが起動時/完了時に自身を直接積み下ろしする。スクリプト停止時はメインに
     /// 加えてこれら全ワーカーも terminate し、暴走ワーカー（無限ループ等）を止める。
     script_worker_isolates: script_host::WorkerIsolates,
+    /// スクリプト停止時に立て、次の `parallel()` で並列ワーカープールを畳んで作り直させる合図。
+    /// 停止で terminate 済みのワーカーアイソレートを再利用しないため。
+    script_pool_stopped: Arc<AtomicBool>,
     /// 現在走行中のスクリプトタスク id（直列実行＝高々1つ）。`ScriptBegin` で立て
     /// `ScriptEnd` で下ろす。中止されたらこの id を見て isolate を terminate する。
     script_task: Rc<RefCell<Option<u64>>>,
@@ -586,6 +589,7 @@ impl MainWindow {
             find_refocus: Rc::new(RefCell::new([None, None])),
             script_isolate: Rc::new(RefCell::new(None)),
             script_worker_isolates: Arc::new(std::sync::Mutex::new(Vec::new())),
+            script_pool_stopped: Arc::new(AtomicBool::new(false)),
             script_task: Rc::new(RefCell::new(None)),
             script_terminated: Rc::new(Cell::new(false)),
             progress_seq: Arc::new(AtomicU64::new(0)),
