@@ -151,7 +151,7 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
 /// メッセージキューに溜まっている文字メッセージ（WM_CHAR/WM_SYSCHAR）を捨てる。キー押下で
 /// ポップアップメニューを開く直前に呼び、押下キーの文字がメニューのアクセスキー入力として
 /// 食われてビープが鳴るのを防ぐ。
-fn flush_pending_chars() {
+pub(crate) fn flush_pending_chars() {
     let mut msg: w::MSG = unsafe { std::mem::zeroed() };
     while w::PeekMessage(&mut msg, None, co::WM::CHAR.raw(), co::WM::CHAR.raw(), co::PM::REMOVE) {}
     while w::PeekMessage(&mut msg, None, co::WM::SYSCHAR.raw(), co::WM::SYSCHAR.raw(), co::PM::REMOVE)

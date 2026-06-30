@@ -1569,6 +1569,9 @@ impl MainWindow {
         if paths.is_empty() {
             return Ok(());
         }
+        // キーで開いた直後はそのキーの WM_CHAR がキューに残り、TrackPopupMenu のモーダル
+        // ループがそれをアクセスキー入力として食う→不一致でビープが鳴る。先に捨てる。
+        crate::flush_pending_chars();
         if let Err(e) = shell::show_context_menu(self.wnd.hwnd(), &paths) {
             self.log.error(&e);
         }
