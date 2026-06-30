@@ -117,12 +117,10 @@ impl ArchiveBackend for SevenZBackend {
                         io_err = Some(e);
                         return Ok(false);
                     }
-                let mut buf = Vec::with_capacity(entry.size as usize);
-                if let Err(e) = rd.read_to_end(&mut buf) {
-                    io_err = Some(e);
-                    return Ok(false);
-                }
-                if let Err(e) = std::fs::write(&p, &buf) {
+                // 丸ごとメモリへ取らず、復号ストリームから直接ファイルへ流す。
+                let copied =
+                    std::fs::File::create(&p).and_then(|mut out| std::io::copy(rd, &mut out));
+                if let Err(e) = copied {
                     io_err = Some(e);
                     return Ok(false);
                 }

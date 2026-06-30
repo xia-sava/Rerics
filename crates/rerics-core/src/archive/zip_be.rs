@@ -194,6 +194,44 @@ impl ArchiveBackend for ZipBackend {
     fn read_with_password(&self, inner: &str, password: Option<&[u8]>) -> io::Result<Vec<u8>> {
         Ok(self.read_entry(inner, None, password)?.0)
     }
+
+    /// 各エントリを丸ごとメモリへ取らず、復号ストリームから直接ファイルへ流す。zip は
+    /// ランダムアクセスなので既定実装でも O(n) だが、巨大エントリでメモリを食わないよう
+    /// override する。
+    fn extract_all(
+        &self,
+        dest: &Path,
+        each: &mut dyn FnMut(&str, u64, u64) -> bool,
+    ) -> io::Result<()> {
+        let total = self.list()?.iter().filter(|e| !e.is_dir).count() as u64;
+        let mut zip = self.archive()?;
+        let mut done = 0u64;
+        for i in 0..zip.len() {
+            let mut f = zip.by_index(i).map_err(zip_err)?;
+            let is_dir = f.is_dir() || f.name_raw().last() == Some(&b'/');
+            let path = normalize_inner(&decode_name(f.name_raw()));
+            if path.is_empty() {
+                continue;
+            }
+            let Some(p) = safe_join(dest, &path) else {
+                continue;
+            };
+            if is_dir {
+                std::fs::create_dir_all(&p)?;
+                continue;
+            }
+            if !each(&path, done, total) {
+                return Ok(());
+            }
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut out = std::fs::File::create(&p)?;
+            std::io::copy(&mut f, &mut out)?;
+            done += 1;
+        }
+        Ok(())
+    }
 }
 
 fn zip_err(e: zip::result::ZipError) -> io::Error {

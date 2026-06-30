@@ -88,7 +88,6 @@ impl ArchiveBackend for TarBackend {
         dest: &Path,
         each: &mut dyn FnMut(&str, u64, u64) -> bool,
     ) -> io::Result<()> {
-        use std::io::Read;
         // 順次 tar は件数を事前に数えられないので、進捗は「圧縮ファイルの消費バイト数／
         // ファイルサイズ」で見せる（単一パス＝再解凍しない・バーが滑らかに伸びる）。
         let total = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
@@ -118,9 +117,9 @@ impl ArchiveBackend for TarBackend {
             if let Some(parent) = p.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let mut buf = Vec::with_capacity(entry.size() as usize);
-            entry.read_to_end(&mut buf)?;
-            std::fs::write(&p, &buf)?;
+            // 丸ごとメモリへ取らず、エントリのストリームから直接ファイルへ流す。
+            let mut out = std::fs::File::create(&p)?;
+            std::io::copy(&mut entry, &mut out)?;
         }
         Ok(())
     }
