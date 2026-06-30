@@ -11,11 +11,17 @@ use std::sync::Arc;
 
 use deno_core::{JsRuntime, OpState, RuntimeOptions, extension, op2};
 
-/// 非同期操作の進捗本文（`onProgress` へ渡す）。今は本文のみ・将来 件数等を足せる器。
+/// 非同期操作の進捗（`onProgress` へ渡す）。本文に加え、数えられる操作は進捗比（`done`/`total`）も持つ。
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ProgressInfo {
     pub text: String,
+    /// 済んだ件数（数えられない操作は `None`）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub done: Option<u64>,
+    /// 全件数（数えられない操作は `None`）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
 }
 
 /// 進行中の非同期操作から JS へ 1 件ずつ流すイベント。進捗（`progress`）は 0 回以上続き、
@@ -35,9 +41,23 @@ pub struct JobEvent {
 }
 
 impl JobEvent {
-    /// 進捗イベント。
+    /// 進捗イベント（件数なし）。
     pub fn progress(text: String) -> Self {
-        Self { done: false, error: None, progress: Some(ProgressInfo { text }), count: None }
+        Self {
+            done: false,
+            error: None,
+            progress: Some(ProgressInfo { text, done: None, total: None }),
+            count: None,
+        }
+    }
+    /// 進捗イベント（件数つき・`done`/`total`）。
+    pub fn progress_counted(text: String, done: u64, total: u64) -> Self {
+        Self {
+            done: false,
+            error: None,
+            progress: Some(ProgressInfo { text, done: Some(done), total: Some(total) }),
+            count: None,
+        }
     }
     /// 完了イベント（`err`＝失敗/中止の理由・成功は None）。
     pub fn done(err: Option<String>) -> Self {
@@ -76,6 +96,13 @@ pub trait HostApi {
     /// [`HostApi::log`] が返した id の行を書き換える。`level` が `Some` なら表示色も差し替える
     /// （`None` は据え置き）。投げっぱなしで、反映はタイマ駆動（同期往復しない＝連射でも詰まらない）。
     fn log_update(&self, id: u64, level: Option<rerics_core::LogLevel>, msg: &str);
+    /// [`HostApi::log`] が返した id の行で「ぐるぐる（と任意で百分率）」の生存表示を始める。
+    /// データ更新が止まっている間も回り続けるので、長時間処理の待ちが違和感なく見える。
+    fn log_progress_start(&self, id: u64);
+    /// 進行表示中の行に進捗比（`done`/`total`）を与える。`total>0` のとき百分率を出す。
+    fn log_progress_set(&self, id: u64, done: u64, total: u64);
+    /// 進行表示を止める（ぐるぐる・百分率を消し、本文だけ残す）。
+    fn log_progress_stop(&self, id: u64);
     /// ログ欄の全文を返す（行は `\r\n` 区切り・末尾にも改行）。
     fn log_text(&self) -> String;
     /// 設定値をドット区切りキーで読む（未知キーは `None`）。
@@ -288,6 +315,24 @@ fn op_log(state: &mut OpState, #[string] level: &str, #[string] msg: &str) -> f6
 fn op_log_update(state: &mut OpState, id: f64, #[string] level: &str, #[string] msg: &str) {
     let level = if level.is_empty() { None } else { Some(parse_log_level(level)) };
     state.borrow::<Host>().log_update(id as u64, level, msg);
+}
+
+/// `op_log` が返した id の行で進行表示（ぐるぐる）を始める。
+#[op2(fast)]
+fn op_log_progress_start(state: &mut OpState, id: f64) {
+    state.borrow::<Host>().log_progress_start(id as u64);
+}
+
+/// 進行表示中の行へ進捗比（`done`/`total`）を与える。
+#[op2(fast)]
+fn op_log_progress_set(state: &mut OpState, id: f64, done: f64, total: f64) {
+    state.borrow::<Host>().log_progress_set(id as u64, done as u64, total as u64);
+}
+
+/// 進行表示を止める。
+#[op2(fast)]
+fn op_log_progress_stop(state: &mut OpState, id: f64) {
+    state.borrow::<Host>().log_progress_stop(id as u64);
 }
 
 #[op2]
@@ -831,8 +876,8 @@ fn op_unpack_start(state: &mut OpState, #[string] src: String, #[string] dst: St
             rerics_core::extract_all_to_progress(
                 &*backend,
                 std::path::Path::new(&dst),
-                &mut |name, _done, _total| {
-                    let _ = tx.send(JobEvent::progress(name.to_string()));
+                &mut |name, done, total| {
+                    let _ = tx.send(JobEvent::progress_counted(name.to_string(), done, total));
                 },
             )
             .map_err(|e| format!("展開に失敗しました [{src}]: {e}"))
@@ -1025,6 +1070,9 @@ extension!(
     ops = [
         op_log,
         op_log_update,
+        op_log_progress_start,
+        op_log_progress_set,
+        op_log_progress_stop,
         op_log_text,
         op_version,
         op_str_conv,
@@ -1229,6 +1277,15 @@ const BOOTSTRAP: &str = r#"
     return {
       update: (text, lvl) => {
         ops.op_log_update(id, lvl == null ? "" : String(lvl), String(text));
+      },
+      startProgress: () => {
+        ops.op_log_progress_start(id);
+      },
+      setProgress: (done, total) => {
+        ops.op_log_progress_set(id, Number(done) || 0, Number(total) || 0);
+      },
+      stopProgress: () => {
+        ops.op_log_progress_stop(id);
       },
     };
   };
@@ -1864,6 +1921,9 @@ mod tests {
         fn log_update(&self, id: u64, _level: Option<rerics_core::LogLevel>, m: &str) {
             self.log_updates.borrow_mut().push((id, m.to_string()));
         }
+        fn log_progress_start(&self, _id: u64) {}
+        fn log_progress_set(&self, _id: u64, _done: u64, _total: u64) {}
+        fn log_progress_stop(&self, _id: u64) {}
         fn log_text(&self) -> String {
             self.logs.borrow().iter().map(|l| format!("{l}\r\n")).collect()
         }
@@ -3279,13 +3339,20 @@ mod tests {
         let code = format!(
             r#"(async () => {{
                  const seen = [];
-                 const n = await rerics.unpack("{zip_p}", "{dst_p}", {{ onProgress: (p) => seen.push(p.text) }});
+                 const counts = [];
+                 const n = await rerics.unpack("{zip_p}", "{dst_p}", {{
+                   onProgress: (p) => {{ seen.push(p.text); counts.push(p.done + "/" + p.total); }},
+                 }});
                  rerics.log("n=" + n);
                  rerics.log("progress=" + seen.length);
+                 rerics.log("counts=" + counts.join(","));
                }})();"#
         );
         eng.run_to_completion("test:unpack-progress", code).unwrap();
-        assert_eq!(*host.logs.borrow(), vec!["n=2".to_string(), "progress=2".to_string()]);
+        assert_eq!(
+            *host.logs.borrow(),
+            vec!["n=2".to_string(), "progress=2".to_string(), "counts=0/2,1/2".to_string()]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

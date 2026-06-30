@@ -4445,6 +4445,70 @@ fn rapid_log_appends_keep_all_lines() {
     assert!(log.contains("BURST-OK"), "連射した先頭・末尾の行が全文に残るはず: {log}");
 }
 
+/// ログ行の進行表示：`startProgress`/`setProgress` が `/state/log` の progress に出て、`stopProgress`
+/// で消える。走行中ずっと観測できるよう、重い `parallel` の await で持続させる。
+#[test]
+fn log_line_progress_shows_percent_then_clears() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"(async () => {
+                const line = rerics.log("PROG-LINE");
+                line.startProgress();
+                line.setProgress(3, 4);
+                await rerics.parallel(() => {
+                    let x = 0;
+                    for (let i = 0; i < 600000000; i++) x += i;
+                    return x;
+                });
+                line.stopProgress();
+                rerics.log("PROG-DONE");
+            })();"#,
+        )
+        .expect("eval");
+    // 走行中：進捗比 75% が観測できる。
+    let during = poll(&server, "/state/log", |b| b.contains("\"percent\":75"));
+    assert!(during.contains("\"percent\":75"), "進行中は 75% が出るはず: {during}");
+    // 完了後：stopProgress で progress が空になる。
+    let after = poll(&server, "/state/log", |b| {
+        b.contains("PROG-DONE") && b.contains("\"progress\":[]")
+    });
+    assert!(after.contains("\"progress\":[]"), "stopProgress で進行表示が消えるはず: {after}");
+}
+
+/// 進行表示の保険：`stopProgress` を呼ばずスクリプトが終わっても、`ScriptEnd` で自動的に消える。
+#[test]
+fn log_line_progress_auto_clears_on_script_end() {
+    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"(async () => {
+                const line = rerics.log("AUTO-LINE");
+                line.startProgress();
+                line.setProgress(1, 2);
+                await rerics.parallel(() => {
+                    let x = 0;
+                    for (let i = 0; i < 600000000; i++) x += i;
+                    return x;
+                });
+                rerics.log("AUTO-DONE");
+            })();"#,
+        )
+        .expect("eval");
+    // 走行中：50% が観測できる（startProgress は届いている）。
+    let during = poll(&server, "/state/log", |b| b.contains("\"percent\":50"));
+    assert!(during.contains("\"percent\":50"), "進行中は 50% が出るはず: {during}");
+    // 完了後：stopProgress なしでも自動で空になる。
+    let after = poll(&server, "/state/log", |b| {
+        b.contains("AUTO-DONE") && b.contains("\"progress\":[]")
+    });
+    assert!(after.contains("\"progress\":[]"), "ScriptEnd で進行表示が自動で消えるはず: {after}");
+}
+
 /// キーバインド経路：登録コマンドの呼び出し式（`r.goUp()`）が `exec` からエンジンへ流れ、実行される。
 /// 登録コマンドがアクティブペインを移動させ、UI に反映されることで配線を検証する。
 #[test]

@@ -268,6 +268,8 @@ impl MainWindow {
                         self.tasks.borrow_mut().retain(|e| e.id != id);
                     }
                     self.script_terminated.set(false);
+                    // 回しっぱなしのログ進行表示を回収する（stopProgress 忘れの保険）。
+                    self.log.stop_all_progress();
                     self.maybe_kill_task_timer();
                 }
             }
@@ -287,6 +289,8 @@ impl MainWindow {
         for is_left in [true, false] {
             self.view(is_left).tick_loading();
         }
+        // 進行表示中のログ行のぐるぐるも進める。
+        self.log.tick_progress();
         self.maybe_kill_task_timer();
         Ok(())
     }

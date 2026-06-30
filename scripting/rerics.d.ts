@@ -107,10 +107,14 @@ interface RericsPane {
  */
 type RericsEvent = "changeDirectory" | "executeCommand";
 
-/** 非同期ファイル操作の進捗（`onProgress` に渡る）。今は本文のみ。 */
+/** 非同期ファイル操作の進捗（`onProgress` に渡る）。 */
 interface RericsProgress {
-  /** 進捗の本文（処理中のファイル名と割合など）。 */
+  /** 進捗の本文（処理中のファイル名など）。 */
   readonly text: string;
+  /** 済んだ件数（数えられる操作のみ。`unpack` など）。 */
+  readonly done?: number;
+  /** 全件数（数えられる操作のみ）。`RericsLogLine.setProgress` にそのまま渡せる。 */
+  readonly total?: number;
 }
 
 /** 非同期ファイル操作のオプション。 */
@@ -272,15 +276,34 @@ type RericsLogLevel = "normal" | "info" | "warning" | "error";
  * 受け取って `update` を呼ぶと、その行を**インプレースで書き換える**（追記ではない）。進捗の
  * 1 行更新などに使う。反映はタイマ駆動で、連続更新でも描画が詰まらない。
  *
+ * `startProgress` でこの行に「ぐるぐる（＋任意で百分率）」の生存表示を付けられる。データ更新が
+ * 止まっている間も回り続けるので、`unpack` の大きいファイル復号など無音の待ちが違和感なく見える。
+ *
  * ```ts
  * const line = r.log("展開中…");
- * await r.unpack(src, dst, { onProgress: (p) => line.update("展開中: " + p.text) });
+ * line.startProgress();
+ * await r.unpack(src, dst, {
+ *   onProgress: (p) => {
+ *     if (p.total) line.setProgress(p.done, p.total);
+ *     line.update("展開中: " + p.text);
+ *   },
+ * });
+ * line.stopProgress();
  * r.info("展開終了"); // 終了は別の行として出す
  * ```
  */
 interface RericsLogLine {
   /** この行の本文を書き換える。`level` を渡すと表示色（レベル）も差し替える。 */
   update(text: string, level?: RericsLogLevel): void;
+
+  /** この行で進行表示（ぐるぐる）を始める。`stopProgress` まで回り続ける。 */
+  startProgress(): void;
+
+  /** 進行表示中の行へ進捗比を与える（`total>0` のとき百分率を出す）。 */
+  setProgress(done: number, total: number): void;
+
+  /** 進行表示を止める（ぐるぐる・百分率を消し、本文だけ残す）。 */
+  stopProgress(): void;
 }
 
 /**
@@ -549,15 +572,22 @@ interface RericsApi {
    * （zip-slip 対策）。対応形式は本体と同じ（zip / 7z / tar 系 / 単体圧縮 など）。`await` して使う。
    *
    * 既定では何もログを出さない。`options.onProgress` を渡すと、エントリを 1 つ取り出すごとに
-   * 進捗（`text`＝書庫内のエントリ名）が来るので、出したいログは自分で出せる（copy/move と同じ形）。
+   * 進捗（`text`＝書庫内のエントリ名・`done`/`total`＝件数）が来るので、出したいログは自分で出せる
+   * （copy/move と同じ形）。1 行を `update` で書き換えつつ `startProgress` で待ちを見せるのが定石。
    *
    * 選択した項目を画面付きで取り出したいときは内蔵コマンド `extract` を使う。
    *
    * ```ts
+   * const line = rerics.log("展開中…");
+   * line.startProgress();
    * const n = await rerics.unpack("C:\\dl\\pkg.zip", rerics.activePane().dir + "\\pkg", {
-   *   onProgress: (p) => rerics.info("展開中: " + p.text),
+   *   onProgress: (p) => {
+   *     if (p.total) line.setProgress(p.done, p.total);
+   *     line.update("展開中: " + p.text);
+   *   },
    * });
-   * rerics.log(`${n} 件展開した`);
+   * line.stopProgress();
+   * rerics.info(`${n} 件展開した`);
    * rerics.navigate(rerics.activePane().dir); // 表示を更新したいなら明示的に
    * ```
    */

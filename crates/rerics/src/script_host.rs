@@ -204,6 +204,18 @@ impl HostApi for GuiHost {
         let _ = self.log_tx.send(LogEvent::Update { id, level, text: msg.to_string() });
     }
 
+    fn log_progress_start(&self, id: u64) {
+        let _ = self.log_tx.send(LogEvent::ProgressStart { id });
+    }
+
+    fn log_progress_set(&self, id: u64, done: u64, total: u64) {
+        let _ = self.log_tx.send(LogEvent::ProgressSet { id, done, total });
+    }
+
+    fn log_progress_stop(&self, id: u64) {
+        let _ = self.log_tx.send(LogEvent::ProgressStop { id });
+    }
+
     fn log_text(&self) -> String {
         match ui_marshal::call(&self.queue, self.hwnd_ptr, SCRIPT_WAKE.raw(), HostCall::GetLog) {
             Ok(HostResp::LogText(text)) => text,
@@ -1123,6 +1135,9 @@ impl MainWindow {
             match ev {
                 LogEvent::Line { id, level, text } => self.log.push_with_id(id, level, &text),
                 LogEvent::Update { id, level, text } => self.log.update(id, level, &text),
+                LogEvent::ProgressStart { id } => self.log.start_progress(id),
+                LogEvent::ProgressSet { id, done, total } => self.log.set_progress(id, done, total),
+                LogEvent::ProgressStop { id } => self.log.stop_progress(id),
             }
         }
     }

@@ -6,7 +6,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use rerics_core::{Colors, Config, LogLevel, LogState, Rgb};
+use rerics_core::{Colors, Config, LogLevel, LogState, Rgb, Spinner};
 use winsafe::{self as w, co, gui, prelude::*};
 
 struct Inner {
@@ -21,6 +21,8 @@ struct Inner {
     sb_drag: Cell<Option<i32>>,
     /// 切り詰め行の全文を出す hover ツールチップ部品（生成後に設定）。
     cell_tip: RefCell<Option<crate::winutil::CellTooltip>>,
+    /// 進行表示中の行（行 id → ぐるぐる状態）。空でなければ取り込みタイマがコマを進める。
+    progress: RefCell<std::collections::HashMap<u64, Spinner>>,
 }
 
 /// 下部ログウィンドウコントロール。
@@ -57,6 +59,7 @@ impl LogView {
             line_height: Cell::new(gui::dpi_y(cfg.font.size + 2)),
             sb_drag: Cell::new(None),
             cell_tip: RefCell::new(None),
+            progress: RefCell::new(std::collections::HashMap::new()),
         });
         let me = Self { wnd, inner };
         me.setup_events();
@@ -84,6 +87,12 @@ impl LogView {
                 (level.to_owned(), l.text.clone())
             })
             .collect()
+    }
+
+    /// 進行表示中の行を `(id, percent)` で返す（観測用）。`percent` は `total>0` のときのみ。
+    #[cfg(feature = "debug-server")]
+    pub fn progress_snapshot(&self) -> Vec<(u64, Option<u64>)> {
+        self.inner.progress.borrow().iter().map(|(id, sp)| (*id, sp.percent())).collect()
     }
 
     /// 通常レベルで追記する（操作の逐次ログ。白・非太字）。
@@ -133,6 +142,52 @@ impl LogView {
     /// `level` が `Some` ならレベル（表示色）も差し替える（`None` は据え置き）。
     pub fn update(&self, id: u64, level: Option<LogLevel>, text: &str) {
         self.inner.state.borrow_mut().update(id, level, text);
+        let _ = self.refresh();
+    }
+
+    /// `id` 付き行で進行表示（ぐるぐる）を始める。データ更新が止まっている間も回り続ける。
+    pub fn start_progress(&self, id: u64) {
+        self.inner.progress.borrow_mut().insert(id, Spinner::immediate());
+        let _ = self.refresh();
+    }
+
+    /// 進行表示中の行へ進捗比（`done`/`total`）を与える（`total>0` で百分率を出す）。
+    pub fn set_progress(&self, id: u64, done: u64, total: u64) {
+        if let Some(spinner) = self.inner.progress.borrow_mut().get_mut(&id) {
+            spinner.set_progress(done, total);
+        }
+        let _ = self.refresh();
+    }
+
+    /// `id` 付き行の進行表示を止める（ぐるぐる・百分率を消す）。
+    pub fn stop_progress(&self, id: u64) {
+        self.inner.progress.borrow_mut().remove(&id);
+        let _ = self.refresh();
+    }
+
+    /// 進行表示中の行のコマを進める（取り込みタイマから毎回呼ぶ）。回っている行が無ければ何もしない。
+    pub fn tick_progress(&self) {
+        {
+            let mut progress = self.inner.progress.borrow_mut();
+            if progress.is_empty() {
+                return;
+            }
+            for spinner in progress.values_mut() {
+                spinner.tick();
+            }
+        }
+        let _ = self.refresh();
+    }
+
+    /// 進行表示をすべて止める（スクリプト終了時の保険＝stopProgress 忘れの取りこぼし回収）。
+    pub fn stop_all_progress(&self) {
+        {
+            let mut progress = self.inner.progress.borrow_mut();
+            if progress.is_empty() {
+                return;
+            }
+            progress.clear();
+        }
         let _ = self.refresh();
     }
 
@@ -507,6 +562,7 @@ impl LogView {
         let lh = self.inner.line_height.get().max(1);
         {
             let s = self.inner.state.borrow();
+            let progress = self.inner.progress.borrow();
             let count = s.count();
             let mut i = s.scroll_top;
             let mut y = 1;
@@ -523,7 +579,17 @@ impl LogView {
                     dc.SetTextColor(rgb(color))?;
                     let flags = co::DT::SINGLELINE | co::DT::NOPREFIX | co::DT::END_ELLIPSIS;
                     let rect = w::RECT { left: 4, top: y, right: text_right, bottom: y + lh };
-                    dc.DrawText(&line.text, rect, flags)?;
+                    // 進行表示中の行はぐるぐる（＋百分率）を本文の前にかぶせる。
+                    let display = match line.id.and_then(|id| progress.get(&id)) {
+                        Some(spinner) => match spinner.percent() {
+                            Some(pct) => {
+                                std::borrow::Cow::Owned(format!("{} {pct}% {}", spinner.glyph(), line.text))
+                            }
+                            None => std::borrow::Cow::Owned(format!("{} {}", spinner.glyph(), line.text)),
+                        },
+                        None => std::borrow::Cow::Borrowed(line.text.as_str()),
+                    };
+                    dc.DrawText(&display, rect, flags)?;
                 }
                 y += lh;
                 i += 1;

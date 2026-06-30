@@ -202,6 +202,12 @@ pub enum LogEvent {
     Line { id: u64, level: LogLevel, text: String },
     /// `id` 付き行の本文を書き換える。`level` が `Some` のときレベル（表示色）も差し替える。
     Update { id: u64, level: Option<LogLevel>, text: String },
+    /// `id` 付き行で「ぐるぐる（＋任意で百分率）」の生存表示を始める。
+    ProgressStart { id: u64 },
+    /// 進行表示中の行の進捗比（`done`/`total`）を設定する。
+    ProgressSet { id: u64, done: u64, total: u64 },
+    /// 進行表示を止める。
+    ProgressStop { id: u64 },
 }
 
 /// [`OperationHost`] の GUI 実装。ログをチャネルへ送り、共有フラグで中止を伝え、

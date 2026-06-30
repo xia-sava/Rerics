@@ -1417,6 +1417,12 @@ impl MainWindow {
             .into_iter()
             .map(|(level, text)| json!({ "level": level, "text": text }))
             .collect();
+        let log_progress: Vec<serde_json::Value> = self
+            .log
+            .progress_snapshot()
+            .into_iter()
+            .map(|(id, percent)| json!({ "id": id, "percent": percent }))
+            .collect();
         let modal = debug_server::modal_registry::with_top(|t| match t {
             None => serde_json::Value::Null,
             Some(e) => {
@@ -1487,7 +1493,7 @@ impl MainWindow {
             "viewer": viewer,
             "tab_bar": { "active": self.active.get(), "labels": self.tab_bar.labels() },
             "tabs": { "active": self.active.get(), "count": tabs.len(), "items": tabs },
-            "log": { "lines": log_lines },
+            "log": { "lines": log_lines, "progress": log_progress },
             "script": { "workers": self.script_worker_isolates.lock().unwrap().len() },
         })
     }
