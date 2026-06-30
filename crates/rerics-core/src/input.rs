@@ -149,6 +149,10 @@ pub enum Command {
     RenameDialog,
     Delete,
     SendToRecycled,
+    ShellCopy,
+    ShellMove,
+    ShellDelete,
+    ShellRename,
     CreateShortcut,
     ClipCopy,
     ClipCut,
@@ -380,6 +384,10 @@ impl Command {
             (RenameDialog, "renameDialog", "名前の変更", "カーソル位置の項目の名前を変更する"),
             (Delete, "delete", "削除", "選択した項目を完全に削除する"),
             (SendToRecycled, "sendToRecycled", "ごみ箱へ送る", "選択した項目をごみ箱へ送る"),
+            (ShellCopy, "shellCopy", "シェルでコピー", "選択した項目を反対側のパスへ Explorer のダイアログでコピーする"),
+            (ShellMove, "shellMove", "シェルで移動", "選択した項目を反対側のパスへ Explorer のダイアログで移動する"),
+            (ShellDelete, "shellDelete", "シェルで完全削除", "選択した項目を Explorer のダイアログで完全に削除する"),
+            (ShellRename, "shellRename", "シェルで名前変更", "カーソル位置の項目を Explorer のダイアログで名前変更する"),
             (CreateShortcut, "createShortcut", "ショートカットの作成", "選択した項目のショートカットを作成する"),
             (ClipCopy, "clipCopy", "クリップボードにコピー", "選択した項目をクリップボードへコピーする"),
             (ClipCut, "clipCut", "クリップボードに切り取り", "選択した項目をクリップボードへ切り取る"),
@@ -1233,6 +1241,21 @@ mod tests {
         let chord = KeyChord::parse(".").unwrap();
         assert_eq!(chord, KeyChord::key(vk::OEM_PERIOD));
         assert_eq!(chord.to_token().as_deref(), Some("."));
+    }
+
+    #[test]
+    fn shell_op_tokens_roundtrip() {
+        use Command::*;
+        for (c, t) in [
+            (ShellCopy, "shellCopy"),
+            (ShellMove, "shellMove"),
+            (ShellDelete, "shellDelete"),
+            (ShellRename, "shellRename"),
+        ] {
+            assert_eq!(Command::from_token(t), Some(c));
+            assert_eq!(c.as_token(), t);
+            assert!(c.available_in(CommandContext::Filer));
+        }
     }
 
     #[test]

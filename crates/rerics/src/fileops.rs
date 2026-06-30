@@ -905,6 +905,100 @@ impl MainWindow {
         Ok(())
     }
 
+    /// 選択（無ければカーソル）項目を反対側ペインのディレクトリへ、Explorer のダイアログ
+    /// （`IFileOperation`）でコピー/移動する。完了後に両ペインを最新化する（実FSのみ）。
+    pub(crate) fn shell_transfer(&self, is_left: bool, move_it: bool) -> w::AnyResult<()> {
+        let label = if move_it { "シェル移動" } else { "シェルコピー" };
+        if self.pane(is_left).borrow().is_archive() || self.pane(!is_left).borrow().is_archive() {
+            self.log.warn(&format!("書庫では{label}は使えません。"));
+            return Ok(());
+        }
+        let items: Vec<PathBuf> =
+            self.selected_real_targets(is_left).into_iter().map(|(p, _)| p).collect();
+        if items.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        let Some(dst) = self.pane(!is_left).borrow().as_real_path().map(|p| p.to_path_buf()) else {
+            self.log.warn(&format!("反対側が実フォルダではないため{label}できません。"));
+            return Ok(());
+        };
+        let res = if move_it {
+            shell::shell_move(self.wnd.hwnd(), &items, &dst)
+        } else {
+            shell::shell_copy(self.wnd.hwnd(), &items, &dst)
+        };
+        match res {
+            Ok(true) => self.log.normal(&format!("{label}: {} 件", items.len())),
+            Ok(false) => self.log.info(&format!("{label}を中止しました。")),
+            Err(e) => self.log.error(&format!("{label}に失敗しました: {e}")),
+        }
+        self.reload_side(is_left)?;
+        self.reload_side(!is_left)?;
+        Ok(())
+    }
+
+    /// 選択（無ければカーソル）項目を Explorer のダイアログ（`IFileOperation`）で完全削除する。
+    /// 確認・進捗はシェルが出す。完了後にアクティブ側を最新化する（実FSのみ）。
+    pub(crate) fn shell_delete_op(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内ではシェル削除は使えません。");
+            return Ok(());
+        }
+        let items: Vec<PathBuf> =
+            self.selected_real_targets(is_left).into_iter().map(|(p, _)| p).collect();
+        if items.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        match shell::shell_delete(self.wnd.hwnd(), &items) {
+            Ok(true) => self.log.normal(&format!("シェル削除: {} 件", items.len())),
+            Ok(false) => self.log.info("シェル削除を中止しました。"),
+            Err(e) => self.log.error(&format!("シェル削除に失敗しました: {e}")),
+        }
+        self.reload_side(is_left)?;
+        Ok(())
+    }
+
+    /// カーソル項目を Explorer のダイアログ（`IFileOperation`）で名前変更する。新名を本体の入力
+    /// ダイアログで尋ね、同名衝突はシェルが解決する。完了後に新名へカーソルを移す（実FSのみ）。
+    pub(crate) fn shell_rename_op(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内ではシェル名前変更は使えません。");
+            return Ok(());
+        }
+        let name = {
+            let view = self.view(is_left);
+            let state = view.state();
+            let s = state.borrow();
+            match s.items.get(s.cursor) {
+                Some(it) if !it.is_parent => it.name.clone(),
+                _ => return Ok(()),
+            }
+        };
+        let Some(dir) = self.pane(is_left).borrow().as_real_path().map(|p| p.to_path_buf()) else {
+            return Ok(());
+        };
+        let Some(new_name) =
+            self.input_with_history("名前の変更", "新しい名前を入力して下さい。", &name, "shellrename")
+        else {
+            return Ok(());
+        };
+        let new_name = new_name.trim();
+        if new_name.is_empty() || new_name == name {
+            return Ok(());
+        }
+        match shell::shell_rename(self.wnd.hwnd(), &dir.join(&name), new_name) {
+            Ok(true) => {
+                self.log.normal(&messages::rename(&name, new_name));
+                self.reload_side_focus(is_left, new_name, false)?;
+            }
+            Ok(false) => self.log.info("名前変更を中止しました。"),
+            Err(e) => self.log.error(&format!("名前変更に失敗しました: {e}")),
+        }
+        Ok(())
+    }
+
     /// 選択（無ければカーソル）の各項目を指すショートカット（.lnk）を同じ場所に作る。
     pub(crate) fn create_shortcut(&self, is_left: bool) -> w::AnyResult<()> {
         if self.pane(is_left).borrow().is_archive() {

@@ -146,6 +146,8 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         OpenTaskManager => DebugCmdClass::MaybeModal,
         // バージョン情報は読取専用モーダル（テキストボックス＋閉じる）。modal_registry に登録済み。
         About => DebugCmdClass::MaybeModal,
+        // シェル名前変更は先に名前入力（本体モーダル）を出す。コピー/移動/削除はシェル所有 UI のみ。
+        ShellRename => DebugCmdClass::MaybeModal,
         _ => DebugCmdClass::NonModal,
     }
 }
@@ -1338,6 +1340,22 @@ impl MainWindow {
             }
             Command::SendToRecycled => {
                 self.send_to_recycled(is_left)?;
+                return Ok(());
+            }
+            Command::ShellCopy => {
+                self.shell_transfer(is_left, false)?;
+                return Ok(());
+            }
+            Command::ShellMove => {
+                self.shell_transfer(is_left, true)?;
+                return Ok(());
+            }
+            Command::ShellDelete => {
+                self.shell_delete_op(is_left)?;
+                return Ok(());
+            }
+            Command::ShellRename => {
+                self.shell_rename_op(is_left)?;
                 return Ok(());
             }
             Command::CreateShortcut => {

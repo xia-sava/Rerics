@@ -8,6 +8,10 @@ use std::time::Duration;
 
 use winsafe::{self as w, co};
 
+// シェルのファイル操作（IFileOperation）用。シグネチャで使う型だけ module 直下に置き、
+// 残りは各関数内で import する（ファイル既存の流儀に合わせる）。
+use windows::Win32::UI::Shell::{IFileOperation, IShellItem};
+
 // Win32 構造体の名前をそのまま写した FFI 宣言（命名は Win32 準拠）。
 #[allow(non_snake_case, clippy::upper_case_acronyms)]
 #[repr(C)]
@@ -452,6 +456,96 @@ pub fn create_shortcut(target: &Path, lnk: &Path) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// シェル（`IFileOperation`）操作の共通処理。COM を初期化して `IFileOperation` を作り、`queue`
+/// で対象を積み、`PerformOperations` で実行する。Explorer 純正の進捗・衝突・確認ダイアログが出て、
+/// 完了（または中止）までブロックする。中止されず完了で `Ok(true)`、ユーザー中止で `Ok(false)`、
+/// システム失敗は `Err`。`owner` を親に据えるのでダイアログがアプリ窓に従属する。
+fn run_file_op(
+    owner: &w::HWND,
+    queue: impl FnOnce(&IFileOperation) -> Result<(), String>,
+) -> Result<bool, String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Com::{
+        CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+    };
+    use windows::Win32::UI::Shell::FileOperation;
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let op: IFileOperation =
+            CoCreateInstance(&FileOperation, None, CLSCTX_ALL).map_err(|e| e.to_string())?;
+        op.SetOwnerWindow(HWND(owner.ptr())).map_err(|e| e.to_string())?;
+        queue(&op)?;
+        op.PerformOperations().map_err(|e| e.to_string())?;
+        Ok(!op.GetAnyOperationsAborted().map_err(|e| e.to_string())?.as_bool())
+    }
+}
+
+/// パスから `IShellItem` を作る（`IFileOperation` の対象指定用）。
+fn shell_item(path: &Path) -> Result<IShellItem, String> {
+    use windows::Win32::UI::Shell::SHCreateItemFromParsingName;
+    use windows::core::PCWSTR;
+    let p = wide(path);
+    unsafe { SHCreateItemFromParsingName(PCWSTR(p.as_ptr()), None) }.map_err(|e| e.to_string())
+}
+
+/// 選択項目を `dst_dir` 直下へシェルコピーする（Explorer の進捗・衝突ダイアログつき）。
+pub fn shell_copy(owner: &w::HWND, items: &[PathBuf], dst_dir: &Path) -> Result<bool, String> {
+    use windows::core::PCWSTR;
+    if items.is_empty() {
+        return Ok(true);
+    }
+    run_file_op(owner, |op| {
+        let dest = shell_item(dst_dir)?;
+        for it in items {
+            let psi = shell_item(it)?;
+            unsafe { op.CopyItem(&psi, &dest, PCWSTR::null(), None) }.map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })
+}
+
+/// 選択項目を `dst_dir` 直下へシェル移動する（Explorer の進捗・衝突ダイアログつき）。
+pub fn shell_move(owner: &w::HWND, items: &[PathBuf], dst_dir: &Path) -> Result<bool, String> {
+    use windows::core::PCWSTR;
+    if items.is_empty() {
+        return Ok(true);
+    }
+    run_file_op(owner, |op| {
+        let dest = shell_item(dst_dir)?;
+        for it in items {
+            let psi = shell_item(it)?;
+            unsafe { op.MoveItem(&psi, &dest, PCWSTR::null(), None) }.map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })
+}
+
+/// 選択項目をシェル削除する（フラグ既定＝完全削除・Explorer の確認/進捗ダイアログつき）。
+pub fn shell_delete(owner: &w::HWND, items: &[PathBuf]) -> Result<bool, String> {
+    if items.is_empty() {
+        return Ok(true);
+    }
+    run_file_op(owner, |op| {
+        for it in items {
+            let psi = shell_item(it)?;
+            unsafe { op.DeleteItem(&psi, None) }.map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })
+}
+
+/// 1 項目をシェル改名する（同名衝突は Explorer 純正ダイアログが出る）。
+pub fn shell_rename(owner: &w::HWND, item: &Path, new_name: &str) -> Result<bool, String> {
+    use windows::core::PCWSTR;
+    let name: Vec<u16> = new_name.encode_utf16().chain(std::iter::once(0)).collect();
+    run_file_op(owner, |op| {
+        let psi = shell_item(item)?;
+        unsafe { op.RenameItem(&psi, PCWSTR(name.as_ptr()), None) }.map_err(|e| e.to_string())?;
+        Ok(())
+    })
 }
 
 /// `paths`（同一ディレクトリ内の実在ファイルの絶対パス）に対し、シェルのコンテキスト
