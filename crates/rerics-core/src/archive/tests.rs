@@ -335,7 +335,7 @@
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// rar 読取。同梱フィクスチャ version.rar を一覧・読取する。
+    /// rar 読取。同梱フィクスチャ version.rar を一覧・読取・一括展開する。
     #[test]
     fn rar_list_and_read() {
         let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/version.rar");
@@ -345,6 +345,14 @@
         assert!(list.iter().any(|e| e.path == "VERSION" && !e.is_dir));
         assert_eq!(be.read("VERSION").unwrap(), b"unrar-0.4.0");
         assert!(be.read("nope").is_err());
+
+        // 単一パス展開（extract_all override）でファイルが書き出される。
+        let dir = temp_path("rar_extract");
+        let _ = std::fs::remove_dir_all(&dir);
+        let n = extract_all_to(&be, &dir).unwrap();
+        assert_eq!(n, 1, "1 ファイル展開");
+        assert_eq!(std::fs::read(dir.join("VERSION")).unwrap(), b"unrar-0.4.0");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn fixture(name: &str) -> PathBuf {
