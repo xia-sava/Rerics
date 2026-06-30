@@ -135,9 +135,11 @@ impl ArchiveBackend for RarBackend {
             if let Some(parent) = p.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let (bytes, next) = cursor.read().map_err(|e| io::Error::other(e.to_string()))?;
-            std::fs::write(&p, &bytes)?;
-            arc = next;
+            // ネイティブ（UnRAR）に復号からディスク書き込みまで一度で行わせる。メモリへの
+            // 往復・確保が無く、書庫内の更新日時も復元される。
+            arc = cursor
+                .extract_to(&p)
+                .map_err(|e| io::Error::other(e.to_string()))?;
             done += 1;
         }
         Ok(())
