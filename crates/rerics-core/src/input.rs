@@ -89,6 +89,7 @@ pub mod vk {
     pub const OEM_4: u16 = 0xDB; // JIS: "[" "{"
     pub const OEM_5: u16 = 0xDC; // JIS: "\\" "|"（￥）
     pub const OEM_6: u16 = 0xDD; // JIS: "]" "}"
+    pub const OEM_PERIOD: u16 = 0xBE; // "." ">"
 }
 
 /// ファイラのコマンド（段階的に拡張していく）。
@@ -839,6 +840,7 @@ const KEY_NAMES: &[(u16, &str)] = &[
     (vk::OEM_4, "["),
     (vk::OEM_5, "\\"),
     (vk::OEM_6, "]"),
+    (vk::OEM_PERIOD, "."),
 ];
 
 /// VK をトークン名へ変換する（A-Z/0-9 はその文字）。
@@ -1223,6 +1225,14 @@ mod tests {
         assert_eq!(Command::from_token("commandDirect"), Some(Command::CommandDirect));
         assert_eq!(Command::CommandDirect.as_token(), "commandDirect");
         assert_eq!(Command::CommandDirect.display_name(), "任意のコマンドを実行");
+    }
+
+    #[test]
+    fn period_key_token_roundtrip() {
+        // 記号キー "." を設定トークンとして解釈・復元できる（個人 config で割当に使う）。
+        let chord = KeyChord::parse(".").unwrap();
+        assert_eq!(chord, KeyChord::key(vk::OEM_PERIOD));
+        assert_eq!(chord.to_token().as_deref(), Some("."));
     }
 
     #[test]
