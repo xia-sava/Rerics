@@ -10,7 +10,7 @@
 //!   取得、画像ファイルは小さなサムネイルを生成する。結果はパス＋mtime でキャッシュし、
 //!   取得できるまでは汎用アイコンを表示。完了で main 窓へ `winutil::msg::ICONS_READY` を Post して再描画。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
@@ -255,14 +255,27 @@ fn make_thumb(path: &std::path::Path) -> Option<WorkerDrawable> {
     Some(WorkerDrawable::Thumb { w, h, bgra })
 }
 
+/// per-file キャッシュの上限エントリ数。超えたら使用の古い順に落とし、HICON やサムネイルの
+/// メモリ・GDI ハンドルを解放する（長時間の閲覧で無制限に膨らむのを防ぐ）。
+const PER_FILE_CAP: usize = 2048;
+
+/// per-file キャッシュの 1 エントリ。`last_used` は LRU 用の最終アクセス時刻（単調増加カウンタ）。
+struct FileEntry {
+    mtime: u64,
+    drawable: Option<Drawable>,
+    last_used: Cell<u64>,
+}
+
 /// 拡張子・フォルダ単位の同期キャッシュ＋実FSファイルの非同期 per-file キャッシュ。UI スレッド専用。
 pub struct IconCache {
     /// 汎用（同期）。キー: "<dir>" / 拡張子（小文字・ドット込み・無拡張子 "<none>"）。
     generic: RefCell<HashMap<String, *mut c_void>>,
     /// 汎用キャッシュが所有する HICON（Drop で破棄）。
     generic_owned: RefCell<Vec<OwnedIcon>>,
-    /// per-file（非同期）。キー: 実フルパス。値: (mtime, 解決結果)。None=解決済みだが取得失敗。
-    per_file: RefCell<HashMap<PathBuf, (u64, Option<Drawable>)>>,
+    /// per-file（非同期）。キー: 実フルパス。値: 解決結果（drawable が None=解決済みだが取得失敗）。
+    per_file: RefCell<HashMap<PathBuf, FileEntry>>,
+    /// LRU 用の単調増加カウンタ（アクセス・挿入のたびに進める）。
+    tick: Cell<u64>,
     /// 取得中のパス（重複要求の抑止）。
     pending: RefCell<HashSet<PathBuf>>,
     req_tx: RefCell<Option<Sender<Request>>>,
@@ -275,6 +288,7 @@ impl IconCache {
             generic: RefCell::new(HashMap::new()),
             generic_owned: RefCell::new(Vec::new()),
             per_file: RefCell::new(HashMap::new()),
+            tick: Cell::new(0),
             pending: RefCell::new(HashSet::new()),
             req_tx: RefCell::new(None),
             res_rx: RefCell::new(None),
@@ -340,12 +354,16 @@ impl IconCache {
         dest: IconBox,
     ) -> bool {
         let map = self.per_file.borrow();
-        let Some((m, Some(drawable))) = map.get(path) else {
+        let Some(entry) = map.get(path) else {
             return false;
         };
-        if *m != mtime {
+        if entry.mtime != mtime {
             return false;
         }
+        let Some(drawable) = entry.drawable.as_ref() else {
+            return false;
+        };
+        entry.last_used.set(self.next_tick());
         let IconBox { x, y, size, .. } = dest;
         match drawable {
             // シェルアイコンは枠が大きいとき原寸寄りで中央へ（サムネイル表示用）。画像サムネは
@@ -400,8 +418,9 @@ impl IconCache {
 
     /// 実FSファイルの per-file アイコン/サムネ取得を依頼する（未取得・未解決のときのみ）。
     pub fn request_file(&self, path: &std::path::Path, mtime: u64, thumb: bool) {
-        if let Some((m, _)) = self.per_file.borrow().get(path)
-            && *m == mtime {
+        if let Some(entry) = self.per_file.borrow().get(path)
+            && entry.mtime == mtime {
+                entry.last_used.set(self.next_tick());
                 return; // 解決済み（成功/失敗どちらも）。
             }
         if self.pending.borrow().contains(path) {
@@ -433,9 +452,39 @@ impl IconCache {
                 WorkerDrawable::Icon(si) => Drawable::Icon(OwnedIcon(si.0)),
                 WorkerDrawable::Thumb { w, h, bgra } => Drawable::Thumb { w, h, bgra },
             });
-            self.per_file.borrow_mut().insert(res.path, (res.mtime, drawable));
+            let last_used = Cell::new(self.next_tick());
+            self.per_file
+                .borrow_mut()
+                .insert(res.path, FileEntry { mtime: res.mtime, drawable, last_used });
+        }
+        if any {
+            self.enforce_cap();
         }
         any
+    }
+
+    /// LRU 用カウンタを 1 つ進めて返す。
+    fn next_tick(&self) -> u64 {
+        let t = self.tick.get().wrapping_add(1);
+        self.tick.set(t);
+        t
+    }
+
+    /// per-file キャッシュが上限を超えていたら、使用の古い順に低水位（上限の 7/8）まで落とす。
+    /// エントリの破棄で HICON（`OwnedIcon` の Drop）やサムネイルのバッファを解放する。
+    fn enforce_cap(&self) {
+        let mut map = self.per_file.borrow_mut();
+        if map.len() <= PER_FILE_CAP {
+            return;
+        }
+        let target = PER_FILE_CAP * 7 / 8;
+        let remove = map.len() - target;
+        let mut by_age: Vec<(u64, PathBuf)> =
+            map.iter().map(|(p, e)| (e.last_used.get(), p.clone())).collect();
+        by_age.sort_unstable_by_key(|(t, _)| *t);
+        for (_, p) in by_age.into_iter().take(remove) {
+            map.remove(&p);
+        }
     }
 }
 
@@ -447,7 +496,30 @@ impl Default for IconCache {
 
 #[cfg(test)]
 mod tests {
-    use super::IconBox;
+    use super::{FileEntry, IconBox, IconCache, PER_FILE_CAP};
+    use std::cell::Cell;
+    use std::path::PathBuf;
+
+    #[test]
+    fn per_file_cache_evicts_to_cap_keeping_recent() {
+        let cache = IconCache::new();
+        let n = PER_FILE_CAP + 100;
+        {
+            let mut map = cache.per_file.borrow_mut();
+            for i in 0..n {
+                map.insert(
+                    PathBuf::from(format!("f{i}")),
+                    FileEntry { mtime: 0, drawable: None, last_used: Cell::new(i as u64) },
+                );
+            }
+        }
+        cache.enforce_cap();
+        let map = cache.per_file.borrow();
+        assert!(map.len() <= PER_FILE_CAP, "上限以下に収まる: {}", map.len());
+        // 最も新しい（last_used 大）エントリは残り、最も古いものは落ちる。
+        assert!(map.contains_key(&PathBuf::from(format!("f{}", n - 1))), "最新は残る");
+        assert!(!map.contains_key(&PathBuf::from("f0")), "最古は落ちる");
+    }
 
     #[test]
     fn center_capped_fills_frame_when_cap_not_smaller() {
