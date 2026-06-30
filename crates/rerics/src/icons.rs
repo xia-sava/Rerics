@@ -144,6 +144,9 @@ const SHGFI_SYSICONINDEX: u32 = 0x0000_4000;
 /// サムネイルとして描く（高DPI・サムネイル表示でくっきり）。下回るときは従来の大アイコン。
 const JUMBO_MIN_PX: i32 = 40;
 
+/// 余白トリム済みの jumbo アイコン（`(幅, 高さ, トップダウン BGRA)`）。
+type JumboBgra = (u32, u32, Vec<u8>);
+
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
 const FILE_ATTRIBUTE_NORMAL: u32 = 0x0000_0080;
 
@@ -275,8 +278,9 @@ fn worker_loop(rx: Receiver<Request>, tx: Sender<IconResult>, wake: isize) {
             let path_str = req.path.to_string_lossy();
             // 大きく描くときは jumbo(256) を余白トリムしてサムネ化（取れなければ大アイコン）。
             req.jumbo
-                .then(|| fetch_jumbo_thumb(&path_str))
+                .then(|| fetch_jumbo_bgra(&path_str, FILE_ATTRIBUTE_NORMAL, false))
                 .flatten()
+                .map(|(w, h, bgra)| WorkerDrawable::Thumb { w, h, bgra })
                 .or_else(|| {
                     let h = fetch_icon(&path_str, FILE_ATTRIBUTE_NORMAL, false, true);
                     (!h.is_null()).then_some(WorkerDrawable::Icon(SendIcon(h)))
@@ -306,13 +310,18 @@ fn make_thumb(path: &std::path::Path) -> Option<WorkerDrawable> {
     Some(WorkerDrawable::Thumb { w, h, bgra })
 }
 
-/// 実パスのシェルアイコンを jumbo(256) で取得し、透明余白をトリムした BGRA サムネとして返す。
-/// 取得・デコードに失敗したら None（呼び側は従来の大アイコンへ倒す）。
-fn fetch_jumbo_thumb(path: &str) -> Option<WorkerDrawable> {
+/// 疑似パス・属性のシェルアイコンを jumbo(256) で取得し、透明余白をトリムした BGRA を返す
+/// （`(幅, 高さ, BGRA)`）。`use_attrs` で実ファイルを触らず属性から引く（generic 用）。取得・
+/// デコードに失敗したら None（呼び側は従来のアイコンへ倒す）。ワーカー・UI どちらからも
+/// 呼ぶので COM を確実に初期化する（STA・二重呼び出しは無害）。
+fn fetch_jumbo_bgra(pseudo: &str, attrs: u32, use_attrs: bool) -> Option<JumboBgra> {
     use windows::Win32::UI::Controls::{IImageList, ILD_TRANSPARENT};
     use windows::Win32::UI::Shell::{SHGetImageList, SHIL_JUMBO};
 
-    let wide: Vec<u16> = std::ffi::OsStr::new(path)
+    unsafe {
+        let _ = CoInitializeEx(std::ptr::null_mut(), COINIT_APARTMENTTHREADED);
+    }
+    let wide: Vec<u16> = std::ffi::OsStr::new(pseudo)
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
@@ -323,13 +332,17 @@ fn fetch_jumbo_thumb(path: &str) -> Option<WorkerDrawable> {
         szDisplayName: [0; 260],
         szTypeName: [0; 80],
     };
+    let mut flags = SHGFI_SYSICONINDEX;
+    if use_attrs {
+        flags |= SHGFI_USEFILEATTRIBUTES;
+    }
     let rc = unsafe {
         SHGetFileInfoW(
             wide.as_ptr(),
-            FILE_ATTRIBUTE_NORMAL,
+            attrs,
             &mut info,
             std::mem::size_of::<SHFILEINFOW>() as u32,
-            SHGFI_SYSICONINDEX,
+            flags,
         )
     };
     if rc == 0 {
@@ -342,8 +355,7 @@ fn fetch_jumbo_thumb(path: &str) -> Option<WorkerDrawable> {
     // 抽出後に DestroyIcon されるよう所有させる（早期 return でも Drop で確実に破棄）。
     let owned = OwnedIcon(hicon.0);
     let (w, h, bgra) = hicon_to_bgra(owned.0)?;
-    let (tw, th, trimmed) = trim_transparent(w, h, &bgra)?;
-    Some(WorkerDrawable::Thumb { w: tw, h: th, bgra: trimmed })
+    trim_transparent(w, h, &bgra)
 }
 
 /// HICON を 32bpp トップダウン BGRA（アルファ込み）へ変換する。失敗で None。
@@ -429,6 +441,68 @@ fn trim_transparent(w: u32, h: u32, bgra: &[u8]) -> Option<(u32, u32, Vec<u8>)> 
     Some((tw as u32, th as u32, out))
 }
 
+/// トップダウン BGRA を `dest` 枠へ、縦横比を保って拡縮し中央寄せで描く（サムネ・jumbo 共用）。
+fn draw_thumb_bgra(dc: &w::HDC, w: u32, h: u32, bgra: &[u8], dest: IconBox) {
+    let IconBox { x, y, size, .. } = dest;
+    let (iw, ih) = (w as i32, h as i32);
+    let long = iw.max(ih).max(1);
+    let dw = (iw * size / long).max(1);
+    let dh = (ih * size / long).max(1);
+    let dx = x + (size - dw) / 2;
+    let dy = y + (size - dh) / 2;
+    let bih = BITMAPINFOHEADER {
+        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+        biWidth: iw,
+        biHeight: -ih, // トップダウン
+        biPlanes: 1,
+        biBitCount: 32,
+        biCompression: 0,
+        biSizeImage: 0,
+        biXPelsPerMeter: 0,
+        biYPelsPerMeter: 0,
+        biClrUsed: 0,
+        biClrImportant: 0,
+    };
+    unsafe {
+        SetStretchBltMode(dc.ptr(), STRETCH_HALFTONE);
+        StretchDIBits(
+            dc.ptr(),
+            dx,
+            dy,
+            dw,
+            dh,
+            0,
+            0,
+            iw,
+            ih,
+            bgra.as_ptr() as *const c_void,
+            &bih,
+            DIB_RGB_COLORS,
+            SRCCOPY,
+        );
+    }
+}
+
+/// 汎用アイコンのキャッシュキー（ディレクトリ／拡張子別・無拡張子は "<none>"）。
+fn generic_key(is_dir: bool, ext: &str) -> String {
+    if is_dir {
+        "<dir>".to_owned()
+    } else if ext.is_empty() {
+        "<none>".to_owned()
+    } else {
+        ext.to_ascii_lowercase()
+    }
+}
+
+/// 汎用アイコンを属性から引くための疑似パスとファイル属性。
+fn generic_pseudo(is_dir: bool, ext: &str) -> (String, u32) {
+    if is_dir {
+        ("folder".to_owned(), FILE_ATTRIBUTE_DIRECTORY)
+    } else {
+        (format!("x{ext}"), FILE_ATTRIBUTE_NORMAL)
+    }
+}
+
 /// per-file キャッシュの上限エントリ数。超えたら使用の古い順に落とし、HICON やサムネイルの
 /// メモリ・GDI ハンドルを解放する（長時間の閲覧で無制限に膨らむのを防ぐ）。
 const PER_FILE_CAP: usize = 2048;
@@ -448,6 +522,9 @@ pub struct IconCache {
     generic: RefCell<HashMap<String, *mut c_void>>,
     /// 汎用キャッシュが所有する HICON（Drop で破棄）。
     generic_owned: RefCell<Vec<OwnedIcon>>,
+    /// 汎用アイコンの jumbo(256) 版（大表示用）。キーは `generic` と同じ。値が None=jumbo 取得
+    /// 不可（再取得しない）。キー数はディレクトリ＋拡張子ぶんで少ないので eviction しない。
+    generic_jumbo: RefCell<HashMap<String, Option<JumboBgra>>>,
     /// per-file（非同期）。キー: 実フルパス。値: 解決結果（drawable が None=解決済みだが取得失敗）。
     per_file: RefCell<HashMap<PathBuf, FileEntry>>,
     /// LRU 用の単調増加カウンタ（アクセス・挿入のたびに進める）。
@@ -463,6 +540,7 @@ impl IconCache {
         Self {
             generic: RefCell::new(HashMap::new()),
             generic_owned: RefCell::new(Vec::new()),
+            generic_jumbo: RefCell::new(HashMap::new()),
             per_file: RefCell::new(HashMap::new()),
             tick: Cell::new(0),
             pending: RefCell::new(HashSet::new()),
@@ -484,22 +562,12 @@ impl IconCache {
     }
 
     fn generic_handle(&self, is_dir: bool, ext: &str) -> *mut c_void {
-        let key = if is_dir {
-            "<dir>".to_owned()
-        } else if ext.is_empty() {
-            "<none>".to_owned()
-        } else {
-            ext.to_ascii_lowercase()
-        };
+        let key = generic_key(is_dir, ext);
         if let Some(h) = self.generic.borrow().get(&key) {
             return *h;
         }
-        let h = if is_dir {
-            fetch_icon("folder", FILE_ATTRIBUTE_DIRECTORY, true, false)
-        } else {
-            let pseudo = format!("x{}", ext);
-            fetch_icon(&pseudo, FILE_ATTRIBUTE_NORMAL, true, false)
-        };
+        let (pseudo, attrs) = generic_pseudo(is_dir, ext);
+        let h = fetch_icon(&pseudo, attrs, true, false);
         if !h.is_null() {
             self.generic_owned.borrow_mut().push(OwnedIcon(h));
         }
@@ -507,16 +575,37 @@ impl IconCache {
         h
     }
 
-    /// 汎用アイコン（ディレクトリ／拡張子別）を `dest` の枠に描く。シェルアイコンは
-    /// 引き伸ばすとぼやけるので `dest.cap` を上限に原寸寄りで枠の中央へ置く（サムネイル
-    /// 表示で枠が大きいとき用。通常表示は `cap == size` で従来どおり枠いっぱいに描く）。
+    /// 汎用アイコン（ディレクトリ／拡張子別）を `dest` の枠に描く。大きく描くときは jumbo(256) を
+    /// 余白トリムして枠いっぱいに描く（キーごとに一度だけ同期取得してセッション中保持）。それ以外
+    /// （または jumbo 取得不可）は従来どおり大アイコンを `dest.cap` 上限で中央へ置く。
     pub fn draw_generic(&self, dc: &w::HDC, is_dir: bool, ext: &str, dest: IconBox) {
+        if dest.size >= JUMBO_MIN_PX && self.draw_generic_jumbo(dc, is_dir, ext, dest) {
+            return;
+        }
         let h = self.generic_handle(is_dir, ext);
         if !h.is_null() {
             let (ox, oy, s) = dest.center_capped();
             unsafe {
                 DrawIconEx(dc.ptr(), ox, oy, h, s, s, 0, std::ptr::null_mut(), DI_NORMAL);
             }
+        }
+    }
+
+    /// 汎用アイコンの jumbo 版を `dest` 枠へサムネとして描く。描けたら true。jumbo 取得不可なら
+    /// false（呼び側が従来の大アイコンを描く）。キーごとに一度だけ取得して結果を保持する。
+    fn draw_generic_jumbo(&self, dc: &w::HDC, is_dir: bool, ext: &str, dest: IconBox) -> bool {
+        let key = generic_key(is_dir, ext);
+        if !self.generic_jumbo.borrow().contains_key(&key) {
+            let (pseudo, attrs) = generic_pseudo(is_dir, ext);
+            let thumb = fetch_jumbo_bgra(&pseudo, attrs, true);
+            self.generic_jumbo.borrow_mut().insert(key.clone(), thumb);
+        }
+        let map = self.generic_jumbo.borrow();
+        if let Some(Some((w, h, bgra))) = map.get(&key) {
+            draw_thumb_bgra(dc, *w, *h, bgra, dest);
+            true
+        } else {
+            false
         }
     }
 
@@ -545,7 +634,6 @@ impl IconCache {
             return false;
         }
         entry.last_used.set(self.next_tick());
-        let IconBox { x, y, size, .. } = dest;
         match drawable {
             // シェルアイコンは枠が大きいとき原寸寄りで中央へ（サムネイル表示用）。画像サムネは
             // 縦横比を保って枠いっぱいに拡縮するので `cap` の対象外。
@@ -553,46 +641,7 @@ impl IconCache {
                 let (ox, oy, s) = dest.center_capped();
                 DrawIconEx(dc.ptr(), ox, oy, icon.0, s, s, 0, std::ptr::null_mut(), DI_NORMAL);
             },
-            Drawable::Thumb { w, h, bgra } => {
-                let (iw, ih) = (*w as i32, *h as i32);
-                // 表示枠 size に長辺を合わせ、縦横比を保って縮小して中央へ置く。
-                let long = iw.max(ih).max(1);
-                let dw = (iw * size / long).max(1);
-                let dh = (ih * size / long).max(1);
-                let dx = x + (size - dw) / 2;
-                let dy = y + (size - dh) / 2;
-                let bih = BITMAPINFOHEADER {
-                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: iw,
-                    biHeight: -ih, // トップダウン
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: 0,
-                    biSizeImage: 0,
-                    biXPelsPerMeter: 0,
-                    biYPelsPerMeter: 0,
-                    biClrUsed: 0,
-                    biClrImportant: 0,
-                };
-                unsafe {
-                    SetStretchBltMode(dc.ptr(), STRETCH_HALFTONE);
-                    StretchDIBits(
-                        dc.ptr(),
-                        dx,
-                        dy,
-                        dw,
-                        dh,
-                        0,
-                        0,
-                        iw,
-                        ih,
-                        bgra.as_ptr() as *const c_void,
-                        &bih,
-                        DIB_RGB_COLORS,
-                        SRCCOPY,
-                    );
-                }
-            }
+            Drawable::Thumb { w, h, bgra } => draw_thumb_bgra(dc, *w, *h, bgra, dest),
         }
         true
     }
