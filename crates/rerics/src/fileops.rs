@@ -5,6 +5,11 @@ use rerics_core::{Location, LogLevel, messages};
 use crate::task::{ChannelHost, OpKind, TaskControl, WorkerEvent};
 use crate::{MainWindow, dialog, shell, short_desc};
 
+/// パスの末尾要素（ファイル名）を `String` で返す（取れなければ空文字）。
+fn file_name_of(p: &Path) -> String {
+    p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
 impl MainWindow {
     /// 入力ダイアログで名前を尋ね、アクティブペインの現在パス直下にディレクトリを作る。
     /// 作成後は一覧を更新し、新ディレクトリへカーソルを移す。
@@ -1383,6 +1388,119 @@ impl MainWindow {
         }
         self.log.normal(&format!("連番リネーム: {} 件", news.len()));
         let _ = self.reload_side(is_left);
+    }
+
+    /// スクリプト発の一括改名。`(旧フルパス, 新フルパス)` を順に処理し、同名衝突は `conflict_box`
+    /// で解決する（「全部に適用」を覚える）。実FS のみ・件数サマリを返す（一覧の再読込は呼び出し側）。
+    pub(crate) fn rename_files_with_conflict(
+        &self,
+        pairs: Vec<(String, String)>,
+    ) -> crate::script::RenameSummary {
+        use rerics_core::ConflictResolution;
+        let mut summary = crate::script::RenameSummary::default();
+        let mut apply_all: Option<ConflictResolution> = None;
+        'outer: for (from, to) in pairs {
+            let from = PathBuf::from(from);
+            if !from.exists() {
+                summary.err += 1;
+                self.log.error(&format!("改名元がありません: {}", from.display()));
+                continue;
+            }
+            let mut target = PathBuf::from(to);
+            // 別名選択時は新しいターゲットで衝突を再判定するためループする。
+            // 大文字小文字だけの変更（同一ファイル）は衝突ではないのでそのまま通す。
+            while target.exists() && !Self::same_file(&from, &target) {
+                let res = match &apply_all {
+                    Some(r) => r.clone(),
+                    None => {
+                        let name = file_name_of(&target);
+                        let (r, all) = dialog::conflict_box(&self.wnd, &name);
+                        if all {
+                            apply_all = Some(r.clone());
+                        }
+                        r
+                    }
+                };
+                match res {
+                    ConflictResolution::Skip => {
+                        summary.skip += 1;
+                        continue 'outer;
+                    }
+                    ConflictResolution::Cancel => {
+                        summary.cancelled = true;
+                        break 'outer;
+                    }
+                    ConflictResolution::Rename(new_name) => {
+                        target = target.with_file_name(new_name);
+                        continue;
+                    }
+                    ConflictResolution::Newest if !Self::is_newer(&from, &target) => {
+                        summary.skip += 1;
+                        continue 'outer;
+                    }
+                    ConflictResolution::Newest | ConflictResolution::Overwrite => {}
+                    ConflictResolution::OverwriteForce => Self::clear_attrs(&target),
+                }
+                // 上書き確定：Windows の rename は既存先を置き換えられないので先に消す。
+                if let Err(e) = Self::remove_path(&target) {
+                    summary.err += 1;
+                    self.log.error(&format!("上書き準備に失敗: {} ({e})", target.display()));
+                    continue 'outer;
+                }
+                break;
+            }
+            match std::fs::rename(&from, &target) {
+                Ok(()) => {
+                    summary.ok += 1;
+                    self.log.normal(&rerics_core::messages::rename(
+                        &file_name_of(&from),
+                        &file_name_of(&target),
+                    ));
+                }
+                Err(e) => {
+                    summary.err += 1;
+                    self.log.error(&rerics_core::messages::rename_failure(
+                        &file_name_of(&from),
+                        &e.to_string(),
+                    ));
+                }
+            }
+        }
+        summary
+    }
+
+    /// 2 つのパスが同一ファイルを指すか（大文字小文字だけ異なる改名を衝突と誤判定しないため）。
+    fn same_file(a: &Path, b: &Path) -> bool {
+        match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(x), Ok(y)) => x == y,
+            _ => a == b,
+        }
+    }
+
+    /// `src` の更新日時が `dst` より新しいか（[`ConflictResolution::Newest`] 判定用）。
+    fn is_newer(src: &Path, dst: &Path) -> bool {
+        match (rerics_core::modified_time(src), rerics_core::modified_time(dst)) {
+            (Some(s), Some(d)) => s > d,
+            _ => false,
+        }
+    }
+
+    /// ファイル・ディレクトリのどちらでも消す（上書きの前処理）。
+    fn remove_path(p: &Path) -> std::io::Result<()> {
+        if p.is_dir() {
+            std::fs::remove_dir_all(p)
+        } else {
+            std::fs::remove_file(p)
+        }
+    }
+
+    /// 読み込み専用/隠し/システム属性を解除する（[`ConflictResolution::OverwriteForce`] 用）。
+    fn clear_attrs(p: &Path) {
+        let mut a = rerics_core::read_attrs(p).unwrap_or_default();
+        a.readonly = false;
+        a.hidden = false;
+        a.system = false;
+        let _ = rerics_core::write_attrs(p, a);
     }
 
     /// 削除をワーカースレッドで起動し、払い出したタスク `id` を返す（[`start_copy`] と同様、

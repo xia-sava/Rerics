@@ -138,6 +138,10 @@ pub trait HostApi {
     /// 内蔵コマンドを名前で実行する（同期）。値返しクエリは値を、アクション系は `null` を返す。
     /// 不明な名前・実行失敗はエラー文字列を返す。ワーカーを起動する操作は「開始」までで戻り、完了は待たない。
     fn command(&self, name: &str, args: &[String]) -> Result<serde_json::Value, String>;
+    /// `(旧フルパス, 新フルパス)` の組を順に改名する（同期・実FSのみ）。同名衝突は
+    /// `conflict_box`（上書き/強制上書き/別名/スキップ/新しい方・「全部に適用」付き）で解決する。
+    /// 結果の件数サマリを返す。
+    fn rename_files(&self, pairs: &[(String, String)]) -> RenameSummary;
     /// 非同期ファイル操作を起動する。起動できたら**トークン**を返し、進行中は `events` へ進捗を
     /// 流し、完了時に完了イベント（成功 or 失敗/中止）を 1 度送る。`items` が空なら対象＝アクティブ
     /// ペインの選択（行き先＝反対ペイン）、非空なら対象＝そのパス群・行き先＝`dest`（delete では
@@ -213,6 +217,20 @@ pub enum ScriptOp {
     Copy,
     Move,
     Delete,
+}
+
+/// 一括改名（[`HostApi::rename_files`]）の結果サマリ。JS では camelCase の数値で見える。
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameSummary {
+    /// 改名できた件数。
+    pub ok: u32,
+    /// 衝突などでスキップした件数。
+    pub skip: u32,
+    /// 失敗した件数。
+    pub err: u32,
+    /// 途中で中止されたか。
+    pub cancelled: bool,
 }
 
 /// ペイン 1 つぶんの状態スナップショット（スクリプトへ渡す）。JS では camelCase で見える。
@@ -729,6 +747,13 @@ fn op_command(
         .map_err(deno_error::JsErrorBox::generic)
 }
 
+/// `(旧パス, 新パス)` の組を順に改名する同期 op。同名衝突は GUI 側で conflict_box を出して解決する。
+#[op2]
+#[serde]
+fn op_rename_files(state: &mut OpState, #[serde] pairs: Vec<(String, String)>) -> RenameSummary {
+    state.borrow::<Host>().rename_files(&pairs)
+}
+
 /// 組込コマンドのトークン名一覧。bootstrap がこれを回して `r.<token>()` の名前付き関数を
 /// 動的生成する（Rust 側に個別 op を 127 本書かずに済ませる）。
 #[op2]
@@ -1204,6 +1229,7 @@ extension!(
         op_set_selected,
         op_apply_selection,
         op_command,
+        op_rename_files,
         op_builtin_commands,
         op_op_start,
         op_op_next,
@@ -1532,6 +1558,8 @@ const BOOTSTRAP: &str = r#"
     command: (name, ...args) => ops.op_command(String(name), args.map(String)),
     copy: (a, b, c) => copyLike(0, a, b, c),
     move: (a, b, c) => copyLike(1, a, b, c),
+    renameFiles: (pairs) =>
+      ops.op_rename_files((pairs || []).map((p) => [String(p.from), String(p.to)])),
     delete: (a, b) =>
       Array.isArray(a) ? startOp(2, a, "", b) : startOp(2, null, "", a),
     open: (p) => ops.op_open(String(p)),
@@ -2025,6 +2053,8 @@ mod tests {
         log_id_seq: std::cell::Cell<u64>,
         /// `log_update()` が受けた `(id, text)` の記録（インプレース更新の検証用）。
         log_updates: RefCell<Vec<(u64, String)>>,
+        /// `rename_files()` が受けた `(旧, 新)` の記録（一括改名の検証用）。
+        renamed: RefCell<Vec<(String, String)>>,
     }
 
     impl HostApi for MockHost {
@@ -2100,6 +2130,10 @@ mod tests {
             }
             self.commands.borrow_mut().push((name.to_string(), args.to_vec()));
             Ok(serde_json::Value::Null)
+        }
+        fn rename_files(&self, pairs: &[(String, String)]) -> RenameSummary {
+            self.renamed.borrow_mut().extend(pairs.iter().cloned());
+            RenameSummary { ok: pairs.len() as u32, ..Default::default() }
         }
         fn begin_operation(
             &self,
@@ -2761,6 +2795,30 @@ mod tests {
         eng.run_to_completion("t3", r#"rerics.prompt("a", "d", { selectAll: true });"#.to_string())
             .unwrap();
         assert!(host.prompt_select_all.get(), "selectAll:true で全選択");
+    }
+
+    #[test]
+    fn rename_files_forwards_pairs_and_returns_summary() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "t",
+            r#"const s = rerics.renameFiles([
+                 { from: "a/x.txt", to: "a/y.txt" },
+                 { from: "a/p.dat", to: "a/q.dat" },
+               ]);
+               rerics.log("ok=" + s.ok + " skip=" + s.skip + " cancelled=" + s.cancelled);"#
+                .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            *host.renamed.borrow(),
+            vec![
+                ("a/x.txt".to_string(), "a/y.txt".to_string()),
+                ("a/p.dat".to_string(), "a/q.dat".to_string()),
+            ]
+        );
+        assert_eq!(*host.logs.borrow(), vec!["ok=2 skip=0 cancelled=false".to_string()]);
     }
 
     #[test]

@@ -25,7 +25,7 @@ use crate::shell;
 use crate::task::{LogEvent, WorkerEvent};
 use rerics_core::{Call, Command, LogLevel};
 
-use crate::script::{self, HostApi, PaneItem, PaneSnapshot, ScriptCommand, ScriptOp};
+use crate::script::{self, HostApi, PaneItem, PaneSnapshot, RenameSummary, ScriptCommand, ScriptOp};
 use crate::ui_marshal::{self, WakeQueue};
 use crate::winutil::msg::SCRIPT_WAKE;
 
@@ -46,6 +46,7 @@ pub enum HostCall {
     SetSelected { is_left: bool, index: usize, selected: bool },
     ApplySelection { is_left: bool, changes: Vec<(usize, bool)> },
     Command { name: String, args: Vec<String> },
+    RenameFiles { pairs: Vec<(String, String)> },
     BeginOperation {
         op: ScriptOp,
         items: Vec<String>,
@@ -393,6 +394,18 @@ impl HostApi for GuiHost {
         ) {
             Ok(HostResp::CommandResult(r)) => r,
             _ => Err("コマンドの実行に応答がありませんでした".to_string()),
+        }
+    }
+
+    fn rename_files(&self, pairs: &[(String, String)]) -> RenameSummary {
+        match ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::RenameFiles { pairs: pairs.to_vec() },
+        ) {
+            Ok(HostResp::CommandResult(Ok(v))) => serde_json::from_value(v).unwrap_or_default(),
+            _ => RenameSummary::default(),
         }
     }
 
@@ -825,6 +838,11 @@ impl MainWindow {
                 }
                 HostCall::Command { name, args } => {
                     let _ = tx.send(HostResp::CommandResult(self.run_script_command(&name, args)));
+                }
+                HostCall::RenameFiles { pairs } => {
+                    let summary = self.rename_files_with_conflict(pairs);
+                    let v = serde_json::to_value(summary).unwrap_or(serde_json::Value::Null);
+                    let _ = tx.send(HostResp::CommandResult(Ok(v)));
                 }
                 HostCall::BeginOperation {
                     op,
