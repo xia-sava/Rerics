@@ -1517,7 +1517,9 @@ const BOOTSTRAP: &str = r#"
     navigate: (p) => ops.op_navigate(String(p)),
     confirm: (m) => ops.op_confirm(String(m)),
     prompt: (m, d, opts) => {
-      const r = ops.op_prompt(String(m), d == null ? "" : String(d), !!(opts && opts.selectAll));
+      // 候補値をすぐ上書きできるよう既定で全選択する。{ selectAll: false } で明示的にオプトアウト。
+      const selectAll = !(opts && opts.selectAll === false);
+      const r = ops.op_prompt(String(m), d == null ? "" : String(d), selectAll);
       return r.length ? r[0] : null;
     },
     select: (t, items) => {
@@ -2748,17 +2750,17 @@ mod tests {
     fn prompt_forwards_select_all_option() {
         let host = Rc::new(MockHost { prompt_reply: Some("x".into()), ..Default::default() });
         let mut eng = Engine::new(host.clone());
-        // オプション無し＝全選択しない。
+        // オプション無し＝既定で全選択する。
         eng.run_to_completion("t1", r#"rerics.prompt("a");"#.to_string()).unwrap();
-        assert!(!host.prompt_select_all.get(), "オプション無しでは全選択しない");
-        // {selectAll:true} でフラグが立つ。
-        eng.run_to_completion("t2", r#"rerics.prompt("a", "d", { selectAll: true });"#.to_string())
-            .unwrap();
-        assert!(host.prompt_select_all.get(), "selectAll:true で全選択フラグが立つ");
-        // 明示 false で戻る。
-        eng.run_to_completion("t3", r#"rerics.prompt("a", "d", { selectAll: false });"#.to_string())
+        assert!(host.prompt_select_all.get(), "オプション無しは既定で全選択");
+        // {selectAll:false} でオプトアウト。
+        eng.run_to_completion("t2", r#"rerics.prompt("a", "d", { selectAll: false });"#.to_string())
             .unwrap();
         assert!(!host.prompt_select_all.get(), "selectAll:false で全選択しない");
+        // {selectAll:true} でも全選択。
+        eng.run_to_completion("t3", r#"rerics.prompt("a", "d", { selectAll: true });"#.to_string())
+            .unwrap();
+        assert!(host.prompt_select_all.get(), "selectAll:true で全選択");
     }
 
     #[test]
