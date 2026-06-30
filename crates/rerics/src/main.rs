@@ -1247,6 +1247,10 @@ impl MainWindow {
                 self.property_dialog(is_left)?;
                 return Ok(());
             }
+            Command::ContextMenu => {
+                self.context_menu(is_left)?;
+                return Ok(());
+            }
             Command::Copy => {
                 self.copy_or_move(is_left, false)?;
                 return Ok(());

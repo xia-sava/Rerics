@@ -373,3 +373,99 @@ pub fn create_shortcut(target: &Path, lnk: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// `paths`（同一ディレクトリ内の実在ファイルの絶対パス）に対し、シェルのコンテキスト
+/// メニュー（エクスプローラの右クリックメニュー）をマウス位置に表示し、選ばれた項目を
+/// 実行する。メニューが閉じるまでブロックする。
+pub fn show_context_menu(owner: &w::HWND, paths: &[PathBuf]) -> Result<(), String> {
+    use windows::Win32::Foundation::{HANDLE, HWND, POINT};
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree};
+    use windows::Win32::UI::Shell::Common::ITEMIDLIST;
+    use windows::Win32::UI::Shell::{
+        CMINVOKECOMMANDINFO, IContextMenu, IShellFolder, SHBindToParent, SHParseDisplayName,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreatePopupMenu, DestroyMenu, GetCursorPos, SW_SHOWNORMAL, TPM_LEFTALIGN, TPM_RETURNCMD,
+        TPM_RIGHTBUTTON, TrackPopupMenuEx,
+    };
+    use windows::core::{PCSTR, PCWSTR};
+
+    // メニュー項目に割り当てる ID の範囲（先頭・上限）と、標準のメニュー内容フラグ。
+    const ID_CMD_FIRST: u32 = 1;
+    const ID_CMD_LAST: u32 = 0x7fff;
+    const CMF_NORMAL: u32 = 0;
+
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let hwnd = HWND(owner.ptr());
+
+    // 各パスを絶対 PIDL に解決する（解決できないものは飛ばす）。
+    let mut pidls: Vec<*mut ITEMIDLIST> = Vec::with_capacity(paths.len());
+    for p in paths {
+        let name = wide(p);
+        let mut pidl: *mut ITEMIDLIST = std::ptr::null_mut();
+        let parsed = unsafe { SHParseDisplayName(PCWSTR(name.as_ptr()), None, &mut pidl, 0, None) };
+        if parsed.is_ok() && !pidl.is_null() {
+            pidls.push(pidl);
+        }
+    }
+
+    let result: Result<(), String> = (|| unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+
+        // 親フォルダ（最初に取れたもの）と、各項目の子 PIDL を集める。
+        let mut folder: Option<IShellFolder> = None;
+        let mut children: Vec<*const ITEMIDLIST> = Vec::with_capacity(pidls.len());
+        for &full in &pidls {
+            let mut child: *mut ITEMIDLIST = std::ptr::null_mut();
+            let psf: IShellFolder =
+                match SHBindToParent(full, Some(&mut child as *mut *mut ITEMIDLIST)) {
+                    Ok(f) => f,
+                    Err(_) => continue,
+                };
+            if folder.is_none() {
+                folder = Some(psf);
+            }
+            if !child.is_null() {
+                children.push(child as *const ITEMIDLIST);
+            }
+        }
+        let (Some(folder), false) = (folder, children.is_empty()) else {
+            return Err("コンテキストメニューの対象を取得できません".to_string());
+        };
+
+        let menu: IContextMenu = folder
+            .GetUIObjectOf(hwnd, &children, None)
+            .map_err(|e| e.to_string())?;
+        let hmenu = CreatePopupMenu().map_err(|e| e.to_string())?;
+        let _ = menu.QueryContextMenu(hmenu, 0, ID_CMD_FIRST, ID_CMD_LAST, CMF_NORMAL);
+
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        let flags = (TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_LEFTALIGN).0;
+        let chosen = TrackPopupMenuEx(hmenu, flags, pt.x, pt.y, hwnd, None).0;
+        let _ = DestroyMenu(hmenu);
+
+        if chosen > 0 {
+            let info = CMINVOKECOMMANDINFO {
+                cbSize: std::mem::size_of::<CMINVOKECOMMANDINFO>() as u32,
+                fMask: 0,
+                hwnd,
+                lpVerb: PCSTR((chosen as u32 - ID_CMD_FIRST) as usize as *const u8),
+                lpParameters: PCSTR::null(),
+                lpDirectory: PCSTR::null(),
+                nShow: SW_SHOWNORMAL.0,
+                dwHotKey: 0,
+                hIcon: HANDLE::default(),
+            };
+            menu.InvokeCommand(&info).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })();
+
+    for &pidl in &pidls {
+        unsafe { CoTaskMemFree(Some(pidl as *const c_void)) };
+    }
+    result
+}

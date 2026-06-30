@@ -1555,6 +1555,26 @@ impl MainWindow {
         Ok(())
     }
 
+    /// 選択（無ければカーソル）した項目に対し、シェルのコンテキストメニューを表示する。
+    pub(crate) fn context_menu(&self, is_left: bool) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内ではコンテキストメニューに未対応です。");
+            return Ok(());
+        }
+        let paths: Vec<PathBuf> = self
+            .selected_real_targets(is_left)
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
+        if paths.is_empty() {
+            return Ok(());
+        }
+        if let Err(e) = shell::show_context_menu(self.wnd.hwnd(), &paths) {
+            self.log.error(&e);
+        }
+        Ok(())
+    }
+
     /// 履歴つき入力ダイアログ。用途キー `key` の履歴（新しい順）を候補に出し、
     /// 確定した値を履歴へ追記して保存する。`history.toml` に永続。
     pub(crate) fn input_with_history(
