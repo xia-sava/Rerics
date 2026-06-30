@@ -1294,6 +1294,33 @@ fn build_appearance(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &
         ],
     );
     label(parent, "（中・大を選ぶと行の高さが広がります）", 24, 424, 320);
+    label(parent, "サムネイルモード時のサイズ", 24, 452, 180);
+    let thumb_size = gui::Edit::new(
+        parent,
+        gui::EditOpts {
+            text: &cfg.icons.thumbnail_size.to_string(),
+            control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
+            position: gui::dpi(210, 450),
+            width: gui::dpi_x(44),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+    let _thumb_spin = gui::UpDown::new(
+        parent,
+        gui::UpDownOpts {
+            position: gui::dpi(254, 450),
+            height: gui::dpi_y(22),
+            range: (16, 256),
+            value: cfg.icons.thumbnail_size,
+            control_style: co::UDS::AUTOBUDDY
+                | co::UDS::SETBUDDYINT
+                | co::UDS::ALIGNRIGHT
+                | co::UDS::ARROWKEYS,
+            ..Default::default()
+        },
+    );
+    label(parent, "px", 280, 452, 24);
     drop(cfg);
 
     // テーマ選択を即反映し、プレビュー／配色編集の対象サイドもこれに追従させる。
@@ -1392,6 +1419,16 @@ fn build_appearance(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &
                 _ => IconSize::Auto,
             };
             preview.refresh();
+            Ok(())
+        });
+    }
+    {
+        let shared = shared.clone();
+        let edit = thumb_size.clone();
+        thumb_size.on().en_change(move || {
+            let cur = shared.cfg.borrow().icons.thumbnail_size;
+            let v = parse_or(&edit, cur).clamp(16, 256);
+            shared.cfg.borrow_mut().icons.thumbnail_size = v;
             Ok(())
         });
     }
