@@ -17,13 +17,11 @@ use crate::FileItem;
 mod zip_be;
 mod sevenz;
 mod tar_be;
-#[cfg(feature = "rar")]
 mod rar;
 mod single_file;
 use self::zip_be::{ZipBackend, ZipWriter};
 use self::sevenz::SevenZBackend;
 use self::tar_be::TarBackend;
-#[cfg(feature = "rar")]
 use self::rar::RarBackend;
 use self::single_file::SingleFileBackend;
 
@@ -159,7 +157,6 @@ pub(crate) enum Comp {
 enum ArchiveKind {
     Zip,
     SevenZ,
-    #[cfg(feature = "rar")]
     Rar,
     /// tar 本体＋ラップ圧縮（None=無圧縮）。
     Tar(Comp),
@@ -167,8 +164,7 @@ enum ArchiveKind {
     Single(Comp),
 }
 
-/// ファイル名（小文字化）から書庫種別を決める。未知は `None`。rar は feature 無効時は
-/// 「書庫でない」扱い（従来どおり関連付け起動へ回す）。
+/// ファイル名（小文字化）から書庫種別を決める。未知は `None`。
 fn classify_archive(path: &Path) -> Option<ArchiveKind> {
     let name = path.file_name()?.to_str()?.to_ascii_lowercase();
     let ends = |s: &str| name.ends_with(s);
@@ -208,10 +204,7 @@ fn classify_archive(path: &Path) -> Option<ArchiveKind> {
         return Some(ArchiveKind::SevenZ);
     }
     if ends(".rar") {
-        #[cfg(feature = "rar")]
         return Some(ArchiveKind::Rar);
-        #[cfg(not(feature = "rar"))]
-        return None;
     }
     None
 }
@@ -226,7 +219,6 @@ pub fn open_archive(path: &Path) -> io::Result<Box<dyn ArchiveBackend>> {
     match classify_archive(path) {
         Some(ArchiveKind::Zip) => Ok(Box::new(ZipBackend::open(path)?)),
         Some(ArchiveKind::SevenZ) => Ok(Box::new(SevenZBackend::open(path)?)),
-        #[cfg(feature = "rar")]
         Some(ArchiveKind::Rar) => Ok(Box::new(RarBackend::open(path)?)),
         Some(ArchiveKind::Tar(comp)) => Ok(Box::new(TarBackend::open(path, comp)?)),
         Some(ArchiveKind::Single(comp)) => Ok(Box::new(SingleFileBackend::open(path, comp)?)),
@@ -295,8 +287,8 @@ impl<R: io::Read> io::Read for CountingReader<R> {
 
 // unrar_sys（vendored C++）はレジストリ/トークン/Crypt 等の Win32 API を参照するが、
 // その build.rs が advapi32 のリンクを指定しないため未解決シンボルになる。ここで空の
-// link ブロックを置いて advapi32 を明示リンクする（`rar` feature 時のみ）。
-#[cfg(all(feature = "rar", windows))]
+// link ブロックを置いて advapi32 を明示リンクする。
+#[cfg(windows)]
 #[link(name = "advapi32")]
 unsafe extern "C" {}
 

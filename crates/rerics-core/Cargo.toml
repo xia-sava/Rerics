@@ -3,11 +3,6 @@ name = "rerics-core"
 version.workspace = true
 edition.workspace = true
 
-[features]
-# rar 読取（unrar crate＝vendored C++・要 cc/MSVC ビルド・既定 off）。
-# UnRAR は非free ライセンス（展開のみ許可）＝配布時は license 注記が要る。
-rar = ["dep:unrar"]
-
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 encoding_rs = "0.8.35"
@@ -25,4 +20,5 @@ flate2 = "1"
 bzip2 = "0.6"
 lzma-rust2 = { version = "0.16", features = ["xz"] }
 ruzstd = "0.8"
-unrar = { version = "0.5", optional = true }
+# rar 読取（vendored C++）。UnRAR は非free ライセンス（展開のみ許可）。
+unrar = "0.5"

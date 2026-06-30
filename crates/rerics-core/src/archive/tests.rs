@@ -1,6 +1,5 @@
     use super::zip_be::ZipBackend;
     use super::sevenz::SevenZBackend;
-    #[cfg(feature = "rar")]
     use super::rar::RarBackend;
     use super::*;
     use crate::Location;
@@ -336,8 +335,7 @@
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// rar 読取（`rar` feature 時のみ）。同梱フィクスチャ version.rar を一覧・読取する。
-    #[cfg(feature = "rar")]
+    /// rar 読取。同梱フィクスチャ version.rar を一覧・読取する。
     #[test]
     fn rar_list_and_read() {
         let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/version.rar");

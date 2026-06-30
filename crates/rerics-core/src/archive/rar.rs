@@ -2,15 +2,21 @@ use std::io;
 use std::path::{Path, PathBuf};
 use super::*;
 
-/// rar 書庫の読取バックエンド（`rar` feature・unrar crate＝vendored C++）。RAR は
-/// ヘッダ順次アクセスなので `random_access: false`（単体取り出しも先頭から走査する）。
-/// 書込みは不可。UnRAR は非free ライセンス（展開のみ許可）。
-#[cfg(feature = "rar")]
+// UnRAR source code may be used in any software to handle RAR archives without
+// limitations free of charge, but cannot be used to develop RAR (WinRAR) compatible
+// archiver and to re-create RAR compression algorithm, which is proprietary.
+// Distribution of modified UnRAR source code in separate form or as a part of other
+// software is permitted, provided that full text of this paragraph, starting from
+// "UnRAR source code" words, is included in license, or in documentation if license
+// is not available, and in source code comments of resulting package.
+
+/// rar 書庫の読取バックエンド（unrar crate＝vendored C++）。RAR はヘッダ順次アクセスなので
+/// `random_access: false`（単体取り出しも先頭から走査する）。書込みは不可。UnRAR は非free
+/// ライセンス（展開のみ許可）。
 pub struct RarBackend {
     path: PathBuf,
 }
 
-#[cfg(feature = "rar")]
 impl RarBackend {
     /// 一覧が取れることを確認して構築する（壊れた/未対応はここで弾く）。
     pub fn open(path: &Path) -> io::Result<Self> {
@@ -23,7 +29,6 @@ impl RarBackend {
     }
 }
 
-#[cfg(feature = "rar")]
 impl ArchiveBackend for RarBackend {
     fn caps(&self) -> Caps {
         Caps {
