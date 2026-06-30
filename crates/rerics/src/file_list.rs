@@ -1122,7 +1122,7 @@ impl FileListView {
                                         MediaKind::from_extension(&item.extension),
                                         Some(MediaKind::Image)
                                     );
-                                    cache.request_file(&full, mtime, thumb);
+                                    cache.request_file(&full, mtime, thumb, icon_px);
                                 }
                             }
                         if !drawn {

@@ -13,7 +13,7 @@ rar = ["rerics-core/rar"]
 [dependencies]
 rerics-core.workspace = true
 unicode-width = "0.2.2"
-windows = { version = "0.62.2", features = ["Win32_Media_MediaFoundation", "Win32_Foundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_Media_KernelStreaming", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62.2", features = ["Win32_Media_MediaFoundation", "Win32_Foundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_Media_KernelStreaming", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls"] }
 winsafe.workspace = true
 serde_json = "1"
 tiny_http = { version = "0.12", optional = true }

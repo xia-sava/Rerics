@@ -57,6 +57,28 @@ unsafe extern "system" {
     ) -> usize;
 }
 
+#[allow(non_snake_case, clippy::upper_case_acronyms)]
+#[repr(C)]
+struct ICONINFO {
+    fIcon: i32,
+    xHotspot: u32,
+    yHotspot: u32,
+    hbmMask: *mut c_void,
+    hbmColor: *mut c_void,
+}
+
+#[allow(non_snake_case, clippy::upper_case_acronyms)]
+#[repr(C)]
+struct BITMAP {
+    bmType: i32,
+    bmWidth: i32,
+    bmHeight: i32,
+    bmWidthBytes: i32,
+    bmPlanes: u16,
+    bmBitsPixel: u16,
+    bmBits: *mut c_void,
+}
+
 #[link(name = "user32")]
 unsafe extern "system" {
     fn DrawIconEx(
@@ -71,11 +93,25 @@ unsafe extern "system" {
         diFlags: u32,
     ) -> i32;
     fn DestroyIcon(hIcon: *mut c_void) -> i32;
+    fn GetIconInfo(hIcon: *mut c_void, piconinfo: *mut ICONINFO) -> i32;
     fn PostMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> i32;
 }
 
 #[link(name = "gdi32")]
 unsafe extern "system" {
+    fn GetObjectW(h: *mut c_void, c: i32, pv: *mut c_void) -> i32;
+    fn GetDIBits(
+        hdc: *mut c_void,
+        hbm: *mut c_void,
+        start: u32,
+        lines: u32,
+        lpvBits: *mut c_void,
+        lpbmi: *mut BITMAPINFOHEADER,
+        usage: u32,
+    ) -> i32;
+    fn CreateCompatibleDC(hdc: *mut c_void) -> *mut c_void;
+    fn DeleteDC(hdc: *mut c_void) -> i32;
+    fn DeleteObject(ho: *mut c_void) -> i32;
     fn StretchDIBits(
         hdc: *mut c_void,
         xDest: i32,
@@ -102,6 +138,11 @@ unsafe extern "system" {
 const SHGFI_ICON: u32 = 0x0000_0100;
 const SHGFI_USEFILEATTRIBUTES: u32 = 0x0000_0010;
 const SHGFI_ADDOVERLAYS: u32 = 0x0000_0020;
+const SHGFI_SYSICONINDEX: u32 = 0x0000_4000;
+
+/// この物理 px 以上で描くときは jumbo(256) のシェルアイコンを取り、余白をトリムして
+/// サムネイルとして描く（高DPI・サムネイル表示でくっきり）。下回るときは従来の大アイコン。
+const JUMBO_MIN_PX: i32 = 40;
 
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
 const FILE_ATTRIBUTE_NORMAL: u32 = 0x0000_0080;
@@ -176,12 +217,16 @@ struct Request {
     path: PathBuf,
     mtime: u64,
     thumb: bool,
+    /// jumbo(256) で取って余白トリムし、サムネとして描くか（大きく描くとき）。
+    jumbo: bool,
 }
 
 struct IconResult {
     path: PathBuf,
     mtime: u64,
     payload: Option<WorkerDrawable>,
+    /// jumbo として取得しようとしたか（成否によらず・再取得ループ防止の記録用）。
+    jumbo: bool,
 }
 
 /// 与えた疑似パス・属性からシステムアイコン（HICON）を1つ取得する。失敗で null。
@@ -228,11 +273,17 @@ fn worker_loop(rx: Receiver<Request>, tx: Sender<IconResult>, wake: isize) {
             make_thumb(&req.path)
         } else {
             let path_str = req.path.to_string_lossy();
-            let h = fetch_icon(&path_str, FILE_ATTRIBUTE_NORMAL, false, true);
-            if h.is_null() { None } else { Some(WorkerDrawable::Icon(SendIcon(h))) }
+            // 大きく描くときは jumbo(256) を余白トリムしてサムネ化（取れなければ大アイコン）。
+            req.jumbo
+                .then(|| fetch_jumbo_thumb(&path_str))
+                .flatten()
+                .or_else(|| {
+                    let h = fetch_icon(&path_str, FILE_ATTRIBUTE_NORMAL, false, true);
+                    (!h.is_null()).then_some(WorkerDrawable::Icon(SendIcon(h)))
+                })
         };
         if tx
-            .send(IconResult { path: req.path, mtime: req.mtime, payload })
+            .send(IconResult { path: req.path, mtime: req.mtime, payload, jumbo: req.jumbo })
             .is_err()
         {
             break;
@@ -255,6 +306,129 @@ fn make_thumb(path: &std::path::Path) -> Option<WorkerDrawable> {
     Some(WorkerDrawable::Thumb { w, h, bgra })
 }
 
+/// 実パスのシェルアイコンを jumbo(256) で取得し、透明余白をトリムした BGRA サムネとして返す。
+/// 取得・デコードに失敗したら None（呼び側は従来の大アイコンへ倒す）。
+fn fetch_jumbo_thumb(path: &str) -> Option<WorkerDrawable> {
+    use windows::Win32::UI::Controls::{IImageList, ILD_TRANSPARENT};
+    use windows::Win32::UI::Shell::{SHGetImageList, SHIL_JUMBO};
+
+    let wide: Vec<u16> = std::ffi::OsStr::new(path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut info = SHFILEINFOW {
+        hIcon: std::ptr::null_mut(),
+        iIcon: 0,
+        dwAttributes: 0,
+        szDisplayName: [0; 260],
+        szTypeName: [0; 80],
+    };
+    let rc = unsafe {
+        SHGetFileInfoW(
+            wide.as_ptr(),
+            FILE_ATTRIBUTE_NORMAL,
+            &mut info,
+            std::mem::size_of::<SHFILEINFOW>() as u32,
+            SHGFI_SYSICONINDEX,
+        )
+    };
+    if rc == 0 {
+        return None;
+    }
+    let hicon = unsafe {
+        let list: IImageList = SHGetImageList(SHIL_JUMBO as i32).ok()?;
+        list.GetIcon(info.iIcon, ILD_TRANSPARENT.0).ok()?
+    };
+    // 抽出後に DestroyIcon されるよう所有させる（早期 return でも Drop で確実に破棄）。
+    let owned = OwnedIcon(hicon.0);
+    let (w, h, bgra) = hicon_to_bgra(owned.0)?;
+    let (tw, th, trimmed) = trim_transparent(w, h, &bgra)?;
+    Some(WorkerDrawable::Thumb { w: tw, h: th, bgra: trimmed })
+}
+
+/// HICON を 32bpp トップダウン BGRA（アルファ込み）へ変換する。失敗で None。
+fn hicon_to_bgra(hicon: *mut c_void) -> Option<(u32, u32, Vec<u8>)> {
+    unsafe {
+        let mut ii: ICONINFO = std::mem::zeroed();
+        if GetIconInfo(hicon, &mut ii) == 0 {
+            return None;
+        }
+        let mut bm: BITMAP = std::mem::zeroed();
+        let got = GetObjectW(
+            ii.hbmColor,
+            std::mem::size_of::<BITMAP>() as i32,
+            &mut bm as *mut BITMAP as *mut c_void,
+        );
+        let (w, h) = (bm.bmWidth, bm.bmHeight);
+        let result = if got != 0 && w > 0 && h > 0 {
+            let mut bgra = vec![0u8; (w * h * 4) as usize];
+            let mut bi = BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: -h, // トップダウン
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: 0, // BI_RGB
+                biSizeImage: 0,
+                biXPelsPerMeter: 0,
+                biYPelsPerMeter: 0,
+                biClrUsed: 0,
+                biClrImportant: 0,
+            };
+            let dc = CreateCompatibleDC(std::ptr::null_mut());
+            let lines = GetDIBits(
+                dc,
+                ii.hbmColor,
+                0,
+                h as u32,
+                bgra.as_mut_ptr() as *mut c_void,
+                &mut bi,
+                DIB_RGB_COLORS,
+            );
+            DeleteDC(dc);
+            if lines != 0 { Some((w as u32, h as u32, bgra)) } else { None }
+        } else {
+            None
+        };
+        if !ii.hbmColor.is_null() {
+            DeleteObject(ii.hbmColor);
+        }
+        if !ii.hbmMask.is_null() {
+            DeleteObject(ii.hbmMask);
+        }
+        result
+    }
+}
+
+/// BGRA からアルファのある領域の外接矩形を求めて切り出す。全透明なら None。
+fn trim_transparent(w: u32, h: u32, bgra: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let (w, h) = (w as i32, h as i32);
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (w, h, -1, -1);
+    for y in 0..h {
+        for x in 0..w {
+            // ほぼ透明（境界のアンチエイリアス残り）は無視する。
+            if bgra[((y * w + x) * 4 + 3) as usize] > 8 {
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+    if max_x < min_x || max_y < min_y {
+        return None;
+    }
+    let (tw, th) = ((max_x - min_x + 1) as usize, (max_y - min_y + 1) as usize);
+    let row_bytes = tw * 4;
+    let mut out = vec![0u8; row_bytes * th];
+    for ty in 0..th {
+        let src = ((min_y as usize + ty) * w as usize + min_x as usize) * 4;
+        let dst = ty * row_bytes;
+        out[dst..dst + row_bytes].copy_from_slice(&bgra[src..src + row_bytes]);
+    }
+    Some((tw as u32, th as u32, out))
+}
+
 /// per-file キャッシュの上限エントリ数。超えたら使用の古い順に落とし、HICON やサムネイルの
 /// メモリ・GDI ハンドルを解放する（長時間の閲覧で無制限に膨らむのを防ぐ）。
 const PER_FILE_CAP: usize = 2048;
@@ -263,6 +437,8 @@ const PER_FILE_CAP: usize = 2048;
 struct FileEntry {
     mtime: u64,
     drawable: Option<Drawable>,
+    /// jumbo として取得しようとした結果か（標準アイコンを大表示へ上げ直す判定・再取得ループ防止）。
+    jumbo: bool,
     last_used: Cell<u64>,
 }
 
@@ -363,6 +539,11 @@ impl IconCache {
         let Some(drawable) = entry.drawable.as_ref() else {
             return false;
         };
+        // 大きく描くのに標準アイコンしか無く、まだ jumbo を試していなければ未解決扱いにして
+        // 上げ直させる（呼び側が汎用を描き jumbo を再依頼する）。jumbo 試行済みならそのまま使う。
+        if matches!(drawable, Drawable::Icon(_)) && dest.size >= JUMBO_MIN_PX && !entry.jumbo {
+            return false;
+        }
         entry.last_used.set(self.next_tick());
         let IconBox { x, y, size, .. } = dest;
         match drawable {
@@ -417,12 +598,18 @@ impl IconCache {
     }
 
     /// 実FSファイルの per-file アイコン/サムネ取得を依頼する（未取得・未解決のときのみ）。
-    pub fn request_file(&self, path: &std::path::Path, mtime: u64, thumb: bool) {
+    /// `size` は描画する物理 px で、大きければ jumbo として取得する。標準アイコンを既に持って
+    /// いても、大表示で jumbo 未取得なら取り直す（モード切替で上げ直す）。
+    pub fn request_file(&self, path: &std::path::Path, mtime: u64, thumb: bool, size: i32) {
+        let want_jumbo = !thumb && size >= JUMBO_MIN_PX;
         if let Some(entry) = self.per_file.borrow().get(path)
-            && entry.mtime == mtime {
-                entry.last_used.set(self.next_tick());
-                return; // 解決済み（成功/失敗どちらも）。
-            }
+            && entry.mtime == mtime
+            && (!want_jumbo || entry.jumbo)
+        {
+            // 解決済みで、要求する解像度クラス（標準/jumbo）も満たしている。
+            entry.last_used.set(self.next_tick());
+            return;
+        }
         if self.pending.borrow().contains(path) {
             return;
         }
@@ -431,7 +618,7 @@ impl IconCache {
             return;
         };
         if tx
-            .send(Request { path: path.to_path_buf(), mtime, thumb })
+            .send(Request { path: path.to_path_buf(), mtime, thumb, jumbo: want_jumbo })
             .is_ok()
         {
             self.pending.borrow_mut().insert(path.to_path_buf());
@@ -453,9 +640,10 @@ impl IconCache {
                 WorkerDrawable::Thumb { w, h, bgra } => Drawable::Thumb { w, h, bgra },
             });
             let last_used = Cell::new(self.next_tick());
-            self.per_file
-                .borrow_mut()
-                .insert(res.path, FileEntry { mtime: res.mtime, drawable, last_used });
+            self.per_file.borrow_mut().insert(
+                res.path,
+                FileEntry { mtime: res.mtime, drawable, jumbo: res.jumbo, last_used },
+            );
         }
         if any {
             self.enforce_cap();
@@ -509,7 +697,7 @@ mod tests {
             for i in 0..n {
                 map.insert(
                     PathBuf::from(format!("f{i}")),
-                    FileEntry { mtime: 0, drawable: None, last_used: Cell::new(i as u64) },
+                    FileEntry { mtime: 0, drawable: None, jumbo: false, last_used: Cell::new(i as u64) },
                 );
             }
         }
@@ -519,6 +707,27 @@ mod tests {
         // 最も新しい（last_used 大）エントリは残り、最も古いものは落ちる。
         assert!(map.contains_key(&PathBuf::from(format!("f{}", n - 1))), "最新は残る");
         assert!(!map.contains_key(&PathBuf::from("f0")), "最古は落ちる");
+    }
+
+    #[test]
+    fn trim_transparent_crops_to_opaque_bounds() {
+        // 4x4 のうち (1,1)-(2,2) の 2x2 だけ不透明（BGRA・アルファ 255）。
+        let (w, h) = (4u32, 4u32);
+        let mut bgra = vec![0u8; (w * h * 4) as usize];
+        for &(x, y) in &[(1u32, 1u32), (2, 1), (1, 2), (2, 2)] {
+            let i = ((y * w + x) * 4) as usize;
+            bgra[i..i + 4].copy_from_slice(&[10, 20, 30, 255]);
+        }
+        let (tw, th, out) = super::trim_transparent(w, h, &bgra).unwrap();
+        assert_eq!((tw, th), (2, 2), "不透明領域の外接矩形へ切り出す");
+        assert_eq!(out.len(), 2 * 2 * 4);
+        assert_eq!(&out[0..4], &[10, 20, 30, 255], "左上が元の不透明画素");
+    }
+
+    #[test]
+    fn trim_transparent_none_when_fully_transparent() {
+        let bgra = vec![0u8; 4 * 4 * 4];
+        assert!(super::trim_transparent(4, 4, &bgra).is_none(), "全透明は None");
     }
 
     #[test]
