@@ -144,8 +144,47 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         // modal_registry に登録済み＝開いて /snapshot/modal で撮れ、/modal/select・
         // /modal/command で行選択やボタン操作まで駆動できる（タスク自体は別スレッド継続）。
         OpenTaskManager => DebugCmdClass::MaybeModal,
+        // バージョン情報は読取専用モーダル（テキストボックス＋閉じる）。modal_registry に登録済み。
+        About => DebugCmdClass::MaybeModal,
         _ => DebugCmdClass::NonModal,
     }
+}
+
+/// バージョン情報ダイアログの本文。アプリ名・バージョン、UnRAR の利用条件、そして
+/// ビルド時に cargo-about が集めたサードパーティライセンス一覧を結合する。
+fn about_text() -> String {
+    // ビルド時に build.rs が OUT_DIR へ書き出す（CRLF 正規化済み）。
+    const LICENSES: &str = include_str!(concat!(env!("OUT_DIR"), "/licenses.txt"));
+    // UnRAR ライセンス第2項全文（"UnRAR source code" から始まる段落）。RAR 展開に unrar を
+    // 用いるため、その配布条件としてこの一文をドキュメント（本ダイアログ）へ掲示する。
+    const UNRAR_NOTICE: &str = "RAR 書庫の読み取りには UnRAR を利用しています。\r\n\r\n\
+        UnRAR source code may be used in any software to handle RAR archives without \
+        limitations free of charge, but cannot be used to develop RAR (WinRAR) compatible \
+        archiver and to re-create RAR compression algorithm, which is proprietary. \
+        Distribution of modified UnRAR source code in separate form or as a part of other \
+        software is permitted, provided that full text of this paragraph, starting from \
+        \"UnRAR source code\" words, is included in license, or in documentation if license \
+        is not available, and in source code comments of resulting package.";
+
+    let bar = "=".repeat(80);
+    format!(
+        "Rerics {ver}\r\n\
+         Windows ファイラ\r\n\
+         \r\n\
+         {bar}\r\n\
+         UnRAR\r\n\
+         {bar}\r\n\
+         {unrar}\r\n\
+         \r\n\
+         {bar}\r\n\
+         サードパーティライセンス\r\n\
+         {bar}\r\n\
+         \r\n\
+         {licenses}",
+        ver = env!("CARGO_PKG_VERSION"),
+        unrar = UNRAR_NOTICE,
+        licenses = LICENSES,
+    )
 }
 
 /// メッセージキューに溜まっている文字メッセージ（WM_CHAR/WM_SYSCHAR）を捨てる。キー押下で
@@ -1365,6 +1404,10 @@ impl MainWindow {
                 self.open_help();
                 return Ok(());
             }
+            Command::About => {
+                self.open_about();
+                return Ok(());
+            }
             Command::KeyBindsDialog => {
                 self.keybinds_dialog();
                 return Ok(());
@@ -1542,6 +1585,17 @@ impl MainWindow {
         {
             self.log.error("ヘルプをブラウザで開けませんでした");
         }
+    }
+
+    /// バージョンとサードパーティライセンス一覧のダイアログを開く。
+    fn open_about(&self) {
+        if self.in_dialog.get() {
+            return;
+        }
+        self.in_dialog.set(true);
+        dialog::about_box(&self.wnd, "Rerics について", &about_text());
+        self.in_dialog.set(false);
+        self.key_sink.hwnd().SetFocus();
     }
 
     fn wire_key_sink(&self) {

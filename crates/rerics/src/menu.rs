@@ -139,7 +139,12 @@ const MENUS: &[MenuDef] = &[
     },
     MenuDef {
         label: "ヘルプ(&H)",
-        items: &[on("スクリプトヘルプ(&S)", Command::OpenHelp), off("ヘルプ")],
+        items: &[
+            on("スクリプトヘルプ(&S)", Command::OpenHelp),
+            off("ヘルプ"),
+            SEP,
+            on("バージョン情報(&A)...", Command::About),
+        ],
     },
 ];
 

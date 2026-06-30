@@ -5341,3 +5341,31 @@ fn thumbnail_mode_toggles_active_pane_row_height() {
     assert_eq!(thumbnail("left"), "false", "再切替でサムネイル表示オフ");
     assert_eq!(item_height("left"), h0, "行高が元へ戻る");
 }
+
+/// バージョン情報（about）モーダルが、アプリ名＋バージョン、UnRAR の利用条件、そして
+/// ビルド時に集めたサードパーティライセンス一覧を載せて開き、debug-server から観測・クローズ
+/// できることを検証する。
+#[test]
+fn about_dialog_shows_version_and_licenses() {
+    let server = Server::start(&["a.txt"], "");
+
+    let (st, _) = server.req("POST", "/command/about", "").expect("about command");
+    assert_eq!(st, 200, "about は読取専用モーダルなので実行できる");
+
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"about\""), "about モーダルが出る: {}", &modal[..modal.len().min(200)]);
+    assert!(modal.contains("Rerics について"), "ダイアログのタイトル");
+    assert!(
+        modal.contains(&format!("Rerics {}", env!("CARGO_PKG_VERSION"))),
+        "アプリ名とバージョンが載る"
+    );
+    // UnRAR ライセンス第2項（配布条件として掲示が要る一文）。
+    assert!(modal.contains("UnRAR source code"), "UnRAR の利用条件が載る");
+    // cargo-about が集めた一覧の代表（依存に必ず居る Apache-2.0 / MIT の見出し）。
+    assert!(modal.contains("Apache License"), "サードパーティライセンス一覧が載る");
+
+    // モーダルは debug-server から閉じられる（「閉じる」ボタン＝ctrl_id 1）。
+    server.req("POST", "/modal/command/ok", "").expect("close about");
+    let after = poll(&server, "/state/modal", |b| b.trim() == "null");
+    assert_eq!(after.trim(), "null", "閉じるボタンで閉じられる");
+}

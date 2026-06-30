@@ -21,6 +21,7 @@ mod find;
 mod sort;
 mod rename;
 mod list;
+mod about;
 pub use message::message_box;
 pub use input::{
     code_box, command_box, completion_members, input_box, input_box_full, input_box_select,
@@ -35,6 +36,7 @@ pub use find::find_file_box;
 pub use sort::sort_box;
 pub use rename::rename_box;
 pub use list::list_box;
+pub use about::about_box;
 
 #[allow(non_snake_case)]
 mod ffi {
