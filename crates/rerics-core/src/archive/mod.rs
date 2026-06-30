@@ -259,9 +259,7 @@ fn wrap_comp<R: io::Read + 'static>(r: R, comp: Comp) -> io::Result<Box<dyn io::
         Comp::Gz => Box::new(flate2::read::GzDecoder::new(r)),
         Comp::Bz2 => Box::new(bzip2::read::BzDecoder::new(r)),
         Comp::Xz => Box::new(lzma_rust2::XzReader::new(r, true)),
-        Comp::Zstd => {
-            Box::new(ruzstd::decoding::StreamingDecoder::new(r).map_err(io::Error::other)?)
-        }
+        Comp::Zstd => Box::new(zstd::Decoder::new(r)?),
     })
 }
 

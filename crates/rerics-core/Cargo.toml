@@ -20,6 +20,7 @@ tar = "0.4"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 bzip2 = "0.6"
 lzma-rust2 = { version = "0.16", features = ["xz"] }
-ruzstd = "0.8"
+# zstd 復号は本家 libzstd（zstd-sys＝cc ビルド・純Rust の ruzstd より大幅に速い）。
+zstd = "0.13"
 # rar 読取（vendored C++）。UnRAR は非free ライセンス（展開のみ許可）。
 unrar = "0.5"
