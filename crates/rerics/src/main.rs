@@ -1093,10 +1093,7 @@ impl MainWindow {
             }
             Command::SetCursorPosition => {
                 if let Some(name) = args.str(0) {
-                    let mut s = state.borrow_mut();
-                    if let Some(idx) = s.items.iter().position(|it| it.name == name) {
-                        s.set_cursor(idx as isize, pr);
-                    }
+                    state.borrow_mut().set_cursor_position(name, pr);
                 }
             }
             Command::SetCursorIndex => {
