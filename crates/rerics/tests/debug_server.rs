@@ -714,6 +714,53 @@ fn ask_before_copy_confirms() {
     assert!(items.contains("\"name\":\"a.txt\""), "cancel leaves the file: {items}");
 }
 
+/// ファイル移動後の再読込でカーソル位置を保つ（先頭へリセットしない）。shellMove と同じ
+/// `refresh_side` 経路を通る内蔵 move で検証する（シェル操作自体はモーダルがシェル所有で観測不可）。
+#[test]
+fn move_keeps_cursor_position() {
+    let server = Server::start_dirs_writable(
+        &[("a.txt", b"a"), ("b.txt", b"b"), ("c.txt", b"c")],
+        &[],
+    );
+    // 左 items = [.., a.txt, b.txt, c.txt]。cursorDown×2 で b.txt（index 2）へ。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    let before = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(before.trim(), "2", "移動前カーソルは b.txt（index 2）");
+    // b.txt を右へ移動。完了で左から b.txt が消える。
+    server.req("POST", "/command/move", "").unwrap();
+    poll(&server, "/state/panes/left/items", |b| !b.contains("\"name\":\"b.txt\""));
+    // 左 items = [.., a.txt, c.txt]。カーソルは元の index 2 付近＝c.txt を保つ（0 に戻らない）。
+    let after = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(after.trim(), "2", "移動後もカーソル位置を保つ（先頭リセットしない）: {after}");
+}
+
+/// 移動先ペインのカーソルは名前で追わず行位置（index）で保つ。移動で抜けたファイルが同じ位置へ
+/// 戻ってきても、カーソルは元の index に留まる＝戻ってきたファイルの上に乗る（1つ下にズレない）。
+#[test]
+fn move_back_keeps_cursor_by_index() {
+    let server = Server::start_dirs_writable(
+        &[("a.txt", b"a"), ("b.txt", b"b"), ("c.txt", b"c")],
+        &[],
+    );
+    // 左 items = [.., a.txt, b.txt, c.txt]。cursorDown×2 で b.txt（index 2）。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    // b.txt を右へ移動。左は [.., a.txt, c.txt]、カーソルは index 2（c.txt）。
+    server.req("POST", "/command/move", "").unwrap();
+    poll(&server, "/state/panes/left/items", |b| !b.contains("\"name\":\"b.txt\""));
+    // 右へ移り、移ってきた b.txt にカーソルを合わせて左へ戻す。
+    server.req("POST", "/command/focusRight", "").unwrap();
+    poll(&server, "/state/panes/right/items", |b| b.contains("\"name\":\"b.txt\""));
+    server.req("POST", "/command/cursorDown", "").unwrap(); // 右 [.., b.txt] の b.txt へ
+    server.req("POST", "/command/move", "").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"b.txt\""));
+    // 左 items = [.., a.txt, b.txt, c.txt]。カーソルは index 2 を保つ＝戻った b.txt に乗る
+    // （名前で c.txt を追って index 3 へズレない）。
+    let cur = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(cur.trim(), "2", "移動先は位置で保つ＝戻ったファイルに乗る（1つ下にズレない）: {cur}");
+}
+
 /// ask_before_delete=false のとき、delete は確認モーダルを出さず即削除する。
 #[test]
 fn ask_before_delete_off_skips_confirm() {
@@ -1025,6 +1072,30 @@ fn path_mask_dialog_delegates_filter_and_clear() {
     server.req("POST", "/modal/text", "*").unwrap();
     server.req("POST", "/modal/key/enter", "").unwrap();
     poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"b.dat\""));
+}
+
+/// パスマスクの絞り込み→解除ではファイルセットが変わらないので、カーソルは位置でなく
+/// ファイル名で保つ＝解除後も同じファイルに残る（先頭へリセットしない）。
+#[test]
+fn path_mask_keeps_cursor_on_file() {
+    let server = Server::start(&["a.txt", "b.txt", "c.txt", "d.txt"], "");
+    // items = [.., a.txt, b.txt, c.txt, d.txt]。cursorDown×3 で c.txt（index 3）。
+    for _ in 0..3 {
+        server.req("POST", "/command/cursorDown", "").unwrap();
+    }
+    assert_eq!(
+        server.req("GET", "/state/panes/left/cursor", "").unwrap().1.trim(),
+        "3",
+        "マスク前カーソルは c.txt（index 3）"
+    );
+    // "c*" で c.txt だけに絞ってから解除する。
+    server.req("POST", "/script/eval", r#"rerics.pathMask("c*")"#).unwrap();
+    poll(&server, "/state/panes/left/items", |b| !b.contains("\"name\":\"b.txt\""));
+    server.req("POST", "/script/eval", r#"rerics.pathMask("*")"#).unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"b.txt\""));
+    // 解除後、カーソルは同じ c.txt（index 3）に残る（0 へ戻らない・名前で保つ）。
+    let cur = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(cur.trim(), "3", "マスク解除でカーソルは同じ c.txt に残る: {cur}");
 }
 
 /// compareDialog＝比較方法の list_box モーダルで選んだ条件を no-UI 版 `r.compare` へ委譲して

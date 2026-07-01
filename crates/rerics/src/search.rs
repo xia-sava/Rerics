@@ -163,12 +163,18 @@ impl MainWindow {
 
     /// その場のリフレッシュ（ファイル操作後・リネーム後など）。結果一覧モードなら元の検索／
     /// 比較を再実行して一覧を作り直し（結果モードを保つ）、そうでなければ通常の同期再読込。
-    /// 親移動・項目を開く等の「離脱」操作は従来どおり [`reload_side`](Self::reload_side) 系を使う。
+    /// カーソルは `focus` 指定があればその名へ寄せ、無ければ元の行位置（index）を保つ。名前では
+    /// 追わないので、移動先へ項目が挿入されてもカーソルは同じ位置に留まる。親移動・項目を開く等の
+    /// 「離脱」操作は従来どおり [`reload_side`](Self::reload_side) 系を使う。
     pub(crate) fn refresh_side(&self, is_left: bool, focus: Option<&str>) -> w::AnyResult<()> {
         if self.view(is_left).state().borrow().find_result && self.research_side(is_left, focus) {
             return Ok(());
         }
-        self.reload_side_now(is_left, crate::ReloadCursor::Reset)
+        let mode = match focus {
+            Some(name) => crate::ReloadCursor::Focus { name: name.to_owned(), center: false },
+            None => crate::ReloadCursor::KeepIndex,
+        };
+        self.reload_side_now(is_left, mode)
     }
 
     /// 覚えている検索／比較条件を**非同期で**再実行し、結果一覧を作り直す。条件が無ければ

@@ -933,8 +933,8 @@ impl MainWindow {
             Ok(false) => self.log.info(&format!("{label}を中止しました。")),
             Err(e) => self.log.error(&format!("{label}に失敗しました: {e}")),
         }
-        self.reload_side(is_left)?;
-        self.reload_side(!is_left)?;
+        self.refresh_side(is_left, None)?;
+        self.refresh_side(!is_left, None)?;
         Ok(())
     }
 
@@ -956,7 +956,7 @@ impl MainWindow {
             Ok(false) => self.log.info("シェル削除を中止しました。"),
             Err(e) => self.log.error(&format!("シェル削除に失敗しました: {e}")),
         }
-        self.reload_side(is_left)?;
+        self.refresh_side(is_left, None)?;
         Ok(())
     }
 
