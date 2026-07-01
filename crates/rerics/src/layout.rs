@@ -110,36 +110,47 @@ impl MainWindow {
         self.layout()
     }
 
-    /// 境界を `delta`（物理px・左ペインが正で広がる）だけ動かす。中央（50%）を
-    /// またぐ移動は中央へ吸着させる。
+    /// 境界を `delta`（物理px・左ペインが正で広がる）だけ動かす。中央（50%）をまたぐ移動は
+    /// 中央へ吸着し、またがない移動は各ペインが最大化余白（`maximize_margin`）を保つ位置で
+    /// 止める。中央へ戻る移動は最大化状態を解除し、中央からズレる移動は最大化状態にする。
+    /// 端で動けないときは何もしない（状態も変えない）。
     pub(crate) fn border_move(&self, delta: i32) -> w::AnyResult<()> {
         let pt = self.panes_total()?;
-        let cur_left = (pt as f64 * self.split_ratio.get()).round() as i32;
-        let next = snap_to_center(cur_left, cur_left + delta, pt / 2);
+        let edge = gui::dpi_x(self.config.borrow().layout.maximize_margin).min(pt / 2);
+        let center = pt / 2;
+        let cur = (pt as f64 * self.split_ratio.get()).round() as i32;
+        let (next, crossed) = border_target(cur, cur + delta, center, pt, edge);
+        if next == cur {
+            return Ok(());
+        }
+        self.maximized.set(!crossed);
         self.set_left_width(next)
     }
 }
 
-/// 左ペイン幅 `cur` から `next` への移動が中央 `center` をまたぐとき、中央へ吸着させる。
-/// またがない移動はそのまま `next` を返す（中央ちょうどからは外へ出られる）。
-fn snap_to_center(cur: i32, next: i32, center: i32) -> i32 {
-    if (cur < center && next > center) || (cur > center && next < center) {
-        center
-    } else {
-        next
-    }
+/// 境界移動の着地点と、中央 `center` をまたいだか（`crossed`）を返す。またぐ移動は中央へ
+/// 吸着させ、またがない移動は各ペインが `edge`（最大化余白）を残す `[edge, total-edge]` へ
+/// クランプする。`crossed`＝中央へ戻る＝最大化解除、非またぎ＝中央からズレる＝最大化、の判定に使う。
+fn border_target(cur: i32, raw: i32, center: i32, total: i32, edge: i32) -> (i32, bool) {
+    let crossed = (cur < center && raw > center) || (cur > center && raw < center);
+    let next = if crossed { center } else { raw.clamp(edge, total - edge) };
+    (next, crossed)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::snap_to_center;
+    use super::border_target;
 
     #[test]
-    fn center_snap_catches_only_crossing() {
-        assert_eq!(snap_to_center(40, 60, 50), 50); // 左→右でまたぐ
-        assert_eq!(snap_to_center(60, 40, 50), 50); // 右→左でまたぐ
-        assert_eq!(snap_to_center(40, 48, 50), 48); // またがない
-        assert_eq!(snap_to_center(50, 70, 50), 70); // 中央からは外へ出られる
-        assert_eq!(snap_to_center(80, 60, 50), 60); // 同じ側の移動はそのまま
+    fn border_target_snaps_center_and_reports_crossing() {
+        // 中央(50)をまたぐ移動は中央へ吸着し crossed=true（＝最大化解除側）。
+        assert_eq!(border_target(40, 60, 50, 100, 20), (50, true)); // 左→右でまたぐ
+        assert_eq!(border_target(60, 40, 50, 100, 20), (50, true)); // 右→左でまたぐ
+        // またがない移動はそのまま・crossed=false（＝最大化側）。
+        assert_eq!(border_target(40, 45, 50, 100, 20), (45, false));
+        assert_eq!(border_target(50, 70, 50, 100, 20), (70, false)); // 中央からは外へ出られる
+        // 端（edge=20 → [20,80]）でクランプする。
+        assert_eq!(border_target(30, 10, 50, 100, 20), (20, false)); // 左端で止まる
+        assert_eq!(border_target(70, 95, 50, 100, 20), (80, false)); // 右端で止まる
     }
 }
