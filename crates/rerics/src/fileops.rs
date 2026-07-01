@@ -912,7 +912,8 @@ impl MainWindow {
                 self.log.error(&messages::send_to_recycled_failure(name, &e));
             }
         }
-        self.reload_side(is_left)?;
+        // 削除系はファイルセットが変わるので、カーソルは位置（index）で保つ（Delete と揃える）。
+        self.refresh_side(is_left, None)?;
         Ok(())
     }
 
