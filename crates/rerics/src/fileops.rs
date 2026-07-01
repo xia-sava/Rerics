@@ -32,8 +32,19 @@ impl MainWindow {
         }
         // 実処理は no-UI 版の正本 script_create_directory へ委譲する（作成・ログ・一覧更新は
         // そちらが行う）。失敗時はログに加えてダイアログでも報せる。
-        if let Err(line) = self.script_create_directory(name) {
-            dialog::message_box(&self.wnd, "ディレクトリの作成", &line, dialog::MessageStyle::Error);
+        match self.script_create_directory(name) {
+            Ok(dir) => {
+                // 設定が有効なら、作成した新ディレクトリへ入る（原作 CreateDirectoryAndMove 相当）。
+                if self.config.borrow().cursor.create_directory_and_move {
+                    self.remember_cursor_for_nav(is_left);
+                    if self.pane(is_left).borrow_mut().navigate(Location::parse(&dir)) {
+                        self.reload_side_navigated(is_left)?;
+                    }
+                }
+            }
+            Err(line) => {
+                dialog::message_box(&self.wnd, "ディレクトリの作成", &line, dialog::MessageStyle::Error);
+            }
         }
         Ok(())
     }
