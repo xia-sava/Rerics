@@ -374,14 +374,14 @@ impl MainWindow {
     pub(crate) fn incremental_search(&self, is_left: bool) -> w::AnyResult<()> {
         let origin = self.view(is_left).state().borrow().cursor;
 
-        let (wnd, arm) = crate::dialog::modal_window("インクリメンタルサーチ", 320, 96);
+        let (wnd, arm) = crate::dialog::modal_window("インクリメンタルサーチ", 360, 96);
 
         let _label = gui::Label::new(
             &wnd,
             gui::LabelOpts {
-                text: "検索文字（打鍵でカーソルが追従）:",
+                text: "検索文字（打鍵で追従・Enter で次の一致）:",
                 position: gui::dpi(12, 10),
-                size: gui::dpi(296, 16),
+                size: gui::dpi(336, 16),
                 ..Default::default()
             },
         );
@@ -397,14 +397,37 @@ impl MainWindow {
             },
         );
 
+        let prev = gui::Button::new(
+            &wnd,
+            gui::ButtonOpts {
+                text: "前(&P)",
+                ctrl_id: 4,
+                position: gui::dpi(12, 60),
+                width: gui::dpi_x(64),
+                height: gui::dpi_y(24),
+                ..Default::default()
+            },
+        );
+
+        let next = gui::Button::new(
+            &wnd,
+            gui::ButtonOpts {
+                text: "次(&N)",
+                ctrl_id: 3,
+                position: gui::dpi(80, 60),
+                width: gui::dpi_x(64),
+                height: gui::dpi_y(24),
+                ..Default::default()
+            },
+        );
+
         let ok = gui::Button::new(
             &wnd,
             gui::ButtonOpts {
                 text: "OK",
-                control_style: co::BS::DEFPUSHBUTTON,
                 ctrl_id: 1,
-                position: gui::dpi(150, 60),
-                width: gui::dpi_x(76),
+                position: gui::dpi(200, 60),
+                width: gui::dpi_x(68),
                 height: gui::dpi_y(24),
                 ..Default::default()
             },
@@ -415,8 +438,8 @@ impl MainWindow {
             gui::ButtonOpts {
                 text: "中止(&S)",
                 ctrl_id: 2,
-                position: gui::dpi(232, 60),
-                width: gui::dpi_x(76),
+                position: gui::dpi(272, 60),
+                width: gui::dpi_x(68),
                 height: gui::dpi_y(24),
                 ..Default::default()
             },
@@ -433,13 +456,38 @@ impl MainWindow {
             });
         }
 
+        // 次／前の一致へ（原作 Next/Previous）。現在の検索文字で現在行の次（前）から探す。
+        {
+            let this = self.clone();
+            let edit2 = edit.clone();
+            next.on().bn_clicked(move || {
+                let q = edit2.text().unwrap_or_default();
+                this.incremental_step(is_left, &q, true);
+                Ok(())
+            });
+        }
+        {
+            let this = self.clone();
+            let edit2 = edit.clone();
+            prev.on().bn_clicked(move || {
+                let q = edit2.text().unwrap_or_default();
+                this.incremental_step(is_left, &q, false);
+                Ok(())
+            });
+        }
+
         #[cfg(feature = "debug-server")]
         arm.plain(
             "incremental",
             "インクリメンタルサーチ",
             "",
             true,
-            vec![("OK".to_string(), 1u16), ("中止(&S)".to_string(), 2u16)],
+            vec![
+                ("前(&P)".to_string(), 4u16),
+                ("次(&N)".to_string(), 3u16),
+                ("OK".to_string(), 1u16),
+                ("中止(&S)".to_string(), 2u16),
+            ],
         );
         {
             let edit2 = edit.clone();
@@ -468,27 +516,53 @@ impl MainWindow {
         }
 
         let _ = wnd.show_modal(&self.wnd);
-        let _ = (edit, ok, cancel);
+        let _ = (edit, prev, next, ok, cancel);
         Ok(())
     }
 
     /// インクリメンタルサーチの1打鍵分：先頭から `query` の一致を探してカーソル移動。
     pub(crate) fn incremental_apply(&self, is_left: bool, query: &str) {
+        self.incremental_move(is_left, 0, query, true);
+    }
+
+    /// `from` から `forward` 方向へ `query`（部分一致・大小無視）の一致を探し、見つかれば
+    /// カーソルとアンカー(`select_start`)をそこへ移して中央寄せする。原作 IncrementalSearch の
+    /// 一致時挙動（`SelectedIndex`＋`SelectStart` 設定＋`CenterCursor`）に合わせる。折り返さない。
+    pub(crate) fn incremental_move(&self, is_left: bool, from: usize, query: &str, forward: bool) -> bool {
         let view = self.view(is_left);
         let pr = view.page_rows();
         let found = {
             let state = view.state();
             let s = state.borrow();
-            rerics_core::find_match(&s.items, 0, query, true, false)
+            rerics_core::find_match(&s.items, from, query, forward, false)
         };
         if let Some(i) = found {
             {
                 let state = view.state();
                 let mut s = state.borrow_mut();
                 s.set_cursor(i as isize, pr);
+                s.select_start = i;
                 s.center_cursor(pr);
             }
             let _ = view.refresh();
+        }
+        found.is_some()
+    }
+
+    /// Enter＝次の一致・Shift+Enter＝前の一致（原作 TextChange の Next/Previous）。現在行の
+    /// 次（前）から探索し、折り返さない。
+    fn incremental_step(&self, is_left: bool, query: &str, forward: bool) {
+        let (cursor, count) = {
+            let s = self.view(is_left).state();
+            let s = s.borrow();
+            (s.cursor, s.count())
+        };
+        if forward {
+            if cursor + 1 < count {
+                self.incremental_move(is_left, cursor + 1, query, true);
+            }
+        } else if cursor > 0 {
+            self.incremental_move(is_left, cursor - 1, query, false);
         }
     }
 

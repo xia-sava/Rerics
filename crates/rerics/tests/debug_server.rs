@@ -1698,6 +1698,37 @@ fn find_incremental_search_cancel_restores() {
     assert_eq!(c.trim(), "1", "cancel should restore the original cursor: {c}");
 }
 
+/// incrementalSearchDialog の「次(&N)」＝次の一致・「前(&P)」＝前の一致（原作 Next/Previous）。
+/// 打鍵は先頭から追従、次は現在行の次から前方・折り返さない。ボタン id は 次=3・前=4。
+#[test]
+fn find_incremental_search_steps_matches() {
+    let server = Server::start(&["a1.txt", "a2.txt", "b.txt"], "");
+    // items は [.., a1(1), a2(2), b(3)]。
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
+    wait_modal(&server);
+
+    // "a" で先頭一致 a1(1) へ追従。
+    server.req("POST", "/modal/text", "a").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+
+    // 「次」＝次の一致 a2(2) へ。
+    server.req("POST", "/modal/command/3", "").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
+
+    // さらに「次」：次の "a" 一致は無く、折り返さないので 2 のまま。
+    server.req("POST", "/modal/command/3", "").unwrap();
+    let c = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(c.trim(), "2", "no wrap: cursor stays at the last match: {c}");
+
+    // 「前」＝前の一致 a1(1) へ。
+    server.req("POST", "/modal/command/4", "").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+    let c2 = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(c2.trim(), "1", "prev steps to the previous match: {c2}");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
 /// 検索結果一覧のビューア：基準直下ではなくサブフォルダ（項目の出自）にある実ファイルを開く。
 /// 出自を見ずに基準直下を引くと「開けません」になるので、ここで出自解決の回帰を防ぐ。
 #[test]
