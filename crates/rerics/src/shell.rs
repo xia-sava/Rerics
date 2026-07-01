@@ -458,6 +458,33 @@ pub fn create_shortcut(target: &Path, lnk: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// `.lnk` ショートカットのリンク先パスを解決して返す（取得できなければ `None`）。
+/// リンク先が存在するかは検証しない（呼び側が用途に応じて判断する）。
+pub fn resolve_shortcut(lnk: &Path) -> Option<PathBuf> {
+    use windows::Win32::System::Com::{
+        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+        IPersistFile, STGM_READ,
+    };
+    use windows::Win32::UI::Shell::{IShellLinkW, SLGP_RAWPATH, ShellLink};
+    use windows::core::{Interface, PCWSTR};
+
+    let lnk_w = wide(lnk);
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
+        let persist: IPersistFile = link.cast().ok()?;
+        persist.Load(PCWSTR(lnk_w.as_ptr()), STGM_READ).ok()?;
+        let mut buf = [0u16; 260];
+        link.GetPath(&mut buf, std::ptr::null_mut(), SLGP_RAWPATH.0 as u32)
+            .ok()?;
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        if len == 0 {
+            return None;
+        }
+        Some(PathBuf::from(String::from_utf16_lossy(&buf[..len])))
+    }
+}
+
 /// シェル（`IFileOperation`）操作の共通処理。COM を初期化して `IFileOperation` を作り、`queue`
 /// で対象を積み、`PerformOperations` で実行する。Explorer 純正の進捗・衝突・確認ダイアログが出て、
 /// 完了（または中止）までブロックする。中止されず完了で `Ok(true)`、ユーザー中止で `Ok(false)`、

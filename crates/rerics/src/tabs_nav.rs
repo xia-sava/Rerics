@@ -156,6 +156,7 @@ impl MainWindow {
             }
             // 開く対象の実パスを得る（書庫内は一時展開してから関連付け起動）。
             let loc = self.pane(is_left).borrow().loc().clone();
+            let src_is_real = matches!(&loc, Location::Real(_));
             let path = match loc {
                 Location::Real(dir) => dir.join(&name),
                 Location::Archive { archive, inner } => {
@@ -171,13 +172,40 @@ impl MainWindow {
                     }
                 }
             };
-            if let Err(e) =
-                self.wnd
-                    .hwnd()
-                    .ShellExecute("open", &path.to_string_lossy(), None, None, co::SW::SHOWNORMAL)
+            // ショートカット（.lnk）がフォルダを指すなら、開かずにその中へ入る（原作 ExecuteShortCut 相当）。
+            if src_is_real
+                && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk"))
+                && let Some(target) = crate::shell::resolve_shortcut(&path)
+                && target.is_dir()
             {
-                self.log
-                    .error(&format!("ファイルを開けません: {}: {}", name, e));
+                if self.pane(is_left).borrow_mut().navigate(Location::Real(target)) {
+                    self.reload_side_navigated(is_left)?;
+                }
+                return Ok(());
+            }
+            // 関連付けで開く。開けたら設定に応じてカーソルを1つ下へ（原作 DownAfterViewer 相当）。
+            match self
+                .wnd
+                .hwnd()
+                .ShellExecute("open", &path.to_string_lossy(), None, None, co::SW::SHOWNORMAL)
+            {
+                Ok(_) => {
+                    if self.config.borrow().cursor.down_after_viewer {
+                        let view = self.view(is_left);
+                        let pr = view.page_rows();
+                        let state = view.state();
+                        {
+                            let mut s = state.borrow_mut();
+                            let c = s.cursor as isize;
+                            s.move_cursor(c + 1, pr, false);
+                        }
+                        let _ = view.refresh();
+                    }
+                }
+                Err(e) => {
+                    self.log
+                        .error(&format!("ファイルを開けません: {}: {}", name, e));
+                }
             }
         }
         Ok(())
