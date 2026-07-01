@@ -379,7 +379,7 @@ impl MainWindow {
         let _label = gui::Label::new(
             &wnd,
             gui::LabelOpts {
-                text: "検索文字（打鍵で追従・Enter で次の一致）:",
+                text: "検索文字（打鍵で追従・↑↓で前後の一致・Enter で確定）:",
                 position: gui::dpi(12, 10),
                 size: gui::dpi(336, 16),
                 ..Default::default()
@@ -490,9 +490,23 @@ impl MainWindow {
             ],
         );
         {
+            let this = self.clone();
             let edit2 = edit.clone();
-            arm.on_create(move |_| {
+            arm.on_create(move |hwnd| {
                 edit2.hwnd().SetFocus();
+                let this = this.clone();
+                let edit3 = edit2.clone();
+                crate::dialog::keyhook::push(hwnd, move |msg, wparam| {
+                    use crate::dialog::keyhook::WM_KEYDOWN;
+                    let vk = wparam as u16;
+                    // Up=前の一致・Down=次の一致（原作 Previous/Next）。
+                    if msg == WM_KEYDOWN && (vk == 0x26 || vk == 0x28) {
+                        let q = edit3.text().unwrap_or_default();
+                        this.incremental_step(is_left, &q, vk == 0x28);
+                        return true;
+                    }
+                    false
+                });
                 Ok(())
             });
         }
@@ -516,6 +530,7 @@ impl MainWindow {
         }
 
         let _ = wnd.show_modal(&self.wnd);
+        crate::dialog::keyhook::pop();
         let _ = (edit, prev, next, ok, cancel);
         Ok(())
     }
@@ -549,8 +564,8 @@ impl MainWindow {
         found.is_some()
     }
 
-    /// Enter＝次の一致・Shift+Enter＝前の一致（原作 TextChange の Next/Previous）。現在行の
-    /// 次（前）から探索し、折り返さない。
+    /// 次／前の一致へ移動する（↑↓・「次(&N)」/「前(&P)」ボタン）。現在行の次（前）から探索し、
+    /// 折り返さない。
     fn incremental_step(&self, is_left: bool, query: &str, forward: bool) {
         let (cursor, count) = {
             let s = self.view(is_left).state();

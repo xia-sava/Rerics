@@ -5543,3 +5543,48 @@ fn about_dialog_shows_version_and_licenses() {
     let after = poll(&server, "/state/modal", |b| b.trim() == "null");
     assert_eq!(after.trim(), "null", "閉じるボタンで閉じられる");
 }
+
+/// インクリメンタルサーチ入力欄で ↑↓ が前／次の一致へカーソルを動かし（端では折り返さない）、
+/// Enter で一致位置を残して確定する。原作の手触り（Up=前・Down=次）の回帰防止。
+#[test]
+fn incremental_search_arrows_step_between_matches() {
+    let server =
+        Server::start(&["match_a.txt", "match_b.txt", "match_c.txt", "other.txt"], "");
+
+    // items は [.., match_a, match_b, match_c, other]＝一致は index 1..=3。
+    let wait_cursor = |val: &str| {
+        let got = poll(&server, "/state/panes/left/cursor", |b| b.trim() == val);
+        assert_eq!(got.trim(), val, "カーソルが index {val} に来る");
+    };
+
+    server
+        .req("POST", "/command/incrementalSearchDialog", "")
+        .expect("open incremental search");
+    wait_modal(&server);
+
+    // "match" 入力で先頭の一致（match_a＝index 1）へ追従する。
+    server.req("POST", "/modal/text", "match").expect("set query");
+    wait_cursor("1");
+
+    // Down＝次の一致（b→c）、最後の一致では動かない。
+    server.req("POST", "/modal/key/down", "").expect("down");
+    wait_cursor("2");
+    server.req("POST", "/modal/key/down", "").expect("down");
+    wait_cursor("3");
+    server.req("POST", "/modal/key/down", "").expect("down");
+    wait_cursor("3");
+
+    // Up＝前の一致（b→a）、先頭の一致では動かない。
+    server.req("POST", "/modal/key/up", "").expect("up");
+    wait_cursor("2");
+    server.req("POST", "/modal/key/up", "").expect("up");
+    wait_cursor("1");
+    server.req("POST", "/modal/key/up", "").expect("up");
+    wait_cursor("1");
+
+    // Enter＝確定：一致位置（match_a＝1）を残してモーダルを閉じる。
+    server.req("POST", "/modal/key/enter", "").expect("enter");
+    let after = poll(&server, "/state/modal", |b| b.trim() == "null");
+    assert_eq!(after.trim(), "null", "Enter で確定して閉じる");
+    wait_cursor("1");
+}
