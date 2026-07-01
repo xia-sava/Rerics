@@ -356,11 +356,13 @@ fn build_stored_zip(path: &Path, entries: &[(&str, &[u8])]) {
     std::fs::write(path, &out).unwrap();
 }
 
-/// `path` を GET し続け、`pred(body)` が真になるまで待つ（最大 ~5 秒）。ワーカ完了や
+/// `path` を GET し続け、`pred(body)` が真になるまで待つ（最大 ~15 秒）。ワーカ完了や
 /// モーダル出現など非同期な状態変化を待つのに使う。最後に観測した body を返す。
+/// 条件成立で即返すので緑のテストの速度には影響せず、上限は過飽和・コールドスタート時の
+/// 誤タイムアウトを防ぐための余裕。
 fn poll<F: Fn(&str) -> bool>(server: &Server, path: &str, pred: F) -> String {
     let mut last = String::new();
-    for _ in 0..50 {
+    for _ in 0..150 {
         if let Some((_, body)) = server.req("GET", path, "") {
             if pred(&body) {
                 return body;
