@@ -1253,9 +1253,12 @@ impl MainWindow {
             Command::SortBySize => self.sort_active(is_left, SortType::Length, false),
             Command::SortByDate => self.sort_active(is_left, SortType::LastWriteTime, false),
             Command::Sort => {
-                if let Some(t) = args.str(0).and_then(SortType::from_token) {
-                    self.sort_active(is_left, t, false);
-                }
+                // 種別指定が無い/不正なら config の既定ソートに従う（原作準拠）。
+                let t = args
+                    .str(0)
+                    .and_then(SortType::from_token)
+                    .unwrap_or_else(|| self.config.borrow().default_sort);
+                self.sort_active(is_left, t, false);
             }
             Command::SortReverseToggle => {
                 let t = state.borrow().sort_type;

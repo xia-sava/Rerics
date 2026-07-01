@@ -1292,6 +1292,25 @@ fn sort_command_changes_sort_type() {
     assert_eq!(after.trim(), "\"Length\"", "sort(\"size\") should switch to Length");
 }
 
+/// 引数無しの `sort()` は config の既定ソート（既定は FileName）に従う（原作準拠）。
+#[test]
+fn sort_command_without_arg_applies_default() {
+    let server = Server::start(&["a.txt", "b.txt"], "");
+    // いったん既定と違う種別（サイズ順）にする。
+    server.req("POST", "/command/sort", r#"["size"]"#).unwrap();
+    assert_eq!(
+        server.req("GET", "/state/panes/left/sort/type", "").unwrap().1.trim(),
+        "\"Length\"",
+    );
+    // 引数無しなら config の既定（FileName）へ戻る。
+    server.req("POST", "/command/sort", "").unwrap();
+    assert_eq!(
+        server.req("GET", "/state/panes/left/sort/type", "").unwrap().1.trim(),
+        "\"FileName\"",
+        "argless sort() should fall back to the configured default (FileName)",
+    );
+}
+
 /// `setCursorPosition("c.txt")` がカーソルを指定名のファイルへ移す。
 #[test]
 fn set_cursor_position_jumps_to_named_file() {
