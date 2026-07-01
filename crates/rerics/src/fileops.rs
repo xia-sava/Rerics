@@ -1016,6 +1016,22 @@ impl MainWindow {
             self.log.warn("書庫内ではショートカット作成は未対応です。");
             return Ok(());
         }
+        // 検索・比較の結果一覧は複数フォルダ由来の寄せ集めなので、各項目の出自ディレクトリの隣へ
+        // 作る。通常モードは copy/move と同じく反対ペインを宛先にする（反対が書庫/結果一覧なら不可）。
+        let find_result = self.view(is_left).state().borrow().find_result;
+        let dst_dir = if find_result {
+            None
+        } else {
+            if self.pane(!is_left).borrow().is_archive() {
+                self.log.warn("反対側が書庫のためショートカットを作成できません。");
+                return Ok(());
+            }
+            if self.view(!is_left).state().borrow().find_result {
+                self.log.warn("反対側が検索結果のためショートカットを作成できません。");
+                return Ok(());
+            }
+            Some(self.pane(!is_left).borrow().path().to_path_buf())
+        };
         let targets = self.selected_real_targets(is_left);
         if targets.is_empty() {
             self.log.error(&messages::not_selected_error());
@@ -1023,7 +1039,10 @@ impl MainWindow {
         }
         let mut ok = 0usize;
         for (target, name) in &targets {
-            let lnk = target.with_file_name(format!("{name}.lnk"));
+            let lnk = match &dst_dir {
+                Some(dir) => dir.join(format!("{name}.lnk")),
+                None => target.with_file_name(format!("{name}.lnk")),
+            };
             match shell::create_shortcut(target, &lnk) {
                 Ok(()) => ok += 1,
                 Err(e) => self.log.error(&format!("ショートカット作成に失敗しました（{name}）：{e}")),
@@ -1032,7 +1051,9 @@ impl MainWindow {
         if ok > 0 {
             self.log.normal(&format!("ショートカットを作成しました: {ok} 件"));
         }
-        self.reload_side(is_left)?;
+        // 反対ペインに作ったら増えた項目を見せるためそちらを、結果一覧なら出自に散らばり一覧へは
+        // 現れないのでアクティブ側を（結果モードを保ったまま）再読込する。
+        self.refresh_side(if find_result { is_left } else { !is_left }, None)?;
         Ok(())
     }
 
