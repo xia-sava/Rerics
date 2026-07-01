@@ -38,6 +38,7 @@ mod sort;
 mod tabs_nav;
 mod tasks;
 mod viewer_ctl;
+mod watch;
 #[cfg(feature = "debug-server")]
 mod debug_ctl;
 
@@ -388,6 +389,8 @@ struct MainWindow {
     archive_extracting: Rc<RefCell<std::collections::HashSet<PathBuf>>>,
     /// temp を作った書庫 → その temp ルート dir。セッション中掃除（参照ゼロで回収）の元。
     archive_temp_dirs: Rc<RefCell<std::collections::HashMap<PathBuf, PathBuf>>>,
+    /// サイドごとの更新監視スレッド。表示先が実ディレクトリのときだけ張り、変わると張り替える。
+    watchers: Rc<RefCell<[Option<watch::WatchHandle>; 2]>>,
     #[cfg(feature = "debug-server")]
     debug: debug_server::Bridge,
     script: script_host::ScriptBridge,
@@ -641,6 +644,7 @@ impl MainWindow {
             archive_extracted: Rc::new(RefCell::new(std::collections::HashMap::new())),
             archive_extracting: Rc::new(RefCell::new(std::collections::HashSet::new())),
             archive_temp_dirs: Rc::new(RefCell::new(std::collections::HashMap::new())),
+            watchers: Rc::new(RefCell::new([None, None])),
             #[cfg(feature = "debug-server")]
             debug: debug_server::Bridge::new(debug_port, debug_allow_write, debug_headless),
             script: script_host::ScriptBridge::new(),
@@ -762,6 +766,16 @@ impl MainWindow {
         let task_wake = winutil::msg::TASK_WAKE;
         self.wnd.on().wm(task_wake, move |_| {
             let _ = this.pump_tasks();
+            Ok(0)
+        });
+
+        // ディレクトリ更新監視スレッドからの再読込要求。対象サイド（wparam）をカーソル保持で
+        // 読み直す。監視スレッド側で静穏待ちを済ませているので、ここは受けて読むだけ。
+        let this = self.clone();
+        let reload_watch = winutil::msg::RELOAD_WATCH;
+        self.wnd.on().wm(reload_watch, move |p| {
+            let is_left = p.wparam != 0;
+            let _ = this.reload_side_impl(is_left, ReloadCursor::Keep);
             Ok(0)
         });
 
@@ -1859,6 +1873,7 @@ impl MainWindow {
         // per-file アイコン取得の基準ディレクトリ（実FSのみ。書庫内は None＝汎用アイコン）。
         let real_dir = self.pane(is_left).borrow().loc().as_real_path().map(|p| p.to_path_buf());
         view.set_dir(real_dir);
+        self.arm_watch(is_left);
         self.update_drive_info(is_left);
         self.update_title()?;
         self.refresh_tab_bar()?;
@@ -1869,6 +1884,36 @@ impl MainWindow {
 
         let plan = LoadPlan { mode, keep_name, keep_scroll, keep_idx, recalled, mask, generation };
         Ok(Some((read_loc, plan)))
+    }
+
+    /// 対象サイドの更新監視を現在の表示先へ合わせて張り替える。実ディレクトリ上にいて設定上の
+    /// 監視対象なら監視を張り（既に同じ場所なら据え置き）、書庫・検索結果・仮想の中や設定オフ・
+    /// 非対象ドライブなら監視を止める。`set_dir` と対で呼ぶ。
+    fn arm_watch(&self, is_left: bool) {
+        let rw = self.config.borrow().reload_watch;
+        let want_dir = if rw.enabled {
+            self.pane(is_left)
+                .borrow()
+                .loc()
+                .as_real_path()
+                .filter(|p| watch::should_watch(p, rw.watch_non_fixed))
+                .map(Path::to_path_buf)
+        } else {
+            None
+        };
+        let idx = if is_left { 0 } else { 1 };
+        let mut slot = self.watchers.borrow_mut();
+        // 既に同じ場所を監視中なら張り替えない（無用なスレッド再生成を避ける）。
+        if let (Some(h), Some(dir)) = (slot[idx].as_ref(), want_dir.as_ref())
+            && h.dir() == dir
+        {
+            return;
+        }
+        slot[idx] = None; // 旧監視を止める（Drop でスレッドへ停止合図＋join）。
+        if let Some(dir) = want_dir {
+            let hwnd_ptr = self.wnd.hwnd().ptr() as isize;
+            slot[idx] = watch::WatchHandle::start(dir, hwnd_ptr, is_left, rw.wait_ms);
+        }
     }
 
     /// 読み出す対象を Send な [`Location`] として確定する。一括展開済み書庫は **temp の実FS** を

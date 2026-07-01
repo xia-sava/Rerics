@@ -257,3 +257,8 @@ copy_date = true
 fixed_size = false
 width = 960
 height = 640
+
+[reload_watch]
+enabled = true
+watch_non_fixed = false
+wait_ms = 1000

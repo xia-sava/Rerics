@@ -89,6 +89,7 @@ impl MainWindow {
             let real_dir =
                 self.pane(is_left).borrow().loc().as_real_path().map(|p| p.to_path_buf());
             self.view(is_left).set_dir(real_dir);
+            self.arm_watch(is_left);
         }
         self.view(true).autofit_columns()?;
         self.view(false).autofit_columns()?;

@@ -46,6 +46,8 @@ pub mod msg {
     pub const SCRIPT_WAKE: co::WM = unsafe { co::WM::from_raw(0x8004) };
     /// 検索・比較ワーカーが UI スレッドを起こす（イベント送信ごとに取り込ませる）。
     pub const TASK_WAKE: co::WM = unsafe { co::WM::from_raw(0x8005) };
+    /// ディレクトリ更新監視スレッドが UI スレッドへ再読込を要求する（`wparam` に対象サイド）。
+    pub const RELOAD_WATCH: co::WM = unsafe { co::WM::from_raw(0x8006) };
 }
 
 // 共通ツールチップ（標準コモンコントロール `tooltips_class32`）。winsafe は TTM_* メッセージを
@@ -77,6 +79,13 @@ unsafe extern "system" {
 pub(crate) fn post_app_message(hwnd: isize, msg: co::WM) {
     unsafe {
         PostMessageW(hwnd as *mut c_void, msg.raw(), 0, 0);
+    }
+}
+
+/// [`post_app_message`] の `wparam` つき版。監視スレッドが対象サイドを乗せて起こすのに使う。
+pub(crate) fn post_app_message_wparam(hwnd: isize, msg: co::WM, wparam: usize) {
+    unsafe {
+        PostMessageW(hwnd as *mut c_void, msg.raw(), wparam, 0);
     }
 }
 

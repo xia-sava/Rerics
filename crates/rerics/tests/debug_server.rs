@@ -1339,10 +1339,10 @@ fn filer_alt_keybind_runs_via_syskeydown() {
 }
 
 /// reload は side 引数で対象ペインを選べる（無指定＝両方・left/right/opposite/active＝1ペイン）。
-/// FS 監視は無いので、起動後にディスクへ足したファイルは明示 reload まで一覧に出ない＝決定的。
+/// 更新監視を切って起動するので、ディスクへ足したファイルは明示 reload まで一覧に出ない＝決定的。
 #[test]
 fn reload_targets_pane_by_side_arg() {
-    let server = Server::start(&["a.txt"], "");
+    let server = Server::start(&["a.txt"], "[reload_watch]\nenabled = false\n");
     std::fs::write(server.base.join("sbx").join("b.txt"), b"x").unwrap();
     let has_b = |side: &str, s: &Server| {
         s.req("GET", &format!("/state/panes/{side}/items"), "")
@@ -1361,6 +1361,35 @@ fn reload_targets_pane_by_side_arg() {
     server.req("POST", "/command/reload", "").expect("reload both");
     poll(&server, "/state/panes/right/items", |b| b.contains("\"name\":\"b.txt\""));
     assert!(has_b("right", &server), "無指定 reload で右にも b.txt");
+}
+
+/// 更新監視が有効なら、外部でディスクに足したファイルが明示 reload なしで一覧へ出る。
+/// 監視スレッドが表示中の実ディレクトリを見張り、静穏（`wait_ms`）後に自動再読込する。
+#[test]
+fn watch_reflects_external_change_when_enabled() {
+    let server = Server::start(&["a.txt"], "[reload_watch]\nenabled = true\nwait_ms = 100\n");
+    // rerics のコマンドを介さず、外部からディスクへ直接 b.txt を足す。
+    std::fs::write(server.base.join("sbx").join("b.txt"), b"x").unwrap();
+    // 明示 reload せずとも監視→静穏待ち→自動再読込で b.txt が現れる。
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"b.txt\""));
+    let left = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert!(left.contains("\"name\":\"b.txt\""), "監視で b.txt が自動反映される: {left}");
+}
+
+/// 更新監視を切ると、外部変更は明示 reload まで反映されない（原作 AutoReload=off 相当）。
+#[test]
+fn watch_disabled_needs_explicit_reload() {
+    let server = Server::start(&["a.txt"], "[reload_watch]\nenabled = false\nwait_ms = 100\n");
+    std::fs::write(server.base.join("sbx").join("b.txt"), b"x").unwrap();
+    // 監視オフなので、待っても自動では出ない。
+    std::thread::sleep(Duration::from_millis(600));
+    let before = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert!(!before.contains("\"name\":\"b.txt\""), "監視オフでは自動反映されない: {before}");
+    // 明示 reload で初めて出る。
+    server.req("POST", "/command/reload", "").expect("reload");
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"b.txt\""));
+    let after = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert!(after.contains("\"name\":\"b.txt\""), "明示 reload 後は出る: {after}");
 }
 
 /// テキストビューア表示中はビューア用コマンドがビューア文脈で実行される。

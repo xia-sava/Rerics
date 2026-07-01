@@ -219,6 +219,26 @@ impl Default for WindowSettings {
     }
 }
 
+/// 表示中ディレクトリの更新監視（自動リロード）の設定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReloadWatchSettings {
+    /// 監視のオン/オフ（原作 AutoReload・既定オン）。オフのときはどのドライブも監視しない。
+    pub enabled: bool,
+    /// 固定ディスク以外（リムーバブル・ネットワーク・光学等）も監視するか
+    /// （原作 AutoReload2・既定オフ）。オフのときは固定ディスクのみ監視する。
+    pub watch_non_fixed: bool,
+    /// 変更を検知してから再読込するまでの静穏待ち時間（ミリ秒・原作 WaitTime・既定 1000）。
+    /// この時間内に変更が続く間は読み直さず、静まってから一度だけ再読込する。
+    pub wait_ms: u64,
+}
+
+impl Default for ReloadWatchSettings {
+    fn default() -> Self {
+        Self { enabled: true, watch_non_fixed: false, wait_ms: 1000 }
+    }
+}
+
 /// 画像ビューアのマウスホイール動作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -363,6 +383,8 @@ pub struct Config {
     pub file_ops: FileOpSettings,
     /// 既定ウィンドウサイズの設定（毎回固定サイズで起動するか）。
     pub window: WindowSettings,
+    /// 表示中ディレクトリの更新監視（自動リロード）の設定。
+    pub reload_watch: ReloadWatchSettings,
     /// 起動時に解決した実テーマ。ファイルには保存しない（`resolve_theme` で設定）。
     #[serde(skip)]
     pub resolved: ResolvedTheme,
@@ -392,6 +414,7 @@ impl Default for Config {
             icons: IconSettings::default(),
             file_ops: FileOpSettings::default(),
             window: WindowSettings::default(),
+            reload_watch: ReloadWatchSettings::default(),
             resolved: ResolvedTheme::default(),
         }
     }
