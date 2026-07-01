@@ -1080,14 +1080,16 @@ impl MainWindow {
                 s.move_cursor(last, pr, args.is_select());
             }
             Command::CursorPageUp => {
+                let step = pr.saturating_sub(1).max(1) as isize;
                 let mut s = state.borrow_mut();
                 let c = s.cursor as isize;
-                s.move_cursor(c - pr as isize, pr, args.is_select());
+                s.move_cursor(c - step, pr, args.is_select());
             }
             Command::CursorPageDown => {
+                let step = pr.saturating_sub(1).max(1) as isize;
                 let mut s = state.borrow_mut();
                 let c = s.cursor as isize;
-                s.move_cursor(c + pr as isize, pr, args.is_select());
+                s.move_cursor(c + step, pr, args.is_select());
             }
             Command::SetCursorPosition => {
                 if let Some(name) = args.str(0) {
