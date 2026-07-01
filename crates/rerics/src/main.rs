@@ -20,6 +20,7 @@ mod settings_dialog;
 mod shell;
 mod splitter;
 mod media_view;
+mod pdf;
 mod status_bar;
 mod tab_bar;
 mod task;

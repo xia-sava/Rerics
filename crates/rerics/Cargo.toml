@@ -16,6 +16,9 @@ winsafe.workspace = true
 serde_json = "1"
 tiny_http = { version = "0.12", optional = true }
 image = { version = "0.25" }
+# PDF ページのラスタライズ（PDFium への高レベルラッパ）。実行時に vendor/pdfium の DLL を
+# 動的ロードする（build.rs が exe 隣へ配置）。
+pdfium-render = { version = "0.9.2", features = ["image_latest"] }
 # TS/JS スクリプト基盤（deno_core ＝ V8 埋め込み）。リリースに載る本機能なので常時ビルド。
 deno_core = "0.404.0"
 tokio = { version = "1.52.3", features = ["rt"] }

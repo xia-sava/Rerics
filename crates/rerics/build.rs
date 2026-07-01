@@ -4,7 +4,7 @@
 //! 設定・テンプレートが変わったときだけ再生成する。cargo-about が無い/失敗してもビルドは
 //! 止めず、プレースホルダを書いて警告する。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
@@ -13,6 +13,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../../Cargo.lock");
 
     embed_icon();
+    copy_pdfium_dll();
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
     let dest = PathBuf::from(&out_dir).join("licenses.txt");
@@ -69,6 +70,36 @@ fn embed_icon() {
 
 #[cfg(not(windows))]
 fn embed_icon() {}
+
+/// 同梱の PDFium DLL を実行ファイルと同じディレクトリへ配置する。実行時は exe 隣の
+/// `pdfium.dll` を `Pdfium::bind_to_library` で動的ロードする（`src/pdf.rs`）。
+/// コピーに失敗してもビルドは止めず警告に留める（PDF 表示だけが無効になる）。
+#[cfg(windows)]
+fn copy_pdfium_dll() {
+    const SRC: &str = "../../vendor/pdfium/pdfium.dll";
+    println!("cargo:rerun-if-changed={SRC}");
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
+    // OUT_DIR = target/<profile>/build/<pkg>/out → 3 つ上が target/<profile>/。
+    let Some(profile_dir) = Path::new(&out_dir).ancestors().nth(3) else {
+        println!("cargo:warning=出力プロファイルのディレクトリを特定できませんでした");
+        return;
+    };
+    // 実行ファイル隣（配布・本番起動）とテストバイナリ隣（target/<profile>/deps）の両方へ置く。
+    // どちらも実行時に exe 同ディレクトリの pdfium.dll を探すため。
+    for dir in [profile_dir.to_path_buf(), profile_dir.join("deps")] {
+        let _ = std::fs::create_dir_all(&dir);
+        let dest = dir.join("pdfium.dll");
+        if let Err(e) = std::fs::copy(SRC, &dest) {
+            println!(
+                "cargo:warning=pdfium.dll のコピーに失敗しました（{}）: {e}",
+                dir.display()
+            );
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn copy_pdfium_dll() {}
 
 /// プレーンテキスト出力向けに最小限の HTML 実体参照を復元する。`&amp;` は二重復元を避けるため最後に。
 fn html_unescape(s: &str) -> String {
