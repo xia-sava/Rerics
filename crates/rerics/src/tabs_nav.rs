@@ -200,12 +200,8 @@ impl MainWindow {
         Ok(())
     }
 
-    /// カレントのドライブルート（`C:\`）へ移動する。書庫内では効かない（警告のみ）。
+    /// カレントのドライブルート（`C:\`）へ移動する。書庫内なら書庫のあるドライブのルートへ抜ける。
     pub(crate) fn to_root(&self, is_left: bool) -> w::AnyResult<()> {
-        if self.pane(is_left).borrow().is_archive() {
-            self.log.warn("書庫内ではルートへ移動できません。");
-            return Ok(());
-        }
         let root = self.pane(is_left).borrow().loc().to_root();
         let Some(root) = root else {
             return Ok(());

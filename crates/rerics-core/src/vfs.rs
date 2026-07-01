@@ -146,12 +146,14 @@ impl Location {
         Location::Real(absolutize(p))
     }
 
-    /// 同じドライブのルート（`C:\`）への Location。実FS のときのみ返す。
-    /// 書庫内は対象外（None）。既にルートならルートを返す。
+    /// 同じドライブのルート（`C:\`）への Location。書庫内は「書庫のあるドライブのルート」へ
+    /// 抜ける（書庫はディレクトリのように見せる機能なので、基準は書庫ファイルの実パス）。
+    /// 既にルートならルートを返す。
     pub fn to_root(&self) -> Option<Location> {
         use std::path::Component;
-        let Location::Real(p) = self else {
-            return None;
+        let p: &Path = match self {
+            Location::Real(p) => p,
+            Location::Archive { archive, .. } => archive,
         };
         let mut comps = p.components();
         match comps.next() {
@@ -265,9 +267,10 @@ mod tests {
         let already = Location::Real(PathBuf::from("C:\\"));
         assert_eq!(already.to_root().and_then(|l| l.as_real_path().map(Path::to_path_buf)),
             Some(PathBuf::from("C:\\")));
-        // 書庫内は対象外。
+        // 書庫内は書庫ファイルのあるドライブのルートへ抜ける。
         let arc = Location::Archive { archive: PathBuf::from("C:\\a.zip"), inner: "x".into() };
-        assert!(arc.to_root().is_none());
+        assert_eq!(arc.to_root().and_then(|l| l.as_real_path().map(Path::to_path_buf)),
+            Some(PathBuf::from("C:\\")));
     }
 
     #[test]
