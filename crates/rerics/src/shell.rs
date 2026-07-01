@@ -150,6 +150,19 @@ fn build_hdrop(paths: &[PathBuf]) -> Vec<u8> {
     buf
 }
 
+/// CF_UNICODETEXT 用のバイト列を組む（絶対パスを CRLF 区切り・null 終端の UTF-16LE）。
+/// CF_HDROP と併載し、ターミナルやエディタへ貼るとフルパス文字列として取り出せるようにする。
+fn build_path_text(paths: &[PathBuf]) -> Vec<u8> {
+    let joined = paths
+        .iter()
+        .map(|p| absolute(p).to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    let mut u16s: Vec<u16> = joined.encode_utf16().collect();
+    u16s.push(0);
+    u16s.iter().flat_map(|u| u.to_le_bytes()).collect()
+}
+
 /// CF_HDROP のバイト列からパス一覧を取り出す（fWide 前提）。
 fn parse_hdrop(bytes: &[u8]) -> Vec<PathBuf> {
     if bytes.len() < 20 {
@@ -209,11 +222,15 @@ pub fn clip_copy_files(owner: &w::HWND, paths: &[PathBuf], move_it: bool) -> Res
         return Ok(());
     }
     let hdrop = build_hdrop(paths);
+    let path_text = build_path_text(paths);
     let effect = if move_it { DROPEFFECT_MOVE } else { DROPEFFECT_COPY };
     let effect_fmt = preferred_drop_effect_format();
     let clip = open_clipboard_retry(owner)?;
     clip.EmptyClipboard().map_err(|e| e.to_string())?;
     clip.SetClipboardData(co::CF::HDROP, &hdrop).map_err(|e| e.to_string())?;
+    // フルパスをテキストでも載せる＝Explorer へはファイル、ターミナル/エディタへは
+    // パス文字列として貼れる。貼り付け側が扱える形式を選ぶ。
+    clip.SetClipboardData(co::CF::UNICODETEXT, &path_text).map_err(|e| e.to_string())?;
     if effect_fmt != 0 {
         let fmt = unsafe { co::CF::from_raw(effect_fmt) };
         clip.SetClipboardData(fmt, &effect.to_le_bytes()).map_err(|e| e.to_string())?;
@@ -669,4 +686,39 @@ pub fn show_context_menu(owner: &w::HWND, paths: &[PathBuf]) -> Result<(), Strin
         unsafe { CoTaskMemFree(Some(pidl as *const c_void)) };
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// null 終端までの UTF-16LE バイト列を文字列へ戻す（テスト検証用）。
+    fn decode_utf16le(bytes: &[u8]) -> String {
+        let units: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
+        String::from_utf16(&units[..end]).unwrap()
+    }
+
+    #[test]
+    fn build_path_text_joins_absolute_paths_with_crlf() {
+        let paths = [
+            PathBuf::from(r"C:\dir\a.txt"),
+            PathBuf::from(r"C:\dir\b c.txt"),
+        ];
+        let bytes = build_path_text(&paths);
+        assert_eq!(&bytes[bytes.len() - 2..], &[0, 0], "null 終端で終わる");
+        assert_eq!(
+            decode_utf16le(&bytes),
+            "C:\\dir\\a.txt\r\nC:\\dir\\b c.txt"
+        );
+    }
+
+    #[test]
+    fn build_path_text_single_path_has_no_separator() {
+        let bytes = build_path_text(&[PathBuf::from(r"C:\x\only.png")]);
+        assert_eq!(decode_utf16le(&bytes), "C:\\x\\only.png");
+    }
 }
