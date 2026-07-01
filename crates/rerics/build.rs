@@ -12,6 +12,8 @@ fn main() {
     println!("cargo:rerun-if-changed=about.hbs");
     println!("cargo:rerun-if-changed=../../Cargo.lock");
 
+    embed_icon();
+
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
     let dest = PathBuf::from(&out_dir).join("licenses.txt");
     let raw = PathBuf::from(&out_dir).join("licenses.raw.txt");
@@ -51,6 +53,22 @@ fn main() {
     });
     std::fs::write(&dest, text).expect("write licenses.txt");
 }
+
+/// アプリアイコンを実行ファイルへ埋め込む（Explorer/タスクバー用）。リソース ID 1 で入れ、
+/// ウィンドウ側は `WindowMainOpts.class_icon = Icon::Id(1)` で同じアイコンを参照する。
+/// リソースコンパイラが無い等で失敗してもビルドは止めず警告に留める。
+#[cfg(windows)]
+fn embed_icon() {
+    println!("cargo:rerun-if-changed=assets/icon.ico");
+    let mut res = winresource::WindowsResource::new();
+    res.set_icon_with_id("assets/icon.ico", "1");
+    if let Err(e) = res.compile() {
+        println!("cargo:warning=アプリアイコンの埋め込みに失敗しました: {e}");
+    }
+}
+
+#[cfg(not(windows))]
+fn embed_icon() {}
 
 /// プレーンテキスト出力向けに最小限の HTML 実体参照を復元する。`&amp;` は二重復元を避けるため最後に。
 fn html_unescape(s: &str) -> String {

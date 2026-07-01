@@ -482,6 +482,8 @@ impl MainWindow {
             size: gui::dpi(960, 640),
             style,
             process_dlg_msgs: false,
+            // build.rs がリソース ID 1 で埋め込むアプリアイコン（タイトルバー/Alt+Tab 用）。
+            class_icon: gui::Icon::Id(1),
             ..Default::default()
         });
 

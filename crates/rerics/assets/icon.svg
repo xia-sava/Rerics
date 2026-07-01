@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- Rerics アプリアイコン正本。R は Segoe UI Bold の字形をパス化（書体非依存）。
+       icon.ico 再生成（各サイズを個別にレンダして束ねる＝小サイズもクッキリ）:
+         for s in 256 64 48 32 16; do magick -background none icon.svg -resize ${s}x${s} f_$s.png; done
+         magick f_256.png f_64.png f_48.png f_32.png f_16.png icon.ico -->
+  <defs>
+    <radialGradient id="body" cx="50%" cy="34%" r="72%">
+      <stop offset="0%"  stop-color="#5a7663"/>
+      <stop offset="55%" stop-color="#35513f"/>
+      <stop offset="100%" stop-color="#16281a"/>
+    </radialGradient>
+    <radialGradient id="vignette" cx="50%" cy="50%" r="50%">
+      <stop offset="70%"  stop-color="#000000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.45"/>
+    </radialGradient>
+    <radialGradient id="gloss" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"  stop-color="#ffffff" stop-opacity="0.5"/>
+      <stop offset="70%" stop-color="#ffffff" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <circle cx="128" cy="128" r="118" fill="url(#body)"/>
+  <circle cx="128" cy="128" r="118" fill="url(#vignette)"/>
+  <ellipse cx="128" cy="86" rx="74" ry="50" fill="url(#gloss)"/>
+
+  <g transform="translate(61.570,198.000) scale(0.09763,-0.09763)">
+    <path d="M1367 0H996L773 369Q748 411 725.0 444.0Q702 477 678.5 500.5Q655 524 629.5 536.5Q604 549 574 549H487V0H164V1434H676Q1198 1434 1198 1044Q1198 969 1175.0 905.5Q1152 842 1110.0 791.0Q1068 740 1008.5 703.0Q949 666 876 645V641Q908 631 938.0 608.5Q968 586 996.0 556.0Q1024 526 1049.5 491.5Q1075 457 1096 424ZM487 1192V793H627Q731 793 794 853Q858 914 858 1004Q858 1192 633 1192Z" fill="#ffffff" stroke="#141416" stroke-width="15.36" paint-order="stroke"/>
+  </g>
+</svg>
