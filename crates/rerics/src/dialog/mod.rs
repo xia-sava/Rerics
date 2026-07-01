@@ -437,7 +437,14 @@ fn modal_window_styled(title: &str, w: i32, h: i32, extra: co::WS) -> (gui::Wind
             // /snapshot/modal でも自前描画ペインの中身が揃うようにする。
             #[cfg(feature = "debug-server")]
             if crate::debug_server::parse_headless() {
+                // 非表示のうちに確立したフォーカス（focus_initial または on_create の指定）は
+                // 可視化で外れることがある。再計算はせず、確立済みのフォーカスを表示後に再適用して
+                // キー操作（IsDialogMessage の矢印/Tab 翻訳）が確実に効くようにする。
+                let focused = w::HWND::GetFocus();
                 wf.hwnd().ShowWindow(co::SW::SHOWNOACTIVATE);
+                if let Some(f) = focused {
+                    f.SetFocus();
+                }
                 if let Ok(rc) = wf.hwnd().GetClientRect() {
                     let _ = wf.hwnd().RedrawWindow(
                         rc,
