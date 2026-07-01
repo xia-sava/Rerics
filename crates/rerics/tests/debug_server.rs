@@ -405,10 +405,28 @@ fn parse_listen_port(line: &str) -> Option<u16> {
     line.rsplit(':').next()?.trim().parse().ok()
 }
 
+/// debug-server へ接続する。起動直後や並列実行の高負荷で一時的に失敗し得るので数回リトライする。
+fn connect_retry(port: u16) -> Option<TcpStream> {
+    for attempt in 0..20 {
+        match TcpStream::connect(("127.0.0.1", port)) {
+            Ok(c) => return Some(c),
+            Err(e) => {
+                if attempt == 19 {
+                    eprintln!("debug-server connect failed on port {port}: {e}");
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+    None
+}
+
 /// 最小 HTTP/1.0 クライアント（依存を増やさない）。`(status, body)` を返す。
 fn req(port: u16, method: &str, path: &str, body: &str) -> Option<(u16, String)> {
-    let mut s = TcpStream::connect(("127.0.0.1", port)).ok()?;
-    s.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    let mut s = connect_retry(port)?;
+    // 並列実行で CPU が過飽和すると UI スレッドへ marshal する応答が遅れるため長めに待つ。
+    s.set_read_timeout(Some(Duration::from_secs(20))).ok();
     let head = format!(
         "{method} {path} HTTP/1.0\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
@@ -416,7 +434,10 @@ fn req(port: u16, method: &str, path: &str, body: &str) -> Option<(u16, String)>
     s.write_all(head.as_bytes()).ok()?;
     s.write_all(body.as_bytes()).ok()?;
     let mut resp = String::new();
-    s.read_to_string(&mut resp).ok()?;
+    if let Err(e) = s.read_to_string(&mut resp) {
+        eprintln!("{method} {path} response read failed: {e}");
+        return None;
+    }
     let status: u16 = resp.split_whitespace().nth(1)?.parse().ok()?;
     let body = resp.split_once("\r\n\r\n").map(|x| x.1).unwrap_or("").to_string();
     Some((status, body))
@@ -2202,8 +2223,9 @@ fn refresh_and_nop_are_noops() {
 
 /// 生バイトで HTTP 応答を読む（PNG 等のバイナリ用。`req` は UTF-8 前提でバイナリを落とす）。
 fn req_bytes(port: u16, method: &str, path: &str) -> Option<(u16, Vec<u8>)> {
-    let mut s = TcpStream::connect(("127.0.0.1", port)).ok()?;
-    s.set_read_timeout(Some(Duration::from_secs(8))).ok();
+    let mut s = connect_retry(port)?;
+    // スナップショット（PrintWindow）は高負荷時に遅れるため read は長めに待つ。
+    s.set_read_timeout(Some(Duration::from_secs(20))).ok();
     let head = format!(
         "{method} {path} HTTP/1.0\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     );
