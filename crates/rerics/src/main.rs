@@ -149,6 +149,8 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         About => DebugCmdClass::MaybeModal,
         // シェル名前変更は先に名前入力（本体モーダル）を出す。コピー/移動/削除はシェル所有 UI のみ。
         ShellRename => DebugCmdClass::MaybeModal,
+        // 終了・再起動は実行中タスクがあるときだけ確認モーダル（YesNo）を開く（無ければ即実行）。
+        End | Restart => DebugCmdClass::MaybeModal,
         _ => DebugCmdClass::NonModal,
     }
 }
@@ -1522,6 +1524,9 @@ impl MainWindow {
                 return Ok(());
             }
             Command::Restart => {
+                if !self.confirm_exit_while_tasks_running("再起動") {
+                    return Ok(());
+                }
                 // 現セッションを保存してから同じ exe を起動し直し、自分は終了する。
                 self.save_session_state();
                 if let Ok(exe) = std::env::current_exe() {
@@ -1532,7 +1537,10 @@ impl MainWindow {
                 return Ok(());
             }
             Command::End => {
-                // 強制終了：タブ数に関係なくアプリを終了する。
+                // タブ数に関係なくアプリを終了する。実行中タスクがあれば確認する。
+                if !self.confirm_exit_while_tasks_running("終了") {
+                    return Ok(());
+                }
                 self.wnd.hwnd().DestroyWindow()?;
                 return Ok(());
             }
@@ -1551,6 +1559,17 @@ impl MainWindow {
         view.refresh()?;
         self.update_selected_info(is_left);
         Ok(())
+    }
+
+    /// 終了・再起動の直前確認。実行中タスクが無ければそのまま続行（`true`）。あれば「それでも
+    /// 実行するか」を確認し、強行なら `true`、取りやめなら `false` を返す。
+    fn confirm_exit_while_tasks_running(&self, action: &str) -> bool {
+        if self.tasks.borrow().is_empty() {
+            return true;
+        }
+        let message = format!("実行中のタスクがあります。それでも{action}しますか？");
+        dialog::message_box(&self.wnd, "確認", &message, dialog::MessageStyle::YesNo)
+            == dialog::MessageResult::Yes
     }
 
     /// 値返しクエリ組込の値を計算して返す。アクション系コマンドは `None`（呼び出し側が通常実行する）。
