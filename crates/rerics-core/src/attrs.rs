@@ -32,6 +32,18 @@ pub fn format_local(t: SystemTime) -> String {
     }
 }
 
+/// ファイル名向けに詰めたローカル時刻 `YYYYMMDD_HHMMSS`。範囲外は空文字。
+pub fn format_stamp_compact(t: SystemTime) -> String {
+    let secs = match t.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(d) => d.as_secs() as i64,
+        Err(_) => return String::new(),
+    };
+    match Local.timestamp_opt(secs, 0).single() {
+        Some(dt) => dt.format("%Y%m%d_%H%M%S").to_string(),
+        None => String::new(),
+    }
+}
+
 /// ローカル時刻の `YYYY/MM/DD HH:MM:SS` を `SystemTime` に解釈する。解釈できなければ `None`。
 pub fn parse_local(s: &str) -> Option<SystemTime> {
     let naive = chrono::NaiveDateTime::parse_from_str(s.trim(), TIME_FMT).ok()?;
@@ -319,6 +331,12 @@ mod tests {
         let t = parse_local(s).unwrap();
         assert_eq!(format_local(t), s);
         assert!(parse_local("not a time").is_none());
+    }
+
+    #[test]
+    fn stamp_compact_packs_local_time_for_filenames() {
+        let t = parse_local("2021/06/15 13:04:09").unwrap();
+        assert_eq!(format_stamp_compact(t), "20210615_130409");
     }
 
     #[test]

@@ -1095,8 +1095,8 @@ impl MainWindow {
             }
         };
         if paths.is_empty() {
-            self.log.info("クリップボードに貼り付けられるファイルがありません。");
-            return Ok(());
+            // ファイルが無ければ画像（CF_DIB）を探し、あればファイルとして保存する。
+            return self.try_paste_clipboard_image(is_left);
         }
         // 親ディレクトリごとにまとめて run_copy する（複数フォルダ由来でも壊れない）。
         let mut groups: std::collections::BTreeMap<PathBuf, Vec<String>> = Default::default();
@@ -1113,6 +1113,30 @@ impl MainWindow {
         }
         let dst = self.pane(is_left).borrow().path().to_path_buf();
         self.start_clip_paste(dst, groups.into_iter().collect(), move_it)
+    }
+
+    /// クリップボードにファイルが無いとき、画像（CF_DIB）があればカレントディレクトリへ
+    /// `clipboard_YYYYMMDD_HHMMSS.png` として保存し、その新ファイルへカーソルを移す。
+    /// 画像も無ければ貼り付け対象なしとして報せる。
+    fn try_paste_clipboard_image(&self, is_left: bool) -> w::AnyResult<()> {
+        let stamp = rerics_core::format_stamp_compact(std::time::SystemTime::now());
+        let name = format!("clipboard_{stamp}.png");
+        let dest = self.pane(is_left).borrow().path().join(&name);
+        match shell::clip_get_image(self.wnd.hwnd(), &dest) {
+            Ok(true) => {
+                self.log
+                    .info(&format!("クリップボードの画像を {name} として保存しました。"));
+                self.reload_side_focus(is_left, &name, false)?;
+            }
+            Ok(false) => {
+                self.log.info("クリップボードに貼り付けられるものがありません。");
+            }
+            Err(e) => {
+                self.log
+                    .error(&format!("クリップボードの画像を保存できませんでした: {e}"));
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn start_clip_paste(
