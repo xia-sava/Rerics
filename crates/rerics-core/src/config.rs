@@ -193,11 +193,23 @@ pub struct CursorSettings {
     /// オフのときはマークしてもカーソルは留まる。移動量を明示した割当（Shift+Space 等）は
     /// この設定に関わらずその量だけ動く。
     pub down_after_select: bool,
+    /// ファイルを関連付けで開いた後にカーソルを下へ動かすか（原作 Cursor/DownAfterViewer・既定オフ）。
+    pub down_after_viewer: bool,
+    /// ディレクトリ作成後、その新ディレクトリへ移動するか（原作 Cursor/CreateDirectoryAndMove・
+    /// 既定オフ）。オフのときは作成した新ディレクトリ名へカーソルを合わせるだけ。
+    pub create_directory_and_move: bool,
 }
 
 impl Default for CursorSettings {
     fn default() -> Self {
-        Self { history: false, history_count: 100, to_parent: false, down_after_select: true }
+        Self {
+            history: false,
+            history_count: 100,
+            to_parent: false,
+            down_after_select: true,
+            down_after_viewer: false,
+            create_directory_and_move: false,
+        }
     }
 }
 
