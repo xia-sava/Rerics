@@ -841,6 +841,69 @@ fn compress_one_by_one_makes_per_item_zips() {
     );
 }
 
+/// 名前に .7z を入れて OK すると 7z が作られる（形式は名前の拡張子で決まる）。
+#[test]
+fn compress_creates_named_7z() {
+    let server = Server::start_writable(&["a.txt", "b.txt"]);
+    server.req("POST", "/command/cursorDown", "").unwrap(); // .. -> a.txt
+    server.req("POST", "/command/compressDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"compress\""), "compress dialog should open: {modal}");
+    server.req("POST", "/modal/text", "out.7z").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    let items = poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"out.7z\""));
+    assert!(items.contains("\"name\":\"out.7z\""), "out.7z should be created: {items}");
+}
+
+/// 複数対象で .tar.xz を入れて OK すると tar.xz が作られる。
+#[test]
+fn compress_creates_tar_xz() {
+    let server = Server::start_writable(&["a.txt", "b.txt"]);
+    server.req("POST", "/command/cursorDown", "").unwrap(); // .. -> a.txt
+    server.req("POST", "/command/markToggle", "").unwrap(); // mark a.txt -> b.txt
+    server.req("POST", "/command/markToggle", "").unwrap(); // mark b.txt
+    server.req("POST", "/command/compressDialog", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/text", "out.tar.xz").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    let items = poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"out.tar.xz\""));
+    assert!(items.contains("\"name\":\"out.tar.xz\""), "out.tar.xz should be created: {items}");
+}
+
+/// 単一ファイルに .xz を入れて OK すると tar なしの単体 xz が作られる。
+#[test]
+fn compress_single_file_xz() {
+    let server = Server::start_writable(&["a.txt", "b.txt"]);
+    server.req("POST", "/command/cursorDown", "").unwrap(); // .. -> a.txt
+    server.req("POST", "/command/compressDialog", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/text", "a.txt.xz").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    let items = poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"a.txt.xz\""));
+    assert!(items.contains("\"name\":\"a.txt.xz\""), "a.txt.xz should be created: {items}");
+}
+
+/// 形式ラジオで 7z を選び個別圧縮にチェックすると、各項目が `<名前>.7z` になる。
+#[test]
+fn compress_radio_7z_one_by_one() {
+    let server = Server::start_writable(&["a.txt", "b.txt"]);
+    server.req("POST", "/command/cursorDown", "").unwrap(); // .. -> a.txt
+    server.req("POST", "/command/markToggle", "").unwrap(); // mark a.txt -> b.txt
+    server.req("POST", "/command/markToggle", "").unwrap(); // mark b.txt
+    server.req("POST", "/command/compressDialog", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/radio/1", "").unwrap(); // 0=zip 1=7z 2=xz
+    server.req("POST", "/modal/check", "").unwrap(); // 個別圧縮
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    let items = poll(&server, "/state/panes/left/items", |b| {
+        b.contains("\"name\":\"a.txt.7z\"") && b.contains("\"name\":\"b.txt.7z\"")
+    });
+    assert!(
+        items.contains("\"name\":\"a.txt.7z\"") && items.contains("\"name\":\"b.txt.7z\""),
+        "each item should become its own 7z: {items}"
+    );
+}
+
 /// extract_create_directory=true のとき、書庫の展開先に書庫名のフォルダ（arc）が作られる。
 #[test]
 fn extract_create_directory_wraps_in_archive_named_dir() {

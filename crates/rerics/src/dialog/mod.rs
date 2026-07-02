@@ -771,13 +771,33 @@ pub enum ArchiveAddMode {
     Rebuild,
 }
 
-/// 圧縮ダイアログの結果（書庫名と圧縮方式）。
+/// 圧縮ダイアログで選べる形式。実際に作る形式は最終的な出力名の拡張子で決まるが、
+/// 個別圧縮や、名前に既知の拡張子が無いときの既定を決めるのにこの選択を使う。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CompressFormat {
+    Zip,
+    SevenZ,
+    Xz,
+}
+
+/// 各形式を選んだときの既定の出力名（フル名）。名前欄が未編集のあいだ、形式ラジオの切替で
+/// 名前欄をこの値へ差し替える（xz は対象の束ね要否で `.xz`／`.tar.xz` が入れ替わる）。
+#[derive(Clone)]
+pub struct CompressDefaults {
+    pub zip: String,
+    pub sevenz: String,
+    pub xz: String,
+}
+
+/// 圧縮ダイアログの結果（書庫名・個別圧縮・選択形式）。
 #[derive(Clone, PartialEq, Eq)]
 pub struct CompressChoice {
-    /// 出力する zip 名（まとめて1つに圧縮する場合に使う）。
+    /// 出力する書庫名（まとめて1つに圧縮する場合に使う）。実際の形式はこの拡張子で決まる。
     pub name: String,
-    /// 選択項目を個別に `<項目名>.zip` へ圧縮する（true）か、まとめて1つにする（false）か。
+    /// 選択項目を個別に圧縮する（true）か、まとめて1つにする（false）か。
     pub one_by_one: bool,
+    /// 選択した形式（個別圧縮・拡張子省略時の既定に使う）。
+    pub format: CompressFormat,
 }
 
 

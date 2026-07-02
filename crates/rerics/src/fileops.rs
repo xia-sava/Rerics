@@ -10,6 +10,88 @@ fn file_name_of(p: &Path) -> String {
     p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
+/// 圧縮で作る書庫形式。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum CompressKind {
+    Zip,
+    SevenZ,
+    /// xz 単体圧縮（対象1ファイル・tar なし）。
+    Xz,
+    TarXz,
+}
+
+impl CompressKind {
+    /// `script_compress` へ渡す形式トークン。
+    fn token(self) -> &'static str {
+        match self {
+            CompressKind::Zip => "zip",
+            CompressKind::SevenZ => "7z",
+            CompressKind::Xz => "xz",
+            CompressKind::TarXz => "tar.xz",
+        }
+    }
+
+    /// 形式トークンを解釈する（大小無視）。未知は `None`。
+    fn from_token(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "zip" => Some(CompressKind::Zip),
+            "7z" => Some(CompressKind::SevenZ),
+            "xz" => Some(CompressKind::Xz),
+            "tar.xz" | "tarxz" | "txz" => Some(CompressKind::TarXz),
+            _ => None,
+        }
+    }
+}
+
+/// 最終的な出力名 `name`・選択形式 `seed`・束ね要否 `bundling`（複数 or ディレクトリ）から、
+/// 実際に作る形式と出力名を決める。名前に既知の書庫拡張子があればそれが優先（＝表示と実体が
+/// 一致）。単体 xz を選んでも束ねが要るなら tar.xz へ格上げする。既知拡張子が無ければ `seed`
+/// の拡張子を補う。
+pub(crate) fn resolve_compress(
+    name: &str,
+    seed: dialog::CompressFormat,
+    bundling: bool,
+) -> (CompressKind, String) {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".tar.xz") || lower.ends_with(".txz") {
+        return (CompressKind::TarXz, name.to_string());
+    }
+    if lower.ends_with(".7z") {
+        return (CompressKind::SevenZ, name.to_string());
+    }
+    if lower.ends_with(".zip") {
+        return (CompressKind::Zip, name.to_string());
+    }
+    if lower.ends_with(".xz") {
+        if bundling {
+            let base = &name[..name.len() - ".xz".len()];
+            return (CompressKind::TarXz, format!("{base}.tar.xz"));
+        }
+        return (CompressKind::Xz, name.to_string());
+    }
+    match seed {
+        dialog::CompressFormat::Zip => (CompressKind::Zip, format!("{name}.zip")),
+        dialog::CompressFormat::SevenZ => (CompressKind::SevenZ, format!("{name}.7z")),
+        dialog::CompressFormat::Xz if bundling => (CompressKind::TarXz, format!("{name}.tar.xz")),
+        dialog::CompressFormat::Xz => (CompressKind::Xz, format!("{name}.xz")),
+    }
+}
+
+/// 個別圧縮での 1 項目の形式と出力名。xz はディレクトリ項目なら tar.xz、通常ファイルなら
+/// 単体 xz。
+fn per_item_compress(
+    name: &str,
+    format: dialog::CompressFormat,
+    is_dir: bool,
+) -> (CompressKind, String) {
+    match format {
+        dialog::CompressFormat::Zip => (CompressKind::Zip, format!("{name}.zip")),
+        dialog::CompressFormat::SevenZ => (CompressKind::SevenZ, format!("{name}.7z")),
+        dialog::CompressFormat::Xz if is_dir => (CompressKind::TarXz, format!("{name}.tar.xz")),
+        dialog::CompressFormat::Xz => (CompressKind::Xz, format!("{name}.xz")),
+    }
+}
+
 impl MainWindow {
     /// 入力ダイアログで名前を尋ね、アクティブペインの現在パス直下にディレクトリを作る。
     /// 作成後は一覧を更新し、新ディレクトリへカーソルを移す。
@@ -120,8 +202,9 @@ impl MainWindow {
         Ok(())
     }
 
-    /// アクティブペインの選択項目を新しい zip に圧縮する（実FS のみ）。出力名を尋ね、
-    /// アクティブペインの直下に作る。既存名は上書き確認する。
+    /// アクティブペインの選択項目を新しい書庫（zip / 7z / xz / tar.xz）へ圧縮する（実FS のみ）。
+    /// 出力名と形式を尋ね、アクティブペインの直下に作る。既存名は上書き確認する。実際の形式は
+    /// 最終的な名前の拡張子で決まる（[`resolve_compress`]）。
     pub(crate) fn compress(&self, is_left: bool) -> w::AnyResult<()> {
         if self.block_if_archive(is_left, "圧縮") {
             return Ok(());
@@ -131,41 +214,47 @@ impl MainWindow {
             self.log.error(&messages::not_selected_error());
             return Ok(());
         }
-        // 既定名：単一選択ならその名 + .zip、複数なら親ディレクトリ名 + .zip。
         let dir = self.pane(is_left).borrow().path().to_path_buf();
-        let default_name = if names.len() == 1 {
-            format!("{}.zip", names[0])
+        // 単一の通常ファイルだけが tar なしの単体圧縮になり得る。複数・ディレクトリは束ねが要る。
+        let bundling = names.len() > 1 || dir.join(&names[0]).is_dir();
+        // 既定名：単一選択ならその名、複数なら親ディレクトリ名を base に。xz は束ね要否で拡張子が変わる。
+        let base = if names.len() == 1 {
+            names[0].clone()
         } else {
-            let base = dir
-                .file_name()
+            dir.file_name()
                 .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "archive".to_owned());
-            format!("{base}.zip")
+                .unwrap_or_else(|| "archive".to_owned())
         };
-        // 履歴付きの圧縮ダイアログ（書庫名＋個別圧縮の選択）。
+        let defaults = dialog::CompressDefaults {
+            zip: format!("{base}.zip"),
+            sevenz: format!("{base}.7z"),
+            xz: if bundling { format!("{base}.tar.xz") } else { format!("{base}.xz") },
+        };
+        // 履歴付きの圧縮ダイアログ（書庫名＋形式＋個別圧縮の選択）。
         let mut hist = rerics_core::InputHistory::load();
         let items = hist.get("compress");
         let refs: Vec<&str> = items.iter().map(String::as_str).collect();
-        let Some(choice) = dialog::compress_box(&self.wnd, &default_name, &refs) else {
+        let Some(choice) = dialog::compress_box(&self.wnd, &defaults, &refs) else {
             return Ok(());
         };
 
         if choice.one_by_one {
-            // 各項目を `<項目名>.zip` へ個別圧縮する（書庫名欄は使わない）。
-            return self.start_compress_each(dir, names);
+            // 各項目を形式ごとの拡張子へ個別圧縮する（書庫名欄は使わない）。
+            return self.start_compress_each(dir, names, choice.format);
         }
 
         let name = choice.name.trim();
         if name.is_empty() {
             return Ok(());
         }
-        hist.add("compress", name);
+        let (kind, out_name) = resolve_compress(name, choice.format, bundling);
+        hist.add("compress", &out_name);
         let _ = hist.save();
-        if dir.join(name).exists() {
+        if dir.join(&out_name).exists() {
             let r = dialog::message_box(
                 &self.wnd,
                 "圧縮",
-                &messages::all_ready_exists(name),
+                &messages::all_ready_exists(&out_name),
                 dialog::MessageStyle::YesNo,
             );
             if r != dialog::MessageResult::Yes {
@@ -174,7 +263,7 @@ impl MainWindow {
         }
         // 実処理は no-UI 版の正本 script_compress へ委譲する（検証・ワーカー起動はそちら）。
         // 失敗時はログに加えてダイアログでも報せる。
-        if let Err(line) = self.script_compress("zip", name, &names) {
+        if let Err(line) = self.script_compress(kind.token(), &out_name, &names) {
             self.log.error(&line);
             dialog::message_box(&self.wnd, "圧縮", &line, dialog::MessageStyle::Error);
         }
@@ -182,8 +271,9 @@ impl MainWindow {
     }
 
     /// スクリプト用：対象名の列 `files`（相対は現在地基準）を `archive` へ圧縮するワーカーを
-    /// 起動する（投げっぱなし）。対応形式は zip のみ。起動前の検証失敗は `Err`。表層 UI の
-    /// `compress` ダイアログもこの実処理を共有して呼ぶ。
+    /// 起動する（投げっぱなし）。`kind` は `zip`/`7z`/`xz`/`tar.xz`（`xz` は単体圧縮＝対象1
+    /// ファイルのみ）。起動前の検証失敗は `Err`。表層 UI の `compress` ダイアログもこの実処理を
+    /// 共有して呼ぶ。
     pub(crate) fn script_compress(
         &self,
         kind: &str,
@@ -194,13 +284,15 @@ impl MainWindow {
         if self.pane(is_left).borrow().is_archive() {
             return Err("書庫内では圧縮できません".to_string());
         }
-        if !kind.trim().eq_ignore_ascii_case("zip") {
-            return Err(format!("未対応の圧縮形式です: {kind}（zip のみ対応）"));
-        }
+        let ck = CompressKind::from_token(kind)
+            .ok_or_else(|| format!("未対応の圧縮形式です: {kind}（zip / 7z / xz / tar.xz）"))?;
         let names: Vec<String> =
             files.iter().map(|f| f.trim().to_owned()).filter(|f| !f.is_empty()).collect();
         if names.is_empty() {
             return Err("圧縮対象がありません".to_string());
+        }
+        if ck == CompressKind::Xz && names.len() != 1 {
+            return Err("xz 単体圧縮は対象1ファイルのみです（複数は tar.xz）".to_string());
         }
         let archive = archive.trim();
         if archive.is_empty() {
@@ -208,8 +300,8 @@ impl MainWindow {
         }
         let dir = self.pane(is_left).borrow().path().to_path_buf();
         let ap = Path::new(archive);
-        let dst_zip = if ap.is_absolute() { ap.to_path_buf() } else { dir.join(archive) };
-        self.start_compress(dir, names, dst_zip).map_err(|e| e.to_string())
+        let dst = if ap.is_absolute() { ap.to_path_buf() } else { dir.join(archive) };
+        self.start_compress(dir, names, dst, ck).map_err(|e| e.to_string())
     }
 
     /// メニュー「解凍」からの取り出し。アクティブが書庫なら反対の実ペインへ展開する。
@@ -221,12 +313,14 @@ impl MainWindow {
         self.extract_from_archive(is_left)
     }
 
-    /// 圧縮作成をワーカースレッドで起動する。完了で出力先（＝src と同じ dir）を再読込する。
+    /// 圧縮作成をワーカースレッドで起動する。`kind` で形式を選び分ける。完了で出力先
+    /// （＝src と同じ dir）を再読込する。
     pub(crate) fn start_compress(
         &self,
         dir: PathBuf,
         names: Vec<String>,
-        dst_zip: PathBuf,
+        dst: PathBuf,
+        kind: CompressKind,
     ) -> w::AnyResult<()> {
         let control = Arc::new(TaskControl::new());
         let host = ChannelHost::new(
@@ -236,11 +330,18 @@ impl MainWindow {
             self.progress_seq.clone(),
         );
         let id = self.next_id();
-        let desc = format!("{} -> {}", short_desc(&names), dst_zip.display());
+        let desc = format!("{} -> {}", short_desc(&names), dst.display());
         self.register_task(id, "圧縮", desc, control)?;
         let src_dir = dir.clone();
         std::thread::spawn(move || {
-            let sum = rerics_core::run_compress(&host, &src_dir, &names, &dst_zip);
+            let sum = match kind {
+                CompressKind::Zip => rerics_core::run_compress(&host, &src_dir, &names, &dst),
+                CompressKind::SevenZ => rerics_core::run_compress_7z(&host, &src_dir, &names, &dst),
+                CompressKind::TarXz => rerics_core::run_compress_tar_xz(&host, &src_dir, &names, &dst),
+                CompressKind::Xz => {
+                    rerics_core::run_compress_xz_single(&host, &src_dir, &names[0], &dst)
+                }
+            };
             let _ = host.tx.send(WorkerEvent::Done {
                 id,
                 kind: OpKind::Copy,
@@ -253,12 +354,13 @@ impl MainWindow {
         Ok(())
     }
 
-    /// 選択項目をそれぞれ `<項目名>.zip` へ個別圧縮する（OneByOne）。同名の zip が既に
-    /// あれば上書きせずスキップする。完了で出力先（＝src と同じ dir）を再読込する。
+    /// 選択項目をそれぞれ形式ごとの拡張子へ個別圧縮する（OneByOne）。同名が既にあれば上書き
+    /// せずスキップする。完了で出力先（＝src と同じ dir）を再読込する。
     pub(crate) fn start_compress_each(
         &self,
         dir: PathBuf,
         names: Vec<String>,
+        format: dialog::CompressFormat,
     ) -> w::AnyResult<()> {
         let control = Arc::new(TaskControl::new());
         let host = ChannelHost::new(
@@ -275,15 +377,33 @@ impl MainWindow {
             let mut cancelled = false;
             let mut failed = false;
             for name in &names {
-                let dst = src_dir.join(format!("{name}.zip"));
+                let is_dir = src_dir.join(name).is_dir();
+                let (kind, out) = per_item_compress(name, format, is_dir);
+                let dst = src_dir.join(&out);
                 if dst.exists() {
                     let _ = host.tx.send(WorkerEvent::Log {
                         level: LogLevel::Warning,
-                        text: messages::all_ready_exists(&format!("{name}.zip")),
+                        text: messages::all_ready_exists(&out),
                     });
                     continue;
                 }
-                let sum = rerics_core::run_compress(&host, &src_dir, std::slice::from_ref(name), &dst);
+                let sum = match kind {
+                    CompressKind::Zip => {
+                        rerics_core::run_compress(&host, &src_dir, std::slice::from_ref(name), &dst)
+                    }
+                    CompressKind::SevenZ => {
+                        rerics_core::run_compress_7z(&host, &src_dir, std::slice::from_ref(name), &dst)
+                    }
+                    CompressKind::TarXz => rerics_core::run_compress_tar_xz(
+                        &host,
+                        &src_dir,
+                        std::slice::from_ref(name),
+                        &dst,
+                    ),
+                    CompressKind::Xz => {
+                        rerics_core::run_compress_xz_single(&host, &src_dir, name, &dst)
+                    }
+                };
                 failed |= sum.err > 0;
                 if sum.cancelled {
                     cancelled = true;
@@ -1901,5 +2021,43 @@ impl MainWindow {
             let _ = hist.save();
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dialog::CompressFormat;
+
+    #[test]
+    fn resolve_prefers_known_extension_over_seed() {
+        // 名前の拡張子が既知ならそれが優先（seed と食い違っても名前どおり）。
+        assert_eq!(resolve_compress("x.7z", CompressFormat::Zip, false).0, CompressKind::SevenZ);
+        assert_eq!(resolve_compress("x.zip", CompressFormat::Xz, false).0, CompressKind::Zip);
+        assert_eq!(resolve_compress("x.tar.xz", CompressFormat::Zip, false).0, CompressKind::TarXz);
+        assert_eq!(resolve_compress("x.txz", CompressFormat::Zip, false).0, CompressKind::TarXz);
+    }
+
+    #[test]
+    fn resolve_xz_single_vs_tar_by_bundling() {
+        // 単体ファイルの .xz は単体 xz、束ねが要るなら tar.xz へ格上げして名前も直す。
+        assert_eq!(resolve_compress("a.txt.xz", CompressFormat::Xz, false), (CompressKind::Xz, "a.txt.xz".to_owned()));
+        assert_eq!(resolve_compress("a.txt.xz", CompressFormat::Xz, true), (CompressKind::TarXz, "a.txt.tar.xz".to_owned()));
+    }
+
+    #[test]
+    fn resolve_appends_seed_extension_when_unknown() {
+        // 既知拡張子が無ければ seed 形式の拡張子を補う。
+        assert_eq!(resolve_compress("foo", CompressFormat::Zip, false), (CompressKind::Zip, "foo.zip".to_owned()));
+        assert_eq!(resolve_compress("foo", CompressFormat::SevenZ, true), (CompressKind::SevenZ, "foo.7z".to_owned()));
+        assert_eq!(resolve_compress("foo", CompressFormat::Xz, false), (CompressKind::Xz, "foo.xz".to_owned()));
+        assert_eq!(resolve_compress("foo", CompressFormat::Xz, true), (CompressKind::TarXz, "foo.tar.xz".to_owned()));
+    }
+
+    #[test]
+    fn per_item_xz_dir_becomes_tar_xz() {
+        assert_eq!(per_item_compress("d", CompressFormat::Xz, true), (CompressKind::TarXz, "d.tar.xz".to_owned()));
+        assert_eq!(per_item_compress("a.txt", CompressFormat::Xz, false), (CompressKind::Xz, "a.txt.xz".to_owned()));
+        assert_eq!(per_item_compress("a", CompressFormat::SevenZ, false), (CompressKind::SevenZ, "a.7z".to_owned()));
     }
 }
