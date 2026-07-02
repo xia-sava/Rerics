@@ -21,16 +21,6 @@ pub(crate) enum CompressKind {
 }
 
 impl CompressKind {
-    /// `script_compress` へ渡す形式トークン。
-    fn token(self) -> &'static str {
-        match self {
-            CompressKind::Zip => "zip",
-            CompressKind::SevenZ => "7z",
-            CompressKind::Xz => "xz",
-            CompressKind::TarXz => "tar.xz",
-        }
-    }
-
     /// 形式トークンを解釈する（大小無視）。未知は `None`。
     fn from_token(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
@@ -203,8 +193,9 @@ impl MainWindow {
     }
 
     /// アクティブペインの選択項目を新しい書庫（zip / 7z / xz / tar.xz）へ圧縮する（実FS のみ）。
-    /// 出力名と形式を尋ね、アクティブペインの直下に作る。既存名は上書き確認する。実際の形式は
-    /// 最終的な名前の拡張子で決まる（[`resolve_compress`]）。
+    /// 出力名と形式を尋ね、反対ペイン（実FS）の直下に作る（原作準拠・反対が書庫/仮想なら
+    /// アクティブ側へフォールバック）。既存名は上書き確認する。実際の形式は最終的な名前の
+    /// 拡張子で決まる（[`resolve_compress`]）。
     pub(crate) fn compress(&self, is_left: bool) -> w::AnyResult<()> {
         if self.block_if_archive(is_left, "圧縮") {
             return Ok(());
@@ -215,6 +206,13 @@ impl MainWindow {
             return Ok(());
         }
         let dir = self.pane(is_left).borrow().path().to_path_buf();
+        // 作成先は反対ペイン（実FS）＝原作準拠。反対が書庫/仮想ならアクティブ側にフォールバック。
+        let dst_dir = self
+            .pane(!is_left)
+            .borrow()
+            .as_real_path()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| dir.clone());
         // 単一の通常ファイルだけが tar なしの単体圧縮になり得る。複数・ディレクトリは束ねが要る。
         let bundling = names.len() > 1 || dir.join(&names[0]).is_dir();
         // 既定名：単一選択ならその名、複数なら親ディレクトリ名を base に。xz は束ね要否で拡張子が変わる。
@@ -240,7 +238,7 @@ impl MainWindow {
 
         if choice.one_by_one {
             // 各項目を形式ごとの拡張子へ個別圧縮する（書庫名欄は使わない）。
-            return self.start_compress_each(dir, names, choice.format);
+            return self.start_compress_each(dir, names, choice.format, dst_dir);
         }
 
         let name = choice.name.trim();
@@ -250,7 +248,8 @@ impl MainWindow {
         let (kind, out_name) = resolve_compress(name, choice.format, bundling);
         hist.add("compress", &out_name);
         let _ = hist.save();
-        if dir.join(&out_name).exists() {
+        let dst = dst_dir.join(&out_name);
+        if dst.exists() {
             let r = dialog::message_box(
                 &self.wnd,
                 "圧縮",
@@ -261,9 +260,10 @@ impl MainWindow {
                 return Ok(());
             }
         }
-        // 実処理は no-UI 版の正本 script_compress へ委譲する（検証・ワーカー起動はそちら）。
-        // 失敗時はログに加えてダイアログでも報せる。
-        if let Err(line) = self.script_compress(kind.token(), &out_name, &names) {
+        // ワーカー起動はスクリプト版と共有の start_compress。起動失敗時はログとダイアログで報せる
+        // （圧縮そのものの失敗は非同期でワーカーがログする）。
+        if let Err(e) = self.start_compress(dir, names, dst, kind) {
+            let line = e.to_string();
             self.log.error(&line);
             dialog::message_box(&self.wnd, "圧縮", &line, dialog::MessageStyle::Error);
         }
@@ -313,8 +313,9 @@ impl MainWindow {
         self.extract_from_archive(is_left)
     }
 
-    /// 圧縮作成をワーカースレッドで起動する。`kind` で形式を選び分ける。完了で出力先
-    /// （＝src と同じ dir）を再読込する。
+    /// 圧縮作成をワーカースレッドで起動する。`dir` は対象を読む元（アクティブペイン）、`dst`
+    /// は出力先のフルパス（反対ペイン等）。`kind` で形式を選び分ける。完了で出力先ディレクトリ
+    /// （`dst` の親）を再読込し、元ペインの選択を解除する。
     pub(crate) fn start_compress(
         &self,
         dir: PathBuf,
@@ -333,6 +334,7 @@ impl MainWindow {
         let desc = format!("{} -> {}", short_desc(&names), dst.display());
         self.register_task(id, "圧縮", desc, control)?;
         let src_dir = dir.clone();
+        let reload_dir = dst.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| dir.clone());
         std::thread::spawn(move || {
             let sum = match kind {
                 CompressKind::Zip => rerics_core::run_compress(&host, &src_dir, &names, &dst),
@@ -345,8 +347,8 @@ impl MainWindow {
             let _ = host.tx.send(WorkerEvent::Done {
                 id,
                 kind: OpKind::Copy,
-                src_dir: src_dir.clone(),
-                dst_dir: src_dir,
+                src_dir,
+                dst_dir: reload_dir,
                 cancelled: sum.cancelled,
                 failed: sum.err > 0,
             });
@@ -354,13 +356,15 @@ impl MainWindow {
         Ok(())
     }
 
-    /// 選択項目をそれぞれ形式ごとの拡張子へ個別圧縮する（OneByOne）。同名が既にあれば上書き
-    /// せずスキップする。完了で出力先（＝src と同じ dir）を再読込する。
+    /// 選択項目をそれぞれ形式ごとの拡張子へ個別圧縮する（OneByOne）。`dir` は対象を読む元、
+    /// `dst_dir` は出力先ディレクトリ（反対ペイン等）。同名が既にあれば上書きせずスキップする。
+    /// 完了で出力先を再読込し、元ペインの選択を解除する。
     pub(crate) fn start_compress_each(
         &self,
         dir: PathBuf,
         names: Vec<String>,
         format: dialog::CompressFormat,
+        dst_dir: PathBuf,
     ) -> w::AnyResult<()> {
         let control = Arc::new(TaskControl::new());
         let host = ChannelHost::new(
@@ -379,7 +383,7 @@ impl MainWindow {
             for name in &names {
                 let is_dir = src_dir.join(name).is_dir();
                 let (kind, out) = per_item_compress(name, format, is_dir);
-                let dst = src_dir.join(&out);
+                let dst = dst_dir.join(&out);
                 if dst.exists() {
                     let _ = host.tx.send(WorkerEvent::Log {
                         level: LogLevel::Warning,
@@ -413,8 +417,8 @@ impl MainWindow {
             let _ = host.tx.send(WorkerEvent::Done {
                 id,
                 kind: OpKind::Copy,
-                src_dir: src_dir.clone(),
-                dst_dir: src_dir,
+                src_dir,
+                dst_dir,
                 cancelled,
                 failed,
             });
