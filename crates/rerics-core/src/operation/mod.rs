@@ -18,7 +18,7 @@ mod delete;
 mod calc;
 pub use copy::run_copy;
 pub use extract::run_extract;
-pub use compress::run_compress;
+pub use compress::{run_compress, run_compress_7z, run_compress_tar_xz, run_compress_xz_single};
 pub use archive_ops::{run_archive_add, run_archive_rebuild, run_archive_delete, run_archive_rename};
 pub use delete::run_delete;
 pub use calc::{run_calc_size, run_calc_size_groups};

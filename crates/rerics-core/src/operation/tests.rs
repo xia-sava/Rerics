@@ -679,6 +679,79 @@
         assert!(!zip.exists());
     }
 
+    #[test]
+    fn compress_7z_roundtrips_files_and_dirs() {
+        let src = TempDir::new();
+        src.write_file("a.txt", "alpha");
+        std::fs::create_dir(src.join("sub")).unwrap();
+        std::fs::write(src.join("sub").join("c.txt"), "charlie").unwrap();
+        let dst = src.join("out.7z");
+        let host = FakeHost::new();
+        let sum = run_compress_7z(
+            &host,
+            &src.path,
+            &["a.txt".to_owned(), "sub".to_owned()],
+            &dst,
+        );
+        assert_eq!(sum.err, 0);
+        assert!(dst.is_file());
+        let be = crate::open_archive(&dst).unwrap();
+        assert_eq!(be.read("a.txt").unwrap(), b"alpha");
+        assert_eq!(be.read("sub/c.txt").unwrap(), b"charlie");
+    }
+
+    #[test]
+    fn compress_xz_single_roundtrips() {
+        let src = TempDir::new();
+        src.write_file("a.txt", "alpha");
+        let dst = src.join("a.txt.xz");
+        let host = FakeHost::new();
+        let sum = run_compress_xz_single(&host, &src.path, "a.txt", &dst);
+        assert_eq!(sum.err, 0);
+        assert!(dst.is_file());
+        // 単体圧縮は 1 エントリ（内側名は圧縮拡張子を除いた元名）として読み戻せる。
+        let be = crate::open_archive(&dst).unwrap();
+        assert_eq!(be.read("a.txt").unwrap(), b"alpha");
+    }
+
+    #[test]
+    fn compress_tar_xz_roundtrips_files_and_dirs() {
+        let src = TempDir::new();
+        src.write_file("a.txt", "alpha");
+        std::fs::create_dir(src.join("sub")).unwrap();
+        std::fs::write(src.join("sub").join("c.txt"), "charlie").unwrap();
+        let dst = src.join("out.tar.xz");
+        let host = FakeHost::new();
+        let sum = run_compress_tar_xz(
+            &host,
+            &src.path,
+            &["a.txt".to_owned(), "sub".to_owned()],
+            &dst,
+        );
+        assert_eq!(sum.err, 0);
+        assert!(dst.is_file());
+        let be = crate::open_archive(&dst).unwrap();
+        assert_eq!(be.read("a.txt").unwrap(), b"alpha");
+        assert_eq!(be.read("sub/c.txt").unwrap(), b"charlie");
+    }
+
+    #[test]
+    fn compress_7z_cancel_removes_partial() {
+        let src = TempDir::new();
+        src.write_file("a.txt", "x");
+        src.write_file("b.txt", "y");
+        let dst = src.join("out.7z");
+        let host = FakeHost { cancel_after: 1, ..FakeHost::new() };
+        let sum = run_compress_7z(
+            &host,
+            &src.path,
+            &["a.txt".to_owned(), "b.txt".to_owned()],
+            &dst,
+        );
+        assert!(sum.cancelled);
+        assert!(!dst.exists());
+    }
+
     /// 標準 CRC-32（IEEE・反転多項式）。手組み stored zip の検証値用。
     fn crc32(data: &[u8]) -> u32 {
         let mut crc = 0xFFFF_FFFFu32;
