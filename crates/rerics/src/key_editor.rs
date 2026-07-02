@@ -114,6 +114,20 @@ fn script_call_name(expr: &str) -> Option<String> {
     (first_ok && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')).then(|| name.to_string())
 }
 
+/// キー順の並び＝基底キーのマスター順→修飾順（[`KeyChord::display_order`]・原作 KeyList 準拠）。
+/// 解釈できない未知バインド（`Func_*` 等）は末尾へ回し、同順内は文字列で安定させる。
+fn cmp_chord(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let ka = KeyChord::parse(a).map(|c| c.display_order());
+    let kb = KeyChord::parse(b).map(|c| c.display_order());
+    match (ka, kb) {
+        (Some(x), Some(y)) => x.cmp(&y).then_with(|| a.cmp(b)),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => a.cmp(b),
+    }
+}
+
 /// ジャンル名 → 並び順。組込ジャンル名に一致すればその順、未知（独自）なら「スクリプト」と同じ
 /// 末尾（14）。スクリプトが `genre: "ファイル操作"` などで組込群に混ざれるようにするための引き当て。
 fn genre_order(name: &str) -> u8 {
@@ -892,7 +906,7 @@ impl KeyEditor {
             let pend = pend_by_cmd.remove(&command).unwrap_or_default();
             match bound_by_cmd.remove(&command) {
                 Some(mut binds) => {
-                    binds.sort_by(|a, b| a.0.cmp(&b.0));
+                    binds.sort_by(|a, b| cmp_chord(&a.0, &b.0));
                     let bound: std::collections::HashSet<String> =
                         binds.iter().map(|(_, e, _)| e.clone()).collect();
                     for (chord, expr, conflicted) in binds {
@@ -923,7 +937,7 @@ impl KeyEditor {
             match binds_by_expr.get(&expr) {
                 Some(binds) => {
                     let mut binds = binds.clone();
-                    binds.sort_by(|a, b| a.0.cmp(&b.0));
+                    binds.sort_by(|a, b| cmp_chord(&a.0, &b.0));
                     for (chord, conflicted) in binds {
                         rows.push(BindRow { expr: expr.clone(), chord: Some(chord), conflicted });
                     }
@@ -931,7 +945,7 @@ impl KeyEditor {
                 None => rows.push(BindRow { expr, chord: None, conflicted: false }),
             }
         }
-        key_rows.sort_by(|a, b| a.chord.cmp(&b.chord));
+        key_rows.sort_by(|a, b| cmp_chord(&a.chord, &b.chord));
         *self.inner.rows.borrow_mut() = rows;
         *self.inner.key_rows.borrow_mut() = key_rows;
         self.rebuild_view();

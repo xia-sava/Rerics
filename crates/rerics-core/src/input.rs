@@ -954,6 +954,79 @@ impl KeyChord {
         s.push_str(&name);
         Some(s)
     }
+
+    /// キー一覧の並び順位＝`(基底キーの順位, 修飾の順位)`。修飾を除いた基底キーで
+    /// まとめ、その中で `Normal → Shift → Ctrl → Shift+Ctrl → Alt` の順に並べる。
+    /// キー一覧（設定の「キー」ページのキー順表示など）を単純な文字列順でなく
+    /// ナビ→英字→数字→編集→記号→ファンクション→テンキーの体系順に見せるために使う。
+    pub fn display_order(&self) -> (u16, u8) {
+        let mods = ((self.alt as u8) << 2) | ((self.ctrl as u8) << 1) | (self.shift as u8);
+        (vk_display_rank(self.vk), mods)
+    }
+}
+
+/// 基底キー（修飾なし）の並び順位。小さいほど先。ナビ→英字→数字→編集→記号→
+/// ファンクション→テンキーの順で、いずれの表にも無いキーは末尾へ vk 昇順で回す。
+fn vk_display_rank(vk: u16) -> u16 {
+    // ナビゲーション系（先頭クラスタ）。
+    const NAV: &[u16] =
+        &[vk::RETURN, vk::SPACE, vk::UP, vk::DOWN, vk::LEFT, vk::RIGHT, vk::NEXT, vk::PRIOR];
+    // 編集系・記号・ファンクション・テンキー（英字/数字の後ろのクラスタ）。
+    const TAIL: &[u16] = &[
+        vk::ESCAPE,
+        vk::DELETE,
+        vk::END,
+        vk::HOME,
+        vk::BACK,
+        vk::TAB,
+        vk::OEM_MINUS,
+        vk::OEM_5,
+        vk::OEM_3,
+        vk::OEM_4,
+        vk::OEM_PLUS,
+        vk::OEM_1,
+        vk::OEM_6,
+        vk::OEM_PERIOD,
+        vk::F1,
+        vk::F2,
+        vk::F3,
+        vk::F4,
+        vk::F5,
+        vk::F6,
+        vk::F7,
+        vk::F8,
+        vk::F9,
+        vk::F10,
+        vk::F11,
+        vk::F12,
+        vk::NUMPAD0,
+        vk::NUMPAD1,
+        vk::NUMPAD2,
+        vk::NUMPAD3,
+        vk::NUMPAD4,
+        vk::NUMPAD5,
+        vk::NUMPAD6,
+        vk::NUMPAD7,
+        vk::NUMPAD8,
+        vk::NUMPAD9,
+        vk::ADD,
+        vk::SUBTRACT,
+        vk::DIVIDE,
+    ];
+    let alpha_base = NAV.len() as u16;
+    let digit_base = alpha_base + 26;
+    let tail_base = digit_base + 10;
+    if let Some(i) = NAV.iter().position(|&v| v == vk) {
+        i as u16
+    } else if (0x41..=0x5A).contains(&vk) {
+        alpha_base + (vk - 0x41)
+    } else if (0x30..=0x39).contains(&vk) {
+        digit_base + (vk - 0x30)
+    } else if let Some(i) = TAIL.iter().position(|&v| v == vk) {
+        tail_base + i as u16
+    } else {
+        tail_base + TAIL.len() as u16 + vk
+    }
 }
 
 /// キー → コマンドの対応表。
@@ -1247,6 +1320,44 @@ mod tests {
         assert_eq!(Command::from_token("commandDirect"), Some(Command::CommandDirect));
         assert_eq!(Command::CommandDirect.as_token(), "commandDirect");
         assert_eq!(Command::CommandDirect.display_name(), "任意のコマンドを実行");
+    }
+
+    #[test]
+    fn display_order_groups_by_base_key_then_modifier() {
+        // 基底キーで並び、同じ基底キー内は Normal→Shift→Ctrl→Shift+Ctrl→Alt の順。
+        let up = KeyChord::key(vk::UP);
+        let ctrl_up = KeyChord::new(vk::UP, true, false, false);
+        let alt_up = KeyChord::new(vk::UP, false, false, true);
+        let a = KeyChord::key(vk::A);
+        assert!(up.display_order() < ctrl_up.display_order());
+        assert!(ctrl_up.display_order() < alt_up.display_order());
+        // Ctrl+Up は A より前（基底キー Up がナビ群でアルファベットより先）。
+        assert!(ctrl_up.display_order() < a.display_order());
+        // 修飾順位は原作の列順（Normal<Shift<Ctrl<Shift+Ctrl<Alt）。
+        assert_eq!(KeyChord::key(vk::A).display_order().1, 0);
+        assert_eq!(KeyChord::new(vk::A, false, true, false).display_order().1, 1);
+        assert_eq!(KeyChord::new(vk::A, true, false, false).display_order().1, 2);
+        assert_eq!(KeyChord::new(vk::A, true, true, false).display_order().1, 3);
+        assert_eq!(KeyChord::new(vk::A, false, false, true).display_order().1, 4);
+    }
+
+    #[test]
+    fn display_order_cluster_sequence() {
+        // クラスタ順：ナビ→英字→数字→編集→記号→ファンクション→テンキー。
+        let ranks = [
+            KeyChord::key(vk::RETURN),  // ナビ
+            KeyChord::key(vk::A),       // 英字
+            KeyChord::key(vk::D0),      // 数字
+            KeyChord::key(vk::ESCAPE),  // 編集
+            KeyChord::key(vk::OEM_MINUS), // 記号
+            KeyChord::key(vk::F1),      // ファンクション
+            KeyChord::key(vk::NUMPAD0), // テンキー
+        ]
+        .map(|c| c.display_order().0);
+        assert!(ranks.windows(2).all(|w| w[0] < w[1]), "clusters not in order: {ranks:?}");
+        // A→B→…→Z は連続昇順、0→9 も連続昇順。
+        assert!(KeyChord::key(vk::A).display_order().0 < KeyChord::key(vk::Z).display_order().0);
+        assert!(KeyChord::key(vk::D0).display_order().0 < KeyChord::key(vk::D5).display_order().0);
     }
 
     #[test]
