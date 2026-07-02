@@ -286,7 +286,7 @@ fn draw_pane(
         fill(dc, x, y, x + w, y + bar_h, c.background)?;
         dc.SetTextColor(to_colorref(c.file_normal))?;
         if bar_h >= fh {
-            dc.TextOut(left, y + (bar_h - fh) / 2, "C:\\Users\\xia\\src")?;
+            dc.TextOut(left, y + (bar_h - fh) / 2, "C:\\Users\\Example\\src")?;
         }
     }
 
