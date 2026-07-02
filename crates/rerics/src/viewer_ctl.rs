@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -281,22 +279,22 @@ impl MainWindow {
         };
         let root = Self::pdf_temp_root(&pdf_path);
         let _ = std::fs::create_dir_all(&root);
-        // 既定幅のページ PNG（前後送りの本体）。index で覚え、再訪では焼き直さない。
-        let cache: Rc<RefCell<HashMap<usize, PathBuf>>> = Rc::new(RefCell::new(HashMap::new()));
+        // 先読みスレッドへ現在ページを伝える共有カレントと、停止フラグ。
+        let cur = Arc::new(AtomicUsize::new(0));
+        let cancel = Arc::new(AtomicBool::new(false));
+        *self.media_prefetch.borrow_mut() = Some(cancel.clone());
+        // 既定幅のページ PNG（前後送りの本体）。確定済みファイルを介して先読みスレッドと協調する
+        // ので、隣接ページが先読み済みなら焼き直さず即座に返る。
         let resolver: NavResolver = {
             let pdf = pdf_path.clone();
             let root = root.clone();
             let log = self.log.clone();
+            let cur = cur.clone();
             Rc::new(move |i: usize| {
-                if let Some(p) = cache.borrow().get(&i) {
-                    return Some(p.clone());
-                }
+                cur.store(i, Ordering::Relaxed);
                 let dest = root.join(format!("page-{i}.png"));
-                match crate::pdf::render_page(&pdf, i, crate::pdf::DEFAULT_RENDER_WIDTH, &dest) {
-                    Ok(()) => {
-                        cache.borrow_mut().insert(i, dest.clone());
-                        Some(dest)
-                    }
+                match crate::pdf::render_page_atomic(&pdf, i, crate::pdf::DEFAULT_RENDER_WIDTH, &dest) {
+                    Ok(()) => Some(dest),
                     Err(e) => {
                         log.error(&format!("PDF のページを描画できません: {} ページ目: {}", i + 1, e));
                         None
@@ -331,7 +329,61 @@ impl MainWindow {
         self.media
             .open_nav_captioned(pages, 0, resolver, Some(name.to_string()));
         self.media.set_rerender(rerender);
+        // 近傍ページを別スレッドで先読み PNG 化し、前後送りを即応にする（書庫メディアと同方式）。
+        {
+            let pdf = pdf_path.clone();
+            let root = root.clone();
+            let shutdown = self.shutdown.clone();
+            std::thread::spawn(move || {
+                Self::pdf_prefetch_loop(&pdf, &root, pages, &cur, &cancel, &shutdown);
+            });
+        }
         self.show_media_or_text(is_left, name)
+    }
+
+    /// PDF ページの先読みループ（BG スレッド）。`cur` の前後の近傍ページを既定幅で焼いて確定
+    /// ファイルを温める。`render_page_atomic` は既にあれば安価に返るので毎パス舐め直しても
+    /// 重くならない。`cancel`/`shutdown` が立つかカレントが動いたら速やかに切り上げて再センタ
+    /// リングする（PDFium 呼び出しは内部ロックで直列化＝1ページ焼くごとに FG へ譲れる）。
+    pub(crate) fn pdf_prefetch_loop(
+        pdf: &Path,
+        root: &Path,
+        pages: usize,
+        cur: &AtomicUsize,
+        cancel: &AtomicBool,
+        shutdown: &AtomicBool,
+    ) {
+        // 前方優先で温める窓（順送りを想定）。総量はこの窓に限られる＝暴走しない。
+        const AHEAD: usize = 4;
+        const BEHIND: usize = 1;
+        loop {
+            if cancel.load(Ordering::Relaxed) || shutdown.load(Ordering::Relaxed) {
+                return;
+            }
+            let center = cur.load(Ordering::Relaxed);
+            let mut targets: Vec<usize> = (1..=AHEAD).map(|k| center + k).collect();
+            for k in 1..=BEHIND {
+                if center >= k {
+                    targets.push(center - k);
+                }
+            }
+            for idx in targets {
+                if cancel.load(Ordering::Relaxed) || shutdown.load(Ordering::Relaxed) {
+                    return;
+                }
+                // カレントが動いたら今の窓は捨てて再センタリングする。
+                if cur.load(Ordering::Relaxed) != center {
+                    break;
+                }
+                if idx >= pages {
+                    continue;
+                }
+                let dest = root.join(format!("page-{idx}.png"));
+                let _ =
+                    crate::pdf::render_page_atomic(pdf, idx, crate::pdf::DEFAULT_RENDER_WIDTH, &dest);
+            }
+            std::thread::sleep(Duration::from_millis(120));
+        }
     }
 
     /// カーソル下 PDF の表示に使えるローカルパスを返す。実FS はそのパス、書庫内は一時展開した
