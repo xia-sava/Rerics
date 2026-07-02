@@ -81,6 +81,8 @@ struct Inner {
     /// 現在 index の実パスを解決する（書庫内は遅延展開）。
     resolver: RefCell<Option<NavResolver>>,
     title: RefCell<String>,
+    /// 巡回セット共通の見出し（PDF 名など）。`Some` なら各ページのファイル名の代わりに使う。
+    caption: RefCell<Option<String>>,
     /// 画像が無いとき（未対応・読込失敗・動画）に中央へ出す文言。
     message: RefCell<Option<String>>,
     /// フレーム供給元（静止画/アニメ/動画）。
@@ -154,6 +156,7 @@ impl MediaView {
             nav_index: Cell::new(0),
             resolver: RefCell::new(None),
             title: RefCell::new(String::new()),
+            caption: RefCell::new(None),
             message: RefCell::new(None),
             source: RefCell::new(None),
             animated: Cell::new(false),
@@ -238,9 +241,22 @@ impl MediaView {
     /// 巡回件数・初期位置・index→実パス解決器を与えて開く。書庫内メディアの遅延展開は
     /// `resolver` が担い、`MediaView` は解決済み実パスの読込/表示だけを受け持つ。
     pub fn open_nav(&self, len: usize, index: usize, resolver: NavResolver) {
+        self.open_nav_captioned(len, index, resolver, None);
+    }
+
+    /// `open_nav` に巡回セット共通の見出し（PDF 名など）を添えて開く。`caption` が `Some` の
+    /// とき、各ページのファイル名の代わりにこの見出しを状態行へ出す（位置 `[i/n]` は別途付く）。
+    pub fn open_nav_captioned(
+        &self,
+        len: usize,
+        index: usize,
+        resolver: NavResolver,
+        caption: Option<String>,
+    ) {
         self.inner.nav_len.set(len);
         self.inner.nav_index.set(if len == 0 { 0 } else { index.min(len - 1) });
         *self.inner.resolver.borrow_mut() = Some(resolver);
+        *self.inner.caption.borrow_mut() = caption;
         self.load_current();
     }
 
@@ -279,10 +295,11 @@ impl MediaView {
     }
 
     fn load_path(&self, path: &Path) {
-        let name = path
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let name = self.inner.caption.borrow().clone().unwrap_or_else(|| {
+            path.file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        });
         *self.inner.title.borrow_mut() = name;
         // 表示状態と再生状態を初期化する。
         let _ = self.hwnd().KillTimer(MEDIA_TIMER_ID);

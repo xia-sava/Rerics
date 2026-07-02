@@ -300,7 +300,8 @@ impl MainWindow {
                 }
             }
         });
-        self.media.open_nav(pages, 0, resolver);
+        self.media
+            .open_nav_captioned(pages, 0, resolver, Some(name.to_string()));
         self.show_media_or_text(is_left, name)
     }
 
