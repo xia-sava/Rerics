@@ -51,20 +51,20 @@ pub fn compress_box(
         &wnd,
         &[
             gui::RadioButtonOpts {
-                text: "zip",
+                text: "&zip",
                 position: gui::dpi(56, 72),
                 size: gui::dpi(64, 20),
                 selected: true,
                 ..Default::default()
             },
             gui::RadioButtonOpts {
-                text: "7z",
+                text: "&7z",
                 position: gui::dpi(132, 72),
                 size: gui::dpi(64, 20),
                 ..Default::default()
             },
             gui::RadioButtonOpts {
-                text: "xz",
+                text: "&xz",
                 position: gui::dpi(208, 72),
                 size: gui::dpi(64, 20),
                 ..Default::default()
