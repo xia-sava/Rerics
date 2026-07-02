@@ -3,6 +3,7 @@
 //! 状態は `rerics_core::FileListState` に持たせ、本モジュールは描画・入力・スクロールの
 //! GUI 配線に徹する。ダブルバッファでちらつきを抑える。
 
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -22,6 +23,32 @@ const THUMB_SHELL_ICON_LOGICAL: i32 = 32;
 
 /// サムネイル表示の行間の隙間（物理 px）。画像を行ピッチより，この分だけ小さく描く。
 const THUMB_ROW_GAP_PX: i32 = 1;
+
+/// 一覧セルの省略記号。GDI の `DT_END_ELLIPSIS` は "..." 固定なので使わず，これで自前に詰める。
+const ELLIPSIS: char = '…';
+
+/// テキストを幅 `avail`（物理 px）に収める。収まればそのまま，超えるなら文字境界で末尾を
+/// 詰めて [`ELLIPSIS`] を付す。測定は描画と同じ DC（同じフォント・文字間隔）で行なうこと。
+fn elide_to_width<'a>(dc: &w::HDC, text: &'a str, avail: i32) -> Cow<'a, str> {
+    if avail <= 0 {
+        return Cow::Borrowed("");
+    }
+    let width = |s: &str| dc.GetTextExtentPoint32(s).map(|z| z.cx).unwrap_or(i32::MAX);
+    if width(text) <= avail {
+        return Cow::Borrowed(text);
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut cut = chars.len();
+    while cut > 0 {
+        cut -= 1;
+        let mut s: String = chars[..cut].iter().collect();
+        s.push(ELLIPSIS);
+        if width(&s) <= avail {
+            return Cow::Owned(s);
+        }
+    }
+    Cow::Owned(ELLIPSIS.to_string())
+}
 
 /// FileItem の更新時刻を per-file アイコンキャッシュのキー用 u64 秒へ。取得不能は 0。
 fn item_mtime(it: &FileItem) -> u64 {
@@ -1099,10 +1126,7 @@ impl FileListView {
                 if text.is_empty() {
                     continue;
                 }
-                let mut flags = co::DT::SINGLELINE
-                    | co::DT::VCENTER
-                    | co::DT::NOPREFIX
-                    | co::DT::END_ELLIPSIS;
+                let mut flags = co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX;
                 if col.align == Align::Right {
                     flags |= co::DT::RIGHT;
                 }
@@ -1147,7 +1171,8 @@ impl FileListView {
                     }
                 // 左は n 幅マージン（＋アイコン幅）、右パディングは 0（原作の左 4/右 0 に倣う）。
                 let rect = w::RECT { left: text_left, top: y, right, bottom: y + item_h };
-                dc.DrawText(&text, rect, flags)?;
+                let shown = elide_to_width(dc, &text, right - text_left);
+                dc.DrawText(&shown, rect, flags)?;
             }
             // 4. カーソル下線。
             if cursor_visible && i == s.cursor {
