@@ -212,4 +212,3 @@ pwsh -File tools/ui.ps1 -Keys "<開くキー>" -PostKeys "<移動キー>" -Foreg
 - `crates/rerics/src/debug_json.rs` … 応答 JSON を組む純粋関数（常時ビルド・ユニットテスト）。
 - `crates/rerics/src/main.rs` の `debug_*` メソッド群・`DebugCmdClass`（NonModal/MaybeModal/ModalWrite）。
 - `crates/rerics/tests/debug_server.rs` … e2e 煙テストと `Server` ガード（state.toml 書式の実例）。
-- 設計の経緯 `(debug-server 設計メモ)`。実装勘所の続きは `(実装メモ)`。
