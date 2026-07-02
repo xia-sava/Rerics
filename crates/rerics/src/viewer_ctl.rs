@@ -1,13 +1,15 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use winsafe::{self as w, co, prelude::*};
-use rerics_core::{Call, Command, KeyChord, Location, MediaKind, open_archive};
+use rerics_core::{Call, Command, KeyChord, Location, MediaKind, data_dir, open_archive};
 use crate::media_view::NavResolver;
 use crate::file_list::FileListView;
-use crate::{ActiveView, MainWindow, dialog, join_inner_path, viewer};
+use crate::{ActiveView, MainWindow, dialog, hash64, join_inner_path, viewer};
 
 impl MainWindow {
     pub(crate) fn view(&self, is_left: bool) -> &FileListView {
@@ -81,6 +83,9 @@ impl MainWindow {
         };
         match MediaKind::from_extension(&ext) {
             Some(kind) => self.view_media(is_left, kind, &name),
+            None if ext.trim_start_matches('.').eq_ignore_ascii_case("pdf") => {
+                self.view_pdf(is_left, &name)
+            }
             None => self.view_text(is_left, &name),
         }
     }
@@ -255,6 +260,101 @@ impl MainWindow {
             }
         }
         self.show_media_or_text(is_left, name)
+    }
+
+    /// PDF をインライン表示する。各ページを PDFium で PNG へラスタライズし、画像ビューアの
+    /// 前後送りにページ単位で載せる（同階層のファイルではなく PDF のページを巡回対象にする）。
+    /// resolver がページ index から PNG を遅延生成・キャッシュする。PDFium 未ロードや PDF を
+    /// 開けないときはテキスト/バイナリビューアへ退避する。
+    pub(crate) fn view_pdf(&self, is_left: bool, name: &str) -> w::AnyResult<()> {
+        self.cancel_media_prefetch();
+        let Some(pdf_path) = self.resolve_pdf_path(is_left, name) else {
+            return self.view_text(is_left, name);
+        };
+        let pages = match crate::pdf::page_count(&pdf_path) {
+            Ok(n) if n > 0 => n,
+            Ok(_) => return self.view_text(is_left, name),
+            Err(e) => {
+                self.log.error(&format!("PDF を開けません: {}: {}", name, e));
+                return self.view_text(is_left, name);
+            }
+        };
+        let root = Self::pdf_temp_root(&pdf_path);
+        let _ = std::fs::create_dir_all(&root);
+        let log = self.log.clone();
+        // 訪問済みページの PNG を index で覚え、前後送りの再訪では焼き直さない。
+        let cache: Rc<RefCell<HashMap<usize, PathBuf>>> = Rc::new(RefCell::new(HashMap::new()));
+        let resolver: NavResolver = Rc::new(move |i: usize| {
+            if let Some(p) = cache.borrow().get(&i) {
+                return Some(p.clone());
+            }
+            let dest = root.join(format!("page-{i}.png"));
+            match crate::pdf::render_page(&pdf_path, i, crate::pdf::DEFAULT_RENDER_WIDTH, &dest) {
+                Ok(()) => {
+                    cache.borrow_mut().insert(i, dest.clone());
+                    Some(dest)
+                }
+                Err(e) => {
+                    log.error(&format!("PDF のページを描画できません: {} ページ目: {}", i + 1, e));
+                    None
+                }
+            }
+        });
+        self.media.open_nav(pages, 0, resolver);
+        self.show_media_or_text(is_left, name)
+    }
+
+    /// カーソル下 PDF の表示に使えるローカルパスを返す。実FS はそのパス、書庫内は一時展開した
+    /// パス。結果一覧は項目の出自から解決する。開けない/展開失敗は `None`。
+    fn resolve_pdf_path(&self, is_left: bool, name: &str) -> Option<PathBuf> {
+        let loc = if self.view(is_left).state().borrow().find_result {
+            self.cursor_dir(is_left)
+        } else {
+            self.pane(is_left).borrow().loc().clone()
+        };
+        match loc {
+            Location::Real(dir) => Some(dir.join(name)),
+            Location::Archive { archive, inner } => {
+                self.register_archive_temp(&archive);
+                let inner_file = join_inner_path(&inner, name);
+                let password = self.ensure_media_password(&archive, Some(&inner_file));
+                match Self::extract_entry_to_temp(&archive, &inner_file, password.as_deref()) {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        self.log
+                            .error(&format!("書庫内 PDF を展開できません: {}: {}", name, e));
+                        None
+                    }
+                }
+            }
+        }
+    }
+
+    /// PDF から焼いたページ PNG の一時置き場。**プロセスごとに分離**して、別インスタンスの
+    /// 掃除が稼働中インスタンスの生成物を壊さないようにする（書庫 temp と同じ方針）。
+    fn pdf_temp_dir() -> PathBuf {
+        data_dir()
+            .join("cache")
+            .join("pdf")
+            .join(std::process::id().to_string())
+    }
+
+    /// 自プロセスの PDF ページ temp のみを削除する（起動時の残骸掃除＋終了時の後始末）。
+    pub(crate) fn clear_pdf_temp() {
+        let _ = std::fs::remove_dir_all(Self::pdf_temp_dir());
+    }
+
+    /// PDF 1つ分のページ temp ルート（`cache/pdf/<pid>/<key>/`）。key はパス＋mtime のハッシュ
+    /// ＝外部更新で別 key になり、焼き直しが古い PNG に当たらない。
+    fn pdf_temp_root(pdf: &Path) -> PathBuf {
+        let stamp = std::fs::metadata(pdf)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let key = format!("{:016x}", hash64(&format!("{}\u{0}{}", pdf.display(), stamp)));
+        Self::pdf_temp_dir().join(key)
     }
 
     /// 指定ビューアを最前面に出し、もう一方を隠してキー入力を奪う。

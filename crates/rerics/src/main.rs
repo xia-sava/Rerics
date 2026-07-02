@@ -529,6 +529,7 @@ impl MainWindow {
         // 前回の異常終了で残った一時展開を起動時に掃除する。自pid分を消し、さらに死んでる
         // 他pid（クラッシュ残骸）の dir も裏で回収する（生存インスタンスの temp は触らない）。
         Self::clear_archive_temp();
+        Self::clear_pdf_temp();
         Self::sweep_dead_pid_temps();
 
         let state = rerics_core::State::load();
@@ -918,6 +919,7 @@ impl MainWindow {
         self.wnd.on().wm_destroy(move || {
             this.shutdown.store(true, Ordering::Relaxed);
             Self::clear_archive_temp();
+            Self::clear_pdf_temp();
             this.save_session_state();
             Ok(())
         });

@@ -436,25 +436,27 @@ impl MainWindow {
     /// 起動時に `cache/archive/<pid>/` を走査し、生きていない pid の dir を裏で削除する
     /// （クラッシュ/前回終了の残骸回収）。生存インスタンスの temp は触らない。
     pub(crate) fn sweep_dead_pid_temps() {
-        let base = data_dir().join("cache").join("archive");
+        let cache = data_dir().join("cache");
         let self_pid = std::process::id();
         std::thread::spawn(move || {
-            let Ok(rd) = std::fs::read_dir(&base) else {
-                return;
-            };
-            for ent in rd.flatten() {
-                if !ent.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                    continue;
-                }
-                let Some(pid) = ent
-                    .file_name()
-                    .to_str()
-                    .and_then(|s| s.parse::<u32>().ok())
-                else {
+            for category in ["archive", "pdf"] {
+                let Ok(rd) = std::fs::read_dir(cache.join(category)) else {
                     continue;
                 };
-                if pid != self_pid && !Self::pid_alive(pid) {
-                    let _ = std::fs::remove_dir_all(ent.path());
+                for ent in rd.flatten() {
+                    if !ent.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        continue;
+                    }
+                    let Some(pid) = ent
+                        .file_name()
+                        .to_str()
+                        .and_then(|s| s.parse::<u32>().ok())
+                    else {
+                        continue;
+                    };
+                    if pid != self_pid && !Self::pid_alive(pid) {
+                        let _ = std::fs::remove_dir_all(ent.path());
+                    }
                 }
             }
         });
