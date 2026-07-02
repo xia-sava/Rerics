@@ -2003,17 +2003,16 @@ fn kind_label(kind: ColumnKind) -> &'static str {
     COLUMN_KINDS.iter().find(|(k, _)| *k == kind).map(|(_, l)| *l).unwrap_or("?")
 }
 
-/// 既定ソート選択肢（リスト表示順）。
-const SORT_TYPES: &[(SortType, &str)] = &[
-    (SortType::FileName, "名前順"),
-    (SortType::Extension, "拡張子順"),
-    (SortType::Length, "サイズ順"),
-    (SortType::LastWriteTime, "更新日時順"),
-    (SortType::CreateTime, "作成日時順"),
-    (SortType::Attribute, "属性順"),
-    (SortType::FileNameExpLike, "名前順（自然順）"),
-    (SortType::ExtensionExpLike, "拡張子順（自然順）"),
-];
+/// 既定ソートの種別ラジオ／互換チェックの状態から `default_sort` を組み直す。
+/// 種別・表記は S キーの「ソート」ダイアログ（[`crate::dialog::SORT_KINDS`]）と共有する。
+fn apply_default_sort(shared: &Rc<Shared>, kinds: &gui::RadioGroup, explike: &gui::CheckBox) {
+    let base = kinds
+        .selected_index()
+        .and_then(|i| crate::dialog::SORT_KINDS.get(i))
+        .map(|(_, t)| *t)
+        .unwrap_or(SortType::FileName);
+    shared.cfg.borrow_mut().default_sort = SortType::with_explike(base, explike.is_checked());
+}
 
 /// ラベル付きボタンを置く。
 fn button(parent: &(impl GuiParent + 'static), text: &str, x: i32, y: i32, w: i32) -> gui::Button {
@@ -2036,9 +2035,10 @@ struct ColumnsEditor {
     shown: gui::ListView<()>,
     /// 使用可能な列（全種類・重複可）。
     available: gui::ListBox,
-    sort_list: gui::ListBox,
-    /// 既定ソートリストで初期選択する行（窓生成後の populate で選ぶ）。
-    sort_sel: Option<usize>,
+    /// 文字間隔スピナーと初期値。winsafe は value==0 だと生成時に位置を設定しないため、
+    /// 生成後の populate で明示的に合わせる（既定 0 が範囲下限で表示されるのを防ぐ）。
+    spacing_spin: gui::UpDown,
+    spacing_init: i32,
     rebuild: Rc<dyn Fn(Option<usize>)>,
 }
 
@@ -2046,22 +2046,69 @@ impl ColumnsEditor {
     fn new(parent: &gui::WindowControl, shared: &Rc<Shared>) -> Self {
         // 既定の並び順（state が無い初回起動時に使う）。
         group_box(parent, "既定の並び順", 12, 8, 250, 158);
-        let sort_list = gui::ListBox::new(
+        // 種別（2列）＋エクスプローラ互換＋降順。S キーの「ソート」ダイアログと項目・表記を揃える。
+        let (init_kind, init_exp) = shared.cfg.borrow().default_sort.split_explike();
+        let sort_kinds = gui::RadioGroup::new(
             parent,
-            gui::ListBoxOpts {
-                position: gui::dpi(24, 32),
-                size: gui::dpi(226, 116),
+            &crate::dialog::SORT_KINDS
+                .iter()
+                .enumerate()
+                .map(|(i, (label, ty))| gui::RadioButtonOpts {
+                    text: label,
+                    position: gui::dpi(24 + (i as i32 % 2) * 114, 30 + (i as i32 / 2) * 24),
+                    size: gui::dpi(110, 20),
+                    selected: *ty == init_kind,
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>(),
+        );
+        let sort_explike = gui::CheckBox::new(
+            parent,
+            gui::CheckBoxOpts {
+                text: "エクスプローラ互換(&X)",
+                position: gui::dpi(24, 108),
+                size: gui::dpi(220, 18),
+                check_state: if init_exp { co::BST::CHECKED } else { co::BST::UNCHECKED },
+                ..Default::default()
+            },
+        );
+        let sort_reverse = gui::CheckBox::new(
+            parent,
+            gui::CheckBoxOpts {
+                text: "降順(&R)",
+                position: gui::dpi(24, 130),
+                size: gui::dpi(220, 18),
+                check_state: if shared.cfg.borrow().default_sort_reverse {
+                    co::BST::CHECKED
+                } else {
+                    co::BST::UNCHECKED
+                },
                 ..Default::default()
             },
         );
         {
             let shared = shared.clone();
-            let sl = sort_list.clone();
-            sort_list.on().lbn_sel_change(move || {
-                if let Some(i) = unsafe { sl.hwnd().SendMessage(lb::GetCurSel {}) }
-                    && let Some((st, _)) = SORT_TYPES.get(i as usize) {
-                        shared.cfg.borrow_mut().default_sort = *st;
-                    }
+            let kinds = sort_kinds.clone();
+            let explike = sort_explike.clone();
+            sort_kinds.on().bn_clicked(move || {
+                apply_default_sort(&shared, &kinds, &explike);
+                Ok(())
+            });
+        }
+        {
+            let shared = shared.clone();
+            let kinds = sort_kinds.clone();
+            let explike = sort_explike.clone();
+            sort_explike.on().bn_clicked(move || {
+                apply_default_sort(&shared, &kinds, &explike);
+                Ok(())
+            });
+        }
+        {
+            let shared = shared.clone();
+            let rev = sort_reverse.clone();
+            sort_reverse.on().bn_clicked(move || {
+                shared.cfg.borrow_mut().default_sort_reverse = rev.is_checked();
                 Ok(())
             });
         }
@@ -2095,7 +2142,7 @@ impl ColumnsEditor {
                 ..Default::default()
             },
         );
-        let _spacing_spin = gui::UpDown::new(
+        let spacing_spin = gui::UpDown::new(
             parent,
             gui::UpDownOpts {
                 position: gui::dpi(730, 198),
@@ -2335,11 +2382,7 @@ impl ColumnsEditor {
             });
         }
 
-        let sort_sel = SORT_TYPES
-            .iter()
-            .position(|(s, _)| *s == shared.cfg.borrow().default_sort);
-
-        Self { shown, available, sort_list, sort_sel, rebuild }
+        Self { shown, available, spacing_spin, spacing_init: spacing.clamp(-20, 20), rebuild }
     }
 
     /// 窓生成後に表示中の列・使用可能な列・既定ソートを流し込む（生成前の add は無効化されるため）。
@@ -2350,13 +2393,8 @@ impl ColumnsEditor {
         let labels: Vec<&str> = COLUMN_KINDS.iter().map(|(_, l)| *l).collect();
         let _ = self.available.items().add(&labels);
 
-        let sort_labels: Vec<&str> = SORT_TYPES.iter().map(|(_, l)| *l).collect();
-        let _ = self.sort_list.items().add(&sort_labels);
-        unsafe {
-            let _ = self.sort_list.hwnd().SendMessage(lb::SetCurSel {
-                index: self.sort_sel.map(|i| i as u32),
-            });
-        }
+        // 生成時に value==0 だと省かれる位置設定を、既定 0 でも正しく表示されるよう明示する。
+        self.spacing_spin.set_pos(self.spacing_init);
 
         (self.rebuild)(Some(0));
     }

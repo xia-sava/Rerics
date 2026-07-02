@@ -248,6 +248,26 @@ impl SortType {
             Self::ExtensionExpLike => "extensionExpLike",
         }
     }
+
+    /// エクスプローラ互換（自然順）種別を、素の種別と互換フラグへ分解する。
+    /// 名前／拡張子以外は互換の概念が無いので `false`。
+    pub fn split_explike(self) -> (SortType, bool) {
+        match self {
+            Self::FileNameExpLike => (Self::FileName, true),
+            Self::ExtensionExpLike => (Self::Extension, true),
+            other => (other, false),
+        }
+    }
+
+    /// 素の種別＋エクスプローラ互換フラグから種別を合成する（[`split_explike`] の逆）。
+    /// 互換を持てるのは名前／拡張子のみで、他種別では `explike` を無視する。
+    pub fn with_explike(base: SortType, explike: bool) -> SortType {
+        match (base, explike) {
+            (Self::FileName, true) => Self::FileNameExpLike,
+            (Self::Extension, true) => Self::ExtensionExpLike,
+            (t, _) => t,
+        }
+    }
 }
 
 /// ファイル名同士を比較する。Windows ではユーザの既定ロケールの言語的照合

@@ -570,13 +570,13 @@ impl MainWindow {
                     &left_path,
                     &config.columns,
                     config.default_sort,
-                    false,
+                    config.default_sort_reverse,
                 ),
                 right_state: Self::build_state_for(
                     &right_path,
                     &config.columns,
                     config.default_sort,
-                    false,
+                    config.default_sort_reverse,
                 ),
                 left_path,
                 right_path,
@@ -1260,12 +1260,15 @@ impl MainWindow {
             Command::SortBySize => self.sort_active(is_left, SortType::Length, false),
             Command::SortByDate => self.sort_active(is_left, SortType::LastWriteTime, false),
             Command::Sort => {
-                // 種別指定が無い/不正なら config の既定ソートに従う（原作準拠）。
-                let t = args
-                    .str(0)
-                    .and_then(SortType::from_token)
-                    .unwrap_or_else(|| self.config.borrow().default_sort);
-                self.sort_active(is_left, t, false);
+                // 種別指定が無い/不正なら config の既定ソート（種別・昇降とも）に従う（原作準拠）。
+                let (t, reverse) = match args.str(0).and_then(SortType::from_token) {
+                    Some(t) => (t, false),
+                    None => {
+                        let cfg = self.config.borrow();
+                        (cfg.default_sort, cfg.default_sort_reverse)
+                    }
+                };
+                self.sort_active(is_left, t, reverse);
             }
             Command::SortReverseToggle => {
                 let t = state.borrow().sort_type;

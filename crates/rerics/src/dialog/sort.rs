@@ -11,11 +11,7 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
 
     // エクスプローラ互換は名前/拡張子に直交するチェック。種別ラジオは互換なしの素の種別を選び、
     // 互換種別が現在値なら対応する素の種別ラジオを選びチェックを立てる。
-    let (init_kind, init_exp) = match cur {
-        SortType::FileNameExpLike => (SortType::FileName, true),
-        SortType::ExtensionExpLike => (SortType::Extension, true),
-        other => (other, false),
-    };
+    let (init_kind, init_exp) = cur.split_explike();
 
     let _ = gui::Label::new(
         &wnd,
@@ -109,11 +105,7 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
                 .and_then(|i| SORT_KINDS.get(i))
                 .map(|(_, t)| *t)
                 .unwrap_or(SortType::FileName);
-            let ty = match (base, explike.is_checked()) {
-                (SortType::FileName, true) => SortType::FileNameExpLike,
-                (SortType::Extension, true) => SortType::ExtensionExpLike,
-                (t, _) => t,
-            };
+            let ty = SortType::with_explike(base, explike.is_checked());
             let rev = reverse_cb.is_checked();
             *result.borrow_mut() = Some((ty, rev));
             wnd2.close();

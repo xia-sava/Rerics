@@ -372,6 +372,8 @@ pub struct Config {
     pub char_spacing_px: i32,
     /// 既定のソート種別（state が無い初回起動時の並び順）。
     pub default_sort: SortType,
+    /// 既定のソートを降順にするか（state が無い初回起動時／種別未指定の Sort に適用）。
+    pub default_sort_reverse: bool,
     /// 日付ソートのときだけ昇降を追加で反転する（古い日付を先頭にできる）。
     pub reverse_sort_date: bool,
     /// 読込・展開の待機スピナーを出すまでの遅延（ミリ秒）。これより速く終わる処理では
@@ -418,6 +420,7 @@ impl Default for Config {
             auto_adjust_columns: true,
             char_spacing_px: 0,
             default_sort: SortType::FileName,
+            default_sort_reverse: false,
             reverse_sort_date: false,
             progress_delay_ms: 1000,
             keybinds: KeyMap::default().to_string_map(),
