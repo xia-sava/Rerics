@@ -1,3 +1,7 @@
+// GUI ビルドではコンソール窓を出さない。debug-server ビルドは stdout でバインドしたポートを
+// 通知し e2e ハーネスがそれを読むため、コンソール（console サブシステム）を残す。
+#![cfg_attr(not(feature = "debug-server"), windows_subsystem = "windows")]
+
 mod chrome;
 mod script;
 // 常時ビルド（純粋関数＋ユニットテスト）。呼び出し元は debug-server feature 下なので OFF 時は未使用。
