@@ -1,6 +1,7 @@
 theme = "system"
 size_format = "simple2"
 auto_adjust_columns = true
+char_spacing_px = 0
 default_sort = "FileName"
 reverse_sort_date = false
 progress_delay_ms = 1000

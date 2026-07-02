@@ -9,6 +9,20 @@ use winsafe::{self as w, co, gui, prelude::*};
 // WM_MOUSEACTIVATE の戻り値（winsafe に co::MA 相当が無いため定数で持つ）。
 const MA_ACTIVATE: isize = 1;
 
+#[link(name = "gdi32")]
+unsafe extern "system" {
+    fn SetTextCharacterExtra(hdc: *mut c_void, extra: i32) -> i32;
+}
+
+/// DC の文字間隔（intercharacter spacing）を論理単位で設定する。負で詰める。
+///
+/// `DrawText`/`TextOut` の描画にも `GetTextExtentPoint32` の実測にも効くので、フォントを
+/// 選択した直後に一度呼べば、その DC 上の以降の文字描画・幅測定が一律にこの間隔になる。
+/// winsafe に相当メソッドが無いため gdi32 を直に叩く。
+pub fn set_char_spacing(dc: &w::HDC, extra: i32) {
+    unsafe { SetTextCharacterExtra(dc.ptr(), extra) };
+}
+
 /// クリックでキーフォーカスを奪わない「受け身の面」として子コントロールを設定する。
 ///
 /// ペイン・ログ・各種バーは、それ自体はキーフォーカスを持たない（キー入力はキーシンクへ

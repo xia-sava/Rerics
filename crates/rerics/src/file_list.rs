@@ -93,6 +93,8 @@ struct Inner {
     size_format: Cell<SizeFormat>,
     /// 列幅を内容に合わせて自動調整するか（設定）。off なら設定幅を保つ。
     auto_adjust: Cell<bool>,
+    /// 一覧セルの文字間隔（設定・論理 px・負で詰める）。描画と幅実測の両方へ効かせる。
+    char_spacing: Cell<i32>,
     /// 現在表示中の実FSディレクトリ（per-file アイコン取得用。書庫内など実体が無ければ None）。
     dir: RefCell<Option<PathBuf>>,
     /// 切り詰めセルの全文を出す hover ツールチップ部品（生成後に設定）。
@@ -152,6 +154,7 @@ impl FileListView {
             thumbnail_size: Cell::new(cfg.icons.thumbnail_size),
             size_format: Cell::new(cfg.size_format),
             auto_adjust: Cell::new(cfg.auto_adjust_columns),
+            char_spacing: Cell::new(cfg.char_spacing_px),
             dir: RefCell::new(None),
             cell_tip: RefCell::new(None),
         });
@@ -309,6 +312,7 @@ impl FileListView {
         self.inner.thumbnail_size.set(cfg.icons.thumbnail_size);
         self.inner.size_format.set(cfg.size_format);
         self.inner.auto_adjust.set(cfg.auto_adjust_columns);
+        self.inner.char_spacing.set(cfg.char_spacing_px);
         self.inner.progress_delay.set(Duration::from_millis(cfg.progress_delay_ms));
         // 列構成をライブ反映（表示中ペイン）。幅は自動調整 on なら autofit が、off なら設定値が効く。
         {
@@ -338,6 +342,7 @@ impl FileListView {
         let dc = self.hwnd().GetDC()?;
         let font = self.create_font()?;
         let _font_sel = dc.SelectObject(&*font)?;
+        crate::winutil::set_char_spacing(&dc, self.inner.char_spacing.get());
         let dpi = gui::dpi_x(96).max(1);
         let to_logical = |phys: i32| (phys * 96 + dpi / 2) / dpi;
         // 代表幅の基準となる平均的な文字幅。
@@ -880,6 +885,7 @@ impl FileListView {
         let Ok(dc) = self.hwnd().GetDC() else { return None };
         let Ok(font) = self.create_font() else { return None };
         let Ok(_sel) = dc.SelectObject(&*font) else { return None };
+        crate::winutil::set_char_spacing(&dc, self.inner.char_spacing.get());
         let mut text_left = left + Self::text_margin(&dc);
         if matches!(kind, ColumnKind::FileName | ColumnKind::FileBaseName) && self.icons_visible() {
             text_left += self.icon_px() + gui::dpi_x(2);
@@ -992,6 +998,7 @@ impl FileListView {
     pub(crate) fn render_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
         let font = self.create_font()?;
         let _font_sel = dc.SelectObject(&*font)?;
+        crate::winutil::set_char_spacing(dc, self.inner.char_spacing.get());
         // フォント高さ実測。
         if let Ok(tm) = dc.GetTextMetrics() {
             self.inner.font_height.set(tm.tmHeight);

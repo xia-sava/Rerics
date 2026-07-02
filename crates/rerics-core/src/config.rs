@@ -368,6 +368,8 @@ pub struct Config {
     pub size_format: SizeFormat,
     /// 列幅を内容に合わせて自動調整する（off なら `columns` の幅をそのまま使う）。
     pub auto_adjust_columns: bool,
+    /// 一覧セルの文字間隔（論理 px・負で詰める）。描画と列幅の実測の両方へ効く。0 で等幅そのまま。
+    pub char_spacing_px: i32,
     /// 既定のソート種別（state が無い初回起動時の並び順）。
     pub default_sort: SortType,
     /// 日付ソートのときだけ昇降を追加で反転する（古い日付を先頭にできる）。
@@ -414,6 +416,7 @@ impl Default for Config {
             columns: default_columns(),
             size_format: SizeFormat::Simple2,
             auto_adjust_columns: true,
+            char_spacing_px: 0,
             default_sort: SortType::FileName,
             reverse_sort_date: false,
             progress_delay_ms: 1000,

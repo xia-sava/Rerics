@@ -2080,6 +2080,46 @@ impl ColumnsEditor {
             },
         );
 
+        // 文字間隔（自動調整トグルと同じ行の右側）。負で詰める＝マイナス入力を許すため
+        // ES::NUMBER は付けない。
+        label(parent, "文字間隔（px・負で詰める）", 512, 200, 170);
+        let spacing = shared.cfg.borrow().char_spacing_px;
+        let spacing_edit = gui::Edit::new(
+            parent,
+            gui::EditOpts {
+                text: &spacing.to_string(),
+                control_style: co::ES::AUTOHSCROLL,
+                position: gui::dpi(686, 198),
+                width: gui::dpi_x(44),
+                height: gui::dpi_y(22),
+                ..Default::default()
+            },
+        );
+        let _spacing_spin = gui::UpDown::new(
+            parent,
+            gui::UpDownOpts {
+                position: gui::dpi(730, 198),
+                height: gui::dpi_y(22),
+                range: (-20, 20),
+                value: spacing.clamp(-20, 20),
+                control_style: co::UDS::AUTOBUDDY
+                    | co::UDS::SETBUDDYINT
+                    | co::UDS::ALIGNRIGHT
+                    | co::UDS::ARROWKEYS,
+                ..Default::default()
+            },
+        );
+        {
+            let shared = shared.clone();
+            let se = spacing_edit.clone();
+            spacing_edit.on().en_change(move || {
+                let cur = shared.cfg.borrow().char_spacing_px;
+                let v = parse_or(&se, cur).clamp(-20, 20);
+                shared.cfg.borrow_mut().char_spacing_px = v;
+                Ok(())
+            });
+        }
+
         // 左：使用可能な列（全種類・重複可）。
         label(parent, "使用可能な列", 24, 228, 200);
         let available = gui::ListBox::new(
