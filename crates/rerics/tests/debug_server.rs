@@ -5777,3 +5777,60 @@ fn incremental_search_arrows_step_between_matches() {
     assert_eq!(after.trim(), "null", "Enter で確定して閉じる");
     wait_cursor("1");
 }
+
+/// pageNext/pagePrevious＝タブを次/前へ巡回移動する（末尾で先頭へ・先頭で末尾へ巻き戻る＝
+/// 原作 frmMain.PageNext/PagePrevious 準拠）。
+#[test]
+fn tab_page_next_previous_cycle() {
+    let server = Server::start_writable(&["a.txt"]);
+    // 開始は 1 タブ・active=0。newFiler ×2 で 3 タブにする。
+    server.req("POST", "/command/newFiler", "").unwrap();
+    server.req("POST", "/command/newFiler", "").unwrap();
+    let count = server.req("GET", "/state/tabs/count", "").unwrap().1;
+    assert_eq!(count.trim(), "3", "newFiler×2 で 3 タブ: {count}");
+
+    let active_is = |v: &str| {
+        let got = poll(&server, "/state/tabs/active", |b| b.trim() == v);
+        assert_eq!(got.trim(), v, "active タブが {v} である");
+    };
+    active_is("2"); // 直近の新タブがアクティブ。
+
+    // 末尾(2)から pageNext で先頭(0)へ巻き戻り、以降は前進。
+    server.req("POST", "/command/pageNext", "").unwrap();
+    active_is("0");
+    server.req("POST", "/command/pageNext", "").unwrap();
+    active_is("1");
+    // 先頭(0)から pagePrevious で末尾(2)へ巻き戻る。
+    server.req("POST", "/command/pagePrevious", "").unwrap();
+    active_is("0");
+    server.req("POST", "/command/pagePrevious", "").unwrap();
+    active_is("2");
+}
+
+/// newFiler＝現在のパスを複製した新タブを「アクティブ直後」へ挿入して切り替える
+/// （原作は末尾追加だが、rerics はタブモデルを刷新し複製元の隣へ挿入する意図的な差）。
+#[test]
+fn new_filer_inserts_tab_after_active() {
+    let server = Server::start_writable(&["a.txt"]);
+    let start = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+
+    // 1 枚目の newFiler：2 タブ・active=1・新タブは複製元と同じパス。
+    server.req("POST", "/command/newFiler", "").unwrap();
+    assert_eq!(server.req("GET", "/state/tabs/count", "").unwrap().1.trim(), "2");
+    assert_eq!(server.req("GET", "/state/tabs/active", "").unwrap().1.trim(), "1");
+    let loc = server.req("GET", "/state/panes/left/location", "").unwrap().1;
+    assert_eq!(loc.trim(), start, "新タブは複製元のパスを引き継ぐ: {loc}");
+
+    // tab0 へ戻ってから newFiler：アクティブ直後(index 1)へ挿入され active=1 になる
+    // （末尾追加なら index 2 になるはず＝挿入位置の差を固定する）。
+    server.req("POST", "/command/pagePrevious", "").unwrap();
+    let got = poll(&server, "/state/tabs/active", |b| b.trim() == "0");
+    assert_eq!(got.trim(), "0", "tab0 へ戻る");
+    server.req("POST", "/command/newFiler", "").unwrap();
+    assert_eq!(server.req("GET", "/state/tabs/count", "").unwrap().1.trim(), "3");
+    assert_eq!(
+        server.req("GET", "/state/tabs/active", "").unwrap().1.trim(),
+        "1",
+        "アクティブ直後へ挿入＝active は 1（末尾追加なら 2 になる）"
+    );
+}
