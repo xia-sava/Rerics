@@ -9,8 +9,8 @@ use super::*;
 pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option<(SortType, bool)> {
     let (wnd, arm) = modal_window("ソート", 280, 300);
 
-    // エクスプローラ互換は名前/拡張子に直交するチェック。種別ラジオは互換なしの素の種別を選び、
-    // 互換種別が現在値なら対応する素の種別ラジオを選びチェックを立てる。
+    // 自然順は名前/拡張子に直交するチェック。種別ラジオは自然順なしの素の種別を選び、
+    // 自然順種別が現在値なら対応する素の種別ラジオを選びチェックを立てる。
     let (init_kind, init_exp) = cur.split_explike();
 
     let _ = gui::Label::new(
@@ -50,7 +50,7 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
     let explike = gui::CheckBox::new(
         &wnd,
         gui::CheckBoxOpts {
-            text: "エクスプローラ互換(&X)",
+            text: "自然順(&X)",
             position: gui::dpi(24, 208),
             size: gui::dpi(240, 18),
             check_state: if init_exp { co::BST::CHECKED } else { co::BST::UNCHECKED },

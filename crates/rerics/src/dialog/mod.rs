@@ -782,7 +782,7 @@ pub struct CompressChoice {
 
 
 /// ソート設定ダイアログの種別ラジオ（表示ラベル → ソート種別・表示順）。
-/// エクスプローラ互換は独立チェックで名前/拡張子に直交させるため、種別はこの6つのみ。
+/// 自然順は独立チェックで名前/拡張子に直交させるため、種別はこの6つのみ。
 pub(crate) const SORT_KINDS: &[(&str, SortType)] = &[
     ("名前順(&F)", SortType::FileName),
     ("拡張子(&E)", SortType::Extension),

@@ -2046,7 +2046,7 @@ impl ColumnsEditor {
     fn new(parent: &gui::WindowControl, shared: &Rc<Shared>) -> Self {
         // 既定の並び順（state が無い初回起動時に使う）。
         group_box(parent, "既定の並び順", 12, 8, 250, 158);
-        // 種別（2列）＋エクスプローラ互換＋降順。S キーの「ソート」ダイアログと項目・表記を揃える。
+        // 種別（2列）＋自然順＋降順。S キーの「ソート」ダイアログと項目・表記を揃える。
         let (init_kind, init_exp) = shared.cfg.borrow().default_sort.split_explike();
         let sort_kinds = gui::RadioGroup::new(
             parent,
@@ -2065,7 +2065,7 @@ impl ColumnsEditor {
         let sort_explike = gui::CheckBox::new(
             parent,
             gui::CheckBoxOpts {
-                text: "エクスプローラ互換(&X)",
+                text: "自然順(&X)",
                 position: gui::dpi(24, 108),
                 size: gui::dpi(220, 18),
                 check_state: if init_exp { co::BST::CHECKED } else { co::BST::UNCHECKED },
