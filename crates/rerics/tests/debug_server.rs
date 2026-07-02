@@ -127,6 +127,33 @@ impl Server {
         Server { child, port, base }
     }
 
+    /// `start_writable` の左右別ディレクトリ版。左に `left_files` を置き、右は空。左をアクティブ
+    /// にして起動する。反対ペイン作成など L/R 方向が問われる挙動の検証用。
+    fn start_writable_split(left_files: &[&str]) -> Server {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("rerics_it_{}_{}", std::process::id(), n));
+        let data = base.join("data");
+        let l = base.join("sbxL");
+        let r = base.join("sbxR");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&l).unwrap();
+        std::fs::create_dir_all(&r).unwrap();
+        for f in left_files {
+            std::fs::write(l.join(f), b"x").unwrap();
+        }
+        std::fs::write(
+            data.join("state.toml"),
+            format!(
+                "active_tab = 0\nsplit_ratio = 0.5\n[[tabs]]\nleft = '{l}'\nright = '{r}'\nactive_right = false\n",
+                l = l.display(),
+                r = r.display()
+            ),
+        )
+        .unwrap();
+        let (child, port) = spawn_and_wait(&data, true);
+        Server { child, port, base }
+    }
+
     /// `start_writable` と同じだが、差分 config.toml を併せて書いて起動する。
     /// （ファイル操作の確認ダイアログ設定など、config 駆動の挙動を書込み許可下で検証する用。）
     fn start_writable_cfg(sandbox_files: &[&str], config_toml: &str) -> Server {
@@ -902,6 +929,23 @@ fn compress_radio_7z_one_by_one() {
         items.contains("\"name\":\"a.txt.7z\"") && items.contains("\"name\":\"b.txt.7z\""),
         "each item should become its own 7z: {items}"
     );
+}
+
+/// 圧縮ファイルは反対ペイン（右）に作られる（原作準拠）。アクティブ（左）には残らない。
+#[test]
+fn compress_creates_in_opposite_pane() {
+    let server = Server::start_writable_split(&["a.txt"]); // 左に a.txt・右は空・左アクティブ。
+    server.req("POST", "/command/cursorDown", "").unwrap(); // .. -> a.txt
+    server.req("POST", "/command/compressDialog", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/text", "out.zip").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    // 右（反対）ペインに現れる。
+    let right = poll(&server, "/state/panes/right/items", |b| b.contains("\"name\":\"out.zip\""));
+    assert!(right.contains("\"name\":\"out.zip\""), "archive should appear in the opposite (right) pane: {right}");
+    // 左（アクティブ）ペインには作られない。
+    let left = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert!(!left.contains("\"name\":\"out.zip\""), "archive must not be in the active (left) pane: {left}");
 }
 
 /// extract_create_directory=true のとき、書庫の展開先に書庫名のフォルダ（arc）が作られる。
