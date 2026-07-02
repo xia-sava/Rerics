@@ -1441,6 +1441,63 @@ fn view_command_opens_internal_viewer_for_file() {
     assert_eq!(av2.trim(), "\"none\"", "closing the viewer returns to the list");
 }
 
+/// 内容なし PDF（`pages` ページ・各 200x200）をバイト列で組み立てる。xref のオフセットを
+/// 実バイト位置から計算するので厳密なパーサ（PDFium）でも開ける。
+fn make_pdf(pages: usize) -> Vec<u8> {
+    let mut objs = vec!["<< /Type /Catalog /Pages 2 0 R >>".to_string()];
+    let kids = (0..pages)
+        .map(|i| format!("{} 0 R", 3 + i))
+        .collect::<Vec<_>>()
+        .join(" ");
+    objs.push(format!("<< /Type /Pages /Kids [{kids}] /Count {pages} >>"));
+    for _ in 0..pages {
+        objs.push("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>".to_string());
+    }
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"%PDF-1.4\n");
+    let mut offs = Vec::new();
+    for (i, body) in objs.iter().enumerate() {
+        offs.push(buf.len());
+        buf.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = buf.len();
+    let size = objs.len() + 1;
+    buf.extend_from_slice(format!("xref\n0 {size}\n").as_bytes());
+    buf.extend_from_slice(b"0000000000 65535 f \n");
+    for o in &offs {
+        buf.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    buf.extend_from_slice(
+        format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+    );
+    buf
+}
+
+/// PDF を view で開くと、テキストではなく画像ビューアにページ画像として載る（各ページを
+/// PNG 化して前後送りする）。状態行の見出しは PDF 名・位置は総ページ数を映す。
+#[test]
+fn view_pdf_shows_pages_in_image_viewer() {
+    let pdf = make_pdf(3);
+    let server = Server::start_dirs(&[("doc.pdf", &pdf)], &[]);
+    server
+        .req("POST", "/command/setCursorPosition", r#"["doc.pdf"]"#)
+        .unwrap();
+    server.req("POST", "/command/view", "").unwrap();
+    let av = poll(&server, "/state/active_view", |b| b.trim() == "\"media\"");
+    assert_eq!(av.trim(), "\"media\"", "PDF は画像ビューアで開く（テキストではない）");
+    let media = server.req("GET", "/state/media", "").unwrap().1;
+    assert!(media.contains("\"total\":3"), "全 3 ページを巡回対象にする: {media}");
+    assert!(media.contains("doc.pdf"), "状態行の見出しは PDF 名: {media}");
+    // 次ページへ送れる（1 始まりの位置が 2 へ進む）。
+    server.req("POST", "/view/key/next", "").unwrap();
+    let media2 = poll(&server, "/state/media", |b| b.contains("\"index\":2"));
+    assert!(media2.contains("\"index\":2"), "送りで 2 ページ目へ進む: {media2}");
+    // 閉じると一覧へ戻る。
+    server.req("POST", "/view/key/close", "").unwrap();
+    let av2 = poll(&server, "/state/active_view", |b| b.trim() == "\"none\"");
+    assert_eq!(av2.trim(), "\"none\"");
+}
+
 /// Alt 併用キーが WM_SYSKEYDOWN 経由でキーバインドへ回る（メニューに食われない）。
 /// `/filer/syskey/G` は key_sink へ実 SYSKEYDOWN を送り、Alt+G に割り当てた式を発火させる。
 #[test]
