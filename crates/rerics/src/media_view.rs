@@ -135,6 +135,8 @@ struct Inner {
     font_size: i32,
     /// ズーム1段あたりの拡大率（倍率係数）。設定の `zoom_step_percent` から決まる。
     zoom_step: f64,
+    /// キーボードパン1回の移動画素数。設定の `pan_step_px` から決まる。
+    pan_step: i32,
     /// 右クリック時に呼ぶコールバック（画面座標）。コンテキストメニュー表示は MainWindow が担う。
     on_menu: RefCell<Option<MenuHandler>>,
 }
@@ -197,6 +199,7 @@ impl MediaView {
             font_family: cfg.font.family.clone(),
             font_size: cfg.font.size,
             zoom_step: 1.0 + cfg.image.zoom_step_percent.max(1) as f64 / 100.0,
+            pan_step: cfg.image.pan_step_px.max(1) as i32,
             on_menu: RefCell::new(None),
         });
         let me = Self { wnd, inner };
@@ -237,6 +240,14 @@ impl MediaView {
     #[cfg(feature = "debug-server")]
     pub fn scale_percent(&self) -> i32 {
         self.effective_zoom_percent()
+    }
+
+    /// 現在のパン（表示位置）オフセット（px・debug-server 観測用）。`(0, 0)` が中央。
+    /// 正の x＝画像を右へ寄せた（左側を見る）状態。
+    #[cfg(feature = "debug-server")]
+    pub fn pan_offset(&self) -> (i32, i32) {
+        let (x, y) = self.inner.pan.get();
+        (x.round() as i32, y.round() as i32)
     }
 
     pub fn refresh(&self) -> w::AnyResult<()> {
@@ -530,6 +541,22 @@ impl MediaView {
         }
         let new_scale = old_scale * old_base_w as f64 / new_base_w as f64;
         self.inner.scale.set(new_scale.clamp(MIN_SCALE, MAX_SCALE));
+    }
+
+    /// 拡大画像の表示位置を1ステップ（設定の `pan_step_px`）ずらす。`dir_x`/`dir_y` は
+    /// -1/0/1 の向きで、正＝右／下を見る。画像が無い・枠に収まっている（パン不要）ときは
+    /// 描画時に中央へ丸められるので実質無効。
+    pub fn pan_step(&self, dir_x: i32, dir_y: i32) -> w::AnyResult<()> {
+        if !self.has_image() {
+            return Ok(());
+        }
+        let step = self.inner.pan_step as f64;
+        let (px, py) = self.inner.pan.get();
+        // pan は画像中心のオフセット。右を見る＝画像を左へ寄せる＝オフセットを負方向へ。
+        self.inner
+            .pan
+            .set((px - dir_x as f64 * step, py - dir_y as f64 * step));
+        self.refresh()
     }
 
     /// 表示モードを切り替える（パンは中央へ戻す）。倍率は描画時にモードから決まる。

@@ -568,6 +568,10 @@ impl MainWindow {
             Command::ImageRotateLeft => self.media.rotate_left()?,
             Command::ImageFlipHorizontal => self.media.flip_horizontal()?,
             Command::ImageFlipVertical => self.media.flip_vertical()?,
+            Command::ImagePanUp => self.media.pan_step(0, -1)?,
+            Command::ImagePanDown => self.media.pan_step(0, 1)?,
+            Command::ImagePanLeft => self.media.pan_step(-1, 0)?,
+            Command::ImagePanRight => self.media.pan_step(1, 0)?,
             Command::ImageCopy => self.media.copy_to_clipboard()?,
             _ => {}
         }

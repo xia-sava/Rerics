@@ -161,7 +161,8 @@ pub(crate) fn command_genre(cmd: Command) -> (u8, &'static str) {
         ViewerClose | ViewerSelectAll | ViewerToggleMode | ViewerChangeEncoding | ViewerCopy
         | ViewerContextMenu => (10, "ビューア操作"),
         ImageNext | ImagePrevious | ImageZoomIn | ImageZoomOut | ImageFitWindow | ImageActualSize
-        | ImageFitWidth | ImageFitHeight | ImageFitLarge => (11, "表示・ズーム"),
+        | ImageFitWidth | ImageFitHeight | ImageFitLarge | ImagePanUp | ImagePanDown
+        | ImagePanLeft | ImagePanRight => (11, "表示・ズーム"),
         ImageRotateRight | ImageRotateLeft | ImageFlipHorizontal | ImageFlipVertical => {
             (12, "回転・反転")
         }

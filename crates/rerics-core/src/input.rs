@@ -235,6 +235,10 @@ pub enum Command {
     ImageRotateLeft,
     ImageFlipHorizontal,
     ImageFlipVertical,
+    ImagePanUp,
+    ImagePanDown,
+    ImagePanLeft,
+    ImagePanRight,
     ImageCopy,
     MediaTogglePlay,
 }
@@ -467,6 +471,10 @@ impl Command {
             (ImageRotateLeft, "imageRotateLeft", "左回転", "画像を左へ 90 度回転する"),
             (ImageFlipHorizontal, "imageFlipHorizontal", "左右反転", "画像を左右に反転する"),
             (ImageFlipVertical, "imageFlipVertical", "上下反転", "画像を上下に反転する"),
+            (ImagePanUp, "imagePanUp", "上へパン", "拡大表示中の画像の表示位置を上へずらす"),
+            (ImagePanDown, "imagePanDown", "下へパン", "拡大表示中の画像の表示位置を下へずらす"),
+            (ImagePanLeft, "imagePanLeft", "左へパン", "拡大表示中の画像の表示位置を左へずらす"),
+            (ImagePanRight, "imagePanRight", "右へパン", "拡大表示中の画像の表示位置を右へずらす"),
             (ImageCopy, "imageCopy", "クリップボードにコピー", "表示中の画像をクリップボードへコピーする"),
             (MediaTogglePlay, "mediaTogglePlay", "再生／一時停止", "動画・音声の再生と一時停止を切り替える"),
         ]
@@ -539,7 +547,8 @@ impl Command {
             ImageNext | ImagePrevious | ImageZoomIn | ImageZoomOut | ImageFitWindow
             | ImageActualSize | ImageFitWidth | ImageFitHeight | ImageFitLarge
             | ImageRotateRight | ImageRotateLeft | ImageFlipHorizontal
-            | ImageFlipVertical | ImageCopy | MediaTogglePlay => &[ImageViewer],
+            | ImageFlipVertical | ImagePanUp | ImagePanDown | ImagePanLeft
+            | ImagePanRight | ImageCopy | MediaTogglePlay => &[ImageViewer],
             Edit | OpenSettings => &[Filer, TextViewer],
             _ => &[Filer],
         }
@@ -1142,6 +1151,11 @@ impl KeyMap {
         m.bind(KeyChord::key(vk::L), ImageRotateLeft);
         m.bind(KeyChord::key(vk::V), ImageFlipHorizontal);
         m.bind(KeyChord::key(vk::H), ImageFlipVertical);
+        // 拡大画像の表示位置移動（Ctrl+矢印）。素の矢印は前/次送り（原作准拠）のまま。
+        m.bind(KeyChord::new(vk::UP, true, false, false), ImagePanUp);
+        m.bind(KeyChord::new(vk::DOWN, true, false, false), ImagePanDown);
+        m.bind(KeyChord::new(vk::LEFT, true, false, false), ImagePanLeft);
+        m.bind(KeyChord::new(vk::RIGHT, true, false, false), ImagePanRight);
         // クリップボードへコピー（Ctrl+C）。
         m.bind(KeyChord::new(vk::C, true, false, false), ImageCopy);
         m

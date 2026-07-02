@@ -1816,7 +1816,7 @@ fn build_viewer(parent: &gui::WindowControl, shared: &Rc<Shared>) {
     let wheel = shared.cfg.borrow().image.wheel;
 
     // 画像セクション。
-    group_box(parent, "画像", 12, 8, 752, 76);
+    group_box(parent, "画像", 12, 8, 752, 100);
     label(parent, "マウスホイール", 28, 38, 110);
     let group = gui::RadioGroup::new(
         parent,
@@ -1888,8 +1888,47 @@ fn build_viewer(parent: &gui::WindowControl, shared: &Rc<Shared>) {
         });
     }
 
+    label(parent, "パン移動量（px）", 28, 86, 110);
+    let pan_step = shared.cfg.borrow().image.pan_step_px;
+    let pan_edit = gui::Edit::new(
+        parent,
+        gui::EditOpts {
+            text: &pan_step.to_string(),
+            control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
+            position: gui::dpi(142, 84),
+            width: gui::dpi_x(60),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+    let _pan_spin = gui::UpDown::new(
+        parent,
+        gui::UpDownOpts {
+            position: gui::dpi(202, 84),
+            height: gui::dpi_y(22),
+            range: (1, 2000),
+            value: pan_step.clamp(1, 2000) as i32,
+            control_style: co::UDS::AUTOBUDDY
+                | co::UDS::SETBUDDYINT
+                | co::UDS::ALIGNRIGHT
+                | co::UDS::ARROWKEYS,
+            ..Default::default()
+        },
+    );
+    label(parent, "（Ctrl＋矢印での1回あたりの移動画素数）", 268, 86, 280);
+    {
+        let shared = shared.clone();
+        let pe = pan_edit.clone();
+        pan_edit.on().en_change(move || {
+            let cur = shared.cfg.borrow().image.pan_step_px as i32;
+            let v = parse_or(&pe, cur).clamp(1, 2000);
+            shared.cfg.borrow_mut().image.pan_step_px = v as u32;
+            Ok(())
+        });
+    }
+
     // テキストセクション（設定項目は今後追加）。
-    group_box(parent, "テキスト", 12, 96, 752, 76);
+    group_box(parent, "テキスト", 12, 120, 752, 76);
 }
 
 /// 「一覧」ページ。ファイルサイズ列の表記スタイルを選ぶ（列構成・既定ソートは今後ここへ追加）。

@@ -1498,6 +1498,31 @@ fn view_pdf_shows_pages_in_image_viewer() {
     assert_eq!(av2.trim(), "\"none\"");
 }
 
+/// 拡大画像は Ctrl＋矢印で表示位置をパンできる（設定 `pan_step_px` の画素数だけ動く）。
+/// 右を見る＝画像を左へ寄せる＝`pan_x` が負へ動き、左パンで中央へ戻る。
+#[test]
+fn image_viewer_pans_with_ctrl_arrows() {
+    let pdf = make_pdf(1);
+    let server = Server::start_dirs(&[("p.pdf", &pdf)], &[]);
+    server
+        .req("POST", "/command/setCursorPosition", r#"["p.pdf"]"#)
+        .unwrap();
+    server.req("POST", "/command/view", "").unwrap();
+    poll(&server, "/state/active_view", |b| b.trim() == "\"media\"");
+    // 拡大してパンできる状態にする（初期パンは中央）。
+    server.req("POST", "/view/key/z", "").unwrap();
+    let before = server.req("GET", "/state/media", "").unwrap().1;
+    assert!(before.contains("\"pan_x\":0"), "初期パンは中央: {before}");
+    // Ctrl+Right＝右を見る＝pan_x が負へ。
+    server.req("POST", "/view/key/Ctrl+Right", "").unwrap();
+    let after = poll(&server, "/state/media", |b| b.contains("\"pan_x\":-"));
+    assert!(after.contains("\"pan_x\":-"), "Ctrl+Right で右へパンする: {after}");
+    // Ctrl+Left で中央へ戻る。
+    server.req("POST", "/view/key/Ctrl+Left", "").unwrap();
+    let back = poll(&server, "/state/media", |b| b.contains("\"pan_x\":0"));
+    assert!(back.contains("\"pan_x\":0"), "Ctrl+Left で戻る: {back}");
+}
+
 /// Alt 併用キーが WM_SYSKEYDOWN 経由でキーバインドへ回る（メニューに食われない）。
 /// `/filer/syskey/G` は key_sink へ実 SYSKEYDOWN を送り、Alt+G に割り当てた式を発火させる。
 #[test]

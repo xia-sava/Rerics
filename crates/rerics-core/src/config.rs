@@ -270,11 +270,13 @@ pub struct ImageSettings {
     pub wheel: WheelAction,
     /// ズーム1段あたりの拡大率（%）。25 なら 1 段で 1.25 倍ずつ拡大／縮小する。
     pub zoom_step_percent: u32,
+    /// キーボードでのパン（拡大画像の表示位置移動）1 回あたりの移動画素数。
+    pub pan_step_px: u32,
 }
 
 impl Default for ImageSettings {
     fn default() -> Self {
-        Self { wheel: WheelAction::Navigate, zoom_step_percent: 25 }
+        Self { wheel: WheelAction::Navigate, zoom_step_percent: 25, pan_step_px: 100 }
     }
 }
 

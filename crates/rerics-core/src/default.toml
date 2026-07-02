@@ -211,6 +211,10 @@ Up = "viewerScrollUp()"
 5 = "imageFitLarge()"
 ";" = "imageZoomIn()"
 "Ctrl+C" = "imageCopy()"
+"Ctrl+Down" = "imagePanDown()"
+"Ctrl+Left" = "imagePanLeft()"
+"Ctrl+Right" = "imagePanRight()"
+"Ctrl+Up" = "imagePanUp()"
 Down = "imageNext()"
 Enter = "viewerClose()"
 Esc = "viewerClose()"
@@ -241,6 +245,7 @@ create_directory_and_move = false
 [image]
 wheel = "navigate"
 zoom_step_percent = 25
+pan_step_px = 100
 
 [icons]
 show = true
