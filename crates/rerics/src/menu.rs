@@ -52,6 +52,13 @@ const SORT_ITEMS: &[Item] = &[
     on("ソート設定(&T)...", Command::SortDialog),
 ];
 
+const SHELL_ITEMS: &[Item] = &[
+    on("コピー(&C)", Command::ShellCopy),
+    on("移動(&M)", Command::ShellMove),
+    on("完全削除(&D)", Command::ShellDelete),
+    on("名前変更(&R)", Command::ShellRename),
+];
+
 const MENUS: &[MenuDef] = &[
     MenuDef {
         label: "Records(&X)",
@@ -74,7 +81,8 @@ const MENUS: &[MenuDef] = &[
             on("ごみ箱へ送る", Command::SendToRecycled),
             on("ディレクトリの作成", Command::MakeDirectoryDialog),
             SEP,
-            off("シェル項目"),
+            sub("シェルで操作(&H)", SHELL_ITEMS),
+            on("コンテキストメニュー", Command::ContextMenu),
             SEP,
             off("検索(&F)"),
             off("ディレクトリ比較"),
@@ -196,4 +204,26 @@ fn build_popup(
         }
     }
     Ok(popup)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn build_wires_shell_and_context_menu_commands() {
+        let (_bar, map) = build().expect("メニューバーの構築");
+        let cmds: HashSet<Command> = map.values().copied().collect();
+        // サブメニュー（シェルで操作）を含め、id → Command マップへ載っていること。
+        for c in [
+            Command::ShellCopy,
+            Command::ShellMove,
+            Command::ShellDelete,
+            Command::ShellRename,
+            Command::ContextMenu,
+        ] {
+            assert!(cmds.contains(&c), "メニューに {c:?} が結線されていない");
+        }
+    }
 }
