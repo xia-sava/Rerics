@@ -334,6 +334,8 @@ pub enum Request {
     ModalCommand { role: String },
     /// `POST /modal/select/<index>`：リスト選択モーダルの選択行を index にする。
     ModalSelect { index: usize },
+    /// `POST /modal/radio/<index>`：開いているモーダルの index 番目のラジオボタンを選ぶ。
+    ModalRadio { index: usize },
     /// `POST /modal/check`：開いているモーダルの最初のチェックボックスをトグルする。
     ModalCheck,
     /// `POST /modal/resize/<w>x<h>`：開いているモーダルの窓サイズを w×h（物理px）へ変える。
@@ -708,6 +710,11 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                     .parse::<usize>()
                     .ok()
                     .map(|index| Request::ModalSelect { index })
+            } else if let Some(n) = path.strip_prefix("/modal/radio/") {
+                n.trim_end_matches('/')
+                    .parse::<usize>()
+                    .ok()
+                    .map(|index| Request::ModalRadio { index })
             } else if path == "/modal/text" {
                 let mut value = String::new();
                 let _ = std::io::Read::read_to_string(req.as_reader(), &mut value);

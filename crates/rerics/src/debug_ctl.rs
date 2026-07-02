@@ -103,6 +103,9 @@ impl MainWindow {
                 debug_server::Request::ModalSelect { index } => {
                     let _ = tx.send(self.debug_modal_select(index));
                 }
+                debug_server::Request::ModalRadio { index } => {
+                    let _ = tx.send(self.debug_modal_radio(index));
+                }
                 debug_server::Request::ModalCheck => {
                     let _ = tx.send(self.debug_modal_check());
                 }
@@ -680,6 +683,38 @@ impl MainWindow {
         const BM_CLICK: u32 = 0x00F5;
         unsafe {
             let _ = cb.PostMessage(w::msg::WndMsg {
+                msg_id: co::WM::from_raw(BM_CLICK),
+                wparam: 0,
+                lparam: 0,
+            });
+        }
+        debug_server::Response::Json(self.debug_state_value().to_string())
+    }
+
+    /// モーダル内の `index` 番目のラジオボタンを選ぶ（`POST /modal/radio/<index>`）。BM_CLICK
+    /// なので選択＋親への BN_CLICKED 通知（＝名前欄の再種付け等）まで起きる。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn debug_modal_radio(&self, index: usize) -> debug_server::Response {
+        let Some(modal) = self.debug_modal_hwnd() else {
+            return debug_server::Response::BadRequest("no modal open".into());
+        };
+        let mut radios: Vec<w::HWND> = Vec::new();
+        modal.EnumChildWindows(|c| {
+            let is_btn =
+                c.GetClassName().map(|s| s.eq_ignore_ascii_case("Button")).unwrap_or(false);
+            let style = c.GetWindowLongPtr(co::GWLP::STYLE) as u32;
+            // BS_RADIOBUTTON(4)/BS_AUTORADIOBUTTON(9) の下位ビット一致でラジオを拾う。
+            if is_btn && matches!(style & 0xF, 4 | 9) {
+                radios.push(c);
+            }
+            true
+        });
+        let Some(rb) = radios.get(index) else {
+            return debug_server::Response::BadRequest("modal has no such radio".into());
+        };
+        const BM_CLICK: u32 = 0x00F5;
+        unsafe {
+            let _ = rb.PostMessage(w::msg::WndMsg {
                 msg_id: co::WM::from_raw(BM_CLICK),
                 wparam: 0,
                 lparam: 0,
