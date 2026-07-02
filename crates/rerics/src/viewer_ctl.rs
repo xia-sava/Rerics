@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use winsafe::{self as w, co, prelude::*};
 use rerics_core::{Call, Command, KeyChord, Location, MediaKind, data_dir, open_archive};
-use crate::media_view::NavResolver;
+use crate::media_view::{NavResolver, PageRerender};
 use crate::file_list::FileListView;
 use crate::{ActiveView, MainWindow, dialog, hash64, join_inner_path, viewer};
 
@@ -281,27 +281,56 @@ impl MainWindow {
         };
         let root = Self::pdf_temp_root(&pdf_path);
         let _ = std::fs::create_dir_all(&root);
-        let log = self.log.clone();
-        // 訪問済みページの PNG を index で覚え、前後送りの再訪では焼き直さない。
+        // 既定幅のページ PNG（前後送りの本体）。index で覚え、再訪では焼き直さない。
         let cache: Rc<RefCell<HashMap<usize, PathBuf>>> = Rc::new(RefCell::new(HashMap::new()));
-        let resolver: NavResolver = Rc::new(move |i: usize| {
-            if let Some(p) = cache.borrow().get(&i) {
-                return Some(p.clone());
-            }
-            let dest = root.join(format!("page-{i}.png"));
-            match crate::pdf::render_page(&pdf_path, i, crate::pdf::DEFAULT_RENDER_WIDTH, &dest) {
-                Ok(()) => {
-                    cache.borrow_mut().insert(i, dest.clone());
-                    Some(dest)
+        let resolver: NavResolver = {
+            let pdf = pdf_path.clone();
+            let root = root.clone();
+            let log = self.log.clone();
+            Rc::new(move |i: usize| {
+                if let Some(p) = cache.borrow().get(&i) {
+                    return Some(p.clone());
                 }
-                Err(e) => {
-                    log.error(&format!("PDF のページを描画できません: {} ページ目: {}", i + 1, e));
-                    None
+                let dest = root.join(format!("page-{i}.png"));
+                match crate::pdf::render_page(&pdf, i, crate::pdf::DEFAULT_RENDER_WIDTH, &dest) {
+                    Ok(()) => {
+                        cache.borrow_mut().insert(i, dest.clone());
+                        Some(dest)
+                    }
+                    Err(e) => {
+                        log.error(&format!("PDF のページを描画できません: {} ページ目: {}", i + 1, e));
+                        None
+                    }
                 }
-            }
-        });
+            })
+        };
+        // ズーム追従：表示画素が既定幅を超えたら、その幅で焼き直した高解像 PNG を返す。幅ごとに
+        // 別ファイルへ焼き、既にあれば再利用する（ズームの往復で焼き直しを繰り返さない）。
+        let rerender: PageRerender = {
+            let pdf = pdf_path.clone();
+            let root = root.clone();
+            let log = self.log.clone();
+            Rc::new(move |i: usize, width: u32| {
+                let dest = root.join(format!("page-{i}@{width}.png"));
+                if dest.is_file() {
+                    return Some(dest);
+                }
+                match crate::pdf::render_page(&pdf, i, width as i32, &dest) {
+                    Ok(()) => Some(dest),
+                    Err(e) => {
+                        log.error(&format!(
+                            "PDF のページを高解像で描画できません: {} ページ目: {}",
+                            i + 1,
+                            e
+                        ));
+                        None
+                    }
+                }
+            })
+        };
         self.media
             .open_nav_captioned(pages, 0, resolver, Some(name.to_string()));
+        self.media.set_rerender(rerender);
         self.show_media_or_text(is_left, name)
     }
 

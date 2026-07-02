@@ -29,6 +29,9 @@ pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 /// ズーム倍率の下限・上限。
 const MIN_SCALE: f64 = 0.02;
 const MAX_SCALE: f64 = 32.0;
+/// ズーム追従の焼き直し幅の上限（px）。これを超える拡大は引き伸ばしで賄う（際限ない
+/// 高解像レンダでメモリ・時間が暴走しないための天井）。
+const MAX_RENDER_WIDTH: u32 = 4096;
 
 /// アニメ/動画の再生用タイマ ID。
 const MEDIA_TIMER_ID: usize = 0x6D31;
@@ -37,6 +40,10 @@ const MEDIA_TIMER_ID: usize = 0x6D31;
 /// ここで遅延展開（既展開なら再利用）する。`None` は「読み込めない」（展開失敗等）を表す。
 /// これにより `MediaView` 自身は書庫を一切知らずに前後送りできる。
 pub type NavResolver = Rc<dyn Fn(usize) -> Option<PathBuf>>;
+
+/// 巡回 index と目標画素幅から、その幅で焼いた画像のパスを返す。PDF のズーム追従用で、
+/// 表示画素が焼き幅を上回ったときに高解像で焼き直すのに使う（画像・動画では未設定）。
+pub type PageRerender = Rc<dyn Fn(usize, u32) -> Option<PathBuf>>;
 
 /// 画像の表示モード（倍率の決め方）。原作 ImageViewer の D1〜D5 に対応する。
 /// 手動ズーム・回転後は `Manual` になり、保存した倍率で表示する。
@@ -111,6 +118,11 @@ struct Inner {
     hflip: Cell<bool>,
     vflip: Cell<bool>,
     scale: Cell<f64>,
+    /// 100%（原寸）の基準幅（px）。新規ロードで `base_w` に合わせ、PDF のズーム追従で
+    /// base を高解像へ差し替えても保つ＝表示倍率 `%` を base の解像度と切り離す。
+    zoom_base_w: Cell<u32>,
+    /// 現ページを指定画素幅で焼き直す（PDF のズーム追従用）。画像・動画では `None`。
+    rerender: RefCell<Option<PageRerender>>,
     /// 表示モード（倍率の決め方）。手動ズーム時は `Manual`。
     mode: Cell<DisplayMode>,
     pan: Cell<(f64, f64)>,
@@ -174,6 +186,8 @@ impl MediaView {
             hflip: Cell::new(false),
             vflip: Cell::new(false),
             scale: Cell::new(1.0),
+            zoom_base_w: Cell::new(0),
+            rerender: RefCell::new(None),
             mode: Cell::new(DisplayMode::Stretch),
             pan: Cell::new((0.0, 0.0)),
             panning: Cell::new(false),
@@ -222,7 +236,7 @@ impl MediaView {
     /// 現在の表示倍率（％・debug-server 観測用）。直近の描画で確定した値。
     #[cfg(feature = "debug-server")]
     pub fn scale_percent(&self) -> i32 {
-        (self.inner.scale.get() * 100.0).round() as i32
+        self.effective_zoom_percent()
     }
 
     pub fn refresh(&self) -> w::AnyResult<()> {
@@ -257,7 +271,16 @@ impl MediaView {
         self.inner.nav_index.set(if len == 0 { 0 } else { index.min(len - 1) });
         *self.inner.resolver.borrow_mut() = Some(resolver);
         *self.inner.caption.borrow_mut() = caption;
+        // 新規に開くたびズーム追従フックは無効化する（画像・動画は焼き直さない）。
+        *self.inner.rerender.borrow_mut() = None;
         self.load_current();
+    }
+
+    /// ズーム追従の焼き直しフックを設定する（PDF のみ）。表示画素が焼き幅を超えたとき、
+    /// このフックに現ページを高解像で焼き直させてクッキリさせる。`open_nav*` で解除される
+    /// ので、PDF を開いた直後に設定する。
+    pub fn set_rerender(&self, rerender: PageRerender) {
+        *self.inner.rerender.borrow_mut() = Some(rerender);
     }
 
     /// 前後のファイルへ移動する（巡回）。書庫内は移動先のその1枚だけを resolver が展開する。
@@ -332,6 +355,8 @@ impl MediaView {
             },
             None => self.set_message("この形式は表示できません"),
         }
+        // 読み込んだ解像度を 100% の基準にする（PDF はここから高解像へ焼き直しても基準は保つ）。
+        self.inner.zoom_base_w.set(self.inner.base_w.get());
         let _ = self.refresh();
     }
 
@@ -455,7 +480,56 @@ impl MediaView {
         }
         self.inner.scale.set(next);
         self.inner.mode.set(DisplayMode::Manual);
+        if zoom_in {
+            self.ensure_render_resolution();
+        }
         self.refresh()
+    }
+
+    /// 表示画素が現在の焼き幅を上回るなら、現ページを必要幅（上限 [`MAX_RENDER_WIDTH`]）で
+    /// 焼き直してクッキリさせる。フックが無い（画像・動画）ときや拡大していないときは何もしない。
+    fn ensure_render_resolution(&self) {
+        let Some(rerender) = self.inner.rerender.borrow().clone() else {
+            return;
+        };
+        if !self.has_image() {
+            return;
+        }
+        let scale = self.inner.scale.get();
+        let base_w = self.inner.base_w.get();
+        // 拡大表示（base を引き伸ばしている）ときだけ焼き直す。縮小は元の高解像を縮めれば綺麗。
+        if scale <= 1.0 || base_w == 0 {
+            return;
+        }
+        let want = ((base_w as f64 * scale).round() as u32).min(MAX_RENDER_WIDTH);
+        if want <= base_w {
+            return;
+        }
+        let idx = self.inner.nav_index.get();
+        if let Some(path) = rerender(idx, want) {
+            self.swap_base_higher_res(&path);
+        }
+    }
+
+    /// 焼き直した高解像画像へ base を差し替える。回転・反転・パン・表示モードは保ち、見た目の
+    /// 大きさが変わらないよう倍率だけ base の拡大率に合わせて詰め直す（＝引き伸ばしが解けて
+    /// クッキリする）。`zoom_base_w` は保つので表示倍率 `%` は変わらない。
+    fn swap_base_higher_res(&self, path: &Path) {
+        let old_base_w = self.inner.base_w.get();
+        let old_scale = self.inner.scale.get();
+        let Some(bytes) = read_capped(path, MAX_IMAGE_BYTES) else {
+            return;
+        };
+        let Some(src) = load_image(&bytes) else {
+            return;
+        };
+        self.set_source(src);
+        let new_base_w = self.inner.base_w.get();
+        if new_base_w == 0 {
+            return;
+        }
+        let new_scale = old_scale * old_base_w as f64 / new_base_w as f64;
+        self.inner.scale.set(new_scale.clamp(MIN_SCALE, MAX_SCALE));
     }
 
     /// 表示モードを切り替える（パンは中央へ戻す）。倍率は描画時にモードから決まる。
@@ -872,6 +946,13 @@ impl MediaView {
         Ok(())
     }
 
+    /// 100% 基準（`zoom_base_w`）に対する実効表示倍率（％）。base を高解像へ焼き直しても
+    /// 基準は変わらないので、PDF のズーム追従で `%` が飛ばない。画像・動画は base=基準＝素の倍率。
+    fn effective_zoom_percent(&self) -> i32 {
+        let zb = self.inner.zoom_base_w.get().max(1);
+        (self.inner.base_w.get() as f64 / zb as f64 * self.inner.scale.get() * 100.0).round() as i32
+    }
+
     fn status_text(&self) -> String {
         let title = self.inner.title.borrow();
         let total = self.inner.nav_len.get();
@@ -882,7 +963,7 @@ impl MediaView {
         }
         let bw = self.inner.base_w.get();
         let bh = self.inner.base_h.get();
-        let zoom = (self.inner.scale.get() * 100.0).round() as i32;
+        let zoom = self.effective_zoom_percent();
         let rot = self.inner.rotation.get();
         let rot_s = if rot != 0 { format!("  {}°", rot) } else { String::new() };
         let play = if self.inner.animated.get() { " Space:再生/停止" } else { "" };
