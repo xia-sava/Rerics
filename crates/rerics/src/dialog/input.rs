@@ -213,6 +213,26 @@ fn completion_prefix(before: &str) -> Option<(usize, String)> {
     Some((prefix.encode_utf16().count(), prefix))
 }
 
+/// カレットまでのテキスト `before` から補完文脈を返す。返り＝(置換長 UTF-16, クエリ, 裸文脈か)。
+/// `r.`/`rerics.` のメンバアクセス（[`completion_prefix`]・裸=false・全メンバが対象）に加え、
+/// **式の先頭の裸の識別子**（手前が空白のみ）も文脈とする（裸=true）。機能欄の正史は裸の
+/// `cursorUp()` 形（`Call` の fast-path）なので、その表記のまま補完が効くようにする。
+/// 裸で呼べるのは組込コマンドだけ（host API・スクリプト関数は裸だとエンジンで未定義）なので、
+/// 候補の絞り込みは呼び手が裸フラグで行う。
+fn completion_context(before: &str) -> Option<(usize, String, bool)> {
+    if let Some((plen, prefix)) = completion_prefix(before) {
+        return Some((plen, prefix, false));
+    }
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let rev: String = before.chars().rev().take_while(|c| is_ident(*c)).collect();
+    let ident: String = rev.chars().rev().collect();
+    let head = &before[..before.len() - ident.len()];
+    if head.trim().is_empty() {
+        return Some((ident.encode_utf16().count(), ident, true));
+    }
+    None
+}
+
 /// 補完クエリと候補の照合。マッチの強さを返す（小さいほど強い）：0=名前の前方一致、
 /// 1=camelCase 頭文字一致（`cp` → `cursorPath`）、2=表示名（和名）の部分一致、
 /// 3=名前の飛び石一致（クエリの文字が順に現れる）。合わなければ None。空クエリは全件 0。
@@ -333,10 +353,11 @@ pub fn completion_members(
 
 /// `members` から `query` に合う補完候補列を組む。照合は [`match_rank`]（名前・和名の曖昧一致）、
 /// 階層は query のドット数と同じものだけ（`r.` はトップレベルのみ・`r.fs.` は `fs.` 配下のみ）。
+/// `bare`（式の先頭の裸の識別子＝fast-path 文脈）では組込コマンドだけに絞る。
 /// 並びはジャンルごとに固め、ジャンル見出しのラベル行を挟む（該当が 1 ジャンルだけなら挟まない）。
 /// query が非空のときはジャンル自体も「群内の最強マッチ」順に並べ、目当ての機能が上に来るようにする。
 /// 確定挿入は callable なら `名前()`（引数ありはカレットを括弧内へ）、オブジェクトは名前のみ。
-fn completion_items(members: &[CompletionMember], query: &str) -> Vec<CompletionItem> {
+fn completion_items(members: &[CompletionMember], query: &str, bare: bool) -> Vec<CompletionItem> {
     use rerics_core::Command;
     let depth = query.matches('.').count();
     struct Hit {
@@ -350,6 +371,9 @@ fn completion_items(members: &[CompletionMember], query: &str) -> Vec<Completion
             continue;
         }
         let builtin = Command::from_token(&m.name);
+        if bare && builtin.is_none() {
+            continue;
+        }
         let label = builtin
             .map(|c| c.display_name().to_string())
             .or_else(|| m.script.as_ref().and_then(|s| s.label.clone()));
@@ -367,11 +391,13 @@ fn completion_items(members: &[CompletionMember], query: &str) -> Vec<Completion
         let detail = builtin
             .map(meta_hint)
             .or_else(|| m.script.as_ref().and_then(|s| s.summary.clone()));
-        // 引数有無：host API は宣言引数（組込と同名なら host が実体なのでこちらを優先）、
+        // 引数有無：host API は宣言引数（`r.` 文脈では組込と同名でも host が実体なのでこちらを優先）、
         // 組込コマンドはメタデータの必須引数から（省略可のみなら引数なし扱い＝そのまま呼べる形で
-        // 確定してカレットを括弧の後ろへ置く）。callable でなければ（オブジェクト）括弧を付けない。
-        let has_args = m.arity > 0
-            || builtin.map(|c| c.meta().args.iter().any(|a| a.required)).unwrap_or(false);
+        // 確定してカレットを括弧の後ろへ置く）。裸文脈は fast-path＝常に組込が実体なのでメタだけを
+        // 見る。callable でなければ（オブジェクト）括弧を付けない。
+        let builtin_needs_args =
+            builtin.map(|c| c.meta().args.iter().any(|a| a.required)).unwrap_or(false);
+        let has_args = builtin_needs_args || (!bare && m.arity > 0);
         let callable = m.callable || builtin.is_some();
         let (insert, caret_back) = if callable {
             (format!("{}()", m.name), if has_args { 1 } else { 0 })
@@ -926,13 +952,18 @@ pub fn code_box(
             Ok(())
         });
     }
-    // 補完モデル＝カレット直前が `r.`／`rerics.` のときだけ、その後の識別子に曖昧一致するメンバを
-    // ジャンル見出し付きで出す（`r.` 直後の空クエリは全件＝機能ブラウザを兼ねる）。`force` は
-    // Ctrl+Space＝「唯一かつ入力済みと同一」でも出す。
+    // 補完モデル＝カレット直前が `r.`／`rerics.` のメンバアクセス、または式の先頭の裸の識別子
+    // （fast-path の組込呼び出し＝組込だけに絞る）のとき、識別子に曖昧一致する候補をジャンル見出し
+    // 付きで出す（`r.` 直後の空クエリは全件＝機能ブラウザを兼ねる）。`force` は Ctrl+Space＝
+    // 「唯一かつ入力済みと同一」でも出すのに加え、空欄でも裸文脈の全組込を出す（空欄は勝手に
+    // 開くとうるさいので force 限定）。
     let members_owned: Vec<CompletionMember> = members.to_vec();
     let complete: CompleteFn = Rc::new(move |before, caret, force| {
-        let (plen, prefix) = completion_prefix(before)?;
-        let items = completion_items(&members_owned, &prefix);
+        let (plen, prefix, bare) = completion_context(before)?;
+        if bare && prefix.is_empty() && !force {
+            return None;
+        }
+        let items = completion_items(&members_owned, &prefix, bare);
         let names: Vec<&str> =
             items.iter().filter(|i| i.selectable).map(|i| i.display.as_str()).collect();
         let only_exact = names.len() == 1 && names[0].eq_ignore_ascii_case(&prefix);
@@ -1170,7 +1201,9 @@ pub mod completion_probe {
 
 #[cfg(test)]
 mod tests {
-    use super::{CompletionMember, completion_items, completion_prefix, match_rank};
+    use super::{
+        CompletionMember, completion_context, completion_items, completion_prefix, match_rank,
+    };
     use crate::script::ScriptCommand;
 
     fn member(name: &str, callable: bool, arity: u32) -> CompletionMember {
@@ -1201,7 +1234,7 @@ mod tests {
             member("cursorDown", true, 0),
             member("spawn", true, 1),
         ];
-        let items = completion_items(&members, "");
+        let items = completion_items(&members, "", false);
         let displays: Vec<&str> = items.iter().map(|i| i.display.as_str()).collect();
         // 複数ジャンル＝見出しラベル行が挟まり、ラベルは選択不可。
         assert_eq!(
@@ -1222,7 +1255,7 @@ mod tests {
     #[test]
     fn items_single_genre_omits_label_row() {
         let members = vec![member("cursorDown", true, 0), member("cursorUp", true, 0)];
-        let items = completion_items(&members, "cursor");
+        let items = completion_items(&members, "cursor", false);
         assert!(items.iter().all(|i| i.selectable), "単一ジャンルは見出しなし");
         assert_eq!(items.len(), 2);
     }
@@ -1231,7 +1264,7 @@ mod tests {
     fn fuzzy_match_pulls_strong_group_first() {
         // "cp" は cursorPath（頭文字一致）が copy（飛び石一致）より強い＝所属ジャンルごと上に来る。
         let members = vec![member("copy", true, 3), member("cursorPath", true, 0)];
-        let items = completion_items(&members, "cp");
+        let items = completion_items(&members, "cp", false);
         let displays: Vec<&str> = items.iter().map(|i| i.display.as_str()).collect();
         let pos = |n: &str| displays.iter().position(|x| *x == n).expect(n);
         assert!(pos("cursorPath") < pos("copy"), "強いマッチの群が先: {displays:?}");
@@ -1245,7 +1278,7 @@ mod tests {
             member("spawn", true, 1),          // host API・引数あり
             member("fs", false, 0),            // オブジェクト
         ];
-        let items = completion_items(&members, "");
+        let items = completion_items(&members, "", false);
         let find = |n: &str| items.iter().find(|i| i.display == n).expect(n);
         assert_eq!(find("cursorDown").insert, "cursorDown()");
         assert_eq!(find("cursorDown").caret_back, 0, "省略可のみはカレットを閉じ括弧の後ろへ");
@@ -1264,14 +1297,14 @@ mod tests {
             member("clearAll", true, 0),
         ];
         // トップレベル（query にドット無し）はドット付きメンバを含めない。
-        let top: Vec<String> = completion_items(&members, "cl")
+        let top: Vec<String> = completion_items(&members, "cl", false)
             .into_iter()
             .filter(|i| i.selectable)
             .map(|i| i.display)
             .collect();
         assert_eq!(top, vec!["clearAll", "clipboard"]);
         // 名前空間配下（query にドット）はその階層だけ。
-        let sub: Vec<String> = completion_items(&members, "clipboard.")
+        let sub: Vec<String> = completion_items(&members, "clipboard.", false)
             .into_iter()
             .map(|i| i.display)
             .collect();
@@ -1289,7 +1322,7 @@ mod tests {
         });
         let members = vec![member("copy", true, 3), member("cursorDown", true, 0), sc];
         // genre 指定のスクリプトコマンドは組込ジャンルの群に混ざる＝「ファイル操作」見出しは 1 つ。
-        let items = completion_items(&members, "");
+        let items = completion_items(&members, "", false);
         let labels: Vec<&str> =
             items.iter().filter(|i| !i.selectable).map(|i| i.display.as_str()).collect();
         assert_eq!(
@@ -1298,7 +1331,7 @@ mod tests {
             "群がマージされる: {labels:?}"
         );
         // 和名でも引ける。
-        let hit: Vec<String> = completion_items(&members, "整理")
+        let hit: Vec<String> = completion_items(&members, "整理", false)
             .into_iter()
             .filter(|i| i.selectable)
             .map(|i| i.display)
@@ -1323,6 +1356,44 @@ mod tests {
         assert_eq!(completion_prefix("=current"), None);
         // r だけ（ドット未入力）はまだメンバアクセスでない。
         assert_eq!(completion_prefix("=r"), None);
+    }
+
+    #[test]
+    fn context_detects_bare_leading_identifier() {
+        // 式の先頭の裸の識別子＝裸文脈（機能欄の fast-path 表記 `cursorUp()` を編集中）。
+        assert_eq!(completion_context("cursorU"), Some((7, "cursorU".into(), true)));
+        assert_eq!(completion_context("  curs"), Some((4, "curs".into(), true)));
+        // 空文字も裸文脈（Ctrl+Space の全組込ブラウズ用。出すかは呼び手が force で判断）。
+        assert_eq!(completion_context(""), Some((0, "".into(), true)));
+        // `r.` メンバアクセスは従来どおり（裸=false）。
+        assert_eq!(completion_context("=r.cur"), Some((3, "cur".into(), false)));
+        // 先頭以外（手前に別のトークンや行がある）は文脈にしない。
+        assert_eq!(completion_context("=cursorU"), None);
+        assert_eq!(completion_context("const x = 1;\ncons"), None);
+        assert_eq!(completion_context("bar.cur"), None);
+    }
+
+    #[test]
+    fn bare_context_completes_builtins_only_with_builtin_meta() {
+        let members = vec![
+            member("cursorDown", true, 0),
+            member("setCursorIndex", true, 0),
+            member("copy", true, 3),  // host API と同名の組込（裸では組込が実体）
+            member("spawn", true, 1), // host API のみ＝裸では呼べない
+            member("fs", false, 0),   // オブジェクト＝裸では呼べない
+        ];
+        let items = completion_items(&members, "", true);
+        let names: Vec<&str> =
+            items.iter().filter(|i| i.selectable).map(|i| i.display.as_str()).collect();
+        assert!(names.contains(&"cursorDown") && names.contains(&"copy"), "組込は出る: {names:?}");
+        assert!(!names.contains(&"spawn") && !names.contains(&"fs"), "非組込は出ない: {names:?}");
+        // 裸文脈の copy は fast-path＝組込が実体なので、host の宣言引数でなく組込メタ
+        // （必須引数なし）でカレット位置を決める。
+        let copy = items.iter().find(|i| i.display == "copy").expect("copy");
+        assert_eq!(copy.insert, "copy()");
+        assert_eq!(copy.caret_back, 0, "裸の copy は組込メタで引数なし扱い");
+        let set = items.iter().find(|i| i.display == "setCursorIndex").expect("setCursorIndex");
+        assert_eq!(set.caret_back, 1, "必須引数ありはカレットを括弧内へ");
     }
 
     #[test]

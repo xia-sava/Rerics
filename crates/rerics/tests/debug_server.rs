@@ -4006,6 +4006,49 @@ fn completion_popup_lists_members_and_inserts_on_accept() {
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
 
+/// 式エディタの補完は、式の先頭の裸の識別子（機能欄の fast-path 表記 `cursorUp()` の編集中）でも
+/// 効く。候補は組込コマンドだけ（host API・スクリプト関数は裸では呼べないので出さない）で、確定も
+/// `r.` なしの裸形で挿入される。空欄では勝手に開かず、Ctrl+Space で全組込ブラウズが出る。
+#[test]
+fn completion_recognizes_bare_builtin_context() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
+    wait_modal(&server);
+    server.req("POST", "/settings/nav/5", "").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/openexpr", "").unwrap();
+    server.req("POST", "/modal/text", "").unwrap();
+
+    // 裸の `cur` ＝組込（cursorDown 等）が出て、host API（currentDir）は出ない。
+    server.req("POST", "/completion/keystrokes", "cur").unwrap();
+    let c = poll(&server, "/completion", |b| b.contains("cursorDown"));
+    assert!(c.contains("cursorDown"), "裸の識別子で組込候補が出る: {c}");
+    assert!(!c.contains("currentDir"), "host API は裸文脈に出ない: {c}");
+
+    // cursorDown の行を確定＝裸形 `cursorDown()` が入る（`r.` は付かない）。
+    let v: serde_json::Value = serde_json::from_str(&c).unwrap();
+    let idx = v["candidates"]
+        .as_array()
+        .expect("candidates")
+        .iter()
+        .position(|x| x.as_str().unwrap_or("").starts_with("cursorDown"))
+        .expect("cursorDown の行がある");
+    server.req("POST", &format!("/completion/accept/{idx}"), "").unwrap();
+    let c2 = poll(&server, "/completion", |b| b.contains(r#""text":"cursorDown()""#));
+    assert!(c2.contains(r#""text":"cursorDown()""#), "裸形で確定される: {c2}");
+
+    // 空欄は勝手に開かないが、Ctrl+Space で全組込がジャンル見出し付きで出る。
+    server.req("POST", "/modal/text", "").unwrap();
+    let hidden = server.req("GET", "/completion", "").unwrap().1;
+    assert!(hidden.contains(r#""visible":false"#), "空欄では開かない: {hidden}");
+    server.req("POST", "/completion/key/ctrlspace", "").unwrap();
+    let c3 = poll(&server, "/completion", |b| b.contains(r#""visible":true"#));
+    assert!(c3.contains("── カーソル移動 ──"), "Ctrl+Space で全組込ブラウズ: {c3}");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
 /// 式エディタの補完は名前空間の中身まで降りる（2 階層）。`r.fs.` で `fs.readText` 等が候補に出て、
 /// 確定すると名前空間込みのメンバ名が挿入される。
 #[test]
