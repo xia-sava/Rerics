@@ -2727,8 +2727,8 @@ fn settings_key_editor_per_chord_delete_in_command_view() {
         "makeDirectoryDialog が 2 行に割れる: {s}"
     );
 
-    // K の行（chord 昇順で index 1）を選んで削除＝K 行だけ消え、Ctrl+Shift+M 行が残る。
-    server.req("POST", "/keys/filer/select/1", "").unwrap();
+    // K の行（chord 昇順で index 0）を選んで削除＝K 行だけ消え、Ctrl+Shift+M 行が残る。
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/unbind", "").unwrap();
     server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
     let s = keys();
@@ -2754,14 +2754,14 @@ fn settings_key_editor_rebinds_selected_chord() {
     wait_modal(&server);
     let keys = || server.req("GET", "/keys/filer", "").expect("keys").1;
 
-    // makeDirectoryDialog に 2 つ目のキーを足す＝2 行に割れる（chord 昇順 [Ctrl+Shift+M, K]）。
+    // makeDirectoryDialog に 2 つ目のキーを足す＝2 行に割れる（chord 昇順 [K, Ctrl+Shift+M]）。
     server.req("POST", "/keys/filer/bind", r#"["makeDirectoryDialog","Ctrl+Shift+M"]"#).unwrap();
     server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
     let s = keys();
     assert!(s.contains(r#"["makeDirectoryDialog",["K"]]"#), "K 行がある: {s}");
 
-    // K の行（index 1）を選んで Ctrl+Alt+K へ変更＝K は外れ Ctrl+Alt+K になる（Ctrl+Shift+M は残る）。
-    server.req("POST", "/keys/filer/select/1", "").unwrap();
+    // K の行（index 0）を選んで Ctrl+Alt+K へ変更＝K は外れ Ctrl+Alt+K になる（Ctrl+Shift+M は残る）。
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
     server.req("POST", "/keys/filer/rebind", "Ctrl+Alt+K").unwrap();
     server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
     let s = keys();
