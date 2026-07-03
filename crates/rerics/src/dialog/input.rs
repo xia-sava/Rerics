@@ -559,6 +559,11 @@ fn unresolved_ident(code: &str, globals: &[String]) -> Option<(String, usize, us
         maybe_syntax: None,
     })
     .ok()?;
+    // swc がリカバリした構文エラー入り＝AST が不安定なので判定しない（構文は構文検査が担当。
+    // ライブ検査では入力途中の式を意味エラー扱いしないためでもある）。
+    if !parsed.diagnostics().is_empty() {
+        return None;
+    }
     let mut finder =
         Finder { unresolved: parsed.unresolved_context(), globals, found: None };
     parsed.program().visit_with(&mut finder);
@@ -567,27 +572,46 @@ fn unresolved_ident(code: &str, globals: &[String]) -> Option<(String, usize, us
     Some((name, d.line_number, d.column_number))
 }
 
+/// Script 式の未解決識別子をエラーメッセージ付きで返す。組込コマンド名そのものが未解決
+/// （裸のままリテラル以外の引数で呼んだ等）のときは、`r.` 経由の書き方へ誘導する。
+fn script_unresolved_error(code: &str, globals: &[String]) -> Option<(String, usize, usize)> {
+    let (name, line, col) = unresolved_ident(code, globals)?;
+    let msg = if rerics_core::Command::from_token(&name).is_some() {
+        format!(
+            "組込 {name} はこの形ではエンジンから見えない（{name}(リテラル引数) の単独呼び出しか r.{name}(...) と書く）"
+        )
+    } else {
+        format!("{name} は定義されていない")
+    };
+    Some((msg, line, col))
+}
+
 /// OK 時の意味検査。組込 fast-path 呼び出しは引数をメタデータと突き合わせ、エンジン行きの
 /// Script 式は未解決識別子を探す。問題があれば (メッセージ, 1 始まり行, 1 始まり桁)。
-/// 組込コマンド名そのものが未解決（裸のままリテラル以外の引数で呼んだ等）のときは、
-/// `r.` 経由の書き方へ誘導する。
 fn semantic_error(code: &str, globals: &[String]) -> Option<(String, usize, usize)> {
-    use rerics_core::{Call, Command, validate_builtin_args};
+    use rerics_core::{Call, validate_builtin_args};
     match Call::parse(code) {
         Call::Builtin { command, args } => {
             validate_builtin_args(command, &args).map(|msg| (msg, 1, 1))
         }
-        Call::Script { .. } => {
-            let (name, line, col) = unresolved_ident(code, globals)?;
-            let msg = if Command::from_token(&name).is_some() {
-                format!(
-                    "組込 {name} はこの形ではエンジンから見えない（{name}(リテラル引数) の単独呼び出しか r.{name}(...) と書く）"
-                )
-            } else {
-                format!("{name} は定義されていない")
-            };
-            Some((msg, line, col))
+        Call::Script { .. } => script_unresolved_error(code, globals),
+    }
+}
+
+/// 入力中のライブ検査。構文が通っている式の意味エラーだけを出し、入力途中（構文が壊れている
+/// 間）は黙る。組込の引数エラーは、カレットがその呼び出しの中にある間＝まだ書きかけの間も
+/// 咎めない（signature help に任せ、括弧の外に出たか OK で示す）。未解決識別子は typo なので
+/// 即座に出す。
+fn live_error(full: &str, before: &str, globals: &[String]) -> Option<(String, usize, usize)> {
+    use rerics_core::{Call, validate_builtin_args};
+    match Call::parse(full) {
+        Call::Builtin { command, args } => {
+            if enclosing_call(before).is_some() {
+                return None;
+            }
+            validate_builtin_args(command, &args).map(|msg| (msg, 1, 1))
         }
+        Call::Script { .. } => script_unresolved_error(full, globals),
     }
 }
 
@@ -876,15 +900,15 @@ fn arg_display(a: &rerics_core::ArgSpec) -> String {
 /// 明示トリガ）から、置換開始位置（UTF-16・終端はカレット）と候補列を返す。None なら出さない。
 type CompleteFn = Rc<dyn Fn(&str, u32, bool) -> Option<(u32, Vec<CompletionItem>)>>;
 
-/// signature help の更新先。カレットまでの文字列を受けてヒント行を書き換える。
-type ContextHintFn = Rc<dyn Fn(&str)>;
+/// signature help／ライブ検査の更新先。(カレットまでの文字列, 全文) を受けてヒント行を書き換える。
+type ContextHintFn = Rc<dyn Fn(&str, &str)>;
 
 /// 補完つき入力欄の配線（`code_box`／`command_box` 共通）。`edit` の下に隠した `cand` を、
 /// `complete` モデルの返す候補で出し入れする。候補は表示文字列で見せ、確定時は挿入文字列を
 /// カレット直前の置換範囲へ入れる。キー操作（↑↓移動クランプ・Enter 確定・Ctrl+Space 表示）と
 /// headless 観測（`completion_probe`）もここでまとめて仕込む。`show_modal` は呼び出し側で。
-/// `context_hint` を渡すと、本文・カレットが動くたびカレットまでのテキストで呼ぶ
-/// （signature help の更新用）。
+/// `context_hint` を渡すと、本文・カレットが動くたび (カレットまで, 全文) で呼ぶ
+/// （signature help・ライブ検査の更新用）。
 fn install_completion(
     arm: &ModalArm,
     edit: &gui::Edit,
@@ -923,10 +947,10 @@ fn install_completion(
                     // カレットを括弧内へ戻した位置で signature help を出し直す
                     // （EN_CHANGE 時点のカレットは挿入末尾なので、ここで再評価する）。
                     if let Some(hint) = &context_hint {
-                        let utf16: Vec<u16> =
-                            edit.text().unwrap_or_default().encode_utf16().collect();
+                        let full = edit.text().unwrap_or_default();
+                        let utf16: Vec<u16> = full.encode_utf16().collect();
                         let end = (pos as usize).min(utf16.len());
-                        hint(&String::from_utf16_lossy(&utf16[..end]));
+                        hint(&String::from_utf16_lossy(&utf16[..end]), &full);
                     }
                 }
                 let _ = cand.hwnd().ShowWindow(co::SW::HIDE);
@@ -946,11 +970,12 @@ fn install_completion(
         let complete = complete.clone();
         let context_hint = context_hint.clone();
         Rc::new(move |force: bool| {
-            let utf16: Vec<u16> = edit.text().unwrap_or_default().encode_utf16().collect();
+            let full = edit.text().unwrap_or_default();
+            let utf16: Vec<u16> = full.encode_utf16().collect();
             let caret = (caret_offset(&edit) as usize).min(utf16.len()) as u32;
             let before = String::from_utf16_lossy(&utf16[..caret as usize]);
             if let Some(hint) = &context_hint {
-                hint(&before);
+                hint(&before, &full);
             }
             match complete(&before, caret, force) {
                 Some((start, items)) if !items.is_empty() => {
@@ -1466,14 +1491,21 @@ pub fn code_box(
             Some((caret - plen as u32, items))
         })
     };
-    // signature help＝カレットを囲う呼び出しのシグネチャをヒント行に出す（解決不能なら消す）。
-    // 本文・カレットが動くたびに install_completion 側から呼ばれる。
+    // ヒント行の更新（本文・カレットが動くたびに install_completion 側から呼ばれる）。
+    // ライブ検査＝構文が通っている式の意味エラー（未解決識別子・組込引数の不整合）を最優先で
+    // 出す。入力途中＝構文が壊れている間は黙る（構文エラーの表示は OK 時だけ＝邪魔しない）。
+    // エラーが無ければ signature help（カレットを囲う呼び出しのシグネチャ）、それも無ければ消す。
     let context_hint: ContextHintFn = {
         let hint = hint.clone();
         let members = members_shared.clone();
-        Rc::new(move |before: &str| {
-            let text = enclosing_call(before)
-                .and_then(|call| signature_help(&members, &call.name, call.arg))
+        let globals = globals.to_vec();
+        Rc::new(move |before: &str, full: &str| {
+            let text = live_error(full, before, &globals)
+                .map(|(msg, line, col)| error_hint_text(full, &msg, line, col))
+                .or_else(|| {
+                    enclosing_call(before)
+                        .and_then(|call| signature_help(&members, &call.name, call.arg))
+                })
                 .unwrap_or_default();
             // 変化が無ければ触らない（キーストロークごとの再描画ちらつきを避ける）。
             if hint.hwnd().GetWindowText().unwrap_or_default() != text {
@@ -1725,10 +1757,25 @@ pub mod completion_probe {
 mod tests {
     use super::{
         CallCtx, CompletionMember, completion_context, completion_items, completion_prefix,
-        enclosing_call, error_hint_text, match_rank, semantic_error, signature_help, syntax_error,
-        utf16_offset_at, value_items,
+        enclosing_call, error_hint_text, live_error, match_rank, semantic_error, signature_help,
+        syntax_error, utf16_offset_at, value_items,
     };
     use crate::script::ScriptCommand;
+
+    #[test]
+    fn live_error_stays_quiet_while_typing() {
+        let globals: Vec<String> = ["r", "rerics"].iter().map(|s| s.to_string()).collect();
+        // 入力途中（構文が壊れている間）は黙る。
+        assert_eq!(live_error("r.spawn(aa", "r.spawn(aa", &globals), None);
+        // 構文が通った瞬間に未解決識別子が出る。
+        assert!(live_error("r.spawn(aaa)", "r.spawn(aaa)", &globals).is_some());
+        // 組込の引数エラーは、カレットがその呼び出しの中（before が括弧内）にある間は黙り、
+        // 外に出たら出す。
+        assert_eq!(live_error("sort()", "sort(", &globals), None, "書きかけは咎めない");
+        assert!(live_error("sort()", "sort()", &globals).is_some(), "外に出たら出す");
+        // 正しい式は何も出さない。
+        assert_eq!(live_error(r#"sort("name")"#, r#"sort("name")"#, &globals), None);
+    }
 
     #[test]
     fn error_hint_shows_offending_line_for_multiline_code() {

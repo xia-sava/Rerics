@@ -4085,6 +4085,11 @@ fn signature_help_tracks_enclosing_call_and_argument() {
     let c4 = poll(&server, "/completion", |b| b.contains(r#""hint":"""#));
     assert!(c4.contains(r#""hint":"""#), "呼び出しの外では消える: {c4}");
 
+    // ライブ検査：構文が通る式の未解決識別子は、OK を押さなくてもヒントに出る。
+    server.req("POST", "/completion/type", "r.spawn(zzz)").unwrap();
+    let c5 = poll(&server, "/completion", |b| b.contains("zzz は定義されていない"));
+    assert!(c5.contains("定義されていない"), "ライブで未解決識別子が出る: {c5}");
+
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
 
