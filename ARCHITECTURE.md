@@ -90,6 +90,29 @@ UI を差し替えても実処理は変わらず、同じ処理が UI 側とロ�
 - 組込コマンドは token で直接書ける（例：`cursorDown`、`compareDialog`）。
 - スクリプト API メンバーや登録コマンドは `r.xxx()` の式で書く（裸の token では引けない）。
 
+## 式エディタ（`code_box`）の補完と検査
+
+キー編集・メニュー編集の「式を編集」は補完つきエディタ（`crates/rerics/src/dialog/input.rs` の
+`code_box`）。次の層でできている。
+
+- **補完** … `r.`/`rerics.` のメンバアクセスと、式の先頭の裸の識別子（fast-path 文脈＝組込のみ）で
+  候補を出す。照合は曖昧マッチ（前方一致 → camelCase 頭文字 → 和名部分一致 → 飛び石一致）。
+  候補はジャンル（`key_editor::command_genre`）ごとに見出し行付きで並び、`r.` 直後の空クエリは
+  全機能ブラウザを兼ねる。確定は `名前()` を挿入し、必須引数があればカレットを括弧内へ置く。
+  引数の値も文脈で補完する（組込 Enum の値・オプション Object のキー・host API の文字列 union）。
+- **signature help** … カレットを囲う呼び出し（`enclosing_call`＝文字列・コメント対応の前方走査で
+  関数名と引数位置を特定）のシグネチャと説明を入力欄直下のヒント行へ常設し、いま書いている引数を
+  ‹› で強調する。組込はメタデータ（`CommandMeta`）から、host API は**埋め込み `rerics.d.ts` の
+  実行時パース**（`crates/rerics/src/hostsig.rs`）から引く＝手書きの型定義が唯一の正本で、
+  シグネチャの別表を保守しない。
+- **検査** … OK 時に構文（deno_ast＝実行系と同じ TS パース）→ 意味の順で検査し、エラーなら
+  閉じずにヒント行へ示してカレットをエラー位置へ飛ばす。意味検査は、組込 fast-path 呼び出しの
+  引数を `rerics_core::validate_builtin_args` で、エンジン行きの Script 式は scope analysis の
+  未解決識別子をエンジンの `globalThis` 実在名（`__globalNames`）と突き合わせて見る。
+  意味エラーは入力中もライブ表示する（構文が壊れている間と、書きかけの呼び出しの中では黙る）。
+- 候補リストはオーナードロー（見出し行のグレー字・名前／説明の桁揃え）。`LB_GETTEXT` は生きて
+  いるので、debug-server の `/completion` からは従来どおり文字列で観測できる。
+
 ## 組込コマンドを追加するとき触る箇所
 
 `Command` を 1 つ増やすときのチェックリスト。
@@ -112,7 +135,9 @@ UI を差し替えても実処理は変わらず、同じ処理が UI 側とロ�
   純粋な計算やシステムクエリは Host を介さない op にできる。
 - `extension!` の ops 一覧に登録し、bootstrap の `globalThis.rerics` に生やす。
 - `crates/rerics-core/src/dts.rs` の `HOST_API_MEMBERS` と `scripting/rerics.d.ts` の両方に
-  追加する。
+  追加する。`rerics.d.ts` の宣言はエディタ補完だけでなく**式エディタの signature help・
+  オプションキー補完の正本**にもなる（`hostsig` が実行時にパースする）ので、パラメータ名と
+  JSDoc の最初の一文は利用者向けの文面で書く。
 
 ## 結果一覧（検索・比較のペイン）
 

@@ -14,6 +14,10 @@ Rerics は TS/JS で動作をカスタマイズできる。スクリプトは V8
 このフォルダの `rerics.d.ts` と `tsconfig.json` を scripts フォルダにコピーすると、
 `rerics.*` が型付きで補完される。型は実行時には消去される（型検査はエディタ側の責務）。
 
+`rerics.d.ts` は Rerics 本体の式エディタ（キー定義・メニューの「式を編集」）でも使われる：
+signature help（編集中の呼び出しの引数ヒント）とオプションキーの補完は、この型定義の宣言と
+JSDoc を実行時にパースして表示する。
+
 ```ts
 rerics.registerCommand("up", () => {
   rerics.navigate(rerics.currentDir() + "/..");

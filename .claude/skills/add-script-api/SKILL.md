@@ -14,6 +14,7 @@ description: Rerics に新しいスクリプト API メンバー（r.xxx）を�
    - 純粋な計算・システムクエリなら Host を介さない op でよい。
 2. **公開**：`extension!` の ops 一覧に登録し、bootstrap の `globalThis.rerics`（別名 `r`）にメソッドとして生やす。
 3. **型定義**：`crates/rerics-core/src/dts.rs` の `HOST_API_MEMBERS` と `scripting/rerics.d.ts` の両方に追加する。
+   - `rerics.d.ts` の宣言は式エディタの **signature help・オプションキー補完の正本**（`crates/rerics/src/hostsig.rs` が実行時にパース）。パラメータ名と JSDoc の最初の一文は利用者向けの文面で書く。
 
 ## 方針
 - 純ロジックは core（`rerics-core`）へ寄せ、op は薄く呼ぶだけにできると良い（core が唯一の正本）。
