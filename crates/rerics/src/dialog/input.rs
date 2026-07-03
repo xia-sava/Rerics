@@ -233,19 +233,37 @@ fn completion_context(before: &str) -> Option<(usize, String, bool)> {
     None
 }
 
-/// カレットまでのテキスト `before` から、編集中の呼び出し＝カレットを囲う最も内側の関数呼び出しの
-/// （関数名, 何番目の引数か）を返す。前から走査して開き括弧のスタックを保ち、文字列・コメントの
-/// 中は読み飛ばす。`{}`/`[]` の中のカンマは引数の区切りに数えない（オブジェクトリテラル引数）。
-/// 名前の取れる `(` が無ければ（グルーピングの括弧だけ等）None。
-fn enclosing_call(before: &str) -> Option<(String, usize)> {
+/// 編集中の呼び出し＝カレットを囲う最も内側の関数呼び出しの文脈。
+#[derive(Debug, PartialEq)]
+struct CallCtx {
+    /// 呼び出し名（`r.spawn`・裸の `cursorUp` 等・ドット込み）。
+    name: String,
+    /// カレットが何番目の引数にいるか（0 始まり）。
+    arg: usize,
+    /// カレットが引数の Object リテラル（`{}`）の中にいるか。
+    in_object: bool,
+    /// Object の中で現在のエントリの `:` より後（＝値の位置）にいるか。
+    after_colon: bool,
+    /// カレットが閉じていない文字列リテラルの中にいるか（値の入力途中）。
+    in_string: bool,
+}
+
+/// カレットまでのテキスト `before` から編集中の呼び出し（[`CallCtx`]）を返す。前から走査して
+/// 開き括弧のスタックを保ち、文字列・コメントの中は読み飛ばす。`{}`/`[]` の中のカンマは引数の
+/// 区切りに数えない（オブジェクトリテラル引数）。名前の取れる `(` が無ければ（グルーピングの
+/// 括弧だけ等）None。
+fn enclosing_call(before: &str) -> Option<CallCtx> {
     struct Open {
         kind: char,
-        /// `(` のとき、その直前の呼び出し名（`r.spawn`・裸の `cursorUp` 等・ドット込み）。
+        /// `(` のとき、その直前の呼び出し名。
         name: Option<String>,
         commas: usize,
+        /// `{` のとき、現在のエントリで `:` を通過したか。
+        after_colon: bool,
     }
     let chars: Vec<char> = before.chars().collect();
     let mut stack: Vec<Open> = Vec::new();
+    let mut in_string = false;
     let mut i = 0;
     while i < chars.len() {
         match chars[i] {
@@ -257,6 +275,8 @@ fn enclosing_call(before: &str) -> Option<(String, usize)> {
                     }
                     i += 1;
                 }
+                // 閉じクォート無しで末尾に達した＝カレットは文字列の中。
+                in_string = i >= chars.len();
             }
             '/' if chars.get(i + 1) == Some(&'/') => {
                 while i < chars.len() && chars[i] != '\n' {
@@ -272,7 +292,7 @@ fn enclosing_call(before: &str) -> Option<(String, usize)> {
             }
             c @ ('(' | '[' | '{') => {
                 let name = (c == '(').then(|| call_name_before(&chars[..i])).flatten();
-                stack.push(Open { kind: c, name, commas: 0 });
+                stack.push(Open { kind: c, name, commas: 0, after_colon: false });
             }
             ')' | ']' | '}' => {
                 stack.pop();
@@ -280,16 +300,123 @@ fn enclosing_call(before: &str) -> Option<(String, usize)> {
             ',' => {
                 if let Some(top) = stack.last_mut() {
                     top.commas += 1;
+                    top.after_colon = false;
+                }
+            }
+            ':' => {
+                if let Some(top) = stack.last_mut()
+                    && top.kind == '{'
+                {
+                    top.after_colon = true;
                 }
             }
             _ => {}
         }
         i += 1;
     }
-    stack
-        .iter()
-        .rev()
-        .find_map(|o| (o.kind == '(').then(|| o.name.clone().map(|n| (n, o.commas))).flatten())
+    let (in_object, after_colon) = stack
+        .last()
+        .map(|o| (o.kind == '{', o.kind == '{' && o.after_colon))
+        .unwrap_or((false, false));
+    stack.iter().rev().find_map(|o| {
+        (o.kind == '(')
+            .then(|| {
+                o.name.clone().map(|name| CallCtx {
+                    name,
+                    arg: o.commas,
+                    in_object,
+                    after_colon,
+                    in_string,
+                })
+            })
+            .flatten()
+    })
+}
+
+/// 引数値の補完で置換するプレフィックス。カレット直前の識別子と、文字列の入力途中
+/// （`in_string`）ならその開きクォートも置換範囲に含める。
+/// 返り＝(置換長 UTF-16, クォートを除いた入力途中の文字列)。
+fn value_prefix(before: &str, in_string: bool) -> (usize, String) {
+    let chars: Vec<char> = before.chars().collect();
+    let mut start = chars.len();
+    while start > 0 && (chars[start - 1].is_ascii_alphanumeric() || chars[start - 1] == '_') {
+        start -= 1;
+    }
+    let query: String = chars[start..].iter().collect();
+    let mut plen = query.encode_utf16().count();
+    if in_string && start > 0 && (chars[start - 1] == '"' || chars[start - 1] == '\'') {
+        plen += 1;
+    }
+    (plen, query)
+}
+
+/// カレットが引数リストの中にいるときの値補完候補。組込は `ArgType::Enum` の値と
+/// `ArgType::Options` のキー、host API は型中の文字列リテラル union の値とオプション Object の
+/// キー（d.ts 由来）を出す。Object 内の値の位置（`:` の後）では出さない。該当なしは空。
+fn value_items(call: &CallCtx, query: &str) -> Vec<CompletionItem> {
+    use rerics_core::{ArgType, Command};
+    if call.in_object && call.after_colon {
+        return Vec::new();
+    }
+    let (token, bare) =
+        match call.name.strip_prefix("r.").or_else(|| call.name.strip_prefix("rerics.")) {
+            Some(t) => (t, false),
+            None if !call.name.contains('.') => (call.name.as_str(), true),
+            _ => return Vec::new(),
+        };
+    let q = query.to_lowercase();
+    let mut out = Vec::new();
+    // `r.` 文脈は host API が実体（組込と同名でも host が勝つ）なので host を先に引く。
+    if !bare && let Some(sig) = crate::hostsig::host_sig(token) {
+        let Some(idx) = host_param_index(sig, call.arg) else {
+            return out;
+        };
+        let ty = &sig.params[idx].ty;
+        if call.in_object {
+            for (name, doc) in crate::hostsig::option_keys(ty) {
+                if name.to_lowercase().starts_with(&q) {
+                    let detail = (!doc.is_empty()).then_some(doc);
+                    out.push(CompletionItem::plain(name.clone(), format!("{name}: "), detail));
+                }
+            }
+        } else {
+            for v in crate::hostsig::enum_values(ty) {
+                if v.to_lowercase().starts_with(&q) {
+                    out.push(CompletionItem::plain(format!("\"{v}\""), format!("\"{v}\""), None));
+                }
+            }
+        }
+        return out;
+    }
+    let Some(cmd) = Command::from_token(token) else {
+        return out;
+    };
+    let Some(spec) = cmd.meta().args.get(call.arg) else {
+        return out;
+    };
+    match spec.ty {
+        ArgType::Enum(vals) if !call.in_object => {
+            for v in vals {
+                if v.to_lowercase().starts_with(&q) {
+                    out.push(CompletionItem::plain(format!("\"{v}\""), format!("\"{v}\""), None));
+                }
+            }
+        }
+        ArgType::Options(opts) if call.in_object => {
+            for o in opts {
+                if o.name.to_lowercase().starts_with(&q) {
+                    let detail = (!o.doc.is_empty()).then(|| o.doc.to_string());
+                    out.push(CompletionItem::plain(
+                        o.name.to_string(),
+                        format!("{}: ", o.name),
+                        detail,
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+    out
 }
 
 /// `(` の直前の呼び出し名（識別子＋ドットの連なり・手前の空白は許す）。無ければ None。
@@ -349,21 +476,72 @@ fn builtin_help(cmd: rerics_core::Command, arg: usize) -> String {
     format!("{}({})  {}", cmd.as_token(), parts.join(", "), doc)
 }
 
-/// host API のシグネチャヘルプ。第 `arg` 引数を `‹›` で強調する（rest 引数 `...` は溢れた分も
-/// そこへ入るので、`arg` が末尾を超えたら rest を強調する）。
+/// host API の第 `arg` 引数に対応するパラメータ位置。rest 引数（`...`）は溢れた分もそこへ
+/// 入るので、`arg` が末尾を超えていたら rest の位置を返す。
+fn host_param_index(sig: &crate::hostsig::HostSig, arg: usize) -> Option<usize> {
+    if arg < sig.params.len() {
+        return Some(arg);
+    }
+    sig.params.len().checked_sub(1).filter(|&last| sig.params[last].name.starts_with("..."))
+}
+
+/// host API のシグネチャヘルプ。第 `arg` 引数を `‹›` で強調する。
 fn host_help(token: &str, sig: &crate::hostsig::HostSig, arg: usize) -> String {
-    let highlight = if arg < sig.params.len() {
-        Some(arg)
-    } else {
-        sig.params.len().checked_sub(1).filter(|&last| sig.params[last].starts_with("..."))
-    };
+    let highlight = host_param_index(sig, arg);
     let parts: Vec<String> = sig
         .params
         .iter()
         .enumerate()
-        .map(|(i, p)| if Some(i) == highlight { format!("‹{p}›") } else { p.clone() })
+        .map(|(i, p)| if Some(i) == highlight { format!("‹{}›", p.name) } else { p.name.clone() })
         .collect();
     format!("{}({})  {}", token, parts.join(", "), sig.summary)
+}
+
+/// 式ソースの構文エラーを返す（無ければ None）。エンジンの実行系と同じ deno_ast（TypeScript
+/// 扱い）でパースする＝ここを通れば型消去・実行へ進める。空文はチェックしない。
+/// 返り＝(メッセージ, 1 始まり行, 1 始まり桁)。
+fn syntax_error(code: &str) -> Option<(String, usize, usize)> {
+    use deno_ast::diagnostics::Diagnostic as _;
+    if code.trim().is_empty() {
+        return None;
+    }
+    let parsed = deno_ast::parse_module(deno_ast::ParseParams {
+        specifier: deno_ast::ModuleSpecifier::parse("file:///expr.ts").expect("static url"),
+        text: code.to_string().into(),
+        media_type: deno_ast::MediaType::TypeScript,
+        capture_tokens: false,
+        scope_analysis: false,
+        maybe_syntax: None,
+    });
+    // 致命的エラー（Err）に加え、リカバリして続行したエラー（diagnostics）も構文エラー扱いにする
+    // （swc が recover しても V8 では落ちる）。
+    let diag = match &parsed {
+        Ok(p) => p.diagnostics().first().cloned(),
+        Err(e) => Some(e.clone()),
+    }?;
+    let pos = diag.display_position();
+    Some((diag.message().to_string(), pos.line_number, pos.column_number))
+}
+
+/// テキスト内の `line`（1 始まり）・`column`（1 始まり）を UTF-16 オフセットへ変換する
+/// （Edit の `set_selection` 用）。範囲を超えたら末尾。
+fn utf16_offset_at(text: &str, line: usize, column: usize) -> usize {
+    let mut off = 0;
+    let mut l = 1;
+    let mut c = 1;
+    for ch in text.chars() {
+        if l == line && c == column {
+            return off;
+        }
+        if ch == '\n' {
+            l += 1;
+            c = 1;
+        } else if l == line && ch != '\r' {
+            c += 1;
+        }
+        off += ch.len_utf16();
+    }
+    off
 }
 
 /// 補完クエリと候補の照合。マッチの強さを返す（小さいほど強い）：0=名前の前方一致、
@@ -1119,8 +1297,19 @@ pub fn code_box(
         let result = result.clone();
         let edit = edit.clone();
         let wnd2 = wnd.clone();
+        let hint = hint.clone();
         ok.on().bn_clicked(move || {
-            *result.borrow_mut() = Some(edit.text().unwrap_or_default());
+            let code = edit.text().unwrap_or_default();
+            // 構文エラーの式は保存しても実行時に落ちるだけなので、閉じずにヒント行へエラーを
+            // 出してカレットをその位置へ飛ばす（破棄して閉じるのはキャンセル）。
+            if let Some((msg, line, col)) = syntax_error(&code) {
+                let _ = hint.hwnd().SetWindowText(&format!("構文エラー: {msg}"));
+                let pos = utf16_offset_at(&code, line, col) as i32;
+                edit.set_selection(pos, pos);
+                edit.hwnd().SetFocus();
+                return Ok(());
+            }
+            *result.borrow_mut() = Some(code);
             wnd2.close();
             Ok(())
         });
@@ -1141,15 +1330,36 @@ pub fn code_box(
     let complete: CompleteFn = {
         let members = members_shared.clone();
         Rc::new(move |before, caret, force| {
-            let (plen, prefix, bare) = completion_context(before)?;
-            if bare && prefix.is_empty() && !force {
+            // メンバー補完（`r.`／`rerics.` のメンバアクセス・式の先頭の裸の識別子）。
+            if let Some((plen, prefix, bare)) = completion_context(before) {
+                if bare && prefix.is_empty() && !force {
+                    return None;
+                }
+                let items = completion_items(&members, &prefix, bare);
+                let names: Vec<&str> =
+                    items.iter().filter(|i| i.selectable).map(|i| i.display.as_str()).collect();
+                let only_exact = names.len() == 1 && names[0].eq_ignore_ascii_case(&prefix);
+                if names.is_empty() || (!force && only_exact) {
+                    return None;
+                }
+                return Some((caret - plen as u32, items));
+            }
+            // 引数の値補完（Enum の値・オプション Object のキー）。値をこれから書く位置
+            // （手前が `(`／`,`／`{`＝引数・エントリの先頭）だけで出す＝書き終えた値の直後には
+            // 出さない。
+            let call = enclosing_call(before)?;
+            let (plen, query) = value_prefix(before, call.in_string);
+            let head: String = {
+                let chars: Vec<char> = before.chars().collect();
+                chars[..chars.len().saturating_sub(plen)].iter().collect()
+            };
+            if !matches!(head.trim_end().chars().last(), Some('(' | ',' | '{')) {
                 return None;
             }
-            let items = completion_items(&members, &prefix, bare);
-            let names: Vec<&str> =
-                items.iter().filter(|i| i.selectable).map(|i| i.display.as_str()).collect();
-            let only_exact = names.len() == 1 && names[0].eq_ignore_ascii_case(&prefix);
-            if names.is_empty() || (!force && only_exact) {
+            let items = value_items(&call, &query);
+            let only_exact = items.len() == 1
+                && items[0].display.trim_matches('"').eq_ignore_ascii_case(&query);
+            if items.is_empty() || (!force && only_exact) {
                 return None;
             }
             Some((caret - plen as u32, items))
@@ -1162,7 +1372,7 @@ pub fn code_box(
         let members = members_shared.clone();
         Rc::new(move |before: &str| {
             let text = enclosing_call(before)
-                .and_then(|(name, arg)| signature_help(&members, &name, arg))
+                .and_then(|call| signature_help(&members, &call.name, call.arg))
                 .unwrap_or_default();
             // 変化が無ければ触らない（キーストロークごとの再描画ちらつきを避ける）。
             if hint.hwnd().GetWindowText().unwrap_or_default() != text {
@@ -1413,10 +1623,30 @@ pub mod completion_probe {
 #[cfg(test)]
 mod tests {
     use super::{
-        CompletionMember, completion_context, completion_items, completion_prefix, enclosing_call,
-        match_rank, signature_help,
+        CallCtx, CompletionMember, completion_context, completion_items, completion_prefix,
+        enclosing_call, match_rank, signature_help, syntax_error, utf16_offset_at, value_items,
     };
     use crate::script::ScriptCommand;
+
+    #[test]
+    fn syntax_check_reports_error_position_and_passes_valid_code() {
+        // 正しい式・空文は素通し。
+        assert!(syntax_error("cursorUp()").is_none());
+        assert!(syntax_error(r#"r.spawn("x", { cwd: r.currentDir() })"#).is_none());
+        assert!(syntax_error("").is_none());
+        // 閉じ忘れ＝エラー（1 始まりの位置付き）。
+        let (msg, line, col) = syntax_error(r#"r.spawn("x", "#).expect("unclosed");
+        assert!(line >= 1 && col >= 1, "{msg} at {line}:{col}");
+        // 複数行コードは 2 行目のエラー位置を指す。
+        let (_, line, _) = syntax_error("const a = 1;\nconst = 2;").expect("bad decl");
+        assert_eq!(line, 2);
+        // 行・桁 → UTF-16 オフセット（CRLF・非 ASCII 混じり）。
+        let text = "abc\r\nあいう";
+        assert_eq!(utf16_offset_at(text, 1, 1), 0);
+        assert_eq!(utf16_offset_at(text, 2, 2), 6);
+        // 範囲外は末尾へクランプ。
+        assert_eq!(utf16_offset_at(text, 9, 9), text.encode_utf16().count());
+    }
 
     fn member(name: &str, callable: bool, arity: u32) -> CompletionMember {
         CompletionMember { name: name.to_string(), callable, arity, script: None }
@@ -1424,7 +1654,7 @@ mod tests {
 
     #[test]
     fn enclosing_call_finds_innermost_call_and_arg_index() {
-        let call = |s: &str| enclosing_call(s).map(|(n, a)| (n, a));
+        let call = |s: &str| enclosing_call(s).map(|c| (c.name, c.arg));
         assert_eq!(call("r.spawn("), Some(("r.spawn".into(), 0)));
         assert_eq!(call(r#"r.spawn("x", "#), Some(("r.spawn".into(), 1)));
         // 文字列の中のカンマ・括弧は数えない（閉じていない文字列を入力中でも囲う呼び出しが取れる）。
@@ -1441,6 +1671,63 @@ mod tests {
         // 呼び出しの外・呼び出しなし。
         assert_eq!(call("r.spawn()"), None);
         assert_eq!(call("abc"), None);
+    }
+
+    #[test]
+    fn enclosing_call_tracks_object_and_string_state() {
+        // Object リテラルの中＝キーの位置。
+        let c = enclosing_call(r#"r.spawn("x", {"#).expect("object");
+        assert!(c.in_object && !c.after_colon && !c.in_string);
+        // `:` の後＝値の位置。`,` で次のエントリのキー位置へ戻る。
+        let c = enclosing_call(r#"r.spawn("x", {cwd: "#).expect("value pos");
+        assert!(c.in_object && c.after_colon);
+        let c = enclosing_call(r#"r.spawn("x", {cwd: p, "#).expect("next key");
+        assert!(c.in_object && !c.after_colon);
+        // 文字列の入力途中。
+        let c = enclosing_call(r#"r.sort(""#).expect("in string");
+        assert!(c.in_string && !c.in_object);
+        let c = enclosing_call(r#"r.sort("name""#).expect("closed string");
+        assert!(!c.in_string);
+    }
+
+    #[test]
+    fn value_items_offer_enum_values_and_option_keys() {
+        let ctx = |name: &str, arg, in_object, after_colon| CallCtx {
+            name: name.to_string(),
+            arg,
+            in_object,
+            after_colon,
+            in_string: false,
+        };
+        // 組込 Enum＝値をクォート付きで出し、前方一致で絞る。
+        let vals: Vec<String> = value_items(&ctx("r.sort", 0, false, false), "")
+            .into_iter()
+            .map(|i| i.insert)
+            .collect();
+        assert!(vals.contains(&"\"name\"".to_string()), "sort の Enum 値: {vals:?}");
+        let vals = value_items(&ctx("sort", 0, false, false), "na");
+        assert_eq!(vals.len(), 1, "前方一致で絞る: {}", vals.len());
+        assert_eq!(vals[0].insert, "\"name\"");
+        // 組込 Options＝Object 内でキーを出す（doc 付き・挿入は `名前: `）。
+        let keys = value_items(&ctx("cursorDown", 0, true, false), "");
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].insert, "select: ");
+        assert!(keys[0].detail.is_some(), "OptSpec.doc が説明に付く");
+        // host API のオプション Object（spawn の RericsProcOptions）＝cwd キーが出る。
+        let keys: Vec<String> = value_items(&ctx("r.spawn", 1, true, false), "")
+            .into_iter()
+            .map(|i| i.insert)
+            .collect();
+        assert!(keys.contains(&"cwd: ".to_string()), "spawn の cwd キー: {keys:?}");
+        // host API の文字列リテラル union（compare の type）＝値が出る。
+        let vals: Vec<String> = value_items(&ctx("r.compare", 0, false, false), "s")
+            .into_iter()
+            .map(|i| i.insert)
+            .collect();
+        assert!(vals.contains(&"\"sameDate\"".to_string()), "compare の union 値: {vals:?}");
+        // `:` の後（値の位置）ではキーを出さない。Enum でない引数も出さない。
+        assert!(value_items(&ctx("r.spawn", 1, true, true), "").is_empty());
+        assert!(value_items(&ctx("setCursorIndex", 0, false, false), "").is_empty());
     }
 
     #[test]

@@ -4088,6 +4088,64 @@ fn signature_help_tracks_enclosing_call_and_argument() {
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
 
+/// 引数の値補完：Enum 型引数の中では値がクォート付きで、オプション Object の中ではキーが
+/// `名前: ` 形で補完される。OK は構文エラーの式を保存せず、ヒント行へエラーを出してダイアログに
+/// 留まる（正しい式に直せば閉じる）。
+#[test]
+fn argument_value_completion_and_syntax_check_on_ok() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
+    wait_modal(&server);
+    server.req("POST", "/settings/nav/5", "").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/openexpr", "").unwrap();
+    server.req("POST", "/modal/text", "").unwrap();
+
+    // 組込 Enum：`r.sort(` の直後で値の一覧が出て、確定でクォート付きで入る。
+    server.req("POST", "/completion/keystrokes", "r.sort(").unwrap();
+    let c = poll(&server, "/completion", |b| b.contains(r#"\"name\""#));
+    let v: serde_json::Value = serde_json::from_str(&c).unwrap();
+    let idx = v["candidates"]
+        .as_array()
+        .expect("candidates")
+        .iter()
+        .position(|x| x.as_str().unwrap_or("") == "\"name\"")
+        .expect("name の値がある");
+    server.req("POST", &format!("/completion/accept/{idx}"), "").unwrap();
+    let c2 = poll(&server, "/completion", |b| b.contains(r#"r.sort(\"name\""#));
+    assert!(c2.contains(r#"r.sort(\"name\""#), "Enum 値がクォート付きで入る: {c2}");
+
+    // host API のオプション Object：spawn の `{` の中で cwd キーが出て、確定で `cwd: ` が入る。
+    server.req("POST", "/modal/text", "").unwrap();
+    server.req("POST", "/completion/keystrokes", "r.spawn(\"x\", {").unwrap();
+    let c3 = poll(&server, "/completion", |b| b.contains("cwd"));
+    let v: serde_json::Value = serde_json::from_str(&c3).unwrap();
+    let idx = v["candidates"]
+        .as_array()
+        .expect("candidates")
+        .iter()
+        .position(|x| x.as_str().unwrap_or("").starts_with("cwd"))
+        .expect("cwd キーがある");
+    server.req("POST", &format!("/completion/accept/{idx}"), "").unwrap();
+    let c4 = poll(&server, "/completion", |b| b.contains("{cwd: "));
+    assert!(c4.contains("{cwd: "), "オプションキーが入る: {c4}");
+
+    // 構文チェック：壊れた式で OK ＝閉じずにヒント行へ「構文エラー」が出る。
+    server.req("POST", "/completion/type", "r.spawn(\"x\", ").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    let c5 = poll(&server, "/completion", |b| b.contains("構文エラー"));
+    assert!(c5.contains("構文エラー"), "OK で構文エラーが示される: {c5}");
+
+    // 正しい式に直して OK ＝式エディタが閉じる（補完プローブが外れて null になる）。
+    server.req("POST", "/completion/type", "cursorUp()").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    let closed = poll(&server, "/completion", |b| b == "null");
+    assert_eq!(closed, "null", "正しい式なら閉じる");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
 /// 式エディタの補完は名前空間の中身まで降りる（2 階層）。`r.fs.` で `fs.readText` 等が候補に出て、
 /// 確定すると名前空間込みのメンバ名が挿入される。
 #[test]
