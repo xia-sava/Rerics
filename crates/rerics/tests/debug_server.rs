@@ -3987,14 +3987,21 @@ fn completion_popup_lists_members_and_inserts_on_accept() {
     server.req("POST", "/modal/text", "").unwrap();
 
     // `=r.my` と実キー入力（WM_CHAR＝EN_CHANGE 経路）すると、登録コマンド myCmd が候補に出る。
+    // 先頭（index 0）はジャンル見出しのラベル行で、最初の候補は index 1。
     server.req("POST", "/completion/keystrokes", "=r.my").unwrap();
     let comp = poll(&server, "/completion", |b| b.contains("myCmd"));
     assert!(comp.contains("myCmd"), "登録コマンドが補完候補に出る: {comp}");
+    assert!(comp.contains("── スクリプト・API ──"), "ジャンル見出しが挟まる: {comp}");
 
-    // 先頭候補を確定＝プレフィックス `my` がメンバ名 `myCmd` へ置換される。
+    // ラベル行（index 0）は確定の対象外＝本文は変わらない。
     server.req("POST", "/completion/accept/0", "").unwrap();
-    let comp2 = poll(&server, "/completion", |b| b.contains(r#""text":"=r.myCmd"#));
-    assert!(comp2.contains(r#""text":"=r.myCmd"#), "確定でメンバ名が挿入される: {comp2}");
+    let unchanged = server.req("GET", "/completion", "").unwrap().1;
+    assert!(unchanged.contains(r#""text":"=r.my""#), "ラベル行は確定できない: {unchanged}");
+
+    // 候補（index 1＝myCmd）を確定＝プレフィックス `my` が `myCmd()` へ置換される（引数なしは () 付き）。
+    server.req("POST", "/completion/accept/1", "").unwrap();
+    let comp2 = poll(&server, "/completion", |b| b.contains(r#""text":"=r.myCmd()""#));
+    assert!(comp2.contains(r#""text":"=r.myCmd()""#), "確定でメンバ名＋() が挿入される: {comp2}");
 
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
@@ -4089,10 +4096,11 @@ fn code_editor_folds_between_single_and_multi_line() {
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
 
-/// 式エディタ（code_box）の「機能を挿入」（ctrl_id 100）はジャンル別の機能一覧を開き、選んだ機能を
-/// `r.名前()` でカレットへ挿入する（名前うろ覚えのブラウズ入力＝インラインピッカーの代替）。
+/// 式エディタ（code_box）の `r.` 補完は機能ブラウザを兼ねる：`r.` 直後（空クエリ）で全機能が
+/// ジャンル見出し付きで並び、見出し行は選択・確定の対象外。候補の確定で `名前()` が挿入される
+/// （名前うろ覚えのブラウズ入力）。
 #[test]
-fn code_editor_inserts_function_by_genre_browse() {
+fn code_editor_browses_functions_by_genre_in_completion() {
     let server = Server::start(&["a.txt"], "");
     server.req("POST", "/command/openSettings", "").expect("openSettings");
     wait_modal(&server);
@@ -4103,22 +4111,30 @@ fn code_editor_inserts_function_by_genre_browse() {
     poll(&server, "/state", |b| b.contains("コードを割り当て"));
     server.req("POST", "/modal/text", "").unwrap();
 
-    // 「機能を挿入」を押す（PostMessage＝respond-first）と、ジャンル別一覧モーダルが開く。
-    server.req("POST", "/modal/command/100", "").unwrap();
-    let st = poll(&server, "/state", |b| b.contains("機能を挿入"));
+    // `r.` 直後＝空クエリで全機能がジャンル見出し付きで出る。
+    server.req("POST", "/completion/keystrokes", "r.").unwrap();
+    let c = poll(&server, "/completion", |b| b.contains("── カーソル移動 ──"));
+    assert!(
+        c.contains("── ファイル操作 ──") && c.contains("── スクリプト・API ──"),
+        "ジャンル見出しが並ぶ: {c}"
+    );
 
-    // 一覧から delete の行を選んで OK＝code_box の本文へ r.delete() が挿入される。
-    let v: serde_json::Value = serde_json::from_str(&st).unwrap();
-    let items = v["modal"]["items"].as_array().expect("modal items");
-    let idx = items
+    // 見出し行（index 0）は確定できない＝本文は変わらない。
+    server.req("POST", "/completion/accept/0", "").unwrap();
+    let unchanged = server.req("GET", "/completion", "").unwrap().1;
+    assert!(unchanged.contains(r#""text":"r.""#), "見出し行は確定できない: {unchanged}");
+
+    // 一覧から delete の行を確定＝code_box の本文へ r.delete() が入る。
+    let v: serde_json::Value = serde_json::from_str(&c).unwrap();
+    let idx = v["candidates"]
+        .as_array()
+        .expect("candidates")
         .iter()
-        .position(|x| x.as_str().unwrap_or("").contains("（delete）"))
+        .position(|x| x.as_str().unwrap_or("").starts_with("delete"))
         .expect("delete の行がある");
-    server.req("POST", &format!("/modal/select/{idx}"), "").unwrap();
-    server.req("POST", "/modal/command/ok", "").unwrap();
-
-    let c = poll(&server, "/completion", |b| b.contains("r.delete()"));
-    assert!(c.contains("r.delete()"), "ジャンル挿入で r.delete() が本文へ入る: {c}");
+    server.req("POST", &format!("/completion/accept/{idx}"), "").unwrap();
+    let c2 = poll(&server, "/completion", |b| b.contains("r.delete()"));
+    assert!(c2.contains("r.delete()"), "確定で r.delete() が本文へ入る: {c2}");
 
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
@@ -4193,23 +4209,25 @@ fn completion_keyboard_navigation_and_ctrl_space() {
     server.req("POST", "/modal/text", "").unwrap();
     let comp = || server.req("GET", "/completion", "").unwrap().1;
 
-    // `=r.o` で候補（on/open/openDialog/oppositePane）が出て、先頭が選択されている。
+    // `=r.o` で候補が出る。並びはジャンル見出し付き：
+    //   0=── ペイン ──, 1=oppositeToCurrent, 2=── アプリ・その他 ──, 3=openHelp, 4=openSettings, …
+    // 初期選択は先頭の候補行（index 1。index 0 は見出しラベル）。
     server.req("POST", "/completion/keystrokes", "=r.o").unwrap();
     let c = poll(&server, "/completion", |b| b.contains(r#""visible":true"#));
-    assert!(c.contains("oppositePane"), "候補が出る: {c}");
-    assert!(c.contains(r#""selected":0"#), "先頭が選択される: {c}");
+    assert!(c.contains("oppositeToCurrent"), "候補が出る: {c}");
+    assert!(c.contains(r#""selected":1"#), "先頭の候補行が選択される: {c}");
 
-    // ↓↓↑ で選択が index 1（open）に動く。
+    // ↓↓↑：見出し行（index 2）をスキップして 1→3→4→3 と動く。
     server.req("POST", "/completion/key/down", "").unwrap();
     server.req("POST", "/completion/key/down", "").unwrap();
     server.req("POST", "/completion/key/up", "").unwrap();
-    let c2 = poll(&server, "/completion", |b| b.contains(r#""selected":1"#));
-    assert!(c2.contains(r#""selected":1"#), "↓↓↑ で index 1: {c2}");
+    let c2 = poll(&server, "/completion", |b| b.contains(r#""selected":3"#));
+    assert!(c2.contains(r#""selected":3"#), "↓↓↑ は見出しをスキップして index 3: {c2}");
 
-    // Enter で選択中（open）を確定＝プレフィックス o が open に置換される。
+    // Enter で選択中（openHelp）を確定＝プレフィックス o が openHelp() に置換される。
     server.req("POST", "/completion/key/enter", "").unwrap();
-    let c3 = poll(&server, "/completion", |b| b.contains(r#""text":"=r.open"#));
-    assert!(c3.contains(r#""text":"=r.open"#), "Enter で open 確定: {c3}");
+    let c3 = poll(&server, "/completion", |b| b.contains(r#""text":"=r.openHelp()"#));
+    assert!(c3.contains(r#""text":"=r.openHelp()"#), "Enter で openHelp 確定: {c3}");
 
     // 唯一一致 `=r.currentDir` は自動では隠れる。Ctrl+Space で強制表示できる。
     server.req("POST", "/completion/keystrokes", "=r.currentDir").unwrap();

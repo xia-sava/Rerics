@@ -2462,7 +2462,7 @@ impl MenusPane {
         shared: &Rc<Shared>,
         wnd: &gui::WindowModal,
         scripts: Vec<crate::script::ScriptCommand>,
-        members: Vec<String>,
+        members: Vec<crate::script::MemberInfo>,
     ) -> Self {
         label(parent, "メニュー（Menu(\"名前\") で開く）。選ぶと右に項目が出る。", 8, 8, 520);
         let menu_list = gui::ListView::<()>::new(
@@ -2819,19 +2819,17 @@ impl MenusPane {
         // コマンド欄の式をコードエディタ（補完つき）で編集する。現在の欄内容を初期値に開き、OK の
         // 文字列を欄へ書き戻す。キー編集の「式を編集」と同じ `code_box` を流用＝組込もスクリプトも
         // 同じ補完（引数ヒント＋説明）で編集できる。ボタンと debug フックの両方から呼ぶ。
-        let script_summaries: std::collections::HashMap<String, String> = scripts
-            .iter()
-            .filter_map(|c| c.summary.clone().map(|s| (c.name.clone(), s)))
-            .collect();
+        let scripts_by_name: std::collections::HashMap<String, crate::script::ScriptCommand> =
+            scripts.iter().map(|c| (c.name.clone(), c.clone())).collect();
         let pick_command: Rc<dyn Fn()> = Rc::new({
             let wnd = wnd.clone();
             let command_edit = command_edit.clone();
             let members = members.clone();
-            let script_summaries = script_summaries.clone();
+            let scripts_by_name = scripts_by_name.clone();
             move || {
                 let current = command_edit.text().unwrap_or_default();
                 let comp = crate::dialog::completion_members(&members, |name| {
-                    script_summaries.get(name).cloned()
+                    scripts_by_name.get(name).cloned()
                 });
                 if let Some(expr) = crate::dialog::code_box(
                     &wnd,
@@ -3383,7 +3381,7 @@ pub fn show(
     parent: &impl GuiParent,
     current: &Config,
     scripts: Vec<crate::script::ScriptCommand>,
-    members: Vec<String>,
+    members: Vec<crate::script::MemberInfo>,
     on_apply: impl Fn(&Config) + 'static,
 ) {
     // 前回開いた設定ダイアログのキー編集フックを捨てる（このダイアログ生成で登録し直す）。

@@ -213,17 +213,46 @@ fn completion_prefix(before: &str) -> Option<(usize, String)> {
     Some((prefix.encode_utf16().count(), prefix))
 }
 
-/// `members` から `prefix` に前方一致する候補を返す（大小無視・元の順序を保つ）。空 prefix は全件。
-/// 名前空間（`fs.readText` 等のドット付き）は prefix と同じ階層だけを返す＝prefix のドット数に
-/// 一致する候補へ絞る。これで `r.`（prefix 空）はトップレベルのみ、`r.fs.` は `fs.` 配下のみが出る。
-fn completion_candidates(members: &[String], prefix: &str) -> Vec<String> {
-    let p = prefix.to_lowercase();
-    let depth = prefix.matches('.').count();
-    members
-        .iter()
-        .filter(|m| m.to_lowercase().starts_with(&p) && m.matches('.').count() == depth)
-        .cloned()
-        .collect()
+/// 補完クエリと候補の照合。マッチの強さを返す（小さいほど強い）：0=名前の前方一致、
+/// 1=camelCase 頭文字一致（`cp` → `cursorPath`）、2=表示名（和名）の部分一致、
+/// 3=名前の飛び石一致（クエリの文字が順に現れる）。合わなければ None。空クエリは全件 0。
+/// 名前は ASCII 前提で大小無視、和名はそのまま部分一致する。
+fn match_rank(query: &str, name: &str, label: Option<&str>) -> Option<u8> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    let q = query.to_lowercase();
+    let n = name.to_lowercase();
+    if n.starts_with(&q) {
+        return Some(0);
+    }
+    // 頭文字列＝各セグメント（ドット区切り）の先頭文字＋大文字。cursorPath → "cp"。
+    let initials: String = name
+        .split('.')
+        .flat_map(|seg| {
+            seg.chars()
+                .enumerate()
+                .filter(|(i, c)| *i == 0 || c.is_ascii_uppercase())
+                .map(|(_, c)| c)
+        })
+        .collect::<String>()
+        .to_lowercase();
+    if initials.starts_with(&q) {
+        return Some(1);
+    }
+    if let Some(l) = label
+        && l.to_lowercase().contains(&q)
+    {
+        return Some(2);
+    }
+    // 飛び石一致は 1 文字だとほぼ全件に合ってノイズになるので、2 文字以上のクエリだけ。
+    if q.chars().count() >= 2 {
+        let mut rest = n.chars();
+        if q.chars().all(|qc| rest.by_ref().any(|nc| nc == qc)) {
+            return Some(3);
+        }
+    }
+    None
 }
 
 /// Edit のカレット位置（UTF-16 オフセット）を返す。winsafe の `em::GetSel` はポインタ出力の
@@ -245,33 +274,141 @@ fn caret_offset(edit: &gui::Edit) -> u32 {
 /// 補完候補1件＝リストに見せる表示文字列と、確定時に入力欄へ挿入する文字列。多くは同一だが、
 /// コマンドパレットのように「和名 (Token) を見せて Token を挿入」する用途で別々にできる。
 /// `detail` は組込コマンドの引数シグネチャ＋説明（メタデータ由来）。あれば候補行の右に添える。
+/// `selectable=false` はジャンル見出しのラベル行＝選択・確定の対象外。`caret_back` は確定挿入後に
+/// カレットを何文字（UTF-16）戻すか（引数ありの `名前()` 挿入で 1＝括弧内へ置く）。
 struct CompletionItem {
     display: String,
     insert: String,
     detail: Option<String>,
+    selectable: bool,
+    caret_back: u32,
+}
+
+impl CompletionItem {
+    /// 通常の候補行（選択可・カレットは挿入末尾のまま）。
+    fn plain(display: String, insert: String, detail: Option<String>) -> Self {
+        Self { display, insert, detail, selectable: true, caret_back: 0 }
+    }
+
+    /// ジャンル見出しのラベル行。
+    fn label(genre: &str) -> Self {
+        Self {
+            display: format!("── {genre} ──"),
+            insert: String::new(),
+            detail: None,
+            selectable: false,
+            caret_back: 0,
+        }
+    }
 }
 
 /// `code_box` の `r.` 補完に渡すメンバ 1 件。組込／host API／スクリプト関数を区別せず名前で持つ。
-/// `script_summary` は登録スクリプト関数の 1 行説明（組込はメタデータから引くので不要・`None`）。
+/// `callable`/`arity` はエンジン報告の関数判定・宣言引数数（組込コマンドはメタデータが正）。
+/// `script` は登録スクリプトコマンドのメタ（表示名・ジャンル・説明。組込・host API は `None`）。
+#[derive(Clone)]
 pub struct CompletionMember {
     pub name: String,
-    pub script_summary: Option<String>,
+    pub callable: bool,
+    pub arity: u32,
+    pub script: Option<crate::script::ScriptCommand>,
 }
 
-/// `members`（`r.` で呼べる名前）と、名前→登録スクリプト関数の 1 行説明を引く関数から、
+/// エンジンから取ったメンバ一覧と、名前→登録スクリプトコマンドのメタを引く関数から、
 /// `code_box` に渡す補完メンバ列を組む。キー編集とメニュー編集で共用する（組込はメタデータから
-/// 説明が引かれるので `script_summary` は登録スクリプト関数だけに付く）。
+/// 説明が引かれるので `script` は登録スクリプトコマンドだけに付く）。
 pub fn completion_members(
-    members: &[String],
-    script_summary: impl Fn(&str) -> Option<String>,
+    members: &[crate::script::MemberInfo],
+    script: impl Fn(&str) -> Option<crate::script::ScriptCommand>,
 ) -> Vec<CompletionMember> {
     members
         .iter()
-        .map(|name| CompletionMember {
-            name: name.clone(),
-            script_summary: script_summary(name),
+        .map(|m| CompletionMember {
+            name: m.name.clone(),
+            callable: m.callable,
+            arity: m.arity,
+            script: script(&m.name),
         })
         .collect()
+}
+
+/// `members` から `query` に合う補完候補列を組む。照合は [`match_rank`]（名前・和名の曖昧一致）、
+/// 階層は query のドット数と同じものだけ（`r.` はトップレベルのみ・`r.fs.` は `fs.` 配下のみ）。
+/// 並びはジャンルごとに固め、ジャンル見出しのラベル行を挟む（該当が 1 ジャンルだけなら挟まない）。
+/// query が非空のときはジャンル自体も「群内の最強マッチ」順に並べ、目当ての機能が上に来るようにする。
+/// 確定挿入は callable なら `名前()`（引数ありはカレットを括弧内へ）、オブジェクトは名前のみ。
+fn completion_items(members: &[CompletionMember], query: &str) -> Vec<CompletionItem> {
+    use rerics_core::Command;
+    let depth = query.matches('.').count();
+    struct Hit {
+        genre: (u8, String),
+        rank: u8,
+        item: CompletionItem,
+    }
+    let mut hits: Vec<Hit> = Vec::new();
+    for m in members {
+        if m.name.matches('.').count() != depth {
+            continue;
+        }
+        let builtin = Command::from_token(&m.name);
+        let label = builtin
+            .map(|c| c.display_name().to_string())
+            .or_else(|| m.script.as_ref().and_then(|s| s.label.clone()));
+        let Some(rank) = match_rank(query, &m.name, label.as_deref()) else {
+            continue;
+        };
+        let genre = match (builtin, m.script.as_ref().and_then(|s| s.genre.clone())) {
+            (Some(cmd), _) => {
+                let (o, g) = crate::key_editor::command_genre(cmd);
+                (o, g.to_string())
+            }
+            (None, Some(g)) => (crate::key_editor::genre_order(&g), g),
+            (None, None) => (u8::MAX, "スクリプト・API".to_string()),
+        };
+        let detail = builtin
+            .map(meta_hint)
+            .or_else(|| m.script.as_ref().and_then(|s| s.summary.clone()));
+        // 引数有無：host API は宣言引数（組込と同名なら host が実体なのでこちらを優先）、
+        // 組込コマンドはメタデータの必須引数から（省略可のみなら引数なし扱い＝そのまま呼べる形で
+        // 確定してカレットを括弧の後ろへ置く）。callable でなければ（オブジェクト）括弧を付けない。
+        let has_args = m.arity > 0
+            || builtin.map(|c| c.meta().args.iter().any(|a| a.required)).unwrap_or(false);
+        let callable = m.callable || builtin.is_some();
+        let (insert, caret_back) = if callable {
+            (format!("{}()", m.name), if has_args { 1 } else { 0 })
+        } else {
+            (m.name.clone(), 0)
+        };
+        hits.push(Hit {
+            genre,
+            rank,
+            item: CompletionItem {
+                display: m.name.clone(),
+                insert,
+                detail,
+                selectable: true,
+                caret_back,
+            },
+        });
+    }
+    // 群ごとの最強マッチ（query 非空時に群の並びを決める）。空 query は全員 0＝ジャンル順のまま。
+    let mut best: std::collections::HashMap<(u8, String), u8> = std::collections::HashMap::new();
+    for h in &hits {
+        let e = best.entry(h.genre.clone()).or_insert(u8::MAX);
+        *e = (*e).min(h.rank);
+    }
+    // 安定ソート＝同キー内は members の名前昇順が保たれる。
+    hits.sort_by_key(|h| (best[&h.genre], h.genre.0, h.genre.1.clone(), h.rank));
+    let multi = best.len() > 1;
+    let mut out: Vec<CompletionItem> = Vec::with_capacity(hits.len());
+    let mut cur: Option<(u8, String)> = None;
+    for h in hits {
+        if multi && cur.as_ref() != Some(&h.genre) {
+            out.push(CompletionItem::label(&h.genre.1));
+            cur = Some(h.genre);
+        }
+        out.push(h.item);
+    }
+    out
 }
 
 /// 組込コマンドのメタデータから、補完候補に添える 1 行ヒント（引数シグネチャ＋説明）を作る。
@@ -310,21 +447,34 @@ type CompleteFn = Rc<dyn Fn(&str, u32, bool) -> Option<(u32, Vec<CompletionItem>
 /// カレット直前の置換範囲へ入れる。キー操作（↑↓移動クランプ・Enter 確定・Ctrl+Space 表示）と
 /// headless 観測（`completion_probe`）もここでまとめて仕込む。`show_modal` は呼び出し側で。
 fn install_completion(arm: &ModalArm, edit: &gui::Edit, cand: &gui::ListBox, complete: CompleteFn) {
-    // 置換範囲（カレット直前のプレフィックス・UTF-16）と、候補と並ぶ挿入文字列。候補表示中だけ有効。
+    // 置換範囲（カレット直前のプレフィックス・UTF-16）と、リストと並ぶ候補列。候補表示中だけ有効。
     let range: Rc<Cell<Option<(u32, u32)>>> = Rc::new(Cell::new(None));
-    let inserts: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let rows: Rc<RefCell<Vec<CompletionItem>>> = Rc::new(RefCell::new(Vec::new()));
 
     // 候補 idx を確定＝カレット直前のプレフィックスをその挿入文字列へ置換し、リストを隠して入力へ戻す。
+    // ラベル行（selectable=false）は何もしない。`caret_back` があれば挿入末尾からその分カレットを戻す
+    // （`名前()` の括弧内へ置く）。
     let do_insert: Rc<dyn Fn(u32)> = {
         let edit = edit.clone();
         let cand = cand.clone();
         let range = range.clone();
-        let inserts = inserts.clone();
+        let rows = rows.clone();
         Rc::new(move |idx: u32| {
-            let ins = inserts.borrow().get(idx as usize).cloned();
-            if let (Some((start, end)), Some(text)) = (range.get(), ins) {
+            // replace_selection の EN_CHANGE が update を呼び rows を書き換えるので、借用は先に手放す。
+            let picked = {
+                let rows = rows.borrow();
+                match rows.get(idx as usize) {
+                    Some(item) if item.selectable => Some((item.insert.clone(), item.caret_back)),
+                    _ => None,
+                }
+            };
+            if let (Some((start, end)), Some((text, caret_back))) = (range.get(), picked) {
                 edit.set_selection(start as i32, end as i32);
                 edit.replace_selection(&text);
+                if caret_back > 0 {
+                    let pos = start + text.encode_utf16().count() as u32 - caret_back;
+                    edit.set_selection(pos as i32, pos as i32);
+                }
                 let _ = cand.hwnd().ShowWindow(co::SW::HIDE);
                 range.set(None);
                 edit.hwnd().SetFocus();
@@ -338,7 +488,7 @@ fn install_completion(arm: &ModalArm, edit: &gui::Edit, cand: &gui::ListBox, com
         let edit = edit.clone();
         let cand = cand.clone();
         let range = range.clone();
-        let inserts = inserts.clone();
+        let rows = rows.clone();
         let complete = complete.clone();
         Rc::new(move |force: bool| {
             let utf16: Vec<u16> = edit.text().unwrap_or_default().encode_utf16().collect();
@@ -356,15 +506,17 @@ fn install_completion(arm: &ModalArm, edit: &gui::Edit, cand: &gui::ListBox, com
                         })
                         .collect();
                     let _ = cand.items().add(&displays);
-                    *inserts.borrow_mut() = items.into_iter().map(|i| i.insert).collect();
-                    let _ = unsafe { cand.hwnd().SendMessage(lb::SetCurSel { index: Some(0) }) };
+                    // 初期選択は先頭の選択可能行（先頭がジャンルラベルのことがある）。
+                    let first = items.iter().position(|i| i.selectable).unwrap_or(0) as u32;
+                    *rows.borrow_mut() = items;
+                    let _ = unsafe { cand.hwnd().SendMessage(lb::SetCurSel { index: Some(first) }) };
                     let _ = cand.hwnd().ShowWindow(co::SW::SHOW);
                     range.set(Some((start, caret)));
                 }
                 _ => {
                     let _ = cand.hwnd().ShowWindow(co::SW::HIDE);
                     range.set(None);
-                    inserts.borrow_mut().clear();
+                    rows.borrow_mut().clear();
                 }
             }
         })
@@ -390,12 +542,14 @@ fn install_completion(arm: &ModalArm, edit: &gui::Edit, cand: &gui::ListBox, com
     }
 
     // 生成時：入力欄へフォーカスし、子コントロールのキーを横取りして補完候補を操作する。
-    // ↑↓＝候補移動（クランプ）・Enter＝確定・Ctrl+Space＝補完を開く。いずれも Edit へは渡さない。
+    // ↑↓＝候補移動（ラベル行はスキップ・端でクランプ）・Enter＝確定・Ctrl+Space＝補完を開く。
+    // いずれも Edit へは渡さない。
     {
         let edit_focus = edit.clone();
         let edit_h = edit.clone();
         let cand_h = cand.clone();
         let range = range.clone();
+        let rows_h = rows.clone();
         let update = update.clone();
         let do_insert = do_insert.clone();
         let ctrl = Rc::new(Cell::new(false));
@@ -408,6 +562,7 @@ fn install_completion(arm: &ModalArm, edit: &gui::Edit, cand: &gui::ListBox, com
             let edit_h = edit_h.clone();
             let cand_h = cand_h.clone();
             let range = range.clone();
+            let rows_h = rows_h.clone();
             let update = update.clone();
             let do_insert = do_insert.clone();
             let ctrl = ctrl.clone();
@@ -451,16 +606,25 @@ fn install_completion(arm: &ModalArm, edit: &gui::Edit, cand: &gui::ListBox, com
                 if range.get().is_none() {
                     return false;
                 }
-                // ↑（0x26）↓（0x28）：候補を上下に移動（端でクランプ・消費）。
+                // ↑（0x26）↓（0x28）：候補を上下に移動（ラベル行はスキップ・端でクランプ・消費）。
                 if msg == keyhook::WM_KEYDOWN && (vk == 0x26 || vk == 0x28) {
                     let count = cand_h.items().count().unwrap_or(0);
                     if count == 0 {
                         return false;
                     }
                     let cur = unsafe { cand_h.hwnd().SendMessage(lb::GetCurSel {}) }.unwrap_or(0);
-                    let next =
-                        if vk == 0x26 { cur.saturating_sub(1) } else { (cur + 1).min(count - 1) };
-                    let _ = unsafe { cand_h.hwnd().SendMessage(lb::SetCurSel { index: Some(next) }) };
+                    let rows = rows_h.borrow();
+                    let selectable = |i: u32| rows.get(i as usize).is_some_and(|r| r.selectable);
+                    let next = if vk == 0x26 {
+                        (0..cur).rev().find(|&i| selectable(i))
+                    } else {
+                        (cur + 1..count).find(|&i| selectable(i))
+                    };
+                    if let Some(next) = next {
+                        let _ = unsafe {
+                            cand_h.hwnd().SendMessage(lb::SetCurSel { index: Some(next) })
+                        };
+                    }
                     return true;
                 }
                 // Enter（WM_CHAR 0x0D）：選択中の候補を確定（消費して改行を防ぐ）。
@@ -529,7 +693,6 @@ fn relayout_code_box(
     cand: &winsafe::HWND,
     ok: &winsafe::HWND,
     cancel: &winsafe::HWND,
-    insert: &winsafe::HWND,
     cw: i32,
     ch: i32,
     expanded: bool,
@@ -547,9 +710,8 @@ fn relayout_code_box(
     let _ = label.MoveWindow(P { x: m, y: gui::dpi_y(14) }, S { cx: label_w, cy: gui::dpi_y(18) }, true);
     let _ = mode.MoveWindow(P { x: cw - m - cbw, y: gui::dpi_y(12) }, S { cx: cbw, cy: gui::dpi_y(20) }, true);
 
-    // 下端：左に「機能を挿入」、右にキャンセル＝最右・OK＝その左。
+    // 下端：右にキャンセル＝最右・OK＝その左。
     let btn_y = (ch - gui::dpi_y(16) - btn_h).max(edit_top);
-    let _ = insert.MoveWindow(P { x: m, y: btn_y }, S { cx: gui::dpi_x(120), cy: btn_h }, true);
     let (ok_w, cancel_w) = (gui::dpi_x(80), gui::dpi_x(86));
     let cancel_x = (cw - m - cancel_w).max(0);
     let _ = cancel.MoveWindow(P { x: cancel_x, y: btn_y }, S { cx: cancel_w, cy: btn_h }, true);
@@ -575,25 +737,6 @@ fn relayout_code_box(
     let _ = cand.MoveWindow(P { x: m, y: cand_y }, S { cx: content_w, cy: cand_h }, true);
 }
 
-/// 「機能を挿入」一覧の (表示行, 挿入名) を `members`（`r.` で呼べる名前）から組む。組込はジャンル順、
-/// その他（スクリプト・host API）は末尾の「スクリプト・API」へまとめる。挿入は `r.<name>()` 形にする。
-fn insert_browser_rows(members: &[CompletionMember]) -> (Vec<String>, Vec<String>) {
-    let mut items: Vec<(u8, String, String)> = members
-        .iter()
-        .map(|m| match rerics_core::Command::from_token(&m.name) {
-            Some(cmd) => {
-                let (gi, gn) = crate::key_editor::command_genre(cmd);
-                (gi, format!("〔{gn}〕{}（{}）", cmd.display_name(), m.name), m.name.clone())
-            }
-            None => (u8::MAX, format!("〔スクリプト・API〕{}", m.name), m.name.clone()),
-        })
-        .collect();
-    items.sort_by_key(|t| t.0);
-    let rows = items.iter().map(|(_, d, _)| d.clone()).collect();
-    let names = items.into_iter().map(|(_, _, n)| n).collect();
-    (rows, names)
-}
-
 pub fn code_box(
     parent: &impl GuiParent,
     message: &str,
@@ -601,7 +744,7 @@ pub fn code_box(
     members: &[CompletionMember],
 ) -> Option<String> {
     // サイズ可変＋サイズ記憶（キー "code_box"・キー編集/メニュー編集で共有）。
-    let (wnd, arm) = modal_window_resizable_keyed("コードを割り当て", "code_box", 480, 400, 360, 300);
+    let (wnd, arm) = modal_window_resizable_keyed("コードを割り当て", "code_box", 560, 480, 360, 300);
 
     // 種の式が複数行を含めば展開モード、単一行ならコンパクトモードで開く（凝った式だけ広く使う）。
     let multiline_init = value.contains('\n');
@@ -690,31 +833,17 @@ pub fn code_box(
             ..Default::default()
         },
     );
-    // ジャンル別の機能一覧から `r.名前()` を挿入する（名前をうろ覚えのとき用・補完の代替）。
-    let insert = gui::Button::new(
-        &wnd,
-        gui::ButtonOpts {
-            text: "機能を挿入(&F)",
-            ctrl_id: 100,
-            position: gui::dpi(16, 356),
-            width: gui::dpi_x(120),
-            height: gui::dpi_y(26),
-            ..Default::default()
-        },
-    );
-
     // 子コントロールを現在のクライアントサイズとモードに合わせて配置し直す共有処理。リサイズと
     // 「複数行」トグルの両方から呼ぶ。
     let relayout: Rc<dyn Fn(bool)> = {
         let wnd = wnd.clone();
-        let (label, mode, edit, cand, ok, cancel, insert) = (
+        let (label, mode, edit, cand, ok, cancel) = (
             label.clone(),
             mode.clone(),
             edit.clone(),
             cand.clone(),
             ok.clone(),
             cancel.clone(),
-            insert.clone(),
         );
         Rc::new(move |expanded: bool| {
             if let Ok(rc) = wnd.hwnd().GetClientRect() {
@@ -725,7 +854,6 @@ pub fn code_box(
                     cand.hwnd(),
                     ok.hwnd(),
                     cancel.hwnd(),
-                    insert.hwnd(),
                     rc.right,
                     rc.bottom,
                     expanded,
@@ -763,11 +891,7 @@ pub fn code_box(
         "コードを割り当て",
         message,
         true,
-        vec![
-            ("OK".to_string(), 1u16),
-            ("キャンセル".to_string(), 2u16),
-            ("機能を挿入".to_string(), 100u16),
-        ],
+        vec![("OK".to_string(), 1u16), ("キャンセル".to_string(), 2u16)],
     );
     {
         let result = result.clone();
@@ -786,50 +910,20 @@ pub fn code_box(
             Ok(())
         });
     }
-    // 「機能を挿入」＝ジャンル別一覧（モーダル）から選んだ機能を `r.名前()` でカレットへ挿入する。
-    {
-        let edit = edit.clone();
-        let wnd2 = wnd.clone();
-        let rows_names = insert_browser_rows(members);
-        insert.on().bn_clicked(move || {
-            let (rows, names) = &rows_names;
-            if let Some(idx) = list_box(&wnd2, "機能を挿入", "funcinsert", rows, 0)
-                && let Some(name) = names.get(idx)
-            {
-                edit.hwnd().SetFocus();
-                edit.replace_selection(&format!("r.{name}()"));
-            }
-            Ok(())
-        });
-    }
-
-    // 補完モデル＝カレット直前が `r.`／`rerics.` のときだけ、その後の識別子に前方一致するメンバを出す。
-    // 表示＝挿入（メンバ名そのもの）。`force` は Ctrl+Space＝「唯一かつ入力済みと同一」でも出す。
-    // メンバ名の一覧（前方一致の絞り込み用）と、スクリプト関数の説明（名前→1行説明）を分けて持つ。
-    let names: Vec<String> = members.iter().map(|m| m.name.clone()).collect();
-    let script_summaries: std::collections::HashMap<String, String> = members
-        .iter()
-        .filter_map(|m| m.script_summary.clone().map(|s| (m.name.clone(), s)))
-        .collect();
+    // 補完モデル＝カレット直前が `r.`／`rerics.` のときだけ、その後の識別子に曖昧一致するメンバを
+    // ジャンル見出し付きで出す（`r.` 直後の空クエリは全件＝機能ブラウザを兼ねる）。`force` は
+    // Ctrl+Space＝「唯一かつ入力済みと同一」でも出す。
+    let members_owned: Vec<CompletionMember> = members.to_vec();
     let complete: CompleteFn = Rc::new(move |before, caret, force| {
         let (plen, prefix) = completion_prefix(before)?;
-        let list = completion_candidates(&names, &prefix);
-        let only_exact = list.len() == 1 && list[0].eq_ignore_ascii_case(&prefix);
-        if list.is_empty() || (!force && only_exact) {
+        let items = completion_items(&members_owned, &prefix);
+        let names: Vec<&str> =
+            items.iter().filter(|i| i.selectable).map(|i| i.display.as_str()).collect();
+        let only_exact = names.len() == 1 && names[0].eq_ignore_ascii_case(&prefix);
+        if names.is_empty() || (!force && only_exact) {
             return None;
         }
-        let start = caret - plen as u32;
-        let items = list
-            .into_iter()
-            .map(|m| {
-                // 組込はメタデータから引数ヒント＋説明を、スクリプト関数は登録時の説明を添える。
-                let detail = rerics_core::Command::from_token(&m)
-                    .map(meta_hint)
-                    .or_else(|| script_summaries.get(&m).cloned());
-                CompletionItem { display: m.clone(), insert: m, detail }
-            })
-            .collect();
-        Some((start, items))
+        Some((caret - plen as u32, items))
     });
     install_completion(&arm, &edit, &cand, complete);
 
@@ -844,7 +938,7 @@ pub fn code_box(
     keyhook::pop();
     #[cfg(feature = "debug-server")]
     completion_probe::clear();
-    let _ = (cancel, cand, mode, expanded, insert);
+    let _ = (cancel, cand, mode, expanded);
     result.borrow().clone()
 }
 
@@ -969,7 +1063,7 @@ pub fn command_box(
                     rerics_core::Call::Builtin { command, .. } => Some(meta_hint(command)),
                     rerics_core::Call::Script { .. } => None,
                 };
-                CompletionItem { display: disp.clone(), insert: tok.clone(), detail }
+                CompletionItem::plain(disp.clone(), tok.clone(), detail)
             })
             .collect();
         let only_exact = items.len() == 1 && items[0].insert.eq_ignore_ascii_case(q);
@@ -1060,27 +1154,140 @@ pub mod completion_probe {
 
 #[cfg(test)]
 mod tests {
-    use super::{CompletionMember, completion_candidates, completion_prefix, insert_browser_rows};
+    use super::{CompletionMember, completion_items, completion_prefix, match_rank};
+    use crate::script::ScriptCommand;
+
+    fn member(name: &str, callable: bool, arity: u32) -> CompletionMember {
+        CompletionMember { name: name.to_string(), callable, arity, script: None }
+    }
 
     #[test]
-    fn insert_browser_groups_builtins_by_genre_and_others_last() {
+    fn rank_orders_prefix_initials_label_subsequence() {
+        // 前方一致が最強。
+        assert_eq!(match_rank("cur", "cursorPath", None), Some(0));
+        // camelCase 頭文字一致。
+        assert_eq!(match_rank("cp", "cursorPath", None), Some(1));
+        // 和名の部分一致。
+        assert_eq!(match_rank("削除", "delete", Some("削除")), Some(2));
+        // 飛び石一致。
+        assert_eq!(match_rank("cpath", "cursorPath", None), Some(3));
+        // 大小無視。
+        assert_eq!(match_rank("CUR", "cursorPath", None), Some(0));
+        // 合わなければ None・空クエリは全件。
+        assert_eq!(match_rank("xyz", "cursorPath", None), None);
+        assert_eq!(match_rank("", "cursorPath", None), Some(0));
+    }
+
+    #[test]
+    fn items_group_by_genre_with_label_rows() {
         let members = vec![
-            CompletionMember { name: "copy".to_string(), script_summary: None },
-            CompletionMember { name: "cursorDown".to_string(), script_summary: None },
-            CompletionMember { name: "organize".to_string(), script_summary: Some("x".to_string()) },
+            member("copy", true, 3),
+            member("cursorDown", true, 0),
+            member("spawn", true, 1),
         ];
-        let (rows, names) = insert_browser_rows(&members);
-        let pos = |n: &str| names.iter().position(|x| x == n).expect("name");
-        // カーソル移動ジャンル(0) は ファイル操作ジャンル(6) より前。
-        assert!(pos("cursorDown") < pos("copy"), "組込はジャンル順: {names:?}");
-        // 組込でない（スクリプト・host API）は末尾へ。
-        assert!(pos("copy") < pos("organize"), "その他は末尾: {names:?}");
-        assert!(rows[pos("organize")].contains("スクリプト・API"), "その他の見出し: {rows:?}");
-        // 組込行は 和名＋トークンを見せる。
-        assert!(
-            rows[pos("copy")].contains("コピー") && rows[pos("copy")].contains("（copy）"),
-            "組込行の表示: {rows:?}"
+        let items = completion_items(&members, "");
+        let displays: Vec<&str> = items.iter().map(|i| i.display.as_str()).collect();
+        // 複数ジャンル＝見出しラベル行が挟まり、ラベルは選択不可。
+        assert_eq!(
+            displays,
+            vec![
+                "── カーソル移動 ──",
+                "cursorDown",
+                "── ファイル操作 ──",
+                "copy",
+                "── スクリプト・API ──",
+                "spawn"
+            ],
+            "ジャンル順＋見出し: {displays:?}"
         );
+        assert!(items.iter().filter(|i| i.display.starts_with("──")).all(|i| !i.selectable));
+    }
+
+    #[test]
+    fn items_single_genre_omits_label_row() {
+        let members = vec![member("cursorDown", true, 0), member("cursorUp", true, 0)];
+        let items = completion_items(&members, "cursor");
+        assert!(items.iter().all(|i| i.selectable), "単一ジャンルは見出しなし");
+        assert_eq!(items.len(), 2);
+    }
+
+    #[test]
+    fn fuzzy_match_pulls_strong_group_first() {
+        // "cp" は cursorPath（頭文字一致）が copy（飛び石一致）より強い＝所属ジャンルごと上に来る。
+        let members = vec![member("copy", true, 3), member("cursorPath", true, 0)];
+        let items = completion_items(&members, "cp");
+        let displays: Vec<&str> = items.iter().map(|i| i.display.as_str()).collect();
+        let pos = |n: &str| displays.iter().position(|x| *x == n).expect(n);
+        assert!(pos("cursorPath") < pos("copy"), "強いマッチの群が先: {displays:?}");
+    }
+
+    #[test]
+    fn items_append_parens_by_arity_and_skip_objects() {
+        let members = vec![
+            member("cursorDown", true, 0),     // 組込・引数は省略可の {select} のみ
+            member("setCursorIndex", true, 0), // 組込・必須引数あり（メタが正・ラッパ arity は 0）
+            member("spawn", true, 1),          // host API・引数あり
+            member("fs", false, 0),            // オブジェクト
+        ];
+        let items = completion_items(&members, "");
+        let find = |n: &str| items.iter().find(|i| i.display == n).expect(n);
+        assert_eq!(find("cursorDown").insert, "cursorDown()");
+        assert_eq!(find("cursorDown").caret_back, 0, "省略可のみはカレットを閉じ括弧の後ろへ");
+        assert_eq!(find("setCursorIndex").insert, "setCursorIndex()");
+        assert_eq!(find("setCursorIndex").caret_back, 1, "組込の必須引数はメタデータから引く");
+        assert_eq!(find("spawn").caret_back, 1, "host API は宣言引数から引く");
+        assert_eq!(find("fs").insert, "fs", "オブジェクトには括弧を付けない");
+    }
+
+    #[test]
+    fn items_keep_same_hierarchy_only() {
+        let members = vec![
+            member("clipboard", false, 0),
+            member("clipboard.getText", true, 0),
+            member("clipboard.setText", true, 1),
+            member("clearAll", true, 0),
+        ];
+        // トップレベル（query にドット無し）はドット付きメンバを含めない。
+        let top: Vec<String> = completion_items(&members, "cl")
+            .into_iter()
+            .filter(|i| i.selectable)
+            .map(|i| i.display)
+            .collect();
+        assert_eq!(top, vec!["clearAll", "clipboard"]);
+        // 名前空間配下（query にドット）はその階層だけ。
+        let sub: Vec<String> = completion_items(&members, "clipboard.")
+            .into_iter()
+            .map(|i| i.display)
+            .collect();
+        assert_eq!(sub, vec!["clipboard.getText", "clipboard.setText"]);
+    }
+
+    #[test]
+    fn script_genre_merges_into_builtin_group_and_label_matches() {
+        let mut sc = member("organize", true, 0);
+        sc.script = Some(ScriptCommand {
+            name: "organize".to_string(),
+            label: Some("整理する".to_string()),
+            genre: Some("ファイル操作".to_string()),
+            summary: Some("散らかりを整理".to_string()),
+        });
+        let members = vec![member("copy", true, 3), member("cursorDown", true, 0), sc];
+        // genre 指定のスクリプトコマンドは組込ジャンルの群に混ざる＝「ファイル操作」見出しは 1 つ。
+        let items = completion_items(&members, "");
+        let labels: Vec<&str> =
+            items.iter().filter(|i| !i.selectable).map(|i| i.display.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec!["── カーソル移動 ──", "── ファイル操作 ──"],
+            "群がマージされる: {labels:?}"
+        );
+        // 和名でも引ける。
+        let hit: Vec<String> = completion_items(&members, "整理")
+            .into_iter()
+            .filter(|i| i.selectable)
+            .map(|i| i.display)
+            .collect();
+        assert_eq!(hit, vec!["organize"]);
     }
 
     #[test]
@@ -1112,33 +1319,4 @@ mod tests {
         assert_eq!(completion_prefix("=foo.bar.baz"), None);
     }
 
-    #[test]
-    fn candidates_keep_same_hierarchy_only() {
-        let members = vec![
-            "clipboard".to_string(),
-            "clipboard.getText".to_string(),
-            "clipboard.setText".to_string(),
-            "clearAll".to_string(),
-        ];
-        // トップレベル（prefix にドット無し）はドット付きメンバを含めない。
-        assert_eq!(completion_candidates(&members, "cl"), vec!["clipboard", "clearAll"]);
-        // 名前空間配下（prefix にドット）はその階層だけ。
-        assert_eq!(
-            completion_candidates(&members, "clipboard."),
-            vec!["clipboard.getText", "clipboard.setText"]
-        );
-        assert_eq!(completion_candidates(&members, "clipboard.s"), vec!["clipboard.setText"]);
-    }
-
-    #[test]
-    fn candidates_filter_prefix_case_insensitive_keep_order() {
-        let members =
-            vec!["currentDir".to_string(), "cursorItem".to_string(), "prompt".to_string()];
-        assert_eq!(completion_candidates(&members, "cur"), vec!["currentDir", "cursorItem"]);
-        // 大小無視。
-        assert_eq!(completion_candidates(&members, "CUR"), vec!["currentDir", "cursorItem"]);
-        // 空 prefix は全件・順序保持。
-        assert_eq!(completion_candidates(&members, "").len(), 3);
-        assert!(completion_candidates(&members, "xyz").is_empty());
-    }
 }

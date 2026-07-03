@@ -130,7 +130,7 @@ fn cmp_chord(a: &str, b: &str) -> std::cmp::Ordering {
 
 /// ジャンル名 → 並び順。組込ジャンル名に一致すればその順、未知（独自）なら「スクリプト」と同じ
 /// 末尾（14）。スクリプトが `genre: "ファイル操作"` などで組込群に混ざれるようにするための引き当て。
-fn genre_order(name: &str) -> u8 {
+pub(crate) fn genre_order(name: &str) -> u8 {
     Command::all()
         .map(command_genre)
         .find(|(_, g)| *g == name)
@@ -200,8 +200,8 @@ struct KeyEditorInner {
     /// 登録済みスクリプトコマンドのメタ（名前→`{label, genre}`）。未割当でも一覧に出して割り当て
     /// 可能にし、表示名カラム／ジャンル見出しに使う。
     script_meta: HashMap<String, ScriptCommand>,
-    /// `r.` で呼べるメンバー名（補完候補）。引数/コード欄の補完に渡す。
-    members: Vec<String>,
+    /// `r.` で呼べるメンバー（補完候補）。引数/コード欄の補完に渡す。
+    members: Vec<crate::script::MemberInfo>,
     /// 編集中の下書き＝chord → 割り当て値（生の invocation 文字列）のリスト。空 Vec＝明示 unbind。
     /// **重複（1 つの chord に複数機能）を許す**＝これが衝突状態。未知バインド（`Func_*` 等）も
     /// 生値のまま保持し、反映時に消さない。OK/適用の検証を通った時だけ `config.keybinds` へ書き戻す。
@@ -264,7 +264,7 @@ impl KeyEditor {
         shared: &Rc<Shared>,
         category: KeyCategory,
         scripts: Vec<ScriptCommand>,
-        members: Vec<String>,
+        members: Vec<crate::script::MemberInfo>,
     ) -> Self {
         // 上部ヒント：モード（機能順／キー順／機能ピッカー）に応じて文面を差し替える。
         // ピッカー中は中止方法をここに大きく出して、背景色と合わせて別モードを明示する。
@@ -1293,9 +1293,10 @@ impl KeyEditor {
         let Some((expr, _)) = self.selected_bind() else {
             return;
         };
-        // 補完メンバに、登録スクリプト関数の 1 行説明を添える（組込はメタデータから引かれる）。
+        // 補完メンバに、登録スクリプトコマンドのメタ（表示名・ジャンル・説明）を添える
+        // （組込はメタデータから引かれる）。
         let members = crate::dialog::completion_members(&self.inner.members, |name| {
-            self.inner.script_meta.get(name).and_then(|sc| sc.summary.clone())
+            self.inner.script_meta.get(name).cloned()
         });
         let result = crate::dialog::code_box(
             &self.list,

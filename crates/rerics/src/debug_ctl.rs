@@ -121,7 +121,8 @@ impl MainWindow {
                     let _ = tx.send(debug_server::Response::Json(json));
                 }
                 debug_server::Request::ScriptMembers => {
-                    let names = self.script_list_members();
+                    let names: Vec<String> =
+                        self.script_list_members().into_iter().map(|m| m.name).collect();
                     let json = serde_json::to_string(&names).unwrap_or_else(|_| "[]".to_string());
                     let _ = tx.send(debug_server::Response::Json(json));
                 }

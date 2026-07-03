@@ -25,7 +25,9 @@ use crate::shell;
 use crate::task::{LogEvent, WorkerEvent};
 use rerics_core::{Call, Command, LogLevel};
 
-use crate::script::{self, HostApi, PaneItem, PaneSnapshot, RenameSummary, ScriptCommand, ScriptOp};
+use crate::script::{
+    self, HostApi, MemberInfo, PaneItem, PaneSnapshot, RenameSummary, ScriptCommand, ScriptOp,
+};
 use crate::ui_marshal::{self, WakeQueue};
 use crate::winutil::msg::SCRIPT_WAKE;
 
@@ -134,8 +136,8 @@ pub enum EngineCmd {
     EvalValue { code: String, tx: Sender<String> },
     /// 現在登録されているコマンドのメタ情報を返す（同期・`HostApi` を呼ばないのでデッドロックしない）。
     ListCommands(Sender<Vec<ScriptCommand>>),
-    /// `r.` で呼べるメンバー名を返す（補完候補・同期・`HostApi` を呼ばない）。
-    ListMembers(Sender<Vec<String>>),
+    /// `r.` で呼べるメンバー（名前＋callable/arity）を返す（補完候補・同期・`HostApi` を呼ばない）。
+    ListMembers(Sender<Vec<MemberInfo>>),
     /// `registerMenu` で登録された名前付きメニュー定義を返す（同期・`HostApi` を呼ばない）。
     ListMenus(Sender<Vec<rerics_core::MenuDef>>),
     /// ファイラー本体の出来事を `rerics.on` ハンドラへ配る（投げっぱなし）。
@@ -699,7 +701,7 @@ pub fn spawn_engine(
                     let _ = tx.send(engine.registered_command_metas());
                 }
                 EngineCmd::ListMembers(tx) => {
-                    let _ = tx.send(engine.registered_member_names());
+                    let _ = tx.send(engine.registered_members());
                 }
                 EngineCmd::ListMenus(tx) => {
                     let _ = tx.send(engine.registered_menus());
@@ -1233,8 +1235,8 @@ impl MainWindow {
         rx.recv().unwrap_or_default()
     }
 
-    /// `r.` で呼べるメンバー名（補完候補）をエンジンから同期取得する。引数/コード欄の補完に使う。
-    pub(crate) fn script_list_members(&self) -> Vec<String> {
+    /// `r.` で呼べるメンバー（補完候補）をエンジンから同期取得する。引数/コード欄の補完に使う。
+    pub(crate) fn script_list_members(&self) -> Vec<MemberInfo> {
         let (tx, rx) = channel();
         let _ = self.script.cmd_tx.send(EngineCmd::ListMembers(tx));
         rx.recv().unwrap_or_default()

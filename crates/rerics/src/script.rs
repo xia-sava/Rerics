@@ -212,6 +212,17 @@ pub struct ScriptCommand {
     pub summary: Option<String>,
 }
 
+/// `r.` で呼べるメンバー 1 件の補完用情報。`callable` は関数として呼べるか（fs/clipboard 等の
+/// オブジェクトは false）、`arity` は宣言引数の数（rest 引数は数えない）。補完確定時の `()` 付与と
+/// カレット位置の判断に使う。組込コマンドの引数有無は [`rerics_core::CommandMeta`] が正なので、
+/// 使う側で上書きする。
+#[derive(serde::Deserialize, Clone, Debug)]
+pub struct MemberInfo {
+    pub name: String,
+    pub callable: bool,
+    pub arity: u32,
+}
+
 /// スクリプトが起動する非同期ファイル操作の種別。
 pub enum ScriptOp {
     Copy,
@@ -1711,18 +1722,29 @@ const BOOTSTRAP: &str = r#"
     }
   };
   globalThis.__commandNames = () => [...commands.keys()];
-  // 補完候補＝`r.` で呼べるもの（組込メンバー＋公開済み登録コマンド）の名前を昇順で返す。
+  // 補完候補＝`r.` で呼べるもの（組込メンバー＋公開済み登録コマンド）を名前昇順で返す。
   // 名前空間（fs/str/env 等のオブジェクト）の中身も `key.sub` の形で加え、2 階層補完を支える。
+  // 各メンバーに callable（関数か）と arity（宣言引数の数）を添え、補完確定時の `()` 付与と
+  // カレット位置の判断に使う。登録コマンドは rest 引数のラッパで公開されるので、arity は
+  // commands の元関数から引く。
   globalThis.__memberNames = () => {
+    const info = (name, val) => {
+      const fn = commands.has(name) ? commands.get(name).fn : val;
+      return {
+        name,
+        callable: typeof val === "function",
+        arity: typeof fn === "function" ? fn.length : 0,
+      };
+    };
     const out = [];
     for (const key of Object.keys(globalThis.rerics)) {
-      out.push(key);
       const val = globalThis.rerics[key];
+      out.push(info(key, val));
       if (val && typeof val === "object") {
-        for (const sub of Object.keys(val)) out.push(key + "." + sub);
+        for (const sub of Object.keys(val)) out.push(info(key + "." + sub, val[sub]));
       }
     }
-    return out.sort();
+    return out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   };
   globalThis.__commandMetas = () =>
     [...commands.entries()].map(([name, e]) => ({
@@ -1906,16 +1928,16 @@ impl Engine {
         deno_core::serde_v8::from_v8::<Vec<rerics_core::MenuDef>>(scope, local).unwrap_or_default()
     }
 
-    /// `r.` で呼べるメンバー名を昇順で返す（組込ホスト API＋公開済み登録コマンド）。設定 UI の
+    /// `r.` で呼べるメンバーを名前昇順で返す（組込ホスト API＋公開済み登録コマンド）。設定 UI の
     /// 引数/コード欄の補完候補に使う。
-    pub fn registered_member_names(&mut self) -> Vec<String> {
+    pub fn registered_members(&mut self) -> Vec<MemberInfo> {
         let global = self
             .runtime
             .execute_script("rerics:list-members", "globalThis.__memberNames()")
             .expect("__memberNames must not fail");
         deno_core::scope!(scope, &mut self.runtime);
         let local = deno_core::v8::Local::new(scope, global);
-        deno_core::serde_v8::from_v8::<Vec<String>>(scope, local).unwrap_or_default()
+        deno_core::serde_v8::from_v8::<Vec<MemberInfo>>(scope, local).unwrap_or_default()
     }
 
     /// 登録済みイベントハンドラを発火する（`rerics.on` で登録したもの）。`arg` は単一の
@@ -2705,7 +2727,8 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        let members = eng.registered_member_names();
+        let members: Vec<String> =
+            eng.registered_members().into_iter().map(|m| m.name).collect();
         // 組込メンバーと公開済み登録コマンドが混ざって昇順で並ぶ。
         assert!(members.contains(&"currentDir".to_string()), "組込: {members:?}");
         assert!(members.contains(&"organize".to_string()), "登録コマンド: {members:?}");
@@ -2716,6 +2739,29 @@ mod tests {
         eng.run_to_completion("test:clash", r#"rerics.log(String(r.prompt("m")));"#.to_string())
             .unwrap();
         assert_eq!(*host.logs.borrow(), vec!["null".to_string()], "組込 prompt が勝つ");
+    }
+
+    #[test]
+    fn members_report_callable_and_arity() {
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host);
+        eng.run_to_completion(
+            "test:register",
+            r#"rerics.registerCommand("withArgs", (a, b) => {});"#.to_string(),
+        )
+        .unwrap();
+        let members = eng.registered_members();
+        let find = |n: &str| members.iter().find(|m| m.name == n).unwrap_or_else(|| panic!("{n}"));
+        // オブジェクト（名前空間）は callable でない・その配下の関数は callable。
+        assert!(!find("fs").callable, "fs はオブジェクト");
+        assert!(find("fs.readText").callable, "fs.readText は関数");
+        // host API 関数は宣言引数の数を報告する。
+        assert!(find("spawn").arity >= 1, "spawn は引数あり");
+        assert_eq!(find("modifiers").arity, 0, "modifiers は引数なし");
+        // 登録コマンドは公開ラッパ（rest 引数）でなく元関数の arity を報告する。
+        let w = find("withArgs");
+        assert!(w.callable, "登録コマンドは callable");
+        assert_eq!(w.arity, 2, "登録コマンドの arity: {w:?}");
     }
 
     #[test]
