@@ -419,12 +419,15 @@ impl MainWindow {
                             let selected = crate::dialog::completion_probe::selected().unwrap_or(-1);
                             let multiline =
                                 crate::dialog::completion_probe::multiline().unwrap_or(false);
+                            let hint =
+                                crate::dialog::completion_probe::hint().unwrap_or_default();
                             serde_json::json!({
                                 "candidates": cands,
                                 "text": text,
                                 "visible": visible,
                                 "selected": selected,
                                 "multiline": multiline,
+                                "hint": hint,
                             })
                             .to_string()
                         }

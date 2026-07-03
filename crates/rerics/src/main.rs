@@ -14,6 +14,7 @@ mod script_host;
 mod dialog;
 mod file_list;
 mod help;
+mod hostsig;
 mod icons;
 mod log_view;
 mod menu;

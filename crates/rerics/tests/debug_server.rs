@@ -4049,6 +4049,45 @@ fn completion_recognizes_bare_builtin_context() {
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
 
+/// 式エディタの signature help：カレットを囲う呼び出しのシグネチャ＋説明がヒント行（`/completion`
+/// の `hint`）に常設され、いま書いている引数が ‹› で強調される。host API は d.ts 由来・組込は
+/// メタデータ由来（引数個別の doc）・裸の組込呼び出しでも効く。呼び出しの外では消える。
+#[test]
+fn signature_help_tracks_enclosing_call_and_argument() {
+    let server = Server::start(&["a.txt"], "");
+    server.req("POST", "/command/openSettings", "").expect("openSettings");
+    wait_modal(&server);
+    server.req("POST", "/settings/nav/5", "").unwrap();
+    server.req("POST", "/keys/filer/search", "makeDirectoryDialog").unwrap();
+    server.req("POST", "/keys/filer/select/0", "").unwrap();
+    server.req("POST", "/keys/filer/openexpr", "").unwrap();
+    server.req("POST", "/modal/text", "").unwrap();
+
+    // host API：`r.spawn(` で第 0 引数 cmd が強調され、d.ts の説明が添う。
+    server.req("POST", "/completion/keystrokes", "r.spawn(").unwrap();
+    let c = poll(&server, "/completion", |b| b.contains("‹cmd›"));
+    assert!(c.contains("spawn(‹cmd›, ...args)"), "spawn の第0引数強調: {c}");
+    assert!(c.contains("外部プログラムを起動"), "d.ts の説明が添う: {c}");
+
+    // 第 2 引数へ進むと rest（...args）の強調に移る。文字列中のカンマは数えない。
+    server.req("POST", "/completion/keystrokes", "\"x, y\", ").unwrap();
+    let c2 = poll(&server, "/completion", |b| b.contains("‹...args›"));
+    assert!(c2.contains("‹...args›"), "rest 引数の強調: {c2}");
+
+    // 裸の組込：`setCursorIndex(` は引数 index の doc が説明に出る。
+    server.req("POST", "/modal/text", "").unwrap();
+    server.req("POST", "/completion/keystrokes", "setCursorIndex(").unwrap();
+    let c3 = poll(&server, "/completion", |b| b.contains("‹index›"));
+    assert!(c3.contains("移動先の位置"), "組込引数の doc: {c3}");
+
+    // 呼び出しの外（閉じた後）ではヒントが消える。
+    server.req("POST", "/completion/keystrokes", "0)").unwrap();
+    let c4 = poll(&server, "/completion", |b| b.contains(r#""hint":"""#));
+    assert!(c4.contains(r#""hint":"""#), "呼び出しの外では消える: {c4}");
+
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
 /// 式エディタの補完は名前空間の中身まで降りる（2 階層）。`r.fs.` で `fs.readText` 等が候補に出て、
 /// 確定すると名前空間込みのメンバ名が挿入される。
 #[test]

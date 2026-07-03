@@ -553,12 +553,11 @@ impl HostApi for GuiHost {
 /// 内容が違えば上書きし、`tsconfig.json` は無いときだけ作る（ユーザの編集を残す）。
 /// 失敗しても起動を妨げない（補完が効かないだけ）。
 fn ensure_script_type_files(dir: &std::path::Path) {
-    const BASE_DTS: &str = include_str!("../../../scripting/rerics.d.ts");
     const TSCONFIG: &str = include_str!("../../../scripting/tsconfig.json");
     if std::fs::create_dir_all(dir).is_err() {
         return;
     }
-    write_if_changed(&dir.join("rerics.d.ts"), BASE_DTS);
+    write_if_changed(&dir.join("rerics.d.ts"), crate::hostsig::HOST_DTS);
     write_if_changed(&dir.join("rerics.commands.d.ts"), &rerics_core::commands_dts());
     let tsconfig = dir.join("tsconfig.json");
     if !tsconfig.exists() {

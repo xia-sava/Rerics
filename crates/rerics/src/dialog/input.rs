@@ -233,6 +233,139 @@ fn completion_context(before: &str) -> Option<(usize, String, bool)> {
     None
 }
 
+/// カレットまでのテキスト `before` から、編集中の呼び出し＝カレットを囲う最も内側の関数呼び出しの
+/// （関数名, 何番目の引数か）を返す。前から走査して開き括弧のスタックを保ち、文字列・コメントの
+/// 中は読み飛ばす。`{}`/`[]` の中のカンマは引数の区切りに数えない（オブジェクトリテラル引数）。
+/// 名前の取れる `(` が無ければ（グルーピングの括弧だけ等）None。
+fn enclosing_call(before: &str) -> Option<(String, usize)> {
+    struct Open {
+        kind: char,
+        /// `(` のとき、その直前の呼び出し名（`r.spawn`・裸の `cursorUp` 等・ドット込み）。
+        name: Option<String>,
+        commas: usize,
+    }
+    let chars: Vec<char> = before.chars().collect();
+    let mut stack: Vec<Open> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            q @ ('"' | '\'' | '`') => {
+                i += 1;
+                while i < chars.len() && chars[i] != q {
+                    if chars[i] == '\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+            }
+            '/' if chars.get(i + 1) == Some(&'/') => {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '/' if chars.get(i + 1) == Some(&'*') => {
+                i += 2;
+                while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                    i += 1;
+                }
+                i += 1;
+            }
+            c @ ('(' | '[' | '{') => {
+                let name = (c == '(').then(|| call_name_before(&chars[..i])).flatten();
+                stack.push(Open { kind: c, name, commas: 0 });
+            }
+            ')' | ']' | '}' => {
+                stack.pop();
+            }
+            ',' => {
+                if let Some(top) = stack.last_mut() {
+                    top.commas += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    stack
+        .iter()
+        .rev()
+        .find_map(|o| (o.kind == '(').then(|| o.name.clone().map(|n| (n, o.commas))).flatten())
+}
+
+/// `(` の直前の呼び出し名（識別子＋ドットの連なり・手前の空白は許す）。無ければ None。
+fn call_name_before(head: &[char]) -> Option<String> {
+    let is_name = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.';
+    let mut end = head.len();
+    while end > 0 && head[end - 1].is_whitespace() {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0 && is_name(head[start - 1]) {
+        start -= 1;
+    }
+    (start < end).then(|| head[start..end].iter().collect())
+}
+
+/// 編集中の呼び出し `name`（`r.`/`rerics.` 込みか裸・第 `arg` 引数）へのシグネチャヘルプ 1 行を
+/// 組む。`r.` 文脈は host API（d.ts 由来・実体が host）→組込→スクリプトの順、裸は fast-path＝
+/// 組込だけを引く。いま書いている引数は `‹›` で強調し、組込で引数個別の説明（doc）があれば
+/// 説明文をそれに差し替える。解決できない名前（`foo.bar` 等）は None。
+fn signature_help(members: &[CompletionMember], name: &str, arg: usize) -> Option<String> {
+    use rerics_core::Command;
+    let (token, bare) =
+        match name.strip_prefix("r.").or_else(|| name.strip_prefix("rerics.")) {
+            Some(t) => (t, false),
+            None if !name.contains('.') => (name, true),
+            _ => return None,
+        };
+    if bare {
+        return Command::from_token(token).map(|cmd| builtin_help(cmd, arg));
+    }
+    if let Some(sig) = crate::hostsig::host_sig(token) {
+        return Some(host_help(token, sig, arg));
+    }
+    if let Some(cmd) = Command::from_token(token) {
+        return Some(builtin_help(cmd, arg));
+    }
+    let m = members.iter().find(|m| m.name == token)?;
+    let summary = m.script.as_ref().and_then(|s| s.summary.clone()).unwrap_or_default();
+    Some(format!("{token}(…)  {summary}").trim_end().to_string())
+}
+
+/// 組込コマンドのシグネチャヘルプ。第 `arg` 引数を `‹›` で強調し、その引数の doc（無ければ
+/// コマンドの summary）を添える。
+fn builtin_help(cmd: rerics_core::Command, arg: usize) -> String {
+    let meta = cmd.meta();
+    let parts: Vec<String> = meta
+        .args
+        .iter()
+        .enumerate()
+        .map(|(i, spec)| {
+            let name = arg_display(spec);
+            if i == arg { format!("‹{name}›") } else { name }
+        })
+        .collect();
+    let doc = meta.args.get(arg).map(|s| s.doc).filter(|d| !d.is_empty()).unwrap_or(meta.summary);
+    format!("{}({})  {}", cmd.as_token(), parts.join(", "), doc)
+}
+
+/// host API のシグネチャヘルプ。第 `arg` 引数を `‹›` で強調する（rest 引数 `...` は溢れた分も
+/// そこへ入るので、`arg` が末尾を超えたら rest を強調する）。
+fn host_help(token: &str, sig: &crate::hostsig::HostSig, arg: usize) -> String {
+    let highlight = if arg < sig.params.len() {
+        Some(arg)
+    } else {
+        sig.params.len().checked_sub(1).filter(|&last| sig.params[last].starts_with("..."))
+    };
+    let parts: Vec<String> = sig
+        .params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| if Some(i) == highlight { format!("‹{p}›") } else { p.clone() })
+        .collect();
+    format!("{}({})  {}", token, parts.join(", "), sig.summary)
+}
+
 /// 補完クエリと候補の照合。マッチの強さを返す（小さいほど強い）：0=名前の前方一致、
 /// 1=camelCase 頭文字一致（`cp` → `cursorPath`）、2=表示名（和名）の部分一致、
 /// 3=名前の飛び石一致（クエリの文字が順に現れる）。合わなければ None。空クエリは全件 0。
@@ -446,33 +579,46 @@ fn meta_hint(cmd: rerics_core::Command) -> String {
 
 /// 引数仕様を `(path)` `(by)` `({select?})` のようなシグネチャ文字列にする。引数なしは空。
 fn arg_signature(args: &[rerics_core::ArgSpec]) -> String {
-    use rerics_core::ArgType;
     if args.is_empty() {
         return String::new();
     }
-    let parts: Vec<String> = args
-        .iter()
-        .map(|a| match a.ty {
-            ArgType::Options(opts) => {
-                let keys: Vec<String> = opts.iter().map(|o| format!("{}?", o.name)).collect();
-                format!("{{{}}}", keys.join(", "))
-            }
-            _ if a.required => a.name.to_string(),
-            _ => format!("{}?", a.name),
-        })
-        .collect();
+    let parts: Vec<String> = args.iter().map(arg_display).collect();
     format!("({})", parts.join(", "))
+}
+
+/// 引数仕様 1 件の表示名（`path`・`by?`・`{select?}` 等）。
+fn arg_display(a: &rerics_core::ArgSpec) -> String {
+    use rerics_core::ArgType;
+    match a.ty {
+        ArgType::Options(opts) => {
+            let keys: Vec<String> = opts.iter().map(|o| format!("{}?", o.name)).collect();
+            format!("{{{}}}", keys.join(", "))
+        }
+        _ if a.required => a.name.to_string(),
+        _ => format!("{}?", a.name),
+    }
 }
 
 /// 補完モデル。カレットまでの文字列 `before`・カレットの UTF-16 位置・`force`（Ctrl+Space の
 /// 明示トリガ）から、置換開始位置（UTF-16・終端はカレット）と候補列を返す。None なら出さない。
 type CompleteFn = Rc<dyn Fn(&str, u32, bool) -> Option<(u32, Vec<CompletionItem>)>>;
 
+/// signature help の更新先。カレットまでの文字列を受けてヒント行を書き換える。
+type ContextHintFn = Rc<dyn Fn(&str)>;
+
 /// 補完つき入力欄の配線（`code_box`／`command_box` 共通）。`edit` の下に隠した `cand` を、
 /// `complete` モデルの返す候補で出し入れする。候補は表示文字列で見せ、確定時は挿入文字列を
 /// カレット直前の置換範囲へ入れる。キー操作（↑↓移動クランプ・Enter 確定・Ctrl+Space 表示）と
 /// headless 観測（`completion_probe`）もここでまとめて仕込む。`show_modal` は呼び出し側で。
-fn install_completion(arm: &ModalArm, edit: &gui::Edit, cand: &gui::ListBox, complete: CompleteFn) {
+/// `context_hint` を渡すと、本文・カレットが動くたびカレットまでのテキストで呼ぶ
+/// （signature help の更新用）。
+fn install_completion(
+    arm: &ModalArm,
+    edit: &gui::Edit,
+    cand: &gui::ListBox,
+    complete: CompleteFn,
+    context_hint: Option<ContextHintFn>,
+) {
     // 置換範囲（カレット直前のプレフィックス・UTF-16）と、リストと並ぶ候補列。候補表示中だけ有効。
     let range: Rc<Cell<Option<(u32, u32)>>> = Rc::new(Cell::new(None));
     let rows: Rc<RefCell<Vec<CompletionItem>>> = Rc::new(RefCell::new(Vec::new()));
@@ -485,6 +631,7 @@ fn install_completion(arm: &ModalArm, edit: &gui::Edit, cand: &gui::ListBox, com
         let cand = cand.clone();
         let range = range.clone();
         let rows = rows.clone();
+        let context_hint = context_hint.clone();
         Rc::new(move |idx: u32| {
             // replace_selection の EN_CHANGE が update を呼び rows を書き換えるので、借用は先に手放す。
             let picked = {
@@ -500,6 +647,14 @@ fn install_completion(arm: &ModalArm, edit: &gui::Edit, cand: &gui::ListBox, com
                 if caret_back > 0 {
                     let pos = start + text.encode_utf16().count() as u32 - caret_back;
                     edit.set_selection(pos as i32, pos as i32);
+                    // カレットを括弧内へ戻した位置で signature help を出し直す
+                    // （EN_CHANGE 時点のカレットは挿入末尾なので、ここで再評価する）。
+                    if let Some(hint) = &context_hint {
+                        let utf16: Vec<u16> =
+                            edit.text().unwrap_or_default().encode_utf16().collect();
+                        let end = (pos as usize).min(utf16.len());
+                        hint(&String::from_utf16_lossy(&utf16[..end]));
+                    }
                 }
                 let _ = cand.hwnd().ShowWindow(co::SW::HIDE);
                 range.set(None);
@@ -516,10 +671,14 @@ fn install_completion(arm: &ModalArm, edit: &gui::Edit, cand: &gui::ListBox, com
         let range = range.clone();
         let rows = rows.clone();
         let complete = complete.clone();
+        let context_hint = context_hint.clone();
         Rc::new(move |force: bool| {
             let utf16: Vec<u16> = edit.text().unwrap_or_default().encode_utf16().collect();
             let caret = (caret_offset(&edit) as usize).min(utf16.len()) as u32;
             let before = String::from_utf16_lossy(&utf16[..caret as usize]);
+            if let Some(hint) = &context_hint {
+                hint(&before);
+            }
             match complete(&before, caret, force) {
                 Some((start, items)) if !items.is_empty() => {
                     cand.items().delete_all();
@@ -716,12 +875,13 @@ fn install_completion(arm: &ModalArm, edit: &gui::Edit, cand: &gui::ListBox, com
     let _ = do_insert;
 }
 
-/// 式エディタの可変寸法（DPI 換算前）を返す。`(入力欄の高さ, 候補欄の上端 y, 候補欄の高さ)`。
+/// 式エディタの可変寸法（DPI 換算前）を返す。
+/// `(入力欄の高さ, ヒント行の y, 候補欄の上端 y, 候補欄の高さ)`。
 /// compact＝1 行入力＋広い候補欄（コマンドを探しやすい）／expanded＝複数行入力＋下に候補欄
 /// （凝った処理を書きやすい）。入力欄の左上・幅は両モード共通なので持たない。生成時の初期配置に使う
 /// （以後のリサイズ・モード切替は [`relayout_code_box`] が動的に計算する）。
-fn code_box_geometry(expanded: bool) -> (i32, i32, i32) {
-    if expanded { (150, 194, 150) } else { (24, 70, 274) }
+fn code_box_geometry(expanded: bool) -> (i32, i32, i32, i32) {
+    if expanded { (150, 192, 222, 172) } else { (24, 66, 96, 306) }
 }
 
 /// 式エディタの子コントロールを、クライアント `cw`×`ch`（物理px）に合わせて配置し直す。リサイズ
@@ -732,6 +892,7 @@ fn relayout_code_box(
     label: &winsafe::HWND,
     mode: &winsafe::HWND,
     edit: &winsafe::HWND,
+    hint: &winsafe::HWND,
     cand: &winsafe::HWND,
     ok: &winsafe::HWND,
     cancel: &winsafe::HWND,
@@ -746,6 +907,8 @@ fn relayout_code_box(
     let btn_h = gui::dpi_y(26);
     let gap = gui::dpi_y(12);
     let edit_top = gui::dpi_y(38);
+    let hint_h = gui::dpi_y(18);
+    let hint_gap = gui::dpi_y(4);
 
     // 上端：左にラベル、右上にモードトグル。
     let label_w = (cw - m * 2 - cbw - btn_gap).max(1);
@@ -760,22 +923,26 @@ fn relayout_code_box(
     let ok_x = (cancel_x - btn_gap - ok_w).max(0);
     let _ = ok.MoveWindow(P { x: ok_x, y: btn_y }, S { cx: ok_w, cy: btn_h }, true);
 
-    // 中央：入力欄と候補欄。下端のボタン行より上の領域を分け合う。
+    // 中央：入力欄・シグネチャヒント行・候補欄。下端のボタン行より上の領域を分け合う。
+    // ヒント行は常に入力欄の直下（編集中の呼び出しの引数ヘルプを出す場所）。
     let content_w = (cw - m * 2).max(1);
     let content_bottom = (btn_y - gap).max(edit_top);
     let min_pane = gui::dpi_y(40);
     let (edit_h, cand_y, cand_h) = if expanded {
-        let cand_h = gui::dpi_y(150).min((content_bottom - edit_top - gap - min_pane).max(min_pane));
+        let cand_h = gui::dpi_y(150)
+            .min((content_bottom - edit_top - hint_gap - hint_h - gap - min_pane).max(min_pane));
         let cand_y = content_bottom - cand_h;
-        let edit_h = (cand_y - gap - edit_top).max(min_pane);
+        let edit_h = (cand_y - gap - hint_h - hint_gap - edit_top).max(min_pane);
         (edit_h, cand_y, cand_h)
     } else {
         let edit_h = gui::dpi_y(24);
-        let cand_y = edit_top + edit_h + gap;
+        let cand_y = edit_top + edit_h + hint_gap + hint_h + gap;
         let cand_h = (content_bottom - cand_y).max(min_pane);
         (edit_h, cand_y, cand_h)
     };
+    let hint_y = edit_top + edit_h + hint_gap;
     let _ = edit.MoveWindow(P { x: m, y: edit_top }, S { cx: content_w, cy: edit_h }, true);
+    let _ = hint.MoveWindow(P { x: m, y: hint_y }, S { cx: content_w, cy: hint_h }, true);
     let _ = cand.MoveWindow(P { x: m, y: cand_y }, S { cx: content_w, cy: cand_h }, true);
 }
 
@@ -790,7 +957,7 @@ pub fn code_box(
 
     // 種の式が複数行を含めば展開モード、単一行ならコンパクトモードで開く（凝った式だけ広く使う）。
     let multiline_init = value.contains('\n');
-    let (edit_h0, cand_y0, cand_h0) = code_box_geometry(multiline_init);
+    let (edit_h0, hint_y0, cand_y0, cand_h0) = code_box_geometry(multiline_init);
 
     let label = gui::Label::new(
         &wnd,
@@ -829,8 +996,19 @@ pub fn code_box(
                 | co::WS::BORDER
                 | co::WS::VSCROLL,
             position: gui::dpi(16, 38),
-            width: gui::dpi_x(448),
+            width: gui::dpi_x(528),
             height: gui::dpi_y(edit_h0),
+            ..Default::default()
+        },
+    );
+
+    // 編集中の呼び出しのシグネチャヘルプ（常設・入力欄の直下）。カレットを囲う呼び出しが
+    // 解決できたときだけ `spawn(‹cmd›, ...args)  説明` の形で入る。
+    let hint = gui::Label::new(
+        &wnd,
+        gui::LabelOpts {
+            position: gui::dpi(16, hint_y0),
+            size: gui::dpi(528, 18),
             ..Default::default()
         },
     );
@@ -841,7 +1019,7 @@ pub fn code_box(
         &wnd,
         gui::ListBoxOpts {
             position: gui::dpi(16, cand_y0),
-            size: gui::dpi(448, cand_h0),
+            size: gui::dpi(528, cand_h0),
             // タブストップで「名前／説明」を桁揃えする（説明の頭位置を固定する）。
             control_style: co::LBS::NOTIFY | co::LBS::USETABSTOPS,
             window_style: co::WS::CHILD | co::WS::BORDER | co::WS::VSCROLL,
@@ -879,10 +1057,11 @@ pub fn code_box(
     // 「複数行」トグルの両方から呼ぶ。
     let relayout: Rc<dyn Fn(bool)> = {
         let wnd = wnd.clone();
-        let (label, mode, edit, cand, ok, cancel) = (
+        let (label, mode, edit, hint, cand, ok, cancel) = (
             label.clone(),
             mode.clone(),
             edit.clone(),
+            hint.clone(),
             cand.clone(),
             ok.clone(),
             cancel.clone(),
@@ -893,6 +1072,7 @@ pub fn code_box(
                     label.hwnd(),
                     mode.hwnd(),
                     edit.hwnd(),
+                    hint.hwnd(),
                     cand.hwnd(),
                     ok.hwnd(),
                     cancel.hwnd(),
@@ -957,35 +1137,55 @@ pub fn code_box(
     // 付きで出す（`r.` 直後の空クエリは全件＝機能ブラウザを兼ねる）。`force` は Ctrl+Space＝
     // 「唯一かつ入力済みと同一」でも出すのに加え、空欄でも裸文脈の全組込を出す（空欄は勝手に
     // 開くとうるさいので force 限定）。
-    let members_owned: Vec<CompletionMember> = members.to_vec();
-    let complete: CompleteFn = Rc::new(move |before, caret, force| {
-        let (plen, prefix, bare) = completion_context(before)?;
-        if bare && prefix.is_empty() && !force {
-            return None;
-        }
-        let items = completion_items(&members_owned, &prefix, bare);
-        let names: Vec<&str> =
-            items.iter().filter(|i| i.selectable).map(|i| i.display.as_str()).collect();
-        let only_exact = names.len() == 1 && names[0].eq_ignore_ascii_case(&prefix);
-        if names.is_empty() || (!force && only_exact) {
-            return None;
-        }
-        Some((caret - plen as u32, items))
-    });
-    install_completion(&arm, &edit, &cand, complete);
+    let members_shared: Rc<Vec<CompletionMember>> = Rc::new(members.to_vec());
+    let complete: CompleteFn = {
+        let members = members_shared.clone();
+        Rc::new(move |before, caret, force| {
+            let (plen, prefix, bare) = completion_context(before)?;
+            if bare && prefix.is_empty() && !force {
+                return None;
+            }
+            let items = completion_items(&members, &prefix, bare);
+            let names: Vec<&str> =
+                items.iter().filter(|i| i.selectable).map(|i| i.display.as_str()).collect();
+            let only_exact = names.len() == 1 && names[0].eq_ignore_ascii_case(&prefix);
+            if names.is_empty() || (!force && only_exact) {
+                return None;
+            }
+            Some((caret - plen as u32, items))
+        })
+    };
+    // signature help＝カレットを囲う呼び出しのシグネチャをヒント行に出す（解決不能なら消す）。
+    // 本文・カレットが動くたびに install_completion 側から呼ばれる。
+    let context_hint: ContextHintFn = {
+        let hint = hint.clone();
+        let members = members_shared.clone();
+        Rc::new(move |before: &str| {
+            let text = enclosing_call(before)
+                .and_then(|(name, arg)| signature_help(&members, &name, arg))
+                .unwrap_or_default();
+            // 変化が無ければ触らない（キーストロークごとの再描画ちらつきを避ける）。
+            if hint.hwnd().GetWindowText().unwrap_or_default() != text {
+                let _ = hint.hwnd().SetWindowText(&text);
+            }
+        })
+    };
+    install_completion(&arm, &edit, &cand, complete, Some(context_hint));
 
-    // headless 観測：現在のモード（1 行／複数行）を読めるようにする。
+    // headless 観測：現在のモード（1 行／複数行）と signature help のヒント行を読めるようにする。
     #[cfg(feature = "debug-server")]
     {
         let expanded = expanded.clone();
         completion_probe::set_multiline(Box::new(move || expanded.get()));
+        let hint = hint.clone();
+        completion_probe::set_hint(Box::new(move || hint.hwnd().GetWindowText().unwrap_or_default()));
     }
 
     let _ = wnd.show_modal(parent);
     keyhook::pop();
     #[cfg(feature = "debug-server")]
     completion_probe::clear();
-    let _ = (cancel, cand, mode, expanded);
+    let _ = (cancel, cand, mode, expanded, hint);
     result.borrow().clone()
 }
 
@@ -1119,7 +1319,7 @@ pub fn command_box(
         }
         Some((0, items))
     });
-    install_completion(&arm, &edit, &cand, complete);
+    install_completion(&arm, &edit, &cand, complete, None);
 
     let _ = wnd.show_modal(parent);
     keyhook::pop();
@@ -1154,6 +1354,8 @@ pub mod completion_probe {
         static PROBE: RefCell<Option<Probe>> = const { RefCell::new(None) };
         /// 式エディタ（`code_box`）の現在モード読み取り。入力欄系（`input_box` 等）は付けない。
         static MULTILINE: RefCell<Option<Box<dyn Fn() -> bool>>> = const { RefCell::new(None) };
+        /// 式エディタの signature help（ヒント行）の現在文字列の読み取り。
+        static HINT: RefCell<Option<Box<dyn Fn() -> String>>> = const { RefCell::new(None) };
     }
 
     pub fn set(p: Probe) {
@@ -1162,6 +1364,7 @@ pub mod completion_probe {
     pub fn clear() {
         PROBE.with(|s| *s.borrow_mut() = None);
         MULTILINE.with(|s| *s.borrow_mut() = None);
+        HINT.with(|s| *s.borrow_mut() = None);
     }
     /// `code_box` が現在モード（複数行なら true）を読む関数を登録する。
     pub fn set_multiline(f: Box<dyn Fn() -> bool>) {
@@ -1170,6 +1373,14 @@ pub mod completion_probe {
     /// 式エディタが複数行モードか（式エディタが開いていなければ None）。
     pub fn multiline() -> Option<bool> {
         MULTILINE.with(|s| s.borrow().as_ref().map(|f| f()))
+    }
+    /// `code_box` が signature help のヒント行文字列を読む関数を登録する。
+    pub fn set_hint(f: Box<dyn Fn() -> String>) {
+        HINT.with(|s| *s.borrow_mut() = Some(f));
+    }
+    /// signature help のヒント行の現在文字列（式エディタが開いていなければ None）。
+    pub fn hint() -> Option<String> {
+        HINT.with(|s| s.borrow().as_ref().map(|f| f()))
     }
     /// 本文を `s` にして補完を更新する（入力の模擬）。開いていれば `true`。
     pub fn type_text(s: &str) -> bool {
@@ -1202,12 +1413,64 @@ pub mod completion_probe {
 #[cfg(test)]
 mod tests {
     use super::{
-        CompletionMember, completion_context, completion_items, completion_prefix, match_rank,
+        CompletionMember, completion_context, completion_items, completion_prefix, enclosing_call,
+        match_rank, signature_help,
     };
     use crate::script::ScriptCommand;
 
     fn member(name: &str, callable: bool, arity: u32) -> CompletionMember {
         CompletionMember { name: name.to_string(), callable, arity, script: None }
+    }
+
+    #[test]
+    fn enclosing_call_finds_innermost_call_and_arg_index() {
+        let call = |s: &str| enclosing_call(s).map(|(n, a)| (n, a));
+        assert_eq!(call("r.spawn("), Some(("r.spawn".into(), 0)));
+        assert_eq!(call(r#"r.spawn("x", "#), Some(("r.spawn".into(), 1)));
+        // 文字列の中のカンマ・括弧は数えない（閉じていない文字列を入力中でも囲う呼び出しが取れる）。
+        assert_eq!(call(r#"r.spawn("a, (b"#), Some(("r.spawn".into(), 0)));
+        // オブジェクトリテラルの中のカンマは引数の区切りに数えない。
+        assert_eq!(call(r#"r.spawn("x", {a: 1, b: 2"#), Some(("r.spawn".into(), 1)));
+        // ネスト＝内側の呼び出しが勝ち、閉じたら外側へ戻る。
+        assert_eq!(call("r.spawn(r.cursorName("), Some(("r.cursorName".into(), 0)));
+        assert_eq!(call("r.spawn(r.cursorName(), "), Some(("r.spawn".into(), 1)));
+        // 裸の組込呼び出し。
+        assert_eq!(call("setCursorIndex("), Some(("setCursorIndex".into(), 0)));
+        // 名前のない括弧（グルーピング）は呼び出しでない＝外側の呼び出しを返す。
+        assert_eq!(call("r.spawn((1 + 2"), Some(("r.spawn".into(), 0)));
+        // 呼び出しの外・呼び出しなし。
+        assert_eq!(call("r.spawn()"), None);
+        assert_eq!(call("abc"), None);
+    }
+
+    #[test]
+    fn signature_help_resolves_host_builtin_and_script() {
+        // host API（d.ts 由来）。rest 引数（...args）は溢れた位置でも強調される。
+        let h = signature_help(&[], "r.spawn", 0).expect("spawn");
+        assert!(h.starts_with("spawn(‹cmd›, ...args)"), "第0引数の強調: {h}");
+        let h = signature_help(&[], "r.spawn", 5).expect("spawn rest");
+        assert!(h.contains("‹...args›"), "rest の強調: {h}");
+        // rerics. 表記・名前空間メンバも同じに引ける。
+        assert!(signature_help(&[], "rerics.fs.readText", 0).is_some());
+        // 組込＝強調中の引数の doc を説明に出す。
+        let h = signature_help(&[], "r.setCursorIndex", 0).expect("builtin");
+        assert!(h.contains("‹index›") && h.contains("移動先の位置"), "引数 doc: {h}");
+        // 裸は fast-path＝組込だけを引き、host API は解決しない。
+        assert!(signature_help(&[], "cursorUp", 0).is_some());
+        assert!(signature_help(&[], "spawn", 0).is_none(), "裸の host API は解決しない");
+        // スクリプトコマンド＝summary を出す。
+        let mut sc = member("organize", true, 0);
+        sc.script = Some(ScriptCommand {
+            name: "organize".to_string(),
+            label: None,
+            genre: None,
+            summary: Some("散らかりを整える".to_string()),
+        });
+        let h = signature_help(&[sc], "r.organize", 0).expect("script");
+        assert!(h.contains("散らかりを整える"), "script summary: {h}");
+        // 未知の名前・別オブジェクトのメソッドは None。
+        assert!(signature_help(&[], "r.noSuch", 0).is_none());
+        assert!(signature_help(&[], "foo.bar", 0).is_none());
     }
 
     #[test]
