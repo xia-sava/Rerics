@@ -909,13 +909,14 @@ type ContextHintFn = Rc<dyn Fn(&str, &str)>;
 /// headless 観測（`completion_probe`）もここでまとめて仕込む。`show_modal` は呼び出し側で。
 /// `context_hint` を渡すと、本文・カレットが動くたび (カレットまで, 全文) で呼ぶ
 /// （signature help・ライブ検査の更新用）。
+/// 返り値は現在の候補列（[`install_candidate_drawing`] のオーナードロー描画が読む）。
 fn install_completion(
     arm: &ModalArm,
     edit: &gui::Edit,
     cand: &gui::ListBox,
     complete: CompleteFn,
     context_hint: Option<ContextHintFn>,
-) {
+) -> Rc<RefCell<Vec<CompletionItem>>> {
     // 置換範囲（カレット直前のプレフィックス・UTF-16）と、リストと並ぶ候補列。候補表示中だけ有効。
     let range: Rc<Cell<Option<(u32, u32)>>> = Rc::new(Cell::new(None));
     let rows: Rc<RefCell<Vec<CompletionItem>>> = Rc::new(RefCell::new(Vec::new()));
@@ -1039,9 +1040,13 @@ fn install_completion(
         let suppress_space = Rc::new(Cell::new(false));
         arm.on_create(move |hwnd| {
             edit_focus.hwnd().SetFocus();
-            // 説明列の頭を固定するタブストップ（ダイアログ単位＝平均文字幅の 1/4）。名前が
-            // これを超える長い候補は次の桁へ送られる（桁グリッド揃え）。
-            let _ = unsafe { cand_h.hwnd().SendMessage(lb::SetTabStops { tab_stops: &[92] }) };
+            // オーナードロー（LBS_OWNERDRAWFIXED）は行高が定まらないので明示する。
+            let _ = unsafe {
+                cand_h.hwnd().SendMessage(lb::SetItemHeight {
+                    index: None,
+                    height: gui::dpi_y(18).clamp(1, 255) as u8,
+                })
+            };
             let edit_h = edit_h.clone();
             let cand_h = cand_h.clone();
             let range = range.clone();
@@ -1169,8 +1174,66 @@ fn install_completion(
             text: Box::new(move || edit_p.text().unwrap_or_default()),
         });
     }
-    // 配線済みの Rc は登録ハンドラ／プローブが保持するのでここで保持し続ける必要はない。
+    // 配線済みの Rc は登録ハンドラ／プローブが保持する。rows は描画配線用に返す。
     let _ = do_insert;
+    rows
+}
+
+/// 補完候補リスト（`LBS_OWNERDRAWFIXED`）の描画を親モーダルへ配線する。ジャンル見出し行
+/// （selectable=false）はグレー字で選択ハイライトを付けず、通常行は名前列＋説明列
+/// （固定位置・グレー字）で描く。`rows` は [`install_completion`] が更新する現在の候補列。
+fn install_candidate_drawing(
+    wnd: &gui::WindowModal,
+    cand: &gui::ListBox,
+    rows: Rc<RefCell<Vec<CompletionItem>>>,
+) {
+    use winsafe::{DRAWITEMSTRUCT, GetSysColor, HBRUSH, co::COLOR};
+    let cand = cand.clone();
+    wnd.on().wm(co::WM::DRAWITEM, move |p| {
+        let dis = unsafe { &*(p.lparam as *const DRAWITEMSTRUCT) };
+        if dis.hwndItem != *cand.hwnd() {
+            return Ok(0);
+        }
+        let dc = &dis.hDC;
+        let rows = rows.borrow();
+        let item = rows.get(dis.itemID as usize);
+        let selected =
+            dis.itemState.has(co::ODS::SELECTED) && item.is_some_and(|i| i.selectable);
+        let bg = if selected { COLOR::HIGHLIGHT } else { COLOR::WINDOW };
+        let _ = dc.FillRect(dis.rcItem, &HBRUSH::GetSysColorBrush(bg)?);
+        let Some(item) = item else {
+            return Ok(1);
+        };
+        let _ = dc.SetBkMode(co::BKMODE::TRANSPARENT);
+        let pad = gui::dpi_x(4);
+        let style = co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX | co::DT::END_ELLIPSIS;
+        if !item.selectable {
+            // ジャンル見出し：グレー字（選択対象外であることを見た目でも示す）。
+            let _ = dc.SetTextColor(GetSysColor(COLOR::GRAYTEXT));
+            let mut rc = dis.rcItem;
+            rc.left += pad;
+            let _ = dc.DrawText(&item.display, rc, style);
+            return Ok(1);
+        }
+        // 通常行：名前列（左）＋説明列（固定位置・選択中以外はグレー）。
+        let name_color = if selected { COLOR::HIGHLIGHTTEXT } else { COLOR::WINDOWTEXT };
+        let detail_x = dis.rcItem.left + gui::dpi_x(150);
+        let mut name_rc = dis.rcItem;
+        name_rc.left += pad;
+        if item.detail.is_some() {
+            name_rc.right = name_rc.right.min(detail_x - gui::dpi_x(8));
+        }
+        let _ = dc.SetTextColor(GetSysColor(name_color));
+        let _ = dc.DrawText(&item.display, name_rc, style);
+        if let Some(detail) = &item.detail {
+            let detail_color = if selected { COLOR::HIGHLIGHTTEXT } else { COLOR::GRAYTEXT };
+            let mut detail_rc = dis.rcItem;
+            detail_rc.left = detail_x;
+            let _ = dc.SetTextColor(GetSysColor(detail_color));
+            let _ = dc.DrawText(detail, detail_rc, style);
+        }
+        Ok(1)
+    });
 }
 
 /// 式エディタの可変寸法（DPI 換算前）を返す。
@@ -1314,13 +1377,14 @@ pub fn code_box(
 
     // `r.` 補完の候補リスト。既定は隠しておき、`r.<prefix>` を打つと候補を入れて表示する。
     // 項目のシングルクリックで、カレット直前のプレフィックスをその候補名に置換する。
+    // オーナードロー＝ジャンル見出しのグレー字と名前／説明の桁揃えを自前で描く
+    // （HASSTRINGS で LB_GETTEXT は従来どおり＝headless 観測が文字列で読める）。
     let cand = gui::ListBox::new(
         &wnd,
         gui::ListBoxOpts {
             position: gui::dpi(16, cand_y0),
             size: gui::dpi(528, cand_h0),
-            // タブストップで「名前／説明」を桁揃えする（説明の頭位置を固定する）。
-            control_style: co::LBS::NOTIFY | co::LBS::USETABSTOPS,
+            control_style: co::LBS::NOTIFY | co::LBS::OWNERDRAWFIXED | co::LBS::HASSTRINGS,
             window_style: co::WS::CHILD | co::WS::BORDER | co::WS::VSCROLL,
             ..Default::default()
         },
@@ -1513,7 +1577,8 @@ pub fn code_box(
             }
         })
     };
-    install_completion(&arm, &edit, &cand, complete, Some(context_hint));
+    let rows = install_completion(&arm, &edit, &cand, complete, Some(context_hint));
+    install_candidate_drawing(&wnd, &cand, rows);
 
     // headless 観測：現在のモード（1 行／複数行）と signature help のヒント行を読めるようにする。
     #[cfg(feature = "debug-server")]
@@ -1569,13 +1634,13 @@ pub fn command_box(
     );
 
     // コマンド名補完の候補リスト（既定は隠す）。`和名 (Token)` を見せて Token を挿入する。
+    // 式エディタと同じオーナードロー（名前／説明の桁揃え）。
     let cand = gui::ListBox::new(
         &wnd,
         gui::ListBoxOpts {
             position: gui::dpi(16, 70),
             size: gui::dpi(428, 180),
-            // タブストップで「名前／説明」を桁揃えする（説明の頭位置を固定する）。
-            control_style: co::LBS::NOTIFY | co::LBS::USETABSTOPS,
+            control_style: co::LBS::NOTIFY | co::LBS::OWNERDRAWFIXED | co::LBS::HASSTRINGS,
             window_style: co::WS::CHILD | co::WS::BORDER | co::WS::VSCROLL,
             ..Default::default()
         },
@@ -1662,7 +1727,8 @@ pub fn command_box(
         }
         Some((0, items))
     });
-    install_completion(&arm, &edit, &cand, complete, None);
+    let rows = install_completion(&arm, &edit, &cand, complete, None);
+    install_candidate_drawing(&wnd, &cand, rows);
 
     let _ = wnd.show_modal(parent);
     keyhook::pop();
