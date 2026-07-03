@@ -4153,6 +4153,15 @@ fn argument_value_completion_and_syntax_check_on_ok() {
     let c8 = poll(&server, "/completion", |b| b.contains("は無い"));
     assert!(c8.contains("nmae") && c8.contains("extension"), "Enum に無い値を示す: {c8}");
 
+    // 複文＝エラーになった文（行番号＋その行の中身）がヒントに添えられる。
+    server.req("POST", "/completion/type", "const a = 1;\nr.spawn(bbb);").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    let c9 = poll(&server, "/completion", |b| b.contains("2 行目"));
+    assert!(
+        c9.contains("bbb は定義されていない") && c9.contains("r.spawn(bbb);"),
+        "エラー行の中身を添える: {c9}"
+    );
+
     // 正しい式に直して OK ＝式エディタが閉じる（補完プローブが外れて null になる）。
     server.req("POST", "/completion/type", "cursorUp()").unwrap();
     server.req("POST", "/modal/command/ok", "").unwrap();

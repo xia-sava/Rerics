@@ -591,6 +591,33 @@ fn semantic_error(code: &str, globals: &[String]) -> Option<(String, usize, usiz
     }
 }
 
+/// 検査エラーのヒント行表示を組む。複文（複数行）のときは、どの文が悪いのか分かるよう
+/// 「── n 行目: その行の中身」を添える（単一行は入力欄にそのまま見えているので添えない）。
+/// 長い行はエラー位置（`col`・1 始まり）の周辺だけに切り詰める。
+fn error_hint_text(code: &str, msg: &str, line: usize, col: usize) -> String {
+    if code.lines().count() <= 1 {
+        return msg.to_string();
+    }
+    let text = code.lines().nth(line.saturating_sub(1)).unwrap_or("").trim();
+    format!("{msg} ── {line} 行目: {}", clip_around(text, col, 48))
+}
+
+/// 行テキストを `max` 文字までに切り詰める（超える場合は `col`（1 始まり）を中心に窓を取り、
+/// 切った端へ「…」を付ける）。
+fn clip_around(text: &str, col: usize, max: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max {
+        return text.to_string();
+    }
+    let center = col.saturating_sub(1).min(chars.len());
+    let start = center.saturating_sub(max / 2).min(chars.len() - max);
+    let end = start + max;
+    let head = if start > 0 { "…" } else { "" };
+    let tail = if end < chars.len() { "…" } else { "" };
+    let body: String = chars[start..end].iter().collect();
+    format!("{head}{body}{tail}")
+}
+
 /// テキスト内の `line`（1 始まり）・`column`（1 始まり）を UTF-16 オフセットへ変換する
 /// （Edit の `set_selection` 用）。範囲を超えたら末尾。
 fn utf16_offset_at(text: &str, line: usize, column: usize) -> usize {
@@ -1377,7 +1404,7 @@ pub fn code_box(
                 .map(|(msg, line, col)| (format!("構文エラー: {msg}"), line, col))
                 .or_else(|| semantic_error(&code, &globals));
             if let Some((msg, line, col)) = error {
-                let _ = hint.hwnd().SetWindowText(&msg);
+                let _ = hint.hwnd().SetWindowText(&error_hint_text(&code, &msg, line, col));
                 let pos = utf16_offset_at(&code, line, col) as i32;
                 edit.set_selection(pos, pos);
                 edit.hwnd().SetFocus();
@@ -1698,10 +1725,27 @@ pub mod completion_probe {
 mod tests {
     use super::{
         CallCtx, CompletionMember, completion_context, completion_items, completion_prefix,
-        enclosing_call, match_rank, semantic_error, signature_help, syntax_error, utf16_offset_at,
-        value_items,
+        enclosing_call, error_hint_text, match_rank, semantic_error, signature_help, syntax_error,
+        utf16_offset_at, value_items,
     };
     use crate::script::ScriptCommand;
+
+    #[test]
+    fn error_hint_shows_offending_line_for_multiline_code() {
+        // 単一行は入力欄に見えているのでメッセージだけ。
+        assert_eq!(error_hint_text("r.spawn(aaa)", "aaa は定義されていない", 1, 9), "aaa は定義されていない");
+        // 複文は行番号とその行の中身を添える（前後の空白は落とす）。
+        let code = "const a = 1;\n  r.spawn(aaa);\nr.log(a);";
+        assert_eq!(
+            error_hint_text(code, "aaa は定義されていない", 2, 11),
+            "aaa は定義されていない ── 2 行目: r.spawn(aaa);"
+        );
+        // 長い行はエラー位置の周辺に切り詰めて「…」を付ける。
+        let long = format!("const x = 1;\nr.log({});", "a".repeat(100));
+        let hint = error_hint_text(&long, "msg", 2, 8);
+        assert!(hint.contains('…'), "切り詰めの印: {hint}");
+        assert!(hint.chars().count() < long.lines().nth(1).unwrap().chars().count(), "短くなる: {hint}");
+    }
 
     #[test]
     fn semantic_check_catches_unresolved_and_builtin_misuse() {
