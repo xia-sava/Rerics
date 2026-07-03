@@ -523,6 +523,74 @@ fn syntax_error(code: &str) -> Option<(String, usize, usize)> {
     Some((diag.message().to_string(), pos.line_number, pos.column_number))
 }
 
+/// Script 式の未解決識別子＝どのスコープにも束縛されず、エンジンの `globalThis` にも実在しない
+/// 名前を探す（最初の 1 件）。V8 は動的なので実行するまで気づけない typo をここで捕まえる。
+/// 型注釈の中の名前は実行時の解決と無関係なので見ない。構文エラーの式は対象外（先に構文検査を通す）。
+/// 返り＝(名前, 1 始まり行, 1 始まり桁)。
+fn unresolved_ident(code: &str, globals: &[String]) -> Option<(String, usize, usize)> {
+    use deno_ast::SourceRangedForSpanned as _;
+    use deno_ast::swc::ecma_visit::{Visit, VisitWith};
+    struct Finder<'a> {
+        unresolved: deno_ast::swc::common::SyntaxContext,
+        globals: &'a [String],
+        found: Option<(String, deno_ast::SourcePos)>,
+    }
+    impl Visit for Finder<'_> {
+        fn visit_ident(&mut self, n: &deno_ast::swc::ast::Ident) {
+            let sym = n.sym.as_str();
+            // `arguments` は関数の中でだけ暗黙に束縛される特殊名なので許す。
+            if self.found.is_none()
+                && n.ctxt == self.unresolved
+                && sym != "arguments"
+                && !self.globals.iter().any(|g| g == sym)
+            {
+                self.found = Some((sym.to_string(), n.start()));
+            }
+        }
+        // 型注釈（TS）は型消去で消える＝実行時の名前解決に関与しない。
+        fn visit_ts_type(&mut self, _n: &deno_ast::swc::ast::TsType) {}
+    }
+    let parsed = deno_ast::parse_module(deno_ast::ParseParams {
+        specifier: deno_ast::ModuleSpecifier::parse("file:///expr.ts").expect("static url"),
+        text: code.to_string().into(),
+        media_type: deno_ast::MediaType::TypeScript,
+        capture_tokens: false,
+        scope_analysis: true,
+        maybe_syntax: None,
+    })
+    .ok()?;
+    let mut finder =
+        Finder { unresolved: parsed.unresolved_context(), globals, found: None };
+    parsed.program().visit_with(&mut finder);
+    let (name, pos) = finder.found?;
+    let d = parsed.text_info_lazy().line_and_column_display(pos);
+    Some((name, d.line_number, d.column_number))
+}
+
+/// OK 時の意味検査。組込 fast-path 呼び出しは引数をメタデータと突き合わせ、エンジン行きの
+/// Script 式は未解決識別子を探す。問題があれば (メッセージ, 1 始まり行, 1 始まり桁)。
+/// 組込コマンド名そのものが未解決（裸のままリテラル以外の引数で呼んだ等）のときは、
+/// `r.` 経由の書き方へ誘導する。
+fn semantic_error(code: &str, globals: &[String]) -> Option<(String, usize, usize)> {
+    use rerics_core::{Call, Command, validate_builtin_args};
+    match Call::parse(code) {
+        Call::Builtin { command, args } => {
+            validate_builtin_args(command, &args).map(|msg| (msg, 1, 1))
+        }
+        Call::Script { .. } => {
+            let (name, line, col) = unresolved_ident(code, globals)?;
+            let msg = if Command::from_token(&name).is_some() {
+                format!(
+                    "組込 {name} はこの形ではエンジンから見えない（{name}(リテラル引数) の単独呼び出しか r.{name}(...) と書く）"
+                )
+            } else {
+                format!("{name} は定義されていない")
+            };
+            Some((msg, line, col))
+        }
+    }
+}
+
 /// テキスト内の `line`（1 始まり）・`column`（1 始まり）を UTF-16 オフセットへ変換する
 /// （Edit の `set_selection` 用）。範囲を超えたら末尾。
 fn utf16_offset_at(text: &str, line: usize, column: usize) -> usize {
@@ -1129,6 +1197,7 @@ pub fn code_box(
     message: &str,
     value: &str,
     members: &[CompletionMember],
+    globals: &[String],
 ) -> Option<String> {
     // サイズ可変＋サイズ記憶（キー "code_box"・キー編集/メニュー編集で共有）。
     let (wnd, arm) = modal_window_resizable_keyed("コードを割り当て", "code_box", 560, 480, 360, 300);
@@ -1298,12 +1367,17 @@ pub fn code_box(
         let edit = edit.clone();
         let wnd2 = wnd.clone();
         let hint = hint.clone();
+        let globals = globals.to_vec();
         ok.on().bn_clicked(move || {
             let code = edit.text().unwrap_or_default();
-            // 構文エラーの式は保存しても実行時に落ちるだけなので、閉じずにヒント行へエラーを
-            // 出してカレットをその位置へ飛ばす（破棄して閉じるのはキャンセル）。
-            if let Some((msg, line, col)) = syntax_error(&code) {
-                let _ = hint.hwnd().SetWindowText(&format!("構文エラー: {msg}"));
+            // 保存しても実行時に落ちるだけの式（構文エラー・組込引数の不整合・未定義の名前）は
+            // 閉じずにヒント行へエラーを出してカレットをその位置へ飛ばす（破棄して閉じるのは
+            // キャンセル）。構文 → 意味の順で検査する。
+            let error = syntax_error(&code)
+                .map(|(msg, line, col)| (format!("構文エラー: {msg}"), line, col))
+                .or_else(|| semantic_error(&code, &globals));
+            if let Some((msg, line, col)) = error {
+                let _ = hint.hwnd().SetWindowText(&msg);
                 let pos = utf16_offset_at(&code, line, col) as i32;
                 edit.set_selection(pos, pos);
                 edit.hwnd().SetFocus();
@@ -1624,9 +1698,34 @@ pub mod completion_probe {
 mod tests {
     use super::{
         CallCtx, CompletionMember, completion_context, completion_items, completion_prefix,
-        enclosing_call, match_rank, signature_help, syntax_error, utf16_offset_at, value_items,
+        enclosing_call, match_rank, semantic_error, signature_help, syntax_error, utf16_offset_at,
+        value_items,
     };
     use crate::script::ScriptCommand;
+
+    #[test]
+    fn semantic_check_catches_unresolved_and_builtin_misuse() {
+        let globals: Vec<String> =
+            ["r", "rerics", "JSON", "globalThis", "myHelper"].iter().map(|s| s.to_string()).collect();
+        // 正しい形は素通し：組込 fast-path・r. 経由・グローバル関数・空文。
+        assert_eq!(semantic_error("cursorUp()", &globals), None);
+        assert_eq!(semantic_error(r#"r.spawn("x", { cwd: r.currentDir() })"#, &globals), None);
+        assert_eq!(semantic_error("myHelper(1)", &globals), None);
+        assert_eq!(semantic_error("", &globals), None);
+        // 変数・関数の typo＝未解決識別子。
+        let (msg, _, _) = semantic_error("r.spawn(aaa)", &globals).expect("aaa");
+        assert!(msg.contains("aaa") && msg.contains("定義されていない"), "{msg}");
+        // 組込をリテラル以外の引数で裸呼び＝エンジンでは未定義なので r. 経由へ誘導。
+        let (msg, _, col) = semantic_error("cursorUp(aaa)", &globals).expect("bare builtin");
+        assert!(msg.contains("r.cursorUp"), "誘導メッセージ: {msg}");
+        assert_eq!(col, 1, "エラー位置は先頭の cursorUp");
+        // 組込 fast-path の引数不整合（core の検証が効く）。
+        let (msg, _, _) = semantic_error(r#"sort("nmae")"#, &globals).expect("enum");
+        assert!(msg.contains("nmae"), "{msg}");
+        // 宣言済みのローカルは未解決にならない。型注釈の型名も見ない。
+        assert_eq!(semantic_error("const a = 1; r.log(a);", &globals), None);
+        assert_eq!(semantic_error("const n: SomeType = null; r.log(n);", &globals), None);
+    }
 
     #[test]
     fn syntax_check_reports_error_position_and_passes_valid_code() {

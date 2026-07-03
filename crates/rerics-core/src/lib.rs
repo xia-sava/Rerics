@@ -46,7 +46,7 @@ pub use file_list::{
     auto_adjust_columns, column_sample, default_columns, find_match, glob_match, read_items,
     sequence_rename,
 };
-pub use call::Call;
+pub use call::{Call, validate_builtin_args};
 pub use compare::{CompareCondition, CompareCounts, CompareOptions, directory_compare};
 pub use find::{FindOptions, find_file};
 pub use sink::Sink;

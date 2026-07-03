@@ -37,6 +37,92 @@ impl Call {
     }
 }
 
+/// 組込 fast-path 呼び出しの引数をメタデータと突き合わせ、問題があれば人間向けの説明を返す。
+/// 個数超過・必須引数の欠落・型（文字列/整数/真偽値）・Enum に無い値・Options に無いキーと
+/// 値の型を検査する。メタが引数を宣言していないコマンド（`args` 空）は、実際は引数を受けても
+/// 宣言が未整備のものと区別できないため検査しない。
+pub fn validate_builtin_args(command: Command, args: &[Value]) -> Option<String> {
+    use crate::input::ArgType;
+    let meta = command.meta();
+    if meta.args.is_empty() {
+        return None;
+    }
+    let token = command.as_token();
+    if args.len() > meta.args.len() {
+        return Some(format!(
+            "{token} の引数は最大 {} 個（{} 個渡されている）",
+            meta.args.len(),
+            args.len()
+        ));
+    }
+    // スカラ型（文字列・整数・真偽値）と値の突き合わせ。`what` は「by」「オプション select」など。
+    fn scalar_error(token: &str, what: &str, ty: &ArgType, v: &Value) -> Option<String> {
+        let expected = match ty {
+            ArgType::Str | ArgType::Path if !v.is_string() => "文字列",
+            ArgType::Int if v.as_i64().is_none() => "整数",
+            ArgType::Bool if !v.is_boolean() => "真偽値",
+            _ => return None,
+        };
+        Some(format!("{token} の {what} は{expected}で指定する"))
+    }
+    for (i, spec) in meta.args.iter().enumerate() {
+        let Some(v) = args.get(i) else {
+            if spec.required {
+                return Some(format!("{token} には引数 {} が必要", spec.name));
+            }
+            continue;
+        };
+        match &spec.ty {
+            ArgType::Enum(vals) => match v.as_str() {
+                Some(s) if vals.contains(&s) => {}
+                Some(s) => {
+                    return Some(format!(
+                        "{token} の {} に \"{s}\" は無い（{} のいずれか）",
+                        spec.name,
+                        vals.join(" / ")
+                    ));
+                }
+                None => {
+                    return Some(format!(
+                        "{token} の {} は文字列で指定する（{} のいずれか）",
+                        spec.name,
+                        vals.join(" / ")
+                    ));
+                }
+            },
+            ArgType::Options(opts) => {
+                let keys = || opts.iter().map(|o| o.name).collect::<Vec<_>>().join(" / ");
+                let Some(map) = v.as_object() else {
+                    return Some(format!(
+                        "{token} の {} は {{名前: 値}} 形のオプションで指定する（{}）",
+                        spec.name,
+                        keys()
+                    ));
+                };
+                for (k, val) in map {
+                    let Some(opt) = opts.iter().find(|o| o.name == k) else {
+                        return Some(format!(
+                            "{token} に {k} というオプションは無い（使えるのは {}）",
+                            keys()
+                        ));
+                    };
+                    if let Some(msg) =
+                        scalar_error(token, &format!("オプション {k}"), &opt.ty, val)
+                    {
+                        return Some(msg);
+                    }
+                }
+            }
+            ty => {
+                if let Some(msg) = scalar_error(token, spec.name, ty, v) {
+                    return Some(msg);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// JSON 値を機能欄の式表記へ整形する。オブジェクトのキーは識別子ならクォートを外し
 /// （`{select:true}`）、入力した名前付きオプションの見た目をそのまま保つ。
 fn value_to_expr(v: &Value) -> String {
@@ -253,6 +339,38 @@ mod tests {
         .to_expr();
         assert_eq!(expr, "cursorDown({select:true})");
         assert_eq!(builtin(&expr), (Command::CursorDown, vec![json!({ "select": true })]));
+    }
+
+    #[test]
+    fn validate_checks_count_types_enum_and_option_keys() {
+        let ok = |s: &str| {
+            let (cmd, args) = builtin(s);
+            validate_builtin_args(cmd, &args)
+        };
+        // 正しい呼び出しは素通し。
+        assert_eq!(ok("cursorDown()"), None);
+        assert_eq!(ok("cursorDown({select: true})"), None);
+        assert_eq!(ok(r#"sort("name")"#), None);
+        assert_eq!(ok("setCursorIndex(3)"), None);
+        // 個数超過（cursorDown はオプション 1 つまで）。
+        assert!(ok("cursorDown(1, 2)").unwrap().contains("最大"), "個数超過");
+        // 必須引数の欠落。
+        assert!(ok("setCursorIndex()").unwrap().contains("必要"), "必須欠落");
+        // 型違い（Int にオブジェクト・Options に数値）。
+        assert!(ok("setCursorIndex(true)").unwrap().contains("整数"), "Int 型違い");
+        assert!(ok("cursorDown(3)").unwrap().contains("オプション"), "Options 型違い");
+        // Enum に無い値。
+        let msg = ok(r#"sort("nmae")"#).expect("enum error");
+        assert!(msg.contains("nmae") && msg.contains("name"), "候補を示す: {msg}");
+        // Options に無いキー・値の型違い。
+        let msg = ok("cursorDown({selct: true})").expect("unknown key");
+        assert!(msg.contains("selct") && msg.contains("select"), "使えるキーを示す: {msg}");
+        assert!(
+            ok("cursorDown({select: 1})").unwrap().contains("真偽値"),
+            "オプション値の型違い"
+        );
+        // メタが引数を宣言しないコマンド（copy 等）は検査しない。
+        assert_eq!(ok(r#"copy("a", "b")"#), None);
     }
 
     #[test]

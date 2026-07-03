@@ -202,6 +202,8 @@ struct KeyEditorInner {
     script_meta: HashMap<String, ScriptCommand>,
     /// `r.` で呼べるメンバー（補完候補）。引数/コード欄の補完に渡す。
     members: Vec<crate::script::MemberInfo>,
+    /// `globalThis` に実在する名前（式エディタの未解決識別子チェック用）。
+    globals: Vec<String>,
     /// 編集中の下書き＝chord → 割り当て値（生の invocation 文字列）のリスト。空 Vec＝明示 unbind。
     /// **重複（1 つの chord に複数機能）を許す**＝これが衝突状態。未知バインド（`Func_*` 等）も
     /// 生値のまま保持し、反映時に消さない。OK/適用の検証を通った時だけ `config.keybinds` へ書き戻す。
@@ -265,6 +267,7 @@ impl KeyEditor {
         category: KeyCategory,
         scripts: Vec<ScriptCommand>,
         members: Vec<crate::script::MemberInfo>,
+        globals: Vec<String>,
     ) -> Self {
         // 上部ヒント：モード（機能順／キー順／機能ピッカー）に応じて文面を差し替える。
         // ピッカー中は中止方法をここに大きく出して、背景色と合わせて別モードを明示する。
@@ -390,6 +393,7 @@ impl KeyEditor {
                 category,
                 script_meta: scripts.into_iter().map(|c| (c.name.clone(), c)).collect(),
                 members,
+                globals,
                 draft: RefCell::new(BTreeMap::new()),
                 rows: RefCell::new(Vec::new()),
                 key_rows: RefCell::new(Vec::new()),
@@ -1303,6 +1307,7 @@ impl KeyEditor {
             "機能欄の式を編集（組込はそのまま呼べる・r. でホスト API・複文可）",
             &expr,
             &members,
+            &self.inner.globals,
         );
         // 子コントロールを親にしたモーダルの後始末で list の無効化やフォーカス喪失が残ることが
         // あるので、OK/キャンセルに依らず有効化＋フォーカスを戻す（戻さないとホイールが効かない）。

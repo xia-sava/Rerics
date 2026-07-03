@@ -4137,6 +4137,22 @@ fn argument_value_completion_and_syntax_check_on_ok() {
     let c5 = poll(&server, "/completion", |b| b.contains("構文エラー"));
     assert!(c5.contains("構文エラー"), "OK で構文エラーが示される: {c5}");
 
+    // 意味検査：未定義の識別子は閉じずに名前を示す。裸の組込＋非リテラル引数は r. 経由へ誘導。
+    server.req("POST", "/completion/type", "r.spawn(aaa)").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    let c6 = poll(&server, "/completion", |b| b.contains("定義されていない"));
+    assert!(c6.contains("aaa"), "未定義の識別子を示す: {c6}");
+    server.req("POST", "/completion/type", "cursorUp(aaa)").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    let c7 = poll(&server, "/completion", |b| b.contains("r.cursorUp"));
+    assert!(c7.contains("r.cursorUp"), "r. 経由へ誘導する: {c7}");
+
+    // 意味検査：組込 fast-path の Enum に無い値も閉じずに示す（候補の列挙付き）。
+    server.req("POST", "/completion/type", "sort(\"nmae\")").unwrap();
+    server.req("POST", "/modal/command/ok", "").unwrap();
+    let c8 = poll(&server, "/completion", |b| b.contains("は無い"));
+    assert!(c8.contains("nmae") && c8.contains("extension"), "Enum に無い値を示す: {c8}");
+
     // 正しい式に直して OK ＝式エディタが閉じる（補完プローブが外れて null になる）。
     server.req("POST", "/completion/type", "cursorUp()").unwrap();
     server.req("POST", "/modal/command/ok", "").unwrap();

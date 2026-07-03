@@ -1746,6 +1746,9 @@ const BOOTSTRAP: &str = r#"
     }
     return out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   };
+  // globalThis に実在する名前の一覧（JS 標準グローバル＋bootstrap やユーザースクリプトが
+  // 生やしたもの）。式エディタの未解決識別子チェックの許容リストに使う。
+  globalThis.__globalNames = () => Object.getOwnPropertyNames(globalThis);
   globalThis.__commandMetas = () =>
     [...commands.entries()].map(([name, e]) => ({
       name,
@@ -1926,6 +1929,18 @@ impl Engine {
         deno_core::scope!(scope, &mut self.runtime);
         let local = deno_core::v8::Local::new(scope, global);
         deno_core::serde_v8::from_v8::<Vec<rerics_core::MenuDef>>(scope, local).unwrap_or_default()
+    }
+
+    /// `globalThis` に実在する名前の一覧を返す（JS 標準グローバル＋ユーザースクリプトが
+    /// 生やしたもの込み）。式エディタの未解決識別子チェックの許容リストに使う。
+    pub fn global_names(&mut self) -> Vec<String> {
+        let global = self
+            .runtime
+            .execute_script("rerics:list-globals", "globalThis.__globalNames()")
+            .expect("__globalNames must not fail");
+        deno_core::scope!(scope, &mut self.runtime);
+        let local = deno_core::v8::Local::new(scope, global);
+        deno_core::serde_v8::from_v8::<Vec<String>>(scope, local).unwrap_or_default()
     }
 
     /// `r.` で呼べるメンバーを名前昇順で返す（組込ホスト API＋公開済み登録コマンド）。設定 UI の

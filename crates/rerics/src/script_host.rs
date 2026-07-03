@@ -138,6 +138,8 @@ pub enum EngineCmd {
     ListCommands(Sender<Vec<ScriptCommand>>),
     /// `r.` で呼べるメンバー（名前＋callable/arity）を返す（補完候補・同期・`HostApi` を呼ばない）。
     ListMembers(Sender<Vec<MemberInfo>>),
+    /// `globalThis` に実在する名前の一覧を返す（未解決識別子チェック用・同期・`HostApi` を呼ばない）。
+    ListGlobals(Sender<Vec<String>>),
     /// `registerMenu` で登録された名前付きメニュー定義を返す（同期・`HostApi` を呼ばない）。
     ListMenus(Sender<Vec<rerics_core::MenuDef>>),
     /// ファイラー本体の出来事を `rerics.on` ハンドラへ配る（投げっぱなし）。
@@ -702,6 +704,9 @@ pub fn spawn_engine(
                 EngineCmd::ListMembers(tx) => {
                     let _ = tx.send(engine.registered_members());
                 }
+                EngineCmd::ListGlobals(tx) => {
+                    let _ = tx.send(engine.global_names());
+                }
                 EngineCmd::ListMenus(tx) => {
                     let _ = tx.send(engine.registered_menus());
                 }
@@ -1238,6 +1243,14 @@ impl MainWindow {
     pub(crate) fn script_list_members(&self) -> Vec<MemberInfo> {
         let (tx, rx) = channel();
         let _ = self.script.cmd_tx.send(EngineCmd::ListMembers(tx));
+        rx.recv().unwrap_or_default()
+    }
+
+    /// `globalThis` に実在する名前の一覧をエンジンから同期取得する。式エディタの
+    /// 未解決識別子チェックの許容リストに使う。
+    pub(crate) fn script_list_globals(&self) -> Vec<String> {
+        let (tx, rx) = channel();
+        let _ = self.script.cmd_tx.send(EngineCmd::ListGlobals(tx));
         rx.recv().unwrap_or_default()
     }
 

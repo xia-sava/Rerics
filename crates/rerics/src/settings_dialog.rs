@@ -2463,6 +2463,7 @@ impl MenusPane {
         wnd: &gui::WindowModal,
         scripts: Vec<crate::script::ScriptCommand>,
         members: Vec<crate::script::MemberInfo>,
+        globals: Vec<String>,
     ) -> Self {
         label(parent, "メニュー（Menu(\"名前\") で開く）。選ぶと右に項目が出る。", 8, 8, 520);
         let menu_list = gui::ListView::<()>::new(
@@ -2825,6 +2826,7 @@ impl MenusPane {
             let wnd = wnd.clone();
             let command_edit = command_edit.clone();
             let members = members.clone();
+            let globals = globals.clone();
             let scripts_by_name = scripts_by_name.clone();
             move || {
                 let current = command_edit.text().unwrap_or_default();
@@ -2836,6 +2838,7 @@ impl MenusPane {
                     "メニュー項目の式を編集（組込はそのまま呼べる・r. でホスト API・複文可）",
                     current.trim(),
                     &comp,
+                    &globals,
                 ) {
                     let _ = command_edit.set_text(expr.trim());
                 }
@@ -3382,6 +3385,7 @@ pub fn show(
     current: &Config,
     scripts: Vec<crate::script::ScriptCommand>,
     members: Vec<crate::script::MemberInfo>,
+    globals: Vec<String>,
     on_apply: impl Fn(&Config) + 'static,
 ) {
     // 前回開いた設定ダイアログのキー編集フックを捨てる（このダイアログ生成で登録し直す）。
@@ -3460,12 +3464,38 @@ pub fn show(
     build_list(&pane_list, &shared);
     let columns_editor = ColumnsEditor::new(&pane_list, &shared);
     let registered = RegisteredPane::new(&pane_registered, &shared);
-    let menus_pane = MenusPane::new(&pane_menus, &shared, &wnd, scripts.clone(), members.clone());
-    let keys = KeyEditor::new(&pane_keys, &shared, KeyCategory::Filer, scripts, members.clone());
-    let keys_text =
-        KeyEditor::new(&pane_keys_text, &shared, KeyCategory::TextViewer, Vec::new(), members.clone());
-    let keys_image =
-        KeyEditor::new(&pane_keys_image, &shared, KeyCategory::ImageViewer, Vec::new(), members);
+    let menus_pane = MenusPane::new(
+        &pane_menus,
+        &shared,
+        &wnd,
+        scripts.clone(),
+        members.clone(),
+        globals.clone(),
+    );
+    let keys = KeyEditor::new(
+        &pane_keys,
+        &shared,
+        KeyCategory::Filer,
+        scripts,
+        members.clone(),
+        globals.clone(),
+    );
+    let keys_text = KeyEditor::new(
+        &pane_keys_text,
+        &shared,
+        KeyCategory::TextViewer,
+        Vec::new(),
+        members.clone(),
+        globals.clone(),
+    );
+    let keys_image = KeyEditor::new(
+        &pane_keys_image,
+        &shared,
+        KeyCategory::ImageViewer,
+        Vec::new(),
+        members,
+        globals,
+    );
 
     // 配色 pane（ファイル一覧・ログ）とテキストビューア pane（ビューア専用色）。
     // 色変更後はそれぞれ対応するプレビューだけを再描画する。
