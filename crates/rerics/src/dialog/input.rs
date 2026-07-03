@@ -606,25 +606,41 @@ fn install_completion(arm: &ModalArm, edit: &gui::Edit, cand: &gui::ListBox, com
                 if range.get().is_none() {
                     return false;
                 }
-                // ↑（0x26）↓（0x28）：候補を上下に移動（ラベル行はスキップ・端でクランプ・消費）。
-                if msg == keyhook::WM_KEYDOWN && (vk == 0x26 || vk == 0x28) {
+                // ↑（0x26）↓（0x28）＝1 行、PageUp（0x21）PageDown（0x22）＝1 画面ぶん、候補を
+                // 移動する（ラベル行はスキップ・端でクランプ・消費）。
+                if msg == keyhook::WM_KEYDOWN && matches!(vk, 0x21 | 0x22 | 0x26 | 0x28) {
                     let count = cand_h.items().count().unwrap_or(0);
                     if count == 0 {
                         return false;
                     }
-                    let cur = unsafe { cand_h.hwnd().SendMessage(lb::GetCurSel {}) }.unwrap_or(0);
                     let rows = rows_h.borrow();
-                    let selectable = |i: u32| rows.get(i as usize).is_some_and(|r| r.selectable);
-                    let next = if vk == 0x26 {
-                        (0..cur).rev().find(|&i| selectable(i))
-                    } else {
-                        (cur + 1..count).find(|&i| selectable(i))
-                    };
-                    if let Some(next) = next {
-                        let _ = unsafe {
-                            cand_h.hwnd().SendMessage(lb::SetCurSel { index: Some(next) })
-                        };
+                    let sel_rows: Vec<u32> = (0..count)
+                        .filter(|&i| rows.get(i as usize).is_some_and(|r| r.selectable))
+                        .collect();
+                    if sel_rows.is_empty() {
+                        return true;
                     }
+                    // 1 画面の行数（PageUp/Down の移動量）＝候補欄の高さ ÷ 行高。
+                    let page = {
+                        let item_h =
+                            unsafe { cand_h.hwnd().SendMessage(lb::GetItemHeight { index: None }) }
+                                .map(|h| h.max(1))
+                                .unwrap_or(1) as i32;
+                        let client_h =
+                            cand_h.hwnd().GetClientRect().map(|r| r.bottom - r.top).unwrap_or(0);
+                        (client_h / item_h).max(1) as usize
+                    };
+                    let cur = unsafe { cand_h.hwnd().SendMessage(lb::GetCurSel {}) }.unwrap_or(0);
+                    let pos = sel_rows.iter().position(|&i| i >= cur).unwrap_or(sel_rows.len() - 1);
+                    let next = match vk {
+                        0x26 => pos.saturating_sub(1),
+                        0x28 => (pos + 1).min(sel_rows.len() - 1),
+                        0x21 => pos.saturating_sub(page),
+                        _ => (pos + page).min(sel_rows.len() - 1),
+                    };
+                    let _ = unsafe {
+                        cand_h.hwnd().SendMessage(lb::SetCurSel { index: Some(sel_rows[next]) })
+                    };
                     return true;
                 }
                 // Enter（WM_CHAR 0x0D）：選択中の候補を確定（消費して改行を防ぐ）。

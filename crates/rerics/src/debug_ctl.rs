@@ -340,6 +340,12 @@ impl MainWindow {
                                     "up" => {
                                         edit.SendMessage(key_down(0x26));
                                     }
+                                    "pageup" => {
+                                        edit.SendMessage(key_down(0x21));
+                                    }
+                                    "pagedown" => {
+                                        edit.SendMessage(key_down(0x22));
+                                    }
                                     // カレット移動は押下で動かし、解放で補完を再評価させる。
                                     "left" => {
                                         edit.SendMessage(key_down(0x25));

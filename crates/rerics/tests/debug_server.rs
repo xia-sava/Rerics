@@ -4224,7 +4224,18 @@ fn completion_keyboard_navigation_and_ctrl_space() {
     let c2 = poll(&server, "/completion", |b| b.contains(r#""selected":3"#));
     assert!(c2.contains(r#""selected":3"#), "↓↓↑ は見出しをスキップして index 3: {c2}");
 
-    // Enter で選択中（openHelp）を確定＝プレフィックス o が openHelp() に置換される。
+    // PageDown＝1 画面ぶん先の候補行へ・PageUp を余分に打っても先頭候補行（index 1）でクランプ。
+    server.req("POST", "/completion/key/pagedown", "").unwrap();
+    let cp = poll(&server, "/completion", |b| !b.contains(r#""selected":3"#));
+    assert!(!cp.contains(r#""selected":3"#), "PageDown でまとめて移動: {cp}");
+    server.req("POST", "/completion/key/pageup", "").unwrap();
+    server.req("POST", "/completion/key/pageup", "").unwrap();
+    let cq = poll(&server, "/completion", |b| b.contains(r#""selected":1"#));
+    assert!(cq.contains(r#""selected":1"#), "PageUp は先頭の候補行でクランプ: {cq}");
+
+    // ↓ で見出し（index 2）を飛ばして index 3（openHelp）へ戻し、Enter で確定＝
+    // プレフィックス o が openHelp() に置換される。
+    server.req("POST", "/completion/key/down", "").unwrap();
     server.req("POST", "/completion/key/enter", "").unwrap();
     let c3 = poll(&server, "/completion", |b| b.contains(r#""text":"=r.openHelp()"#));
     assert!(c3.contains(r#""text":"=r.openHelp()"#), "Enter で openHelp 確定: {c3}");
