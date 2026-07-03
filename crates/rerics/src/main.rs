@@ -952,6 +952,14 @@ impl MainWindow {
         self.view(is_left).on_wheel(move |dist, coords| {
             let _ = this.scroll_under_cursor(dist, coords);
         });
+
+        // 選択（マーク）が変わったらステータスバー左へ件数/サイズを反映する。選択を変える
+        // どの経路（コマンド・マウス・スクリプト）も最後に refresh を通るので、ここで一括に拾う。
+        let this = self.clone();
+        self.view(is_left).on_selection_changed(move |count, size| {
+            let text = rerics_core::format_selected(count, size).unwrap_or_default();
+            this.status(is_left).set_left(&text);
+        });
     }
 
 
@@ -1569,7 +1577,6 @@ impl MainWindow {
             _ => {}
         }
         view.refresh()?;
-        self.update_selected_info(is_left);
         Ok(())
     }
 
@@ -1751,13 +1758,6 @@ impl MainWindow {
 
     fn status(&self, is_left: bool) -> &StatusBarView {
         if is_left { self.left.status() } else { self.right.status() }
-    }
-
-    /// ペインの選択数/サイズをステータスバー左へ反映する（0件なら空）。
-    fn update_selected_info(&self, is_left: bool) {
-        let (count, size) = self.view(is_left).state().borrow().selected_count_size();
-        let text = rerics_core::format_selected(count, size).unwrap_or_default();
-        self.status(is_left).set_left(&text);
     }
 
     /// ペインのドライブ容量をステータスバー右へ反映する。
@@ -2049,7 +2049,6 @@ impl MainWindow {
         }
         view.autofit_columns()?;
         view.refresh()?;
-        self.update_selected_info(is_left);
         self.cleanup_unreferenced_temps();
         // 一覧確定後に changeDirectory を配る（実際に現在地が変わったときだけ・notify 側で判定）。
         // ここなら activePane() や並べ替えコマンドがハンドラから効く。

@@ -95,8 +95,6 @@ impl MainWindow {
         self.view(false).autofit_columns()?;
         self.view(true).refresh()?;
         self.view(false).refresh()?;
-        self.update_selected_info(true);
-        self.update_selected_info(false);
         self.update_drive_info(true);
         self.update_drive_info(false);
         // 復元/タブ切替先がソリッド書庫等（非RA）なら一括展開＋スピナーを起こす。これらの

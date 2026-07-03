@@ -69,6 +69,7 @@ enum MouseEvent {
 
 type ActivateCb = Box<dyn Fn(usize)>;
 type WheelCb = Box<dyn Fn(i16, w::POINT)>;
+type SelectionCb = Box<dyn Fn(u64, u64)>;
 
 /// content-fit で各非フレックス列に与える上限（クライアント幅に対する割合）。
 const AUTOFIT_MAX_RATIO: f64 = 0.25;
@@ -100,6 +101,10 @@ struct Inner {
     on_activate: RefCell<Option<ActivateCb>>,
     on_got_focus: RefCell<Option<Box<dyn Fn()>>>,
     on_wheel: RefCell<Option<WheelCb>>,
+    /// 選択（マーク）状態が変わったときの通知先（件数と合計サイズを渡す）。
+    on_selection_changed: RefCell<Option<SelectionCb>>,
+    /// 直近に通知した選択サマリ (件数, 合計サイズ)。refresh 時に導出し、変化時だけ着火する。
+    last_selection: Cell<Option<(u64, u64)>>,
     /// 読込・展開の待機表示。`Some` の間は一覧の代わりに待機スピナーを重ねる。
     loading: RefCell<Option<Spinner>>,
     /// 待機スピナーを出すまでの遅延（設定）。これより速い読込はチラつかせない。
@@ -171,6 +176,8 @@ impl FileListView {
             on_activate: RefCell::new(None),
             on_got_focus: RefCell::new(None),
             on_wheel: RefCell::new(None),
+            on_selection_changed: RefCell::new(None),
+            last_selection: Cell::new(None),
             loading: RefCell::new(None),
             progress_delay: Cell::new(Duration::from_millis(cfg.progress_delay_ms)),
             load_gen: Cell::new(0),
@@ -252,6 +259,12 @@ impl FileListView {
         *self.inner.on_got_focus.borrow_mut() = Some(Box::new(cb));
     }
 
+    /// 選択（マーク）状態が変わったときのコールバック（引数は件数と合計サイズ）。`refresh` を
+    /// choke point に、前回通知値と異なるときだけ着火する（スクロール等での空振りを避ける）。
+    pub fn on_selection_changed(&self, cb: impl Fn(u64, u64) + 'static) {
+        *self.inner.on_selection_changed.borrow_mut() = Some(Box::new(cb));
+    }
+
     /// ホイール回転時のコールバック（回転量と画面座標を渡す）。設定すると自前スクロールの
     /// 代わりにこれが呼ばれ、呼び出し側がカーソル下のペインを判定してスクロールする。
     pub fn on_wheel(&self, cb: impl Fn(i16, w::POINT) + 'static) {
@@ -269,7 +282,26 @@ impl FileListView {
     /// 再描画を促す。
     pub fn refresh(&self) -> w::AnyResult<()> {
         self.hwnd().InvalidateRect(None, false)?;
+        self.notify_selection_changed();
         Ok(())
+    }
+
+    /// 現在の選択サマリ (件数, 合計サイズ) を状態から導出し、前回通知値と異なれば
+    /// `on_selection_changed` を撃つ。選択を変える全経路が最後に `refresh` を通るので、
+    /// ここを唯一の通知点にできる（コマンド・マウス・スクリプトを問わず一箇所で拾う）。
+    fn notify_selection_changed(&self) {
+        let Ok(state) = self.inner.state.try_borrow() else {
+            return;
+        };
+        let summary = state.selected_count_size();
+        drop(state);
+        if self.inner.last_selection.get() == Some(summary) {
+            return;
+        }
+        self.inner.last_selection.set(Some(summary));
+        if let Some(cb) = self.inner.on_selection_changed.borrow().as_ref() {
+            cb(summary.0, summary.1);
+        }
     }
 
     /// サムネイル表示（行高を広げ画像を大きく見せる）を切り替える。切替後の有効状態を返す。

@@ -1177,6 +1177,35 @@ fn select_mask_dialog_delegates_with_clear() {
         2,
         "only the two .txt files should remain marked (b.dat cleared): {items}"
     );
+
+    // マスク選択でもステータスバー左に選択件数が反映される（選択を変える経路は
+    // refresh を通じて件数表示を更新する）。
+    let status = poll(&server, "/state/panes/left/status_bar/left", |b| b.contains("選択 2"));
+    assert!(
+        status.contains("選択 2"),
+        "status bar should show the selected count after mask select: {status}"
+    );
+}
+
+/// 組込の全選択コマンドでも、ステータスバー左に選択件数が反映される（選択変更は refresh を
+/// choke point に件数表示へ伝わる）。全選択→全解除で表示が出て消えることまで確認する。
+#[test]
+fn select_all_updates_status_bar_count() {
+    let server = Server::start(&["a.txt", "b.txt", "c.txt"], "");
+
+    server.req("POST", "/command/selectAll", "").unwrap();
+    let status = poll(&server, "/state/panes/left/status_bar/left", |b| b.contains("選択 3"));
+    assert!(
+        status.contains("選択 3"),
+        "status bar should show 3 selected after selectAll: {status}"
+    );
+
+    server.req("POST", "/command/clearAll", "").unwrap();
+    let cleared = poll(&server, "/state/panes/left/status_bar/left", |b| !b.contains("選択"));
+    assert!(
+        !cleared.contains("選択"),
+        "status bar should be cleared after clearAll: {cleared}"
+    );
 }
 
 /// pathMaskDialog＝入力モーダルで取ったマスクを no-UI 版 `r.pathMask` へ委譲する。`*.txt` で

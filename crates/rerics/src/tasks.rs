@@ -247,7 +247,6 @@ impl MainWindow {
                             }
                             s.select_start = s.cursor;
                         }
-                        self.update_selected_info(is_left);
                         find_dirty[idx] = true;
                     }
                     self.maybe_kill_task_timer();
