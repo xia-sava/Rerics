@@ -4,7 +4,9 @@
 //! エンジン→UI の操作（[`HostApi`]）は [`ui_marshal`] でマーシャルする。逆方向（UI→
 //! エンジンへの「このコマンドを実行」要求）は [`EngineCmd`] チャネルで送る。エンジンが
 //! `HostApi` 経由で UI を待つ間に UI がエンジンを待つとデッドロックするため、UI→エンジンの
-//! コマンドは投げっぱなし（完了を待たない）。一覧取得だけは `HostApi` を呼ばないので同期で待てる。
+//! コマンドは投げっぱなし（完了を待たない）。登録内容の一覧取得と値返し Eval は同期応答を
+//! 待つが、UI は待機中も [`MainWindow::recv_pumping`] でマーシャルキューを汲むので、先行
+//! スクリプトの `HostApi` 往復と待ち合ってデッドロックすることはない。
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -124,8 +126,10 @@ fn system_time_ms(t: Option<std::time::SystemTime>) -> u64 {
 
 /// UI スレッド → エンジンスレッドへのコマンド。
 /// `Invoke` はスクリプト発のコマンド実行から、`Eval` は機能欄のスクリプト式（[`Call::Script`]）から、
-/// `FireEvent` は本体イベントから送られる。`ListCommands`/`EvalValue` の送り手は debug-server
-/// エンドポイントだけなので、その構成以外では当該バリアントが未使用＝dead_code を許容する。
+/// `FireEvent` は本体イベントから送られる。`List*`/`EvalValue` は同期取得だが、UI は応答待ちの間
+/// [`MainWindow::recv_pumping`] でマーシャルキューを汲むため、先行スクリプトの `HostApi` 往復と
+/// デッドロックしない。`ListCommands`/`EvalValue` の送り手は debug-server エンドポイントだけなので、
+/// その構成以外では当該バリアントが未使用＝dead_code を許容する。
 #[cfg_attr(not(feature = "debug-server"), allow(dead_code))]
 pub enum EngineCmd {
     /// 登録済みコマンドを名前で実行する（投げっぱなし）。`args` はコールバックへ転送する。
@@ -134,13 +138,13 @@ pub enum EngineCmd {
     Eval(String),
     /// TS/JS コードを評価し、最後の式の値を文字列で返す（同期取得）。`undefined`/`null` は空文字。
     EvalValue { code: String, tx: Sender<String> },
-    /// 現在登録されているコマンドのメタ情報を返す（同期・`HostApi` を呼ばないのでデッドロックしない）。
+    /// 現在登録されているコマンドのメタ情報を返す（同期取得）。
     ListCommands(Sender<Vec<ScriptCommand>>),
-    /// `r.` で呼べるメンバー（名前＋callable/arity）を返す（補完候補・同期・`HostApi` を呼ばない）。
+    /// `r.` で呼べるメンバー（名前＋callable/arity）を返す（補完候補・同期取得）。
     ListMembers(Sender<Vec<MemberInfo>>),
-    /// `globalThis` に実在する名前の一覧を返す（未解決識別子チェック用・同期・`HostApi` を呼ばない）。
+    /// `globalThis` に実在する名前の一覧を返す（未解決識別子チェック用・同期取得）。
     ListGlobals(Sender<Vec<String>>),
-    /// `registerMenu` で登録された名前付きメニュー定義を返す（同期・`HostApi` を呼ばない）。
+    /// `registerMenu` で登録された名前付きメニュー定義を返す（同期取得）。
     ListMenus(Sender<Vec<rerics_core::MenuDef>>),
     /// ファイラー本体の出来事を `rerics.on` ハンドラへ配る（投げっぱなし）。
     FireEvent { event: String, arg: String },
@@ -1086,10 +1090,12 @@ impl MainWindow {
             command: cmd,
             args: args.into_iter().map(serde_json::Value::String).collect(),
         };
-        // スクリプト発のコマンド実行中は executeCommand を抑止する（無限再帰を防ぐ）。
-        self.script.suppress_events.set(true);
+        // スクリプト発のコマンド実行中は executeCommand を抑止する（無限再帰を防ぐ）。モーダルの
+        // 入れ子メッセージループで並列ワーカーのコマンドが再入し得るので、クリアでなく退避/復元
+        // にして、入れ子の終了が外側の抑止状態を落とさないようにする。
+        let prev = self.script.suppress_events.replace(true);
         let result = self.exec(is_left, &call);
-        self.script.suppress_events.set(false);
+        self.script.suppress_events.set(prev);
         // アクション系コマンドは値を返さない（`undefined` 相当の null）。
         result.map(|()| serde_json::Value::Null).map_err(|e| e.to_string())
     }
@@ -1225,25 +1231,41 @@ impl MainWindow {
         let _ = self.script.cmd_tx.send(cmd);
     }
 
+    /// エンジンからの同期応答を、待つあいだも [`HostApi`] マーシャルキューを汲みながら受け取る。
+    /// こうしないと、先行スクリプトが `HostApi` 往復で UI を待つ間に UI が応答待ちで固まる
+    /// （head-of-line デッドロック）。応答が来るまでキューを汲みつつ短間隔でポーリングする。
+    fn recv_pumping<T>(&self, rx: &Receiver<T>) -> Option<T> {
+        use std::sync::mpsc::RecvTimeoutError;
+        loop {
+            // 先に溜まっている HostApi 要求を捌いてエンジンを進ませる。
+            self.drain_script_requests();
+            match rx.recv_timeout(std::time::Duration::from_millis(5)) {
+                Ok(v) => return Some(v),
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => return None,
+            }
+        }
+    }
+
     /// 登録済みコマンドのメタ情報をエンジンから同期取得する。
     pub(crate) fn script_list_commands(&self) -> Vec<ScriptCommand> {
         let (tx, rx) = channel();
         let _ = self.script.cmd_tx.send(EngineCmd::ListCommands(tx));
-        rx.recv().unwrap_or_default()
+        self.recv_pumping(&rx).unwrap_or_default()
     }
 
     /// スクリプトが `registerMenu` で登録した名前付きメニュー定義をエンジンから同期取得する。
     pub(crate) fn script_list_menus(&self) -> Vec<rerics_core::MenuDef> {
         let (tx, rx) = channel();
         let _ = self.script.cmd_tx.send(EngineCmd::ListMenus(tx));
-        rx.recv().unwrap_or_default()
+        self.recv_pumping(&rx).unwrap_or_default()
     }
 
     /// `r.` で呼べるメンバー（補完候補）をエンジンから同期取得する。引数/コード欄の補完に使う。
     pub(crate) fn script_list_members(&self) -> Vec<MemberInfo> {
         let (tx, rx) = channel();
         let _ = self.script.cmd_tx.send(EngineCmd::ListMembers(tx));
-        rx.recv().unwrap_or_default()
+        self.recv_pumping(&rx).unwrap_or_default()
     }
 
     /// `globalThis` に実在する名前の一覧をエンジンから同期取得する。式エディタの
@@ -1251,15 +1273,16 @@ impl MainWindow {
     pub(crate) fn script_list_globals(&self) -> Vec<String> {
         let (tx, rx) = channel();
         let _ = self.script.cmd_tx.send(EngineCmd::ListGlobals(tx));
-        rx.recv().unwrap_or_default()
+        self.recv_pumping(&rx).unwrap_or_default()
     }
 
-    /// コードを評価して最後の式の値を同期取得する（値返し Eval の検証口）。
+    /// コードを評価して最後の式の値を同期取得する（値返し Eval の検証口）。評価コードが
+    /// `HostApi` を呼んでもデッドロックしないよう、待機中はマーシャルキューを汲む。
     #[cfg(feature = "debug-server")]
     pub(crate) fn script_eval_value(&self, code: String) -> String {
         let (tx, rx) = channel();
         let _ = self.script.cmd_tx.send(EngineCmd::EvalValue { code, tx });
-        rx.recv().unwrap_or_default()
+        self.recv_pumping(&rx).unwrap_or_default()
     }
 }
 
