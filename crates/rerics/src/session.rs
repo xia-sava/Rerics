@@ -3,6 +3,42 @@ use rerics_core::{Column, FileListState, Pane, SortType};
 use crate::window_state;
 use crate::{MainWindow, TabSnapshot};
 
+/// 保存状態から実タブ群を組む（ワーカースレッドで実行・GUI 非依存）。パス探索と一覧読込を
+/// 含み、オフラインパスではブロックし得るので UI スレッドでは呼ばない。
+fn build_restored_tabs(
+    state: &rerics_core::State,
+    columns: &[Column],
+    home: &str,
+) -> (Vec<TabSnapshot>, usize) {
+    let tabs: Vec<TabSnapshot> = state
+        .tabs
+        .iter()
+        .map(|t| {
+            let left_path = crate::normalize_path(&t.left, ".");
+            let right_path = crate::normalize_path(&t.right, home);
+            TabSnapshot {
+                left_state: MainWindow::build_state_for(
+                    &left_path,
+                    columns,
+                    t.sort_left,
+                    t.sort_left_reverse,
+                ),
+                right_state: MainWindow::build_state_for(
+                    &right_path,
+                    columns,
+                    t.sort_right,
+                    t.sort_right_reverse,
+                ),
+                left_path,
+                right_path,
+                active_right: t.active_right,
+            }
+        })
+        .collect();
+    let active = state.active_tab.min(tabs.len().saturating_sub(1));
+    (tabs, active)
+}
+
 impl MainWindow {
     /// 現在のタブ群・ウィンドウ位置・分割比を state.toml へ保存する。
     /// 終了時（wm_destroy）と再起動時（Restart）の両方から呼ぶ。
@@ -51,6 +87,40 @@ impl MainWindow {
         s.cursor = 0;
         s.scroll_top = 0;
         s
+    }
+
+    /// 保存タブの復元をワーカーで行う。パス探索（`normalize_path`）と一覧読込
+    /// （`build_state_for`）はオフライン UNC/取り外し済みドライブでは接続タイムアウトまで
+    /// ブロックするため、UI スレッドから外す。完了したらタブ群を差し替えてアクティブタブを描く。
+    pub(crate) fn start_restore_tabs(&self) {
+        let Some(state) = self.pending_restore.borrow_mut().take() else {
+            return;
+        };
+        let columns = self.config.borrow().columns.clone();
+        let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "..".to_owned());
+        self.spawn_job(
+            move || build_restored_tabs(&state, &columns, &home),
+            move |mw, (tabs, active)| mw.apply_restored_tabs(tabs, active),
+        );
+    }
+
+    /// 復元したタブ群をライブへ反映する。アクティブタブを描き直し、タブ帯とタイトルを更新する。
+    pub(crate) fn apply_restored_tabs(
+        &self,
+        tabs: Vec<TabSnapshot>,
+        active: usize,
+    ) -> w::AnyResult<()> {
+        if tabs.is_empty() {
+            return Ok(());
+        }
+        let active = active.min(tabs.len() - 1);
+        *self.tabs.borrow_mut() = tabs;
+        self.active.set(active);
+        let snap = self.tabs.borrow()[active].clone();
+        self.load_snapshot(&snap)?;
+        self.update_title()?;
+        self.refresh_tab_bar()?;
+        Ok(())
     }
 
     /// 現在のライブ状態を退避用スナップショットに固める。

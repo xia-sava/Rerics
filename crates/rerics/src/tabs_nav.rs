@@ -6,6 +6,12 @@ use rerics_core::{Location, Spinner, format_size};
 use crate::{ActiveView, MainWindow, TabSnapshot, dialog, join_inner_path};
 
 impl MainWindow {
+    /// どちらかのペインが非同期読込中か。読込中に `save_active` すると、まだ届いていない
+    /// 新一覧の代わりに古い一覧をスナップショットへ固めてしまうため、タブ操作を抑止する判定。
+    pub(crate) fn any_pane_loading(&self) -> bool {
+        self.view(true).is_loading() || self.view(false).is_loading()
+    }
+
     /// 指定 index のタブへ切替える（範囲外・現在と同じなら何もしない）。
     pub(crate) fn switch_tab(&self, index: usize) -> w::AnyResult<()> {
         if index >= self.tabs.borrow().len() || index == self.active.get() {
@@ -14,7 +20,7 @@ impl MainWindow {
         // どちらかのペインが非同期読込中はタブ切替を抑止する（読込前の古い一覧をスナップ
         // ショットへ固めると、戻ったとき誤った内容が残り続けるため）。キー経路は exec が
         // 読込中を抑止するが、タブ帯のマウスクリックはそこを通らないのでここで揃える。
-        if self.view(true).is_loading() || self.view(false).is_loading() {
+        if self.any_pane_loading() {
             return Ok(());
         }
         self.save_active();
@@ -48,6 +54,10 @@ impl MainWindow {
 
     /// 現在のパスを複製した新タブをアクティブ直後に挿入して切替える。
     pub(crate) fn new_tab(&self) -> w::AnyResult<()> {
+        // 読込中は抑止する（switch_tab と同じ。古い一覧を新タブへ固めないため）。
+        if self.any_pane_loading() {
+            return Ok(());
+        }
         self.save_active();
         let left_path = self.left_pane.borrow().loc_display();
         let right_path = self.right_pane.borrow().loc_display();

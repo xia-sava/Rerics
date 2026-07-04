@@ -335,6 +335,9 @@ struct MainWindow {
     viewer_keymap: Rc<RefCell<KeyMap>>,
     media_keymap: Rc<RefCell<KeyMap>>,
     initial_window: Option<WindowState>,
+    /// 起動時にまだ復元していない保存状態（保存タブがある場合）。窓を先に出してから、
+    /// パス探索と一覧読込（オフライン UNC 等でブロックし得る）をワーカーで行うため保持する。
+    pending_restore: Rc<RefCell<Option<rerics_core::State>>>,
     active_right: Rc<Cell<bool>>,
     /// 左ペインの幅比（0.0〜1.0）。スプリッタのドラッグ／最大化／境界移動で変わる。
     split_ratio: Rc<Cell<f64>>,
@@ -541,36 +544,15 @@ impl MainWindow {
         let initial_window = state.window.clone();
         let initial_split = state.split_ratio.clamp(0.05, 0.95);
 
-        // 保存タブから退避用スナップショット集合を組む。存在しないパスはフォールバックへ正規化。
-        let mut tabs: Vec<TabSnapshot> = state
-            .tabs
-            .iter()
-            .map(|t| {
-                let left_path = normalize_path(&t.left, ".");
-                let right_path = normalize_path(&t.right, &home);
-                TabSnapshot {
-                    left_state: Self::build_state_for(
-                        &left_path,
-                        &config.columns,
-                        t.sort_left,
-                        t.sort_left_reverse,
-                    ),
-                    right_state: Self::build_state_for(
-                        &right_path,
-                        &config.columns,
-                        t.sort_right,
-                        t.sort_right_reverse,
-                    ),
-                    left_path,
-                    right_path,
-                    active_right: t.active_right,
-                }
-            })
-            .collect();
-        if tabs.is_empty() {
+        // 保存タブの復元は、パス探索(normalize_path)も一覧読込(build_state_for)も、オフラインの
+        // UNC/取り外し済みドライブでは接続タイムアウトまでブロックする。これを窓生成前にやると
+        // 数分ものあいだ窓が出ない。そこで起動時はローカルの既定タブ（"."/ホーム＝ブロックしない）を
+        // プレースホルダとして即座に表示し、実際の保存タブ復元は窓表示後にワーカーで行う。
+        let has_saved_tabs = !state.tabs.is_empty();
+        let placeholder = {
             let left_path = ".".to_owned();
             let right_path = home.clone();
-            tabs.push(TabSnapshot {
+            TabSnapshot {
                 left_state: Self::build_state_for(
                     &left_path,
                     &config.columns,
@@ -586,14 +568,17 @@ impl MainWindow {
                 left_path,
                 right_path,
                 active_right: false,
-            });
-        }
-        let active = state.active_tab.min(tabs.len() - 1);
+            }
+        };
+        let tabs = vec![placeholder];
+        let active = 0;
 
         let cur = &tabs[active];
         let left_pane = Rc::new(RefCell::new(Pane::restore(&cur.left_path)));
         let right_pane = Rc::new(RefCell::new(Pane::restore(&cur.right_path)));
         let active_right = cur.active_right;
+        // 保存タブがあれば窓表示後にワーカーで復元する。無ければ既定タブがそのまま最終状態。
+        let pending_restore = if has_saved_tabs { Some(state.clone()) } else { None };
 
         let keymap = config.keymap();
         let viewer_keymap = config.keymap_textviewer();
@@ -627,6 +612,7 @@ impl MainWindow {
             viewer_keymap: Rc::new(RefCell::new(viewer_keymap)),
             media_keymap: Rc::new(RefCell::new(media_keymap)),
             initial_window,
+            pending_restore: Rc::new(RefCell::new(pending_restore)),
             active_right: Rc::new(Cell::new(active_right)),
             split_ratio: Rc::new(Cell::new(initial_split)),
             maximized: Rc::new(Cell::new(false)),
@@ -852,6 +838,9 @@ impl MainWindow {
             this.load_snapshot(&snap)?;
             this.update_title()?;
             this.refresh_tab_bar()?;
+            // 保存タブがあれば、窓を出した後にワーカーで復元する（パス探索・一覧読込は
+            // オフライン UNC 等でブロックし得るため UI スレッドから外す）。
+            this.start_restore_tabs();
             // headless 時は本体を画面外へ送る。モーダルは親ウィンドウの中央に作られるので、
             // これでモーダルも画面外に出て、headless 検証中の一瞬のフラッシュが見えなくなる
             // （バックグラウンドプロセスゆえフォーカスは元々奪わない）。モーダルは VISIBLE の
