@@ -163,16 +163,16 @@ impl MainWindow {
 
     /// その場のリフレッシュ（ファイル操作後・リネーム後など）。結果一覧モードなら元の検索／
     /// 比較を再実行して一覧を作り直し（結果モードを保つ）、そうでなければ通常の同期再読込。
-    /// カーソルは `focus` 指定があればその名へ寄せ、無ければ元の行位置（index）を保つ。名前では
-    /// 追わないので、移動先へ項目が挿入されてもカーソルは同じ位置に留まる。親移動・項目を開く等の
-    /// 「離脱」操作は従来どおり [`reload_side`](Self::reload_side) 系を使う。
+    /// カーソルは `focus` 指定があればその名へ寄せ、無ければカーソル下ファイルを名前で追い、
+    /// 消えていれば元の行位置（index）を保つ。親移動・項目を開く等の「離脱」操作は従来どおり
+    /// [`reload_side`](Self::reload_side) 系を使う。
     pub(crate) fn refresh_side(&self, is_left: bool, focus: Option<&str>) -> w::AnyResult<()> {
         if self.view(is_left).state().borrow().find_result && self.research_side(is_left, focus) {
             return Ok(());
         }
         let mode = match focus {
             Some(name) => crate::ReloadCursor::Focus { name: name.to_owned(), center: false },
-            None => crate::ReloadCursor::KeepIndex,
+            None => crate::ReloadCursor::Keep,
         };
         self.reload_side_now(is_left, mode)
     }
@@ -180,17 +180,25 @@ impl MainWindow {
     /// 覚えている検索／比較条件を**非同期で**再実行し、結果一覧を作り直す。条件が無ければ
     /// `false`（呼び側は通常再読込へ）。走査はワーカースレッドで回し、結果は WAKE 取り込みで
     /// 即時にストリーム反映する（大きな木でも UI スレッドを止めない）。完了時にカーソルを
-    /// `focus`（リネーム後の新名）＞現在のカーソル下＞先頭の名前へ戻す（`find_refocus`）。
+    /// `focus`（リネーム後の新名）または現在のカーソル下の名前で追い、結果から消えていれば
+    /// 元の行位置へ戻す（`find_refocus`）。
     fn research_side(&self, is_left: bool, focus: Option<&str>) -> bool {
         let idx = if is_left { 0 } else { 1 };
         let query = self.find_query.borrow()[idx].clone();
         let Some(query) = query else {
             return false;
         };
-        // 再検索後のカーソル：リネームは新名で追い（呼び側指定）、reload・操作後は元の位置を保つ。
-        let refocus = match focus {
-            Some(name) => crate::Refocus::Name(name.to_owned()),
-            None => crate::Refocus::Index(self.view(is_left).state().borrow().cursor),
+        // 再検索後のカーソル：リネームは新名（呼び側指定）、操作後はカーソル下の名前で追い、
+        // 結果から消えていれば元の行位置へ戻す。名前照合は出自（source）込み。
+        let refocus = {
+            let st = self.view(is_left).state();
+            let s = st.borrow();
+            let cur = s.items.get(s.cursor);
+            crate::Refocus {
+                name: focus.map(str::to_owned).or_else(|| cur.map(|it| it.name.clone())),
+                source: cur.and_then(|it| it.source.clone()),
+                index: s.cursor,
+            }
         };
         // 退避はタスク起動後に行う（start_find_task が refocus をリセットするため、その後に置く）。
         match query {

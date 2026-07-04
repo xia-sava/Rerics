@@ -233,17 +233,20 @@ impl MainWindow {
                         // 確定後の列幅を内容に合わせる。
                         self.view(is_left).autofit_columns()?;
                         // 操作後リフレッシュ・リネーム後の再検索では、完了時にカーソルを戻す。
+                        // 名前（出自込み）で追い、結果から消えていれば元の行位置へ。
                         if let Some(refocus) = self.find_refocus.borrow_mut()[idx].take() {
                             let pr = self.view(is_left).page_rows();
                             let state = self.view(is_left).state();
                             let mut s = state.borrow_mut();
-                            match refocus {
-                                crate::Refocus::Name(name) => {
-                                    s.set_cursor_position(&name, pr);
-                                }
-                                crate::Refocus::Index(i) => {
-                                    s.set_cursor(i as isize, pr);
-                                }
+                            let found = refocus
+                                .name
+                                .as_deref()
+                                .map(|n| {
+                                    s.set_cursor_position_sourced(n, refocus.source.as_ref(), pr)
+                                })
+                                .unwrap_or(false);
+                            if !found {
+                                s.set_cursor(refocus.index as isize, pr);
                             }
                             s.select_start = s.cursor;
                         }

@@ -1116,6 +1116,28 @@ impl FileListState {
         }
     }
 
+    /// `filename` と出自 `source` の両方が一致する行へカーソルを移動する。結果一覧
+    /// （検索・比較）は別フォルダの同名ファイルが並びうるため、名前だけでなく出自込みで
+    /// 照合する（名前一致だけだと先頭側の同名へ飛ぶ）。
+    pub fn set_cursor_position_sourced(
+        &mut self,
+        filename: &str,
+        source: Option<&crate::vfs::Location>,
+        page_rows: usize,
+    ) -> bool {
+        if let Some(i) = self
+            .items
+            .iter()
+            .position(|it| it.name == filename && it.source.as_ref() == source)
+        {
+            self.set_cursor(i as isize, page_rows);
+            self.select_start = i;
+            true
+        } else {
+            false
+        }
+    }
+
     /// index のマークを立てる（親はスキップ）。カーソルも idx へ・select_start=idx。
     pub fn select_file(&mut self, idx: usize, page_rows: usize) {
         if idx >= self.count() {
@@ -1810,6 +1832,33 @@ mod tests {
         result.source = Some(Location::Real(std::path::PathBuf::from("C:\\other")));
         result.info = Some("追加".to_owned());
         assert!(matches!(result.source_or(&pane), Location::Real(p) if p == std::path::Path::new("C:\\other")));
+    }
+
+    #[test]
+    fn set_cursor_position_sourced_matches_name_and_source() {
+        use crate::vfs::Location;
+        let loc_a = Location::Real(std::path::PathBuf::from("C:\\a"));
+        let loc_b = Location::Real(std::path::PathBuf::from("C:\\b"));
+
+        // 別フォルダの同名ファイルが並ぶ結果一覧を模す。
+        let mut s = FileListState::new();
+        let mut it1 = file("same.txt");
+        it1.source = Some(loc_a.clone());
+        let mut it2 = file("same.txt");
+        it2.source = Some(loc_b.clone());
+        s.items = vec![it1, it2];
+
+        // 名前＋出自の一致で、先頭側の同名を飛び越えて2つ目へ移動できる。
+        assert!(s.set_cursor_position_sourced("same.txt", Some(&loc_b), 10));
+        assert_eq!(s.cursor, 1);
+
+        // 出自が一致しなければ動かない。
+        let loc_c = Location::Real(std::path::PathBuf::from("C:\\c"));
+        assert!(!s.set_cursor_position_sourced("same.txt", Some(&loc_c), 10));
+        assert_eq!(s.cursor, 1);
+
+        // 名前が無ければ動かない。
+        assert!(!s.set_cursor_position_sourced("gone.txt", Some(&loc_a), 10));
     }
 
     #[test]

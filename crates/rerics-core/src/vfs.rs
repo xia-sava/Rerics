@@ -11,7 +11,7 @@ use crate::FileItem;
 use crate::archive::{entries_at, open_archive};
 
 /// ペインの現在地。実FS か 書庫内か。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Location {
     /// 実ファイルシステム上のディレクトリ。
     Real(PathBuf),

@@ -764,8 +764,9 @@ fn ask_before_copy_confirms() {
     assert!(items.contains("\"name\":\"a.txt\""), "cancel leaves the file: {items}");
 }
 
-/// ファイル移動後の再読込でカーソル位置を保つ（先頭へリセットしない）。shellMove と同じ
-/// `refresh_side` 経路を通る内蔵 move で検証する（シェル操作自体はモーダルがシェル所有で観測不可）。
+/// カーソル直下ファイル自体を移動したときは、カーソルは元の行位置（index）を保つ
+/// （先頭へリセットしない）。shellMove と同じ `refresh_side` 経路を通る内蔵 move で
+/// 検証する（シェル操作自体はモーダルがシェル所有で観測不可）。
 #[test]
 fn move_keeps_cursor_position() {
     let server = Server::start_dirs_writable(
@@ -785,30 +786,53 @@ fn move_keeps_cursor_position() {
     assert_eq!(after.trim(), "2", "移動後もカーソル位置を保つ（先頭リセットしない）: {after}");
 }
 
-/// 移動先ペインのカーソルは名前で追わず行位置（index）で保つ。移動で抜けたファイルが同じ位置へ
-/// 戻ってきても、カーソルは元の index に留まる＝戻ってきたファイルの上に乗る（1つ下にズレない）。
+/// マークしたファイルを移動した後、カーソル直下だったファイルが残っていれば名前で追従する
+/// （マーク数ぶん行位置がズレない）。
 #[test]
-fn move_back_keeps_cursor_by_index() {
+fn move_marked_follows_cursor_file_by_name() {
     let server = Server::start_dirs_writable(
-        &[("a.txt", b"a"), ("b.txt", b"b"), ("c.txt", b"c")],
+        &[("a.txt", b"a"), ("b.txt", b"b"), ("c.txt", b"c"), ("d.txt", b"d"), ("e.txt", b"e")],
         &[],
     );
-    // 左 items = [.., a.txt, b.txt, c.txt]。cursorDown×2 で b.txt（index 2）。
+    // 左 items = [.., a.txt, b.txt, c.txt, d.txt, e.txt]。a.txt へ降りて a.txt・b.txt をマーク
+    // （markToggle は既定でカーソルを1つ進める）。マーク後カーソルは c.txt（index 3）。
     server.req("POST", "/command/cursorDown", "").unwrap();
-    server.req("POST", "/command/cursorDown", "").unwrap();
-    // b.txt を右へ移動。左は [.., a.txt, c.txt]、カーソルは index 2（c.txt）。
+    server.req("POST", "/command/markToggle", "").unwrap();
+    server.req("POST", "/command/markToggle", "").unwrap();
+    let before = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(before.trim(), "3", "マーク後カーソルは c.txt（index 3）");
+    // マークした a.txt・b.txt を右へ移動。完了で左から2つ消える。
     server.req("POST", "/command/move", "").unwrap();
-    poll(&server, "/state/panes/left/items", |b| !b.contains("\"name\":\"b.txt\""));
-    // 右へ移り、移ってきた b.txt にカーソルを合わせて左へ戻す。
+    poll(&server, "/state/panes/left/items", |b| !b.contains("\"name\":\"a.txt\""));
+    // 左 items = [.., c.txt, d.txt, e.txt]。カーソルは c.txt を名前で追従（index 1）＝
+    // 元の行位置 3（e.txt）へズレない。
+    let after = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(after.trim(), "1", "カーソルは c.txt を追従する（位置ズレしない）: {after}");
+}
+
+/// 複数ファイルの移動では、移動先ペインのカーソルはカーソル下のファイルを名前で追従する。
+/// 手前へ項目が挿入されると行位置は動くが、同じファイルの上に乗り続ける。
+#[test]
+fn move_multiple_follows_cursor_file_on_dest() {
+    let server = Server::start_dirs_writable(
+        &[("a.txt", b"a"), ("b.txt", b"b"), ("c.txt", b"c")],
+        &[("x.txt", b"x"), ("y.txt", b"y")],
+    );
+    // 右 items = [.., x.txt, y.txt]。y.txt（index 2）にカーソルを置いて左へ戻る。
     server.req("POST", "/command/focusRight", "").unwrap();
-    poll(&server, "/state/panes/right/items", |b| b.contains("\"name\":\"b.txt\""));
-    server.req("POST", "/command/cursorDown", "").unwrap(); // 右 [.., b.txt] の b.txt へ
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/focusLeft", "").unwrap();
+    // 左で a.txt・b.txt をマークして右へ移動。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/markToggle", "").unwrap();
+    server.req("POST", "/command/markToggle", "").unwrap();
     server.req("POST", "/command/move", "").unwrap();
-    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"b.txt\""));
-    // 左 items = [.., a.txt, b.txt, c.txt]。カーソルは index 2 を保つ＝戻った b.txt に乗る
-    // （名前で c.txt を追って index 3 へズレない）。
-    let cur = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
-    assert_eq!(cur.trim(), "2", "移動先は位置で保つ＝戻ったファイルに乗る（1つ下にズレない）: {cur}");
+    poll(&server, "/state/panes/right/items", |b| b.contains("\"name\":\"b.txt\""));
+    // 右 items = [.., a.txt, b.txt, x.txt, y.txt]。カーソルは y.txt を名前で追従して
+    // index 4 へ（2件の挿入で行位置は動くが、同じファイルの上に乗り続ける）。
+    let cur = server.req("GET", "/state/panes/right/cursor", "").unwrap().1;
+    assert_eq!(cur.trim(), "4", "移動先はカーソル下ファイルを名前で追従する: {cur}");
 }
 
 /// ask_before_delete=false のとき、delete は確認モーダルを出さず即削除する。

@@ -420,14 +420,11 @@ struct TabSnapshot {
 
 /// ペイン再読込時にカーソルをどこへ置くか。
 enum ReloadCursor {
-    /// 常に先頭へ（在席再読込：マスク変更・ファイル操作後など）。
+    /// 常に先頭へ（ペインの表示先そのものが変わる場面など）。
     Reset,
-    /// 再読込前のカーソル下ファイル名へ戻し、スクロール位置も維持する（F5）。
+    /// 再読込前のカーソル下ファイルを名前で追い、消えていれば元の index（行位置）へ戻す。
+    /// スクロール位置も維持する。F5 やファイル操作後の「その場の再読込」で使う。
     Keep,
-    /// 再読込前のカーソル index（位置）へ戻し、スクロール位置も維持する。名前は見ない。
-    /// ファイル操作後、カーソルを名前で追わず同じ行位置に留めたい場面で使う（移動先へ項目が
-    /// 挿入されても行位置は動かない）。
-    KeepIndex,
     /// 移動先パスで以前覚えたカーソル位置へ戻す。無ければ先頭（ディレクトリ移動）。
     /// `cursor.history` がオンのときだけ復元する（オフは先頭）。
     Recall,
@@ -447,12 +444,14 @@ enum FindQuery {
     Compare(rerics_core::CompareOptions),
 }
 
-/// 結果一覧を再検索した後、完了時にカーソルを戻す指定。リネーム後は新名で追う（`Name`）、
-/// reload・操作後リフレッシュは元のカーソル位置を保つ（`Index`）。結果一覧は同名ファイルが
-/// 別フォルダに複数ありうるため、位置復元を名前一致で行うと先頭側の同名へ飛んでしまう。
-enum Refocus {
-    Name(String),
-    Index(usize),
+/// 結果一覧を再検索した後、完了時にカーソルを戻す指定。`name`（リネーム後の新名、または
+/// 元のカーソル下の名前）が結果に残っていればその行へ、消えていれば `index`（元の行位置）へ
+/// 戻す。結果一覧は同名ファイルが別フォルダに複数ありうるため、名前は出自（`source`）込みで
+/// 照合する（名前だけだと先頭側の同名へ飛ぶ）。
+struct Refocus {
+    name: Option<String>,
+    source: Option<rerics_core::Location>,
+    index: usize,
 }
 
 /// 非同期読込の継続（[`MainWindow::apply_loaded_items`]）へ渡す、読込後処理の計画。
@@ -1870,9 +1869,8 @@ impl MainWindow {
             return Ok(None);
         }
         let view = self.view(is_left);
-        // Keep/KeepIndex のときだけ、再読込前のカーソル下ファイル名・index・スクロール位置を退避する。
-        let (keep_name, keep_scroll, keep_idx) =
-            if matches!(mode, ReloadCursor::Keep | ReloadCursor::KeepIndex) {
+        // Keep のときだけ、再読込前のカーソル下ファイル名・index・スクロール位置を退避する。
+        let (keep_name, keep_scroll, keep_idx) = if matches!(mode, ReloadCursor::Keep) {
             let st = view.state();
             let s = st.borrow();
             (s.items.get(s.cursor).map(|it| it.name.clone()), s.scroll_top, s.cursor)
@@ -2002,11 +2000,6 @@ impl MainWindow {
                         s.set_cursor(plan.keep_idx as isize, pr);
                     }
                     // スクロール位置を復元（カーソルが画面内に収まる限り見た目を維持）。
-                    s.set_scroll_top(plan.keep_scroll as isize, pr);
-                }
-                ReloadCursor::KeepIndex => {
-                    // 名前は見ず、元の index（行位置）へ戻す。挿入・削除で名前がズレても位置を保つ。
-                    s.set_cursor(plan.keep_idx as isize, pr);
                     s.set_scroll_top(plan.keep_scroll as isize, pr);
                 }
                 ReloadCursor::Recall | ReloadCursor::RecallAlways => {
