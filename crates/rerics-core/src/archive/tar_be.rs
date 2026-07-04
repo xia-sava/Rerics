@@ -72,7 +72,9 @@ impl ArchiveBackend for TarBackend {
             }
             let path = normalize_inner(&entry.path()?.to_string_lossy());
             if path == want {
-                let mut buf = Vec::with_capacity(entry.size() as usize);
+                // 申告サイズは未検証（sparse ヘッダ等で巨大値を宣言でき、事前確保だけで
+                // OOM abort し得る）。上限でクランプし、不足分は read_to_end の拡張に任せる。
+                let mut buf = Vec::with_capacity((entry.size() as usize).min(super::PREALLOC_CAP));
                 entry.read_to_end(&mut buf)?;
                 return Ok(buf);
             }

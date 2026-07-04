@@ -291,17 +291,35 @@ impl<R: io::Read> io::Read for CountingReader<R> {
 unsafe extern "C" {}
 
 /// `inner`（'/' 区切り・正規化済み）を `dest` 配下の実パスへ安全に合成する。各セグメントを
-/// 検証し、空/"."/".."や '\\' 混入を弾く（zip-slip 対策）。`None` は不正で展開対象外。
+/// 検証し、空/"."/".."や '\\'・':' 混入を弾く（zip-slip 対策）。':' 拒否で "C:evil" の
+/// ようなドライブ相対プレフィクスが `push` で base を捨てて外へ逃げるのを防ぐ。`None` は
+/// 不正で展開対象外。
 fn safe_join(dest: &Path, inner: &str) -> Option<PathBuf> {
     let mut p = dest.to_path_buf();
     for seg in inner.split('/') {
-        if seg.is_empty() || seg == "." || seg == ".." || seg.contains('\\') {
+        if !is_safe_segment(seg) {
             return None;
         }
         p.push(seg);
     }
     Some(p)
 }
+
+/// 展開先の1階層分として安全なパスセグメントか。空/"."/".."、区切り文字('/'・'\\')、
+/// ドライブ相対や代替データストリームになりうる ':' を弾く。
+pub(crate) fn is_safe_segment(seg: &str) -> bool {
+    !(seg.is_empty()
+        || seg == "."
+        || seg == ".."
+        || seg.contains('/')
+        || seg.contains('\\')
+        || seg.contains(':'))
+}
+
+/// エントリ読取時の先行確保バイト数の上限。エントリが自称するサイズは信用できない
+/// （細工書庫が巨大値を宣言して OOM abort を誘発しうる）ため、`Vec::with_capacity` は
+/// この値でクランプする。実データがこれを超える分は読み進めながら伸長する。
+pub(crate) const PREALLOC_CAP: usize = 16 * 1024 * 1024;
 
 /// 単体圧縮ファイルの内側エントリ名＝圧縮拡張子を除いたファイル名（`foo.json.xz`→`foo.json`）。
 fn single_inner_name(path: &Path) -> String {

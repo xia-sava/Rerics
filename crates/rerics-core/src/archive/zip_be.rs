@@ -139,8 +139,7 @@ impl ZipBackend {
             None => {
                 // 申告サイズは未検証（壊れた/細工書庫は巨大値を書けて、事前確保だけで
                 // OOM abort し得る）。上限でクランプし、不足分は read_to_end の拡張に任せる。
-                const PREALLOC_CAP: usize = 16 * 1024 * 1024;
-                let mut buf = Vec::with_capacity((f.size() as usize).min(PREALLOC_CAP));
+                let mut buf = Vec::with_capacity((f.size() as usize).min(super::PREALLOC_CAP));
                 f.read_to_end(&mut buf)?;
                 Ok((buf, false))
             }
