@@ -275,8 +275,13 @@ impl MainWindow {
                         self.tasks.borrow_mut().retain(|e| e.id != id);
                     }
                     self.script_terminated.set(false);
-                    // 回しっぱなしのログ進行表示を回収する（stopProgress 忘れの保険）。
-                    self.log.stop_all_progress();
+                    // 回しっぱなしのスクリプト進行表示を回収する（stopProgress 忘れの保険）。
+                    // ログレーンを先に汲み切り、直前に始まった進行表示も取りこぼさない。
+                    // ワーカー操作の進行表示は対象外（`LogEnd` の確定まで回し続ける）。
+                    self.drain_log_events();
+                    for id in self.script_progress.borrow_mut().drain() {
+                        self.log.stop_progress(id);
+                    }
                     self.maybe_kill_task_timer();
                 }
             }

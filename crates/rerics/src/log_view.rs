@@ -179,18 +179,6 @@ impl LogView {
         let _ = self.refresh();
     }
 
-    /// 進行表示をすべて止める（スクリプト終了時の保険＝stopProgress 忘れの取りこぼし回収）。
-    pub fn stop_all_progress(&self) {
-        {
-            let mut progress = self.inner.progress.borrow_mut();
-            if progress.is_empty() {
-                return;
-            }
-            progress.clear();
-        }
-        let _ = self.refresh();
-    }
-
     /// ログ全文をクリップボードへコピーする（CF_UNICODETEXT・行は CRLF 区切り）。
     pub fn copy_all(&self) -> w::AnyResult<()> {
         let text = {

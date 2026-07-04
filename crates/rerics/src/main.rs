@@ -385,6 +385,10 @@ struct MainWindow {
     script_task: Rc<RefCell<Option<u64>>>,
     /// 現在のスクリプトタスクへ既に terminate を発行したか（多重発行を防ぐ）。
     script_terminated: Rc<Cell<bool>>,
+    /// スクリプトが開始した進行表示（ぐるぐる）行の id。スクリプト終了時の取りこぼし
+    /// 回収（stopProgress 忘れの保険）をこの id 群に限定し、ワーカー操作の進行表示を
+    /// 巻き添えで止めない。
+    script_progress: Rc<RefCell<std::collections::HashSet<u64>>>,
     progress_seq: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
     in_dialog: Rc<Cell<bool>>,
@@ -636,6 +640,7 @@ impl MainWindow {
             script_pool_stopped: Arc::new(AtomicBool::new(false)),
             script_task: Rc::new(RefCell::new(None)),
             script_terminated: Rc::new(Cell::new(false)),
+            script_progress: Rc::new(RefCell::new(std::collections::HashSet::new())),
             progress_seq: Arc::new(AtomicU64::new(0)),
             shutdown: Arc::new(AtomicBool::new(false)),
             in_dialog: Rc::new(Cell::new(false)),

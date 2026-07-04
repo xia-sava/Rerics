@@ -3563,6 +3563,26 @@ fn task_control_suspend_resume_stop_via_task_manager() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 }
 
+/// ワーカー操作の進行表示（ぐるぐる）は、走行中にスクリプトが実行・終了しても
+/// 巻き添えで止まらない（終了時の stopProgress 保険はスクリプトが始めた進行表示のみ回収）。
+#[test]
+fn worker_progress_survives_script_end() {
+    let server = Server::start(&["a.txt"], "");
+    // 中止まで回り続けるタスクが、実操作と同じ流儀の進捗行（進行表示つき）を開く。
+    server.req("POST", "/debug/spawn-task", "").expect("spawn-task");
+    poll(&server, "/state/log", |b| {
+        b.contains("テスト用タスク実行中") && !b.contains("\"progress\":[]")
+    });
+
+    // スクリプトを1本実行して終了させる（ログ行の出現で終了近傍まで待つ）。
+    server.req("POST", "/script/eval", r#"rerics.log("script-ran");"#).unwrap();
+    poll(&server, "/state/log", |b| b.contains("script-ran"));
+    // ScriptEnd の保険が走ったあとも、ワーカーの進行表示は回ったまま。
+    std::thread::sleep(Duration::from_millis(300));
+    let log = server.req("GET", "/state/log", "").unwrap().1;
+    assert!(!log.contains("\"progress\":[]"), "worker spinner survives script end: {log}");
+}
+
 /// スクリプトのタスク化：暴走スクリプト（無限ループ）がスクリプトタスクとして出て、中断は
 /// 無反応（V8 制約・実行中のまま）、中止で isolate が強制終了され消える。停止後もエンジンは
 /// 復帰して次の評価に応える。

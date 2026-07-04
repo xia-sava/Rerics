@@ -356,7 +356,9 @@ impl MainWindow {
 
     /// テスト足場：中止まで回り続けるダミーのタスクを起こし、払い出した id を返す。
     /// タスク制御（中止・中断・再開）をタスクマネージャ越しに確定的に検証するために使う
-    /// （検索・比較と同じ `search_cancelled` で止まる＝同じ制御機構を叩く）。
+    /// （検索・比較と同じ `search_cancelled` で止まる＝同じ制御機構を叩く）。進捗行も
+    /// 実操作と同じ流儀（`LogLine` 開始 → `LogEnd` 確定）で持ち、進行表示（ぐるぐる）の
+    /// 生存も検証できる。
     #[cfg(feature = "debug-server")]
     pub(crate) fn start_debug_task(&self) -> u64 {
         let control = Arc::new(TaskControl::new());
@@ -364,12 +366,23 @@ impl MainWindow {
         let _ = self.register_task(id, "デバッグ", "テスト用タスク".to_string(), control.clone());
         let tx = self.task_tx.clone();
         let shutdown = self.shutdown.clone();
+        let pid = self.progress_seq.fetch_add(1, Ordering::Relaxed);
         std::thread::spawn(move || {
+            let _ = tx.send(WorkerEvent::LogLine {
+                id: pid,
+                level: LogLevel::Normal,
+                text: "テスト用タスク実行中".to_owned(),
+            });
             // 中止（中断→中止／アプリ終了を含む）まで待つ。中断中は search_cancelled が
             // ブロックして待つ。
             while !search_cancelled(&control, &shutdown) {
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
+            let _ = tx.send(WorkerEvent::LogEnd {
+                id: pid,
+                level: None,
+                text: "テスト用タスク終了".to_owned(),
+            });
             // 完了通知。id 一致でタスク登録を解除するだけ（find_task は立てていないので
             // 結果ペインには触れない）。
             let _ = tx.send(WorkerEvent::FindDone { id, is_left: true });

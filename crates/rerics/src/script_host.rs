@@ -1221,9 +1221,15 @@ impl MainWindow {
             match ev {
                 LogEvent::Line { id, level, text } => self.log.push_with_id(id, level, &text),
                 LogEvent::Update { id, level, text } => self.log.update(id, level, &text),
-                LogEvent::ProgressStart { id } => self.log.start_progress(id),
+                LogEvent::ProgressStart { id } => {
+                    self.script_progress.borrow_mut().insert(id);
+                    self.log.start_progress(id);
+                }
                 LogEvent::ProgressSet { id, done, total } => self.log.set_progress(id, done, total),
-                LogEvent::ProgressStop { id } => self.log.stop_progress(id),
+                LogEvent::ProgressStop { id } => {
+                    self.script_progress.borrow_mut().remove(&id);
+                    self.log.stop_progress(id);
+                }
             }
         }
     }
