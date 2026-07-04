@@ -351,6 +351,7 @@ impl MainWindow {
                 dst_dir: reload_dir,
                 cancelled: sum.cancelled,
                 failed: sum.err > 0,
+                single_name: None,
             });
         });
         Ok(())
@@ -421,6 +422,7 @@ impl MainWindow {
                 dst_dir,
                 cancelled,
                 failed,
+                single_name: None,
             });
         });
         Ok(())
@@ -617,6 +619,7 @@ impl MainWindow {
                 dst_dir: dst_done,
                 cancelled,
                 failed,
+                single_name: None,
             });
         });
         Ok(())
@@ -654,6 +657,7 @@ impl MainWindow {
         let desc = format!("{} -> {}", short_desc(&names), dst_dir.display());
         self.register_task(id, text, desc, control)?;
         std::thread::spawn(move || {
+            let single_name = (names.len() == 1).then(|| names[0].clone());
             let sum = rerics_core::run_copy(&host, &src_dir, &dst_dir, &names, move_it);
             let _ = host.tx.send(WorkerEvent::Done {
                 id,
@@ -662,6 +666,7 @@ impl MainWindow {
                 dst_dir,
                 cancelled: sum.cancelled,
                 failed: sum.err > 0,
+                single_name,
             });
         });
         Ok(id)
@@ -700,6 +705,10 @@ impl MainWindow {
         let desc = format!("{} -> {}", short_desc(&all_names), dst_dir.display());
         self.register_task(id, text, desc, control)?;
         std::thread::spawn(move || {
+            let single_name = match &groups[..] {
+                [(_, names)] if names.len() == 1 => Some(names[0].clone()),
+                _ => None,
+            };
             let mut cancelled = false;
             let mut failed = false;
             for (src_dir, names) in &groups {
@@ -717,6 +726,7 @@ impl MainWindow {
                 dst_dir,
                 cancelled,
                 failed,
+                single_name,
             });
         });
         Ok(id)
@@ -1072,12 +1082,12 @@ impl MainWindow {
             self.log.warn(&format!("書庫では{label}は使えません。"));
             return Ok(());
         }
-        let items: Vec<PathBuf> =
-            self.selected_real_targets(is_left).into_iter().map(|(p, _)| p).collect();
-        if items.is_empty() {
+        let targets = self.selected_real_targets(is_left);
+        if targets.is_empty() {
             self.log.error(&messages::not_selected_error());
             return Ok(());
         }
+        let items: Vec<PathBuf> = targets.iter().map(|(p, _)| p.clone()).collect();
         let Some(dst) = self.pane(!is_left).borrow().as_real_path().map(|p| p.to_path_buf()) else {
             self.log.warn(&format!("反対側が実フォルダではないため{label}できません。"));
             return Ok(());
@@ -1087,13 +1097,18 @@ impl MainWindow {
         } else {
             shell::shell_copy(self.wnd.hwnd(), &items, &dst)
         };
+        // 対象が単独で完遂したときは、移動先ペインのカーソルを届いたファイルへ寄せる。
+        let single_focus = match (&res, &targets[..]) {
+            (Ok(true), [(_, name)]) => Some(name.clone()),
+            _ => None,
+        };
         match res {
             Ok(true) => self.log.normal(&format!("{label}: {} 件", items.len())),
             Ok(false) => self.log.info(&format!("{label}を中止しました。")),
             Err(e) => self.log.error(&format!("{label}に失敗しました: {e}")),
         }
         self.refresh_side(is_left, None)?;
-        self.refresh_side(!is_left, None)?;
+        self.refresh_side(!is_left, single_focus.as_deref())?;
         Ok(())
     }
 
@@ -1305,6 +1320,10 @@ impl MainWindow {
         self.register_task(id, text, format!("{total} 件"), control)?;
         let dst2 = dst.clone();
         std::thread::spawn(move || {
+            let single_name = match &groups[..] {
+                [(_, names)] if names.len() == 1 => Some(names[0].clone()),
+                _ => None,
+            };
             let mut cancelled = false;
             let mut failed = false;
             for (src, names) in groups {
@@ -1323,6 +1342,7 @@ impl MainWindow {
                 dst_dir: dst2,
                 cancelled,
                 failed,
+                single_name,
             });
         });
         Ok(())
@@ -1846,6 +1866,7 @@ impl MainWindow {
                 dst_dir: dir,
                 cancelled: sum.cancelled,
                 failed: sum.err > 0,
+                single_name: None,
             });
         });
         Ok(id)
@@ -1888,6 +1909,7 @@ impl MainWindow {
                 dst_dir: base_src,
                 cancelled,
                 failed,
+                single_name: None,
             });
         });
         Ok(id)

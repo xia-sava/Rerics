@@ -146,8 +146,10 @@ impl MainWindow {
                     self.in_dialog.set(false);
                     let _ = reply.send(r);
                 }
-                WorkerEvent::Done { id, kind, src_dir, dst_dir, cancelled, failed } => {
-                    self.on_op_done(kind, &src_dir, &dst_dir)?;
+                WorkerEvent::Done { id, kind, src_dir, dst_dir, cancelled, failed, single_name } => {
+                    // 中止・失敗時は届いたか不確かなので、カーソル寄せはしない。
+                    let focus = if cancelled || failed { None } else { single_name };
+                    self.on_op_done(kind, &src_dir, &dst_dir, focus.as_deref())?;
                     self.tasks.borrow_mut().retain(|e| e.id != id);
                     self.notify_script_op_done(id, cancelled, failed);
                     self.maybe_kill_task_timer();
@@ -298,8 +300,16 @@ impl MainWindow {
     }
 
     /// 操作完了に応じて関与した側のペインを再読込・選択解除する。結果一覧は再検索（非同期・
-    /// WAKE 取り込みで即時反映）、通常一覧は同期再読込で最新化する。
-    pub(crate) fn on_op_done(&self, kind: OpKind, src_dir: &Path, dst_dir: &Path) -> w::AnyResult<()> {
+    /// WAKE 取り込みで即時反映）、通常一覧は同期再読込で最新化する。`single_focus` はコピー/
+    /// 移動の対象が単独だったときのその名前で、移動先ペインのカーソルを届いたファイルへ寄せる
+    /// （複数対象はカーソル下ファイルの名前追従に任せる）。
+    pub(crate) fn on_op_done(
+        &self,
+        kind: OpKind,
+        src_dir: &Path,
+        dst_dir: &Path,
+        single_focus: Option<&str>,
+    ) -> w::AnyResult<()> {
         for is_left in [true, false] {
             let path = self.pane(is_left).borrow().path().to_path_buf();
             let is_src = path == src_dir;
@@ -307,14 +317,16 @@ impl MainWindow {
             match kind {
                 OpKind::Copy => {
                     if is_dst {
-                        self.refresh_side(is_left, None)?;
+                        self.refresh_side(is_left, single_focus)?;
                     } else if is_src {
                         self.view(is_left).state().borrow_mut().clear_all();
                         self.view(is_left).refresh()?;
                     }
                 }
                 OpKind::Move => {
-                    if is_src || is_dst {
+                    if is_dst {
+                        self.refresh_side(is_left, single_focus)?;
+                    } else if is_src {
                         self.refresh_side(is_left, None)?;
                     }
                 }

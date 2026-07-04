@@ -810,6 +810,32 @@ fn move_marked_follows_cursor_file_by_name() {
     assert_eq!(after.trim(), "1", "カーソルは c.txt を追従する（位置ズレしない）: {after}");
 }
 
+/// 単独ファイルの移動では、移動先ペインのカーソルが届いたそのファイルへ寄る
+/// （リネームが新名へ寄るのと同じ focus 動作）。
+#[test]
+fn move_single_focuses_arrived_file_on_dest() {
+    let server = Server::start_dirs_writable(
+        &[("a.txt", b"a"), ("b.txt", b"b"), ("c.txt", b"c")],
+        &[],
+    );
+    // 左 items = [.., a.txt, b.txt, c.txt]。cursorDown×2 で b.txt（index 2）。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    // b.txt を右へ移動。左は [.., a.txt, c.txt]、カーソルは index 2（c.txt）。
+    server.req("POST", "/command/move", "").unwrap();
+    poll(&server, "/state/panes/left/items", |b| !b.contains("\"name\":\"b.txt\""));
+    // 右へ移り、移ってきた b.txt にカーソルを合わせて左へ戻す。
+    server.req("POST", "/command/focusRight", "").unwrap();
+    poll(&server, "/state/panes/right/items", |b| b.contains("\"name\":\"b.txt\""));
+    server.req("POST", "/command/cursorDown", "").unwrap(); // 右 [.., b.txt] の b.txt へ
+    server.req("POST", "/command/move", "").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"b.txt\""));
+    // 左 items = [.., a.txt, b.txt, c.txt]。カーソルは戻ってきた b.txt（index 2）へ寄る
+    // （カーソル下だった c.txt の名前追従より、単独対象への focus が優先される）。
+    let cur = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(cur.trim(), "2", "移動先は届いた単独ファイルへカーソルを寄せる: {cur}");
+}
+
 /// 複数ファイルの移動では、移動先ペインのカーソルはカーソル下のファイルを名前で追従する。
 /// 手前へ項目が挿入されると行位置は動くが、同じファイルの上に乗り続ける。
 #[test]

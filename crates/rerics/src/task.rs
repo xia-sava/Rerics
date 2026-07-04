@@ -145,7 +145,8 @@ pub enum WorkerEvent {
     AskDeleteWarn { name: String, attr: String, reply: Sender<MessageResult> },
     /// 操作完了。タスク id と関与したディレクトリを伴う（除去・再読込の判定に使う）。
     /// `cancelled`/`failed` は結末（[`OpSummary`] 由来）で、スクリプトの `await` を成功で
-    /// 解くか例外で reject するかの判定に使う。
+    /// 解くか例外で reject するかの判定に使う。`single_name` はコピー/移動の対象が単独だった
+    /// ときのその名前（移動先ペインのカーソルを届いたファイルへ寄せる。複数対象・削除は None）。
     Done {
         id: u64,
         kind: OpKind,
@@ -153,6 +154,7 @@ pub enum WorkerEvent {
         dst_dir: PathBuf,
         cancelled: bool,
         failed: bool,
+        single_name: Option<String>,
     },
     /// 進捗（インプレース更新中の本文）。スクリプトの `onProgress` へ流すためタスク id を伴う。
     /// タスクマネージャのログ行更新は別経路（`LogLine`/`LogUpdate`）が担う。
