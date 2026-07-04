@@ -81,27 +81,30 @@ fn extract_item(
         }
         Flow::Continue
     } else {
+        // 衝突解決。別名(Rename)を選んでもその別名が既存と衝突していれば、黙って上書き
+        // せず改めてホストへ確認して繰り返す（既存ファイルの誤消去を防ぐ）。
         let mut target = dst.to_path_buf();
-        let do_copy = if dst.exists() {
-            match host.resolve_conflict(&name) {
-                ConflictResolution::Newest => archive_newer(entries, inner, dst),
-                ConflictResolution::Overwrite => true,
+        let do_copy = loop {
+            if !target.exists() {
+                break true;
+            }
+            let cur = file_name(&target);
+            match host.resolve_conflict(&cur) {
+                ConflictResolution::Newest => break archive_newer(entries, inner, &target),
+                ConflictResolution::Overwrite => break true,
                 ConflictResolution::OverwriteForce => {
-                    clear_attributes(dst);
-                    true
+                    clear_attributes(&target);
+                    break true;
                 }
                 ConflictResolution::Rename(new) => match safe_component(&new) {
-                    Some(c) if new != name => {
-                        target = dst.with_file_name(c);
-                        true
+                    Some(c) if new != cur => {
+                        target = target.with_file_name(c);
                     }
-                    _ => false,
+                    _ => break false,
                 },
-                ConflictResolution::Skip => false,
+                ConflictResolution::Skip => break false,
                 ConflictResolution::Cancel => return Flow::Cancel,
             }
-        } else {
-            true
         };
         if !do_copy {
             host.log(LogLevel::Warning, &messages::skip(&name));
@@ -177,14 +180,13 @@ fn join_inner_seg(inner: &str, name: &str) -> String {
     }
 }
 
-/// 1コンポーネントが dst 配下に安全に書けるか検証する。`..`・`.`・空・区切り文字を
-/// 含むものは弾く（書き出し先逸脱の防止）。OK なら元の文字列を返す。
+/// 1コンポーネントが dst 配下に安全に書けるか検証する。`..`・`.`・空・区切り文字・
+/// ドライブ相対や代替データストリームになりうる ':' を含むものは弾く（書き出し先逸脱の
+/// 防止）。OK なら元の文字列を返す。
 fn safe_component(name: &str) -> Option<&str> {
-    if name.is_empty() || name == "." || name == ".." {
-        return None;
+    if crate::archive::is_safe_segment(name) {
+        Some(name)
+    } else {
+        None
     }
-    if name.contains('/') || name.contains('\\') {
-        return None;
-    }
-    Some(name)
 }

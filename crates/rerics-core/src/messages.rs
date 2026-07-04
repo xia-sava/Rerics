@@ -51,6 +51,18 @@ pub fn skip(name: &str) -> String {
     format!("Skip {name}")
 }
 
+/// `リンクは{0}の対象外です。- {1}`（シンボリックリンク/ジャンクションをスキップ）。
+/// `verb` は `コピー`/`移動`。
+pub fn skip_link(verb: &str, name: &str) -> String {
+    format!("リンクは{verb}の対象外です。- {name}")
+}
+
+/// `ディレクトリを自身の下へは{0}出来ません。- {1}`（自己再帰の防止）。
+/// `verb` は `コピー`/`移動`。
+pub fn copy_into_self(verb: &str, name: &str) -> String {
+    format!("ディレクトリを自身の下へは{verb}出来ません。- {name}")
+}
+
 /// `CreateDirectory {0}`（ディレクトリ作成成功ログ）。
 pub fn create_directory(name: &str) -> String {
     format!("CreateDirectory {name}")

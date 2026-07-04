@@ -21,13 +21,20 @@ pub fn run_copy(
         }
         let src = src_dir.join(name);
         let dst = dst_dir.join(name);
-        if src == dst {
+        // 同一パス（Windows はケース違いも同一とみなす）はエラー。
+        if same_path(&src, &dst) {
             let line = if move_it {
                 messages::same_move_path(name)
             } else {
                 messages::same_copy_path(name)
             };
             host.log(LogLevel::Error, &line);
+            sum.err += 1;
+            continue;
+        }
+        // ディレクトリを自分自身の配下へコピー/移動すると無限再帰になるので拒否する。
+        if src.is_dir() && dst_within_src(&src, &dst) {
+            host.log(LogLevel::Error, &messages::copy_into_self(verb, name));
             sum.err += 1;
             continue;
         }
@@ -52,6 +59,13 @@ fn copy_item(
     sum: &mut OpSummary,
 ) -> Flow {
     let name = file_name(src);
+
+    // シンボリックリンク／ジャンクションは中へ辿らず、リンク自体を dst へ張り直す。辿ると
+    // リンク先の実体をコピーし、移動ではリンク先の元データを消してしまう（選んでいない場所を
+    // 壊す）。再作成に失敗（symlink 作成権限が無い等）したら、辿らずスキップして実体を守る。
+    if let Some(link_meta) = std::fs::symlink_metadata(src).ok().filter(meta_is_link) {
+        return copy_link(host, src, dst, move_it, meta_is_dir(&link_meta), &name, sum);
+    }
 
     // 移動かつ衝突なしなら rename で一括（同一ドライブの高速路）。失敗時は個別へ。
     if move_it && !dst.exists() && std::fs::rename(src, dst).is_ok() {
@@ -111,28 +125,30 @@ fn copy_item(
         }
         Flow::Continue
     } else {
+        // 衝突解決。別名(Rename)を選んでもその別名が既存と衝突していれば、黙って上書き
+        // せず改めてホストへ確認して繰り返す（既存ファイルの誤消去を防ぐ）。
         let mut target = dst.to_path_buf();
-        let do_copy = if dst.exists() {
-            match host.resolve_conflict(&name) {
-                ConflictResolution::Newest => is_src_newer(src, dst),
-                ConflictResolution::Overwrite => true,
+        let do_copy = loop {
+            if !target.exists() {
+                break true;
+            }
+            let cur = file_name(&target);
+            match host.resolve_conflict(&cur) {
+                ConflictResolution::Newest => break is_src_newer(src, &target),
+                ConflictResolution::Overwrite => break true,
                 ConflictResolution::OverwriteForce => {
-                    clear_attributes(dst);
-                    true
+                    clear_attributes(&target);
+                    break true;
                 }
                 ConflictResolution::Rename(new) => {
-                    if new.is_empty() || new == name {
-                        false
-                    } else {
-                        target = dst.with_file_name(&new);
-                        true
+                    if new.is_empty() || new == cur {
+                        break false;
                     }
+                    target = target.with_file_name(&new);
                 }
-                ConflictResolution::Skip => false,
+                ConflictResolution::Skip => break false,
                 ConflictResolution::Cancel => return Flow::Cancel,
             }
-        } else {
-            true
         };
         if !do_copy {
             host.log(LogLevel::Warning, &messages::skip(&name));
@@ -181,6 +197,95 @@ fn copy_item(
             }
         }
     }
+}
+
+/// リンク（symlink/junction）を1件、`dst` へ張り直す。`dst` に既存があればスキップ。移動時は
+/// 張り直し成功後にリンク自体だけを除去する（リンク先の実体には触れない）。再作成に失敗
+/// （symlink 作成権限が無い等）したら、辿らずスキップしてリンク先の実体を守る。
+fn copy_link(
+    host: &dyn OperationHost,
+    src: &Path,
+    dst: &Path,
+    move_it: bool,
+    is_dir_link: bool,
+    name: &str,
+    sum: &mut OpSummary,
+) -> Flow {
+    if dst.exists() {
+        host.log(LogLevel::Warning, &messages::all_ready_exists(name));
+        sum.skip += 1;
+        return Flow::Continue;
+    }
+    match recreate_link(src, dst, is_dir_link) {
+        Ok(()) => {
+            let line = if move_it { messages::move_(name) } else { messages::copy(name) };
+            host.log(LogLevel::Normal, &line);
+            if move_it {
+                remove_link(src, is_dir_link);
+            }
+            sum.ok += 1;
+        }
+        Err(_) => {
+            let verb = if move_it { "移動" } else { "コピー" };
+            host.log(LogLevel::Warning, &messages::skip_link(verb, name));
+            sum.skip += 1;
+        }
+    }
+    Flow::Continue
+}
+
+/// `src` のリンク先を読み、同じ先を指すシンボリックリンクを `dst` に作る。ジャンクションは
+/// 同等のディレクトリシンボリックリンクとして張り直す。Windows の symlink 作成には権限
+/// （開発者モード/管理者）が要るため失敗し得る。
+#[cfg(windows)]
+fn recreate_link(src: &Path, dst: &Path, is_dir_link: bool) -> std::io::Result<()> {
+    let target = std::fs::read_link(src)?;
+    if is_dir_link {
+        std::os::windows::fs::symlink_dir(&target, dst)
+    } else {
+        std::os::windows::fs::symlink_file(&target, dst)
+    }
+}
+
+#[cfg(not(windows))]
+fn recreate_link(src: &Path, dst: &Path, _is_dir_link: bool) -> std::io::Result<()> {
+    let target = std::fs::read_link(src)?;
+    std::os::unix::fs::symlink(&target, dst)
+}
+
+/// リンク自体を除去する（リンク先は辿らない）。ディレクトリリンクは remove_dir。
+fn remove_link(src: &Path, is_dir_link: bool) {
+    let _ = if is_dir_link {
+        std::fs::remove_dir(src)
+    } else {
+        std::fs::remove_file(src)
+    };
+}
+
+/// パスを比較用に正規化する（絶対化・区切りを '\\' に統一・末尾区切り除去、
+/// Windows では小文字化してケース非依存で比較する）。
+fn norm_key(p: &Path) -> Option<String> {
+    let abs = std::path::absolute(p).ok()?;
+    let s = abs.to_string_lossy().replace('/', "\\");
+    let s = s.trim_end_matches('\\').to_owned();
+    Some(if cfg!(windows) { s.to_lowercase() } else { s })
+}
+
+/// `a` と `b` が同一パスを指すか（Windows はケース違いも同一とみなす）。
+fn same_path(a: &Path, b: &Path) -> bool {
+    match (norm_key(a), norm_key(b)) {
+        (Some(x), Some(y)) => x == y,
+        // 正規化できない場合は素の比較にフォールバック。
+        _ => a == b,
+    }
+}
+
+/// `dst` が `src` 自身、または `src` の配下を指すか（自己再帰コピー/移動の検出）。
+fn dst_within_src(src: &Path, dst: &Path) -> bool {
+    let (Some(s), Some(d)) = (norm_key(src), norm_key(dst)) else {
+        return false;
+    };
+    d == s || d.starts_with(&format!("{s}\\"))
 }
 
 /// src の更新時刻が dst より新しいか（読めない場合はコピー扱いで `true`）。

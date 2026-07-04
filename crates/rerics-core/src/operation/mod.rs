@@ -140,6 +140,33 @@ fn file_name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// symlink_metadata（リンクを辿らない）が指すエントリがリンク（シンボリックリンク／
+/// ジャンクション等の reparse point）か。Windows は reparse 属性(0x400)で判定し、
+/// ジャンクションも含める（`file_list::FileItem::from_metadata` と同じ基準）。
+#[cfg(windows)]
+fn meta_is_link(m: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    m.file_attributes() & 0x400 != 0
+}
+
+#[cfg(not(windows))]
+fn meta_is_link(m: &std::fs::Metadata) -> bool {
+    m.file_type().is_symlink()
+}
+
+/// symlink_metadata が指すエントリ自体がディレクトリか（ディレクトリジャンクション／
+/// シンボリックリンクの削除方法を選ぶための、リンク先を辿らない判定）。
+#[cfg(windows)]
+fn meta_is_dir(m: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    m.file_attributes() & 0x10 != 0
+}
+
+#[cfg(not(windows))]
+fn meta_is_dir(m: &std::fs::Metadata) -> bool {
+    m.is_dir()
+}
+
 
 /// 操作の締めくくりに、結果に応じた枠ログ（終了/警告終了/中止）を出す。`verb` は
 /// `コピー`/`移動`/`削除`。

@@ -35,6 +35,15 @@
         }
     }
 
+    /// `dir` 直下に書庫再構築の一時ファイル（`*.rerics-tmp-*`）が残っていないか。
+    fn has_rewrite_tmp(dir: &std::path::Path) -> bool {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().contains(".rerics-tmp"))
+    }
+
     /// ログを記録し、指定件数のコピー後に中止を返すフェイクホスト。
     struct FakeHost {
         logs: RefCell<Vec<(LogLevel, String)>>,
@@ -912,7 +921,7 @@
         assert_eq!(be.read("a.txt").unwrap(), b"old");
         assert_eq!(be.read("日本語.txt").unwrap(), b"orig");
         // 一時ファイルは残らない。
-        assert!(!dir.join("a.zip.rerics-tmp").exists());
+        assert!(!has_rewrite_tmp(&dir.path));
     }
 
     #[test]
@@ -994,5 +1003,47 @@
         let be = crate::open_archive(&zip).unwrap();
         assert_eq!(be.read("a.txt").unwrap(), b"AAA");
         assert_eq!(be.read("b.txt").unwrap(), b"BBB");
-        assert!(!dir.join("a.zip.rerics-tmp").exists());
+        assert!(!has_rewrite_tmp(&dir.path));
+    }
+
+    #[test]
+    fn copy_dir_into_own_subtree_refused() {
+        // dst が src の配下（自身の中）なら無限再帰になるので拒否する。
+        let root = TempDir::new();
+        std::fs::create_dir_all(root.join("d").join("inner")).unwrap();
+        std::fs::write(root.join("d").join("inner").join("x.txt"), "x").unwrap();
+        let dst_dir = root.join("d"); // d を d の中へコピー。
+        let host = FakeHost::new();
+        let sum = run_copy(&host, &root.path, &dst_dir, &["d".to_owned()], false);
+        assert_eq!(sum.err, 1);
+        assert_eq!(sum.ok, 0);
+        assert!(host.lines().iter().any(|l| l.contains("自身の下へは")));
+    }
+
+    #[test]
+    fn conflict_rename_to_existing_does_not_overwrite() {
+        // 別名(Rename)先も既存なら、黙って上書きせず再確認（固定ホストでは最終的にスキップ）。
+        let src = TempDir::new();
+        let dst = TempDir::new();
+        src.write_file("a.txt", "new");
+        dst.write_file("a.txt", "old"); // 最初の衝突。
+        dst.write_file("b.txt", "keep"); // Rename 先も既存。
+        let host = FakeHost::with_conflict(ConflictResolution::Rename("b.txt".to_owned()));
+        let sum = run_copy(&host, &src.path, &dst.path, &["a.txt".to_owned()], false);
+        assert_eq!(sum.ok, 0);
+        assert_eq!(sum.skip, 1);
+        assert_eq!(std::fs::read_to_string(dst.join("b.txt")).unwrap(), "keep", "既存を潰さない");
+        assert_eq!(std::fs::read_to_string(dst.join("a.txt")).unwrap(), "old");
+    }
+
+    #[test]
+    fn extract_rejects_drive_prefixed_name() {
+        // "C:evil" のようなドライブ相対プレフィクスは弾く（push で base を捨てて外へ逃げる）。
+        let dst = TempDir::new();
+        let arc = MockArchive::new(&[("ok.txt", b"X")]);
+        let entries = arc.entries.clone();
+        let host = FakeHost::new();
+        let sum = run_extract(&host, &arc, &entries, "", &["C:evil.txt".to_owned()], &dst.path);
+        assert_eq!(sum.err, 1);
+        assert_eq!(sum.ok, 0);
     }

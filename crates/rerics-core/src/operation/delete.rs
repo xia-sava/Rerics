@@ -38,10 +38,9 @@ fn delete_item(host: &dyn OperationHost, target: &Path, name: &str, sum: &mut Op
     }
 
     // シンボリックリンク／ジャンクションは中へ再帰せず、リンク自体だけを消す。
-    let is_symlink = std::fs::symlink_metadata(target)
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false);
-    let is_dir = !is_symlink && target.is_dir();
+    let link_meta = std::fs::symlink_metadata(target).ok();
+    let is_link = link_meta.as_ref().map(meta_is_link).unwrap_or(false);
+    let is_dir = !is_link && target.is_dir();
 
     if is_dir {
         return delete_directory(host, target, name, sum);
@@ -51,7 +50,10 @@ fn delete_item(host: &dyn OperationHost, target: &Path, name: &str, sum: &mut Op
         return removal;
     }
     host.log(LogLevel::Normal, &messages::delete(name));
-    let result = if is_symlink && target.is_dir() {
+    // ディレクトリを指すリンク（リンク先が消えていても）は remove_dir、それ以外は
+    // remove_file。リンク先の有無で辿らず、リンク自体の種別で消し方を選ぶ。
+    let link_is_dir = link_meta.as_ref().map(meta_is_dir).unwrap_or(false);
+    let result = if is_link && link_is_dir {
         std::fs::remove_dir(target)
     } else {
         std::fs::remove_file(target)
