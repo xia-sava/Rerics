@@ -782,6 +782,21 @@ impl MainWindow {
             let dir = &targets[0].0;
             let new = new.trim();
             if !new.is_empty() && new != old.as_str() {
+                // 同名の別ファイルが既に在れば、黙って上書きせず確認する（大文字小文字だけの
+                // 変更＝同一ファイルは確認なしで通す）。いいえ/キャンセルなら中止する。
+                let new_path = dir.join(new);
+                if new_path.exists() && !Self::same_file(&dir.join(old), &new_path) {
+                    let msg = format!("{new} は既に存在します。上書きしますか？");
+                    if dialog::message_box(
+                        &self.wnd,
+                        "名前の変更",
+                        &msg,
+                        dialog::MessageStyle::YesNo,
+                    ) != dialog::MessageResult::Yes
+                    {
+                        return Ok(());
+                    }
+                }
                 if let Err(e) = std::fs::rename(dir.join(old), dir.join(new)) {
                     let line = messages::rename_failure(old, &e.to_string());
                     self.log.error(&line);
@@ -806,6 +821,15 @@ impl MainWindow {
             for (dir, name, is_dir) in &targets {
                 let new_name = res.name_case.apply(name, *is_dir);
                 if new_name == *name {
+                    new_paths.push(dir.join(name));
+                    continue;
+                }
+                // 同名の別ファイルが既に在れば黙って上書きせずスキップ（大文字小文字だけの
+                // 変更＝同一ファイルは許す）。
+                let new_path = dir.join(&new_name);
+                if new_path.exists() && !Self::same_file(&dir.join(name), &new_path) {
+                    rename_errors += 1;
+                    self.log.error(&messages::rename_failure(name, "同名のファイルが既に存在します"));
                     new_paths.push(dir.join(name));
                     continue;
                 }
@@ -1646,22 +1670,45 @@ impl MainWindow {
                 return;
             }
         }
+        // フェーズ1：全対象を一時名へ退避する。途中で失敗したら、退避済みを逆順で元へ戻して
+        // 中止する（一時名のまま取り残さない）。
         let mut tmps = Vec::new();
         for (i, old) in olds.iter().enumerate() {
             let tmp = format!("{old}.rerics-seq-{i}");
             if let Err(e) = std::fs::rename(dir.join(old), dir.join(&tmp)) {
                 self.log.error(&format!("リネーム失敗（{old}）：{e}"));
+                for j in (0..tmps.len()).rev() {
+                    if std::fs::rename(dir.join(&tmps[j]), dir.join(&olds[j])).is_err() {
+                        self.log.error(&format!("復旧できませんでした（{} のまま）", tmps[j]));
+                    }
+                }
                 let _ = self.reload_side(is_left);
                 return;
             }
             tmps.push(tmp);
         }
-        for (tmp, new) in tmps.iter().zip(news.iter()) {
-            if let Err(e) = std::fs::rename(dir.join(tmp), dir.join(new)) {
-                self.log.error(&format!("リネーム失敗（→{new}）：{e}"));
+        // フェーズ2：一時名から新名へ。失敗した分は元名へ best-effort で戻し、実際の成功件数を報告する。
+        let mut done = 0usize;
+        let mut stranded = 0usize;
+        for (i, (tmp, new)) in tmps.iter().zip(news.iter()).enumerate() {
+            match std::fs::rename(dir.join(tmp), dir.join(new)) {
+                Ok(()) => done += 1,
+                Err(e) => {
+                    self.log.error(&format!("リネーム失敗（→{new}）：{e}"));
+                    if std::fs::rename(dir.join(tmp), dir.join(&olds[i])).is_err() {
+                        stranded += 1;
+                        self.log.error(&format!("復旧できませんでした（{tmp} のまま）"));
+                    }
+                }
             }
         }
-        self.log.normal(&format!("連番リネーム: {} 件", news.len()));
+        if stranded > 0 {
+            self.log.warn(&format!(
+                "連番リネーム: {done} 件成功・{stranded} 件が一時名のまま残りました"
+            ));
+        } else {
+            self.log.normal(&format!("連番リネーム: {done} 件"));
+        }
         let _ = self.reload_side(is_left);
     }
 

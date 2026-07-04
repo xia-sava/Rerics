@@ -26,10 +26,7 @@ impl MainWindow {
         match loc {
             Location::Real(dir) => read_capped(&dir.join(name), cap),
             Location::Archive { archive, inner } => {
-                let mut bytes = self.read_archive_entry(&archive, &join_inner_path(&inner, name))?;
-                let truncated = bytes.len() > cap;
-                bytes.truncate(cap);
-                Ok((bytes, truncated))
+                self.read_archive_entry(&archive, &join_inner_path(&inner, name), cap)
             }
         }
     }
@@ -37,13 +34,25 @@ impl MainWindow {
     /// 書庫内エントリを読む（暗号化エントリはキャッシュ済み or 入力プロンプトのパスワードで
     /// 復号する）。パスワードが合えば書庫単位でキャッシュし、同一書庫の他エントリで再入力
     /// させない。誤入力は数回まで再入力を促す。
-    pub(crate) fn read_archive_entry(&self, archive: &Path, inner: &str) -> std::io::Result<Vec<u8>> {
-        // 既に temp に在れば実FS から直接読む（一括展開済み or per-file 展開済み・再展開しない）。
+    pub(crate) fn read_archive_entry(
+        &self,
+        archive: &Path,
+        inner: &str,
+        cap: usize,
+    ) -> std::io::Result<(Vec<u8>, bool)> {
+        // 申告サイズが巨大/展開爆弾のエントリでフル解凍して OOM しないよう、常に cap で
+        // 上限を掛けて読む（表示は先頭 cap バイトあれば足りる）。
+        let cap_it = |mut b: Vec<u8>| {
+            let truncated = b.len() > cap;
+            b.truncate(cap);
+            (b, truncated)
+        };
+        // 既に temp に在れば実FS から上限付きで読む（一括展開済み or per-file 展開済み）。
         let root = self.register_archive_temp(archive);
         if let Some(rel) = Self::safe_inner_path(inner) {
             let p = root.join(&rel);
             if p.is_file() {
-                return std::fs::read(&p);
+                return read_capped(&p, cap);
             }
         }
         let backend = open_archive(archive)?;
@@ -54,12 +63,13 @@ impl MainWindow {
             .map(|e| e.is_encrypted)
             .unwrap_or(false);
         if !encrypted {
-            return backend.read(inner);
+            // ストリーム解凍できる backend は cap で解凍自体を打ち切る。
+            return backend.read_capped(inner, cap);
         }
         // キャッシュ済みパスワードを先に試す。
         if let Some(pw) = self.archive_passwords.borrow().get(archive).cloned()
             && let Ok(b) = backend.read_with_password(inner, Some(&pw)) {
-                return Ok(b);
+                return Ok(cap_it(b));
             }
         for _ in 0..3 {
             let Some(pw) = self.prompt_password(archive) else {
@@ -73,7 +83,7 @@ impl MainWindow {
                     self.archive_passwords
                         .borrow_mut()
                         .insert(archive.to_path_buf(), pw.into_bytes());
-                    return Ok(b);
+                    return Ok(cap_it(b));
                 }
                 Err(_) => self.log.warn("パスワードが違うようです"),
             }
@@ -135,8 +145,10 @@ impl MainWindow {
         root
     }
 
-    /// 書庫内パス（'/' 区切り）を temp ルート配下の安全な相対パスへ。空/"."は捨て、".."や '\\'
-    /// 混入は弾く（zip-slip 対策）。有効セグメントが無ければ None。
+    /// 書庫内パス（'/' 区切り）を temp ルート配下の安全な相対パスへ。空/"."は捨て、".."や
+    /// '\\'・':' 混入は弾く（zip-slip 対策）。':' 拒否で "C:evil" のようなドライブ相対
+    /// プレフィクスが push で base を捨てて temp 外へ逃げるのを防ぐ。有効セグメントが
+    /// 無ければ None。
     pub(crate) fn safe_inner_path(inner: &str) -> Option<PathBuf> {
         let mut p = PathBuf::new();
         let mut any = false;
@@ -144,7 +156,7 @@ impl MainWindow {
             if seg.is_empty() || seg == "." {
                 continue;
             }
-            if seg == ".." || seg.contains('\\') {
+            if seg == ".." || seg.contains('\\') || seg.contains(':') {
                 return None;
             }
             p.push(seg);
@@ -385,12 +397,16 @@ impl MainWindow {
                 }
             }
         }
+        // 展開中の書庫は「参照なし」でも掃除しない。展開ワーカーが書き込んでいる temp root を
+        // 消すと、展開完了後に不完全な root が完了マーカー付きでキャッシュされてしまう。
+        let extracting: HashSet<PathBuf> = self.archive_extracting.borrow().iter().cloned().collect();
         let mut to_delete: Vec<PathBuf> = Vec::new();
         {
             let mut reg = self.archive_temp_dirs.borrow_mut();
             let mut extracted = self.archive_extracted.borrow_mut();
             reg.retain(|archive, root| {
                 let referenced = inside.contains(archive)
+                    || extracting.contains(archive)
                     || archive.parent().is_some_and(|p| dirs.contains(p));
                 if !referenced {
                     to_delete.push(root.clone());
