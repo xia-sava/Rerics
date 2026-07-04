@@ -415,14 +415,14 @@ fn exp_like_compare(input1: &str, input2: &str) -> std::cmp::Ordering {
                 if a.prefix.trim() != b.prefix.trim() {
                     break;
                 }
-                if a.digits.len() > 8 || b.digits.len() > 8 {
-                    break;
-                }
-                let na: i64 = a.digits.parse().unwrap_or(0);
-                let nb: i64 = b.digits.parse().unwrap_or(0);
-                let num = na - nb;
-                if num != 0 {
-                    return num.cmp(&0);
+                // 数字列を任意桁で数値比較する（先頭ゼロ無視→桁数→辞書順）。i64 に収まらない
+                // 長大な数字列でも一貫した順序づけになり、比較の推移律を保つ（桁数で早期に
+                // 通常比較へ抜けると数値順と文字順が混ざって推移律が崩れ sort が panic する）。
+                let da = a.digits.trim_start_matches('0');
+                let db = b.digits.trim_start_matches('0');
+                let num = da.len().cmp(&db.len()).then_with(|| da.cmp(db));
+                if num != std::cmp::Ordering::Equal {
+                    return num;
                 }
                 let rest1 = &input1[a.end..];
                 let rest2 = &input2[b.end..];
@@ -1474,6 +1474,26 @@ mod tests {
     }
 
     #[test]
+    fn exp_like_compare_is_transitive_across_digit_widths() {
+        // 桁数をまたいでも数値順で一貫する（報告された推移律違反トリプル）。
+        assert_eq!(exp_like_compare("A99", "A100"), Ordering::Less);
+        assert_eq!(exp_like_compare("A100", "A123456789"), Ordering::Less);
+        assert_eq!(exp_like_compare("A99", "A123456789"), Ordering::Less);
+    }
+
+    #[test]
+    fn exp_like_sort_orders_numeric_and_does_not_panic() {
+        // 桁数の異なる数字列が混在しても sort_by は panic せず数値順に並ぶ。
+        let mut items: Vec<FileItem> = ["A100", "A9", "A123456789", "A1", "A99", "A10"]
+            .iter()
+            .map(|n| file(n))
+            .collect();
+        items.sort_by(|a, b| compare_items(a, b, SortType::FileNameExpLike, false));
+        let got: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(got, ["A1", "A9", "A10", "A99", "A100", "A123456789"]);
+    }
+
+    #[test]
     fn source_or_falls_back_to_pane_location() {
         use crate::vfs::Location;
         let pane = Location::Real(std::path::PathBuf::from("C:\\pane"));
@@ -1797,8 +1817,8 @@ mod tests {
         assert_eq!(exp_like_compare("FILE2", "FILE2"), Ordering::Equal);
         // 等値プレフィクスで複数数字列。
         assert_eq!(exp_like_compare("V1-2", "V1-10"), Ordering::Less);
-        // 9桁以上は数値比較せず通常の文字列比較へフォールバックする。
-        assert_eq!(exp_like_compare("X1000000000", "X2"), Ordering::Less);
+        // 9桁以上でも数値として比較する（桁数→辞書順で任意精度・比較の推移律を保つ）。
+        assert_eq!(exp_like_compare("X1000000000", "X2"), Ordering::Greater);
     }
 
     #[test]
