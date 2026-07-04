@@ -155,8 +155,12 @@ impl MainWindow {
         // ディレクトリ/書庫へ潜る前に、今のカーソル位置を覚えておく（再訪時に復元）。
         self.remember_cursor_for_nav(is_left);
         if is_dir {
-            if self.pane(is_left).borrow_mut().enter(&name, is_dir) {
-                self.reload_side_navigated(is_left)?;
+            // RefMut は enter_reported の行で解放してから結果を判定する（reload が再借用するため）。
+            let outcome = self.pane(is_left).borrow_mut().enter_reported(&name, is_dir);
+            match outcome {
+                Ok(()) => self.reload_side_navigated(is_left)?,
+                // 入れない dir（ACL 拒否の互換 junction・消えた dir 等）は黙殺せずログで報せる。
+                Err(e) => self.log.error(&enter_dir_error_message(&name, &e)),
             }
         } else {
             // 書庫ファイルなら潜る（zip 等）。
@@ -916,6 +920,16 @@ impl MainWindow {
 
 /// `roots` を `delta`（+1/-1）方向に巡回し、`cur` 以外で最初に `ready` を満たす index を返す。
 /// 他に対象が無ければ（全て未了・ドライブが1つだけ等）None。
+/// dir に入れなかったときのログ文言（`EnterDir`・`View` の潜り共通）。存在しない
+/// （消えた・リンク先が無い）と読めない（権限不足等）で文言を分ける。
+pub(crate) fn enter_dir_error_message(name: &str, err: &std::io::Error) -> String {
+    if err.kind() == std::io::ErrorKind::NotFound {
+        format!("{name}：ディレクトリが存在しません。")
+    } else {
+        format!("{name}：ディレクトリを開けません。原因：{err}")
+    }
+}
+
 /// `changeDirectory` 失敗時のダイアログ文言（原作 `NotExistsDirectory` / `ChangeDirectoryError`）。
 /// 移動先が存在しないなら専用文、それ以外（権限不足・読込エラー等）は原因付きで報せる。
 fn change_directory_error_message(err: &std::io::Error) -> String {
@@ -999,7 +1013,10 @@ fn probe_drive_info(root: &str) -> (String, String, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{change_directory_error_message, next_ready_index, unique_shortcut_index};
+    use super::{
+        change_directory_error_message, enter_dir_error_message, next_ready_index,
+        unique_shortcut_index,
+    };
 
     #[test]
     fn shortcut_index_matches_unique_case_insensitively() {
@@ -1027,6 +1044,20 @@ mod tests {
 
         let denied = change_directory_error_message(&Error::new(ErrorKind::PermissionDenied, "アクセスが拒否されました"));
         assert!(denied.starts_with("ディレクトリが変更出来ません。"));
+        assert!(denied.contains("原因："));
+    }
+
+    #[test]
+    fn enter_dir_error_names_item_and_distinguishes_not_found() {
+        use std::io::{Error, ErrorKind};
+        let gone = enter_dir_error_message("jlink", &Error::from(ErrorKind::NotFound));
+        assert_eq!(gone, "jlink：ディレクトリが存在しません。");
+
+        let denied = enter_dir_error_message(
+            "Documents and Settings",
+            &Error::new(ErrorKind::PermissionDenied, "アクセスが拒否されました"),
+        );
+        assert!(denied.starts_with("Documents and Settings：ディレクトリを開けません。"));
         assert!(denied.contains("原因："));
     }
 

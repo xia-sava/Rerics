@@ -173,14 +173,20 @@ impl Pane {
     /// `name` へ侵入する（dir なら降りる・書庫ファイルなら潜る）。移動できたら `true`。
     /// 侵入先が読めることを確認してから確定する（壊れた書庫/権限不足で弾く）。
     pub fn enter(&mut self, name: &str, is_dir: bool) -> bool {
-        match self.loc.enter(name, is_dir) {
-            Some(next) if next.read().is_ok() => {
-                self.record_history();
-                self.loc = next;
-                true
-            }
-            _ => false,
-        }
+        self.enter_reported(name, is_dir).is_ok()
+    }
+
+    /// [`enter`](Self::enter) と同じだが、失敗時は理由（io エラー）を返す。侵入対象として
+    /// 解決できない（dir が消えた・リンク先が無い・書庫でないファイル等）は `NotFound`、
+    /// 解決できたが読めない（権限不足・壊れた書庫等）はその io エラー。
+    pub fn enter_reported(&mut self, name: &str, is_dir: bool) -> std::io::Result<()> {
+        let Some(next) = self.loc.enter(name, is_dir) else {
+            return Err(std::io::ErrorKind::NotFound.into());
+        };
+        next.read()?;
+        self.record_history();
+        self.loc = next;
+        Ok(())
     }
 
     /// 親へ移動する。移動できたら、元いた場所の名前（書庫ルートからは書庫ファイル名）を返す。
@@ -315,6 +321,18 @@ mod tests {
         let p = Pane::open(env!("CARGO_MANIFEST_DIR"));
         assert!(p.path().is_absolute());
         assert!(p.read().iter().any(|e| e.name == "Cargo.toml"));
+    }
+
+    #[test]
+    fn enter_reported_distinguishes_missing_target() {
+        let mut p = Pane::open(env!("CARGO_MANIFEST_DIR"));
+        // 実在する dir へは入れる。
+        assert!(p.enter_reported("src", true).is_ok());
+        assert!(p.path().ends_with("src"));
+        // 解決できない名前（消えた dir・リンク先なし相当）は NotFound で報せ、現在地は動かない。
+        let err = p.enter_reported("no_such_dir", true).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(p.path().ends_with("src"));
     }
 
     #[test]
