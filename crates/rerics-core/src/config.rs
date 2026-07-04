@@ -53,24 +53,53 @@ pub fn dialog_sizes_path() -> PathBuf {
     data_dir().join("dialog-sizes.toml")
 }
 
-/// TOML ファイルを読んでデシリアライズする。ファイルが無い・読めない・
-/// パースに失敗したいずれの場合も `T::default()` を返す。
+/// TOML ファイルを読んでデシリアライズする。ファイルが無い場合は `T::default()`。
+///
+/// ファイルは在るのにパースに失敗した場合（破損・切り詰め・バージョン差による未知の
+/// 列挙値など）は、破損内容を `<path>.broken` へ複製で退避してから `T::default()` を返す。
+/// 退避しないと、次の自動保存が唯一のコピーを空の既定値で上書きし内容を永久に失う。原本は
+/// 動かさない（手編集が正本の `config.toml` を勝手に移動しないため。自動保存される
+/// `state.toml` 等は退避コピーを残したまま次回保存で自然に上書き回復する）。
 pub fn load_toml<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| toml::from_str(&s).ok())
-        .unwrap_or_default()
+    let text = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        // ファイル不在などは正常な初回起動として既定値。
+        Err(_) => return T::default(),
+    };
+    match toml::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            let broken = path.with_extension("broken");
+            let _ = std::fs::write(&broken, &text);
+            eprintln!(
+                "設定/状態ファイルを解析できませんでした（{} へ退避）: {}",
+                broken.display(),
+                e
+            );
+            T::default()
+        }
+    }
 }
 
 /// 値を TOML としてファイルへ書き出す。親ディレクトリは自動で用意する。
 /// 直列化エラーは `InvalidData` の `io::Error` に変換する。
+///
+/// 書込みは「同ディレクトリの一時ファイルへ書いてから rename で置換」するアトミック方式。
+/// 途中でクラッシュ/電源断が起きても、元ファイルが空/半端に切り詰められて残らない。
 pub fn save_toml<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let text = toml::to_string_pretty(value)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(path, text)
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, text)?;
+    // rename は同一ボリューム内では原子的。失敗時は一時ファイルを残さない。
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// ファイル一覧などのフォント指定。
@@ -840,6 +869,42 @@ mod tests {
         // 他キーは既定のまま。
         assert_eq!(km.resolve(&crate::KeyChord::key(crate::vk::DOWN)), Some(crate::Command::CursorDown));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn save_toml_atomic_roundtrip_leaves_no_tmp() {
+        #[derive(Serialize, Deserialize, Default, PartialEq, Debug)]
+        struct S {
+            a: u32,
+            b: String,
+        }
+        let dir = std::env::temp_dir().join(format!("rerics_cfg_atomic_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("state.toml");
+        let v = S { a: 7, b: "x".to_owned() };
+        save_toml(&path, &v).unwrap();
+        assert!(!path.with_extension("toml.tmp").exists(), "一時ファイルを残さない");
+        let got: S = load_toml(&path);
+        assert_eq!(got, v);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_toml_quarantines_corrupt_and_defaults() {
+        #[derive(Serialize, Deserialize, Default, PartialEq, Debug)]
+        struct S {
+            a: u32,
+        }
+        let dir = std::env::temp_dir().join(format!("rerics_cfg_broken_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("state.toml");
+        std::fs::write(&path, "a = = broken").unwrap();
+        let got: S = load_toml(&path);
+        assert_eq!(got, S::default(), "破損時は既定値");
+        // 破損内容は .broken に退避し、原本も残す（次の保存で唯一のコピーを潰さない）。
+        assert!(path.with_extension("broken").exists(), "破損退避コピーが在る");
+        assert!(path.exists(), "原本は動かさない");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
