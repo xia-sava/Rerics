@@ -76,9 +76,12 @@ impl FileItem {
     #[cfg(windows)]
     pub fn from_metadata(name: String, meta: &std::fs::Metadata) -> Self {
         use std::os::windows::fs::MetadataExt;
-        let is_dir = meta.is_dir();
-        let mut it = Self::bare(name, is_dir);
         let attr = meta.file_attributes();
+        // dir 判定は属性ビット直読み。`Metadata::is_dir()` は reparse なディレクトリ
+        // （ジャンクション・ディレクトリ symlink）を false にするため使わない
+        // （dir として並び・侵入できるのが原作準拠の挙動）。
+        let is_dir = attr & 0x10 != 0;
+        let mut it = Self::bare(name, is_dir);
         it.readonly = attr & 0x1 != 0;
         it.hidden = attr & 0x2 != 0;
         it.system = attr & 0x4 != 0;
