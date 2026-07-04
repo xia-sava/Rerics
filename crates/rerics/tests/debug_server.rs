@@ -2283,6 +2283,9 @@ fn directory_information_shows_dir_size_in_list() {
     assert!(items.contains("\"size\":1500"), "sub row gets its size: {items}");
     let log = server.req("GET", "/state/log", "").unwrap().1;
     assert!(log.contains("1,500 バイト"), "log numbers are digit-grouped: {log}");
+    // 進捗行の進行表示（ぐるぐる）は完了で確定・停止している。
+    let log = poll(&server, "/state/log", |b| b.contains("\"progress\":[]"));
+    assert!(log.contains("\"progress\":[]"), "spinner stops on completion: {log}");
 
     // 再読込で <DIR> 表示（size なし）へ戻る。
     server.req("POST", "/command/reload", "").unwrap();

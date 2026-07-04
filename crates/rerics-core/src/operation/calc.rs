@@ -29,7 +29,7 @@ pub fn run_calc_size(host: &dyn OperationHost, dir: &Path, names: &[String]) -> 
     let handle = host.begin_progress(LogLevel::Normal, &crate::messages::calc_size_progress(0));
     calc_names(host, dir, names, &mut result, handle);
     let scanned = result.total.files + result.total.dirs;
-    host.update_progress(handle, &crate::messages::calc_size_done(scanned));
+    host.end_progress(handle, &crate::messages::calc_size_done(scanned));
     result
 }
 
@@ -45,7 +45,7 @@ pub fn run_calc_size_groups(host: &dyn OperationHost, groups: &[(PathBuf, Vec<St
         calc_names(host, dir, names, &mut result, handle);
     }
     let scanned = result.total.files + result.total.dirs;
-    host.update_progress(handle, &crate::messages::calc_size_done(scanned));
+    host.end_progress(handle, &crate::messages::calc_size_done(scanned));
     result
 }
 

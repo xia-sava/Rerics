@@ -124,9 +124,14 @@ impl MainWindow {
                 },
                 WorkerEvent::LogLine { id, level, text } => {
                     self.log.push_with_id(id, level, &text);
+                    self.log.start_progress(id);
                 }
                 WorkerEvent::LogUpdate { id, level, text } => {
                     self.log.update(id, level, &text);
+                }
+                WorkerEvent::LogEnd { id, level, text } => {
+                    self.log.update(id, level, &text);
+                    self.log.stop_progress(id);
                 }
                 WorkerEvent::AskConflict { name, reply } => {
                     self.in_dialog.set(true);

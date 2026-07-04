@@ -175,17 +175,17 @@ fn copy_item(
         });
         match result {
             Ok(CopyOutcome::Completed) => {
-                host.update_progress(handle, &line);
+                host.end_progress(handle, &line);
                 sum.ok += 1;
                 Flow::Continue
             }
             Ok(CopyOutcome::Cancelled) => {
-                host.update_progress(handle, &line);
+                host.end_progress(handle, &line);
                 Flow::Cancel
             }
             Err(e) => {
                 let reason = e.to_string();
-                host.update_progress(handle, &line);
+                host.end_progress(handle, &line);
                 let fail = if move_it {
                     messages::move_failure(&name, &reason)
                 } else {

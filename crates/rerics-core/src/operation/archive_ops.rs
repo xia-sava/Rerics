@@ -170,6 +170,9 @@ fn rewrite_archive(
             }
         }
 
+    // 進捗行から % を落として確定する（成否に依らず）。
+    host.end_progress(handle, &messages::archive_rebuild());
+
     let finished = zw.finish();
     if sum.cancelled || sum.err > 0 {
         drop(finished);
@@ -334,6 +337,7 @@ fn add_archive_item(
         let total = reader.metadata().map(|m| m.len()).unwrap_or(0);
         let handle = host.begin_progress(LogLevel::Normal, &messages::archive_add(&name));
         if let Err(e) = zw.start_file(rel.to_string(), opts) {
+            host.end_progress(handle, &messages::archive_add(&name));
             host.log(LogLevel::Error, &messages::archive_add_failure(&name, &e.to_string()));
             sum.err += 1;
             return Flow::Continue;
@@ -349,12 +353,14 @@ fn add_archive_item(
                 Ok(0) => break,
                 Ok(n) => n,
                 Err(e) => {
+                    host.end_progress(handle, &messages::archive_add(&name));
                     host.log(LogLevel::Error, &messages::archive_add_failure(&name, &e.to_string()));
                     sum.err += 1;
                     return Flow::Continue;
                 }
             };
             if let Err(e) = zw.write_all(&buf[..n]) {
+                host.end_progress(handle, &messages::archive_add(&name));
                 host.log(LogLevel::Error, &messages::archive_add_failure(&name, &e.to_string()));
                 sum.err += 1;
                 return Flow::Continue;
@@ -364,7 +370,7 @@ fn add_archive_item(
                 host.update_progress(handle, &messages::archive_add_progress(&name, pct));
             }
         }
-        host.update_progress(handle, &messages::archive_add(&name));
+        host.end_progress(handle, &messages::archive_add(&name));
         sum.ok += 1;
         Flow::Continue
     }

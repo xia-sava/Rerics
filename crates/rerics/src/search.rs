@@ -269,7 +269,7 @@ impl MainWindow {
             let head = if cancelled { "検索中止" } else { "検索結果" };
             let summary = format!("{head} {count}件（走査 {}件）", scanned.get());
             let level = if cancelled { Some(LogLevel::Warning) } else { None };
-            let _ = tx.send(WorkerEvent::LogUpdate { id: pid, level, text: summary });
+            let _ = tx.send(WorkerEvent::LogEnd { id: pid, level, text: summary });
             let _ = tx.send(WorkerEvent::FindDone { id, is_left });
             crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
         });
@@ -348,7 +348,7 @@ impl MainWindow {
                 counts.equals, counts.not_equals, counts.adds, counts.deletes, scanned.get()
             );
             let level = if cancelled { Some(LogLevel::Warning) } else { None };
-            let _ = tx.send(WorkerEvent::LogUpdate { id: pid, level, text: summary });
+            let _ = tx.send(WorkerEvent::LogEnd { id: pid, level, text: summary });
             let _ = tx.send(WorkerEvent::FindDone { id, is_left });
             crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
         });

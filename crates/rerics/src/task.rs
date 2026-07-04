@@ -134,11 +134,14 @@ pub enum ArchiveOutcome {
 pub enum WorkerEvent {
     /// ログ1行を追記する。
     Log { level: LogLevel, text: String },
-    /// インプレース更新できる `id` 付きの行を追記する（進捗行の開始）。
+    /// インプレース更新できる `id` 付きの行を追記する（進捗行の開始）。行には進行表示
+    /// （ぐるぐる）が付き、`LogEnd` まで回り続ける。
     LogLine { id: u64, level: LogLevel, text: String },
-    /// `id` 付き行の本文を書き換える（進捗の更新・確定）。`level` が `Some` のとき
+    /// `id` 付き行の本文を書き換える（進捗の更新）。`level` が `Some` のとき
     /// レベル（表示色）も差し替える（`None` は据え置き）。
     LogUpdate { id: u64, level: Option<LogLevel>, text: String },
+    /// `id` 付き行を最終本文で確定させ、進行表示を止める。
+    LogEnd { id: u64, level: Option<LogLevel>, text: String },
     /// 同名衝突の解決を UI に問い合わせる（回答を `reply` で受け取る）。
     AskConflict { name: String, reply: Sender<ConflictReply> },
     /// 属性付きファイルの削除可否を UI に問い合わせる。
@@ -300,6 +303,15 @@ impl OperationHost for ChannelHost {
 
     fn update_progress(&self, handle: ProgressHandle, text: &str) {
         let _ = self.tx.send(WorkerEvent::LogUpdate {
+            id: handle.0,
+            level: None,
+            text: text.to_owned(),
+        });
+        self.emit_script_progress(text);
+    }
+
+    fn end_progress(&self, handle: ProgressHandle, text: &str) {
+        let _ = self.tx.send(WorkerEvent::LogEnd {
             id: handle.0,
             level: None,
             text: text.to_owned(),

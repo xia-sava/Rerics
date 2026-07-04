@@ -81,6 +81,12 @@ pub trait OperationHost {
         let _ = (handle, text);
     }
 
+    /// [`Self::begin_progress`] で得た行を最終本文で確定させる（以後この行は更新しない）。
+    /// 進行表示（ぐるぐる）を出すホストはここで止める。既定では本文の書き換えのみ。
+    fn end_progress(&self, handle: ProgressHandle, text: &str) {
+        self.update_progress(handle, text);
+    }
+
     /// ディレクトリコピー時に元ディレクトリの属性/日時を複製するかの設定。既定は複製しない
     /// （設定を持たないホスト＝テスト等は従来どおり）。
     fn copy_options(&self) -> CopyOptions {
