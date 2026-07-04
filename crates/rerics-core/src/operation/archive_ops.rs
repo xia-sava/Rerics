@@ -1,8 +1,13 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use crate::LogLevel;
 use crate::archive::{decode_name, normalize_inner};
 use crate::messages;
 use super::*;
+
+/// 書庫再構築の一時ファイル名を一意にするための連番。同一書庫を同時に書き換えても
+/// 一時ファイルを取り合って壊し合わない（rename の後勝ちに収束する）。
+static REWRITE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// `inner_prefix`（'/' 区切り・正規化済み・"" はルート）の下に `name` を繋いだ書庫内パス。
 fn join_inner(prefix: &str, name: &str) -> String {
@@ -98,8 +103,9 @@ fn rewrite_archive(
         }
     };
 
+    let seq = REWRITE_SEQ.fetch_add(1, Ordering::Relaxed);
     let mut tmp_path = dst_zip.to_path_buf();
-    tmp_path.set_file_name(format!("{}.rerics-tmp", zip_name));
+    tmp_path.set_file_name(format!("{}.rerics-tmp-{}-{}", zip_name, std::process::id(), seq));
     let tmp_file = match std::fs::File::create(&tmp_path) {
         Ok(f) => f,
         Err(e) => {
