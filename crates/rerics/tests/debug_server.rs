@@ -2239,14 +2239,14 @@ fn find_result_directory_information_sums_sources() {
     poll(&server, "/state/panes/left/items", |b| count_substr(b, "\"marked\":true") == 2);
 
     server.req("POST", "/command/directoryInformation", "").unwrap();
-    let modal = wait_modal(&server);
-    // 別々のサブフォルダの 5+3 バイトが合算される。
-    assert!(modal.contains("8 \u{30d0}\u{30a4}\u{30c8}"), "should sum to 8 bytes: {modal}");
-    server.req("POST", "/modal/key/enter", "").unwrap();
-    poll(&server, "/state/modal", |b| b.trim() == "null");
+    // 別々のサブフォルダの 5+3 バイトが合算され、結果はログに出る（ダイアログは出さない）。
+    let log = poll(&server, "/state/log", |b| b.contains("8 バイト"));
+    assert!(log.contains("8 バイト"), "should sum to 8 bytes: {log}");
+    let modal = server.req("GET", "/state/modal", "").unwrap().1;
+    assert_eq!(modal.trim(), "null", "no result dialog: {modal}");
 }
 
-/// directoryInformation＝カーソル位置の使用量を計算し結果ダイアログを出す。
+/// directoryInformation＝カーソル位置の使用量を計算し、結果をログに出す（ダイアログは出さない）。
 #[test]
 fn info_directory_information() {
     let server = Server::start(&["a.txt"], "");
@@ -2254,15 +2254,39 @@ fn info_directory_information() {
     server.req("POST", "/command/cursorDown", "").unwrap();
     poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
 
-    // 計算はワーカで走り、完了後に結果モーダルが出る。
+    // 計算はワーカで走り、完了後に結果がログへ出る。
     server.req("POST", "/command/directoryInformation", "").unwrap();
-    let modal = wait_modal(&server);
-    assert!(modal.contains("ファイル"), "should show a result dialog: {modal}");
-    assert!(modal.contains("1 \u{30d0}\u{30a4}\u{30c8}"), "should count 1 byte: {modal}");
+    let log = poll(&server, "/state/log", |b| b.contains("1 バイト"));
+    assert!(log.contains("ファイル"), "result goes to the log: {log}");
+    let modal = server.req("GET", "/state/modal", "").unwrap().1;
+    assert_eq!(modal.trim(), "null", "no result dialog: {modal}");
+}
 
-    // 結果ダイアログを閉じる。
-    server.req("POST", "/modal/key/enter", "").unwrap();
-    poll(&server, "/state/modal", |b| b.trim() == "null");
+/// directoryInformation＝計算したディレクトリの一覧行は "<DIR>" の代わりにサイズを表示する
+/// （再読込までの一時表示・原作準拠）。ログの数値は桁区切りカンマ表記。
+#[test]
+fn directory_information_shows_dir_size_in_list() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx = server.base.join("sbx");
+    std::fs::create_dir_all(sbx.join("sub")).unwrap();
+    std::fs::write(sbx.join("sub").join("f.bin"), vec![0u8; 1500]).unwrap();
+    server.req("POST", "/command/reload", "").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"sub\""));
+
+    // sub を選択して使用量計算。完了で sub の行へサイズが入る。
+    server
+        .req("POST", "/script/eval", r#"rerics.activePane().items.forEach((it)=>{ if(it.name==="sub") it.selected=true; });"#)
+        .unwrap();
+    poll(&server, "/state/panes/left/items", |b| count_substr(b, "\"marked\":true") == 1);
+    server.req("POST", "/command/directoryInformation", "").unwrap();
+    let items = poll(&server, "/state/panes/left/items", |b| b.contains("\"size\":1500"));
+    assert!(items.contains("\"size\":1500"), "sub row gets its size: {items}");
+    let log = server.req("GET", "/state/log", "").unwrap().1;
+    assert!(log.contains("1,500 バイト"), "log numbers are digit-grouped: {log}");
+
+    // 再読込で <DIR> 表示（size なし）へ戻る。
+    server.req("POST", "/command/reload", "").unwrap();
+    poll(&server, "/state/panes/left/items", |b| !b.contains("\"size\":1500"));
 }
 
 /// renameSequenceDialog＝既定テンプレート（File<No:0000>.ext）で選択を連番リネームする。

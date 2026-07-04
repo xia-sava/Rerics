@@ -5,30 +5,48 @@ use super::*;
 /// 書き換える（毎件更新は重いので間引く）。
 const CALC_REPORT_EVERY: u64 = 512;
 
+/// 対象1件（`dir` 直下の `name`）ごとの集計サイズ。一覧のサイズ表示への反映用。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalcEntry {
+    pub dir: PathBuf,
+    pub name: String,
+    pub bytes: u64,
+}
+
+/// 使用量計算の結果。全対象の合計と、対象ごとの内訳。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CalcResult {
+    pub total: DirInfo,
+    /// 対象ごとの集計。中止時、走査し切れなかった対象は含まない（部分値を出さない）。
+    pub entries: Vec<CalcEntry>,
+}
+
 /// `dir` 直下の `names`（ファイル/ディレクトリ）の使用量を再帰集計する。選んだ
 /// ディレクトリ自身も `dirs` に数える。ファイル境界で中止/中断を確認し、走査件数を
 /// インプレース更新行で随時報告する。
-pub fn run_calc_size(host: &dyn OperationHost, dir: &Path, names: &[String]) -> DirInfo {
-    let mut info = DirInfo::default();
+pub fn run_calc_size(host: &dyn OperationHost, dir: &Path, names: &[String]) -> CalcResult {
+    let mut result = CalcResult::default();
     let handle = host.begin_progress(LogLevel::Normal, &crate::messages::calc_size_progress(0));
-    calc_names(host, dir, names, &mut info, handle);
-    host.update_progress(handle, &crate::messages::calc_size_done(info.files + info.dirs));
-    info
+    calc_names(host, dir, names, &mut result, handle);
+    let scanned = result.total.files + result.total.dirs;
+    host.update_progress(handle, &crate::messages::calc_size_done(scanned));
+    result
 }
 
 /// 出自ディレクトリ別にまとまった複数グループの使用量を、ひとつの進捗行で合算する
 /// （結果一覧の選択項目の情報表示用）。
-pub fn run_calc_size_groups(host: &dyn OperationHost, groups: &[(PathBuf, Vec<String>)]) -> DirInfo {
-    let mut info = DirInfo::default();
+pub fn run_calc_size_groups(host: &dyn OperationHost, groups: &[(PathBuf, Vec<String>)]) -> CalcResult {
+    let mut result = CalcResult::default();
     let handle = host.begin_progress(LogLevel::Normal, &crate::messages::calc_size_progress(0));
     for (dir, names) in groups {
         if should_stop(host) {
             break;
         }
-        calc_names(host, dir, names, &mut info, handle);
+        calc_names(host, dir, names, &mut result, handle);
     }
-    host.update_progress(handle, &crate::messages::calc_size_done(info.files + info.dirs));
-    info
+    let scanned = result.total.files + result.total.dirs;
+    host.update_progress(handle, &crate::messages::calc_size_done(scanned));
+    result
 }
 
 /// `dir` 直下の各 `names` を集計へ加える（進捗行は呼び側が用意した `handle` を使う）。
@@ -36,14 +54,24 @@ fn calc_names(
     host: &dyn OperationHost,
     dir: &Path,
     names: &[String],
-    info: &mut DirInfo,
+    result: &mut CalcResult,
     handle: ProgressHandle,
 ) {
     for name in names {
         if should_stop(host) {
             break;
         }
-        calc_into(host, &dir.join(name), info, handle);
+        let before = result.total.bytes;
+        calc_into(host, &dir.join(name), &mut result.total, handle);
+        // 中止で走査が途中の対象は、部分値を内訳に残さない。
+        if host.cancelled() {
+            break;
+        }
+        result.entries.push(CalcEntry {
+            dir: dir.to_path_buf(),
+            name: name.clone(),
+            bytes: result.total.bytes - before,
+        });
     }
 }
 

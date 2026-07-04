@@ -200,14 +200,12 @@ impl MainWindow {
                     self.reload_side(!src_is_left)?;
                     self.maybe_kill_task_timer();
                 }
-                WorkerEvent::DirInfoDone { id, label, bytes, files, dirs } => {
+                WorkerEvent::DirInfoDone { id, is_left, label, bytes, files, dirs, entries } => {
                     self.tasks.borrow_mut().retain(|e| e.id != id);
                     self.maybe_kill_task_timer();
                     let msg = messages::directory_information(&label, bytes, files, dirs);
                     self.log.normal(&msg);
-                    self.in_dialog.set(true);
-                    dialog::message_box(&self.wnd, "情報", &msg, dialog::MessageStyle::OkOnly);
-                    self.in_dialog.set(false);
+                    self.apply_dir_sizes(is_left, &entries)?;
                 }
                 WorkerEvent::FindBegin { id, is_left } => {
                     let idx = if is_left { 0 } else { 1 };

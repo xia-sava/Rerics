@@ -2345,6 +2345,13 @@ mod tests {
             FileListState::new().cell_text(&d, ColumnKind::Length, SizeFormat::Detail),
             "<DIR>"
         );
+        // 使用量計算でサイズが入ったディレクトリは "<DIR>" の代わりに数値を表示する。
+        d.size = Some(2048);
+        assert_eq!(
+            FileListState::new().cell_text(&d, ColumnKind::Length, SizeFormat::Detail),
+            "2,048"
+        );
+        d.size = None;
         let mut f = file("big.bin");
         f.size = Some(1234567);
         assert_eq!(

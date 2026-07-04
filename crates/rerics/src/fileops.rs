@@ -1915,9 +1915,9 @@ impl MainWindow {
         Ok(id)
     }
 
-    /// 削除をワーカースレッドで起動する。
     /// カーソル/選択のディスク使用量を再帰計算する（実FSのみ・別スレッド）。完了は
-    /// `DirInfoDone` で受け、結果をダイアログ＋ログに出す。
+    /// `DirInfoDone` で受け、結果をログへ出し、計算したディレクトリの一覧行へサイズを
+    /// 反映する。
     pub(crate) fn directory_information(&self, is_left: bool) -> w::AnyResult<()> {
         if self.pane(is_left).borrow().is_archive() {
             self.log.warn("書庫内では使用量計算は未対応です。");
@@ -1930,7 +1930,7 @@ impl MainWindow {
                 self.log.error(&messages::not_selected_error());
                 return Ok(());
             }
-            return self.start_dir_info_grouped(groups);
+            return self.start_dir_info_grouped(is_left, groups);
         }
         let names = self.selected_or_cursor_names(is_left);
         if names.is_empty() {
@@ -1938,10 +1938,10 @@ impl MainWindow {
             return Ok(());
         }
         let dir = self.pane(is_left).borrow().path().to_path_buf();
-        self.start_dir_info(dir, names)
+        self.start_dir_info(is_left, dir, names)
     }
 
-    pub(crate) fn start_dir_info(&self, dir: PathBuf, names: Vec<String>) -> w::AnyResult<()> {
+    pub(crate) fn start_dir_info(&self, is_left: bool, dir: PathBuf, names: Vec<String>) -> w::AnyResult<()> {
         let control = Arc::new(TaskControl::new());
         let host = ChannelHost::new(
             self.task_tx.clone(),
@@ -1953,20 +1953,22 @@ impl MainWindow {
         let label = short_desc(&names);
         self.register_task(id, "情報", label.clone(), control)?;
         std::thread::spawn(move || {
-            let info = rerics_core::run_calc_size(&host, &dir, &names);
+            let result = rerics_core::run_calc_size(&host, &dir, &names);
             let _ = host.tx.send(WorkerEvent::DirInfoDone {
                 id,
+                is_left,
                 label,
-                bytes: info.bytes,
-                files: info.files,
-                dirs: info.dirs,
+                bytes: result.total.bytes,
+                files: result.total.files,
+                dirs: result.total.dirs,
+                entries: result.entries,
             });
         });
         Ok(())
     }
 
     /// 結果一覧用に、出自ディレクトリ別にまとめた項目の使用量を1タスクで合算する。
-    pub(crate) fn start_dir_info_grouped(&self, groups: Vec<(PathBuf, Vec<String>)>) -> w::AnyResult<()> {
+    pub(crate) fn start_dir_info_grouped(&self, is_left: bool, groups: Vec<(PathBuf, Vec<String>)>) -> w::AnyResult<()> {
         let control = Arc::new(TaskControl::new());
         let host = ChannelHost::new(
             self.task_tx.clone(),
@@ -1979,15 +1981,54 @@ impl MainWindow {
         let label = short_desc(&all_names);
         self.register_task(id, "情報", label.clone(), control)?;
         std::thread::spawn(move || {
-            let info = rerics_core::run_calc_size_groups(&host, &groups);
+            let result = rerics_core::run_calc_size_groups(&host, &groups);
             let _ = host.tx.send(WorkerEvent::DirInfoDone {
                 id,
+                is_left,
                 label,
-                bytes: info.bytes,
-                files: info.files,
-                dirs: info.dirs,
+                bytes: result.total.bytes,
+                files: result.total.files,
+                dirs: result.total.dirs,
+                entries: result.entries,
             });
         });
+        Ok(())
+    }
+
+    /// 使用量計算の結果を一覧へ反映する。計算したディレクトリ項目の `<DIR>` 表示が
+    /// サイズ数値に変わる（再読込までの一時表示・原作準拠）。ペインが別の場所へ移動
+    /// 済みなど、出自の一致しない内訳は捨てる。
+    pub(crate) fn apply_dir_sizes(&self, is_left: bool, entries: &[rerics_core::CalcEntry]) -> w::AnyResult<()> {
+        let pane_dir: Option<PathBuf> = match self.pane(is_left).borrow().loc() {
+            Location::Real(dir) => Some(dir.clone()),
+            _ => None,
+        };
+        let state = self.view(is_left).state();
+        let mut changed = false;
+        {
+            let mut s = state.borrow_mut();
+            let find_result = s.find_result;
+            for e in entries {
+                for it in s.items.iter_mut().filter(|it| it.is_dir && !it.is_parent) {
+                    if it.name != e.name {
+                        continue;
+                    }
+                    let matches = if find_result {
+                        matches!(&it.source, Some(Location::Real(d)) if *d == e.dir)
+                    } else {
+                        pane_dir.as_deref() == Some(e.dir.as_path())
+                    };
+                    if matches {
+                        it.size = Some(e.bytes);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            self.view(is_left).autofit_columns()?;
+            self.view(is_left).refresh()?;
+        }
         Ok(())
     }
 

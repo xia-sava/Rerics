@@ -172,13 +172,17 @@ pub enum WorkerEvent {
         id: u64,
         src_is_left: bool,
     },
-    /// ディレクトリ使用量計算の完了。結果をダイアログ＋ログで表示する。
+    /// ディレクトリ使用量計算の完了。結果をログへ出し、計算した側のペインで対象
+    /// ディレクトリの一覧行へサイズを反映する（再読込までの一時表示）。
     DirInfoDone {
         id: u64,
+        is_left: bool,
         label: String,
         bytes: u64,
         files: u64,
         dirs: u64,
+        /// 対象ごとの集計サイズ（一覧行への反映用）。
+        entries: Vec<rerics_core::CalcEntry>,
     },
     /// 検索・比較の開始。指定ペインを結果モード（".." のみ）へ切り替える。
     FindBegin { id: u64, is_left: bool },

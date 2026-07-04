@@ -200,10 +200,27 @@
         std::fs::create_dir_all(base.join("sub")).unwrap();
         base.write_file("sub/b.txt", "xyz"); // 3 bytes
         let host = FakeHost::new();
-        let info = run_calc_size(&host, &base.path, &["a.txt".to_owned(), "sub".to_owned()]);
-        assert_eq!(info.files, 2, "a.txt と sub/b.txt の2ファイル");
-        assert_eq!(info.dirs, 1, "選んだ sub 自身を数える");
-        assert_eq!(info.bytes, 8, "5 + 3 バイト");
+        let result = run_calc_size(&host, &base.path, &["a.txt".to_owned(), "sub".to_owned()]);
+        assert_eq!(result.total.files, 2, "a.txt と sub/b.txt の2ファイル");
+        assert_eq!(result.total.dirs, 1, "選んだ sub 自身を数える");
+        assert_eq!(result.total.bytes, 8, "5 + 3 バイト");
+    }
+
+    #[test]
+    fn calc_size_reports_per_target_entries() {
+        let base = TempDir::new();
+        base.write_file("a.txt", "12345"); // 5 bytes
+        std::fs::create_dir_all(base.join("sub")).unwrap();
+        base.write_file("sub/b.txt", "xyz"); // 3 bytes
+        let host = FakeHost::new();
+        let result = run_calc_size(&host, &base.path, &["a.txt".to_owned(), "sub".to_owned()]);
+        let sizes: Vec<(&str, u64)> = result
+            .entries
+            .iter()
+            .map(|e| (e.name.as_str(), e.bytes))
+            .collect();
+        assert_eq!(sizes, vec![("a.txt", 5), ("sub", 3)], "対象ごとのサイズ内訳");
+        assert!(result.entries.iter().all(|e| e.dir == base.path), "内訳は出自 dir を持つ");
     }
 
     #[test]
@@ -217,10 +234,12 @@
             (d1.path.clone(), vec!["a.txt".to_owned()]),
             (d2.path.clone(), vec!["b.txt".to_owned()]),
         ];
-        let info = run_calc_size_groups(&host, &groups);
-        assert_eq!(info.files, 2, "両ディレクトリのファイルを合算");
-        assert_eq!(info.dirs, 0, "ファイルのみ＝フォルダは数えない");
-        assert_eq!(info.bytes, 8, "5 + 3 バイトを合算");
+        let result = run_calc_size_groups(&host, &groups);
+        assert_eq!(result.total.files, 2, "両ディレクトリのファイルを合算");
+        assert_eq!(result.total.dirs, 0, "ファイルのみ＝フォルダは数えない");
+        assert_eq!(result.total.bytes, 8, "5 + 3 バイトを合算");
+        let dirs: Vec<&std::path::Path> = result.entries.iter().map(|e| e.dir.as_path()).collect();
+        assert_eq!(dirs, vec![d1.path.as_path(), d2.path.as_path()], "内訳は出自 dir 別");
     }
 
     #[test]
