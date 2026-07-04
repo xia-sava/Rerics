@@ -26,6 +26,12 @@ pub struct FileItem {
     pub system: bool,
     pub archive: bool,
     pub reparse: bool,
+    /// リンク種別（reparse tag と Cygwin 旧来型 cookie の分別結果）。実 FS の一覧
+    /// （`read_items`）で判定する。それ以外の経路（書庫・合成項目）では `None` のまま。
+    pub link: LinkKind,
+    /// リンク先の表示文字列（種別とあわせて `read_items` が取得。取れなければ `None`。
+    /// WSL/Cygwin 形式は POSIX パスをそのまま持つ）。
+    pub link_target: Option<String>,
     pub selected: bool,
     /// この項目が属する場所（VFS）。通常一覧では `None`（ペインの現在地が場所）。検索・比較などの
     /// 結果一覧では、項目が出自のディレクトリをまたぐので、その出自の場所をここに持つ。
@@ -53,6 +59,8 @@ impl FileItem {
             system: false,
             archive: false,
             reparse: false,
+            link: LinkKind::None,
+            link_target: None,
             selected: false,
             source: None,
             info: None,
@@ -92,6 +100,85 @@ impl FileItem {
         it.modified = meta.modified().ok();
         it.accessed = meta.accessed().ok();
         it
+    }
+
+    /// 表示・API 用のリンク種別。tag 未判定の reparse（書庫内項目・合成項目）は
+    /// その他の reparse に寄せ、junction 確定時だけを `Junction` として扱えるようにする。
+    pub fn link_kind(&self) -> LinkKind {
+        if self.link == LinkKind::None && self.reparse {
+            LinkKind::OtherReparse
+        } else {
+            self.link
+        }
+    }
+}
+
+/// リンク種別。reparse point の tag と Cygwin 旧来型 symlink（cookie ファイル）を分別する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LinkKind {
+    /// リンクではない。
+    #[default]
+    None,
+    /// ディレクトリジャンクション（IO_REPARSE_TAG_MOUNT_POINT）。
+    Junction,
+    /// NTFS シンボリックリンク（IO_REPARSE_TAG_SYMLINK）。
+    Symlink,
+    /// WSL 形式のシンボリックリンク（IO_REPARSE_TAG_LX_SYMLINK。Cygwin 3.4+ の既定もこれ）。
+    WslSymlink,
+    /// Cygwin 旧来型の symlink（SYSTEM 属性＋ `!<symlink>` cookie の通常ファイル）。
+    CygwinSymlink,
+    /// その他の reparse point（クラウドプレースホルダ等、tag 不明も含む）。
+    OtherReparse,
+}
+
+impl LinkKind {
+    /// reparse tag から種別を判定する。
+    pub fn from_reparse_tag(tag: u32) -> Self {
+        const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
+        const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
+        const IO_REPARSE_TAG_LX_SYMLINK: u32 = 0xA000_001D;
+        match tag {
+            IO_REPARSE_TAG_MOUNT_POINT => Self::Junction,
+            IO_REPARSE_TAG_SYMLINK => Self::Symlink,
+            IO_REPARSE_TAG_LX_SYMLINK => Self::WslSymlink,
+            _ => Self::OtherReparse,
+        }
+    }
+
+    /// Attribute 列に表示する1文字（リンクでなければ `None`）。
+    pub fn attribute_char(self) -> Option<char> {
+        match self {
+            Self::None => None,
+            Self::Junction => Some('J'),
+            Self::Symlink => Some('L'),
+            Self::WslSymlink => Some('W'),
+            Self::CygwinSymlink => Some('C'),
+            Self::OtherReparse => Some('P'),
+        }
+    }
+
+    /// サイズ列に出す種別ラベル（cmd の dir 表示風）。リンクでないものに加え、その他の
+    /// reparse（クラウドプレースホルダ等）も実サイズに意味があるので `None`（通常表示）。
+    pub fn length_label(self, is_dir: bool) -> Option<&'static str> {
+        match self {
+            Self::None | Self::OtherReparse => None,
+            Self::Junction => Some("<JUNCTION>"),
+            Self::Symlink => Some(if is_dir { "<SYMLINKD>" } else { "<SYMLINK>" }),
+            Self::WslSymlink => Some("<WSLLINK>"),
+            Self::CygwinSymlink => Some("<CYGLINK>"),
+        }
+    }
+
+    /// スクリプト API 等で使う種別トークン（リンクでなければ `None`）。
+    pub fn as_token(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Junction => Some("junction"),
+            Self::Symlink => Some("symlink"),
+            Self::WslSymlink => Some("wsl"),
+            Self::CygwinSymlink => Some("cygwin"),
+            Self::OtherReparse => Some("reparse"),
+        }
     }
 }
 
@@ -596,7 +683,7 @@ pub fn column_sample(kind: ColumnKind) -> &'static str {
         ColumnKind::Length => "999,999,999,999",
         ColumnKind::CreateTime | ColumnKind::LastWriteTime => "0000/00/00 00:00",
         ColumnKind::CreateTimeS | ColumnKind::LastWriteTimeS => "00/00/00 00:00",
-        ColumnKind::Attribute => "DSHRA",
+        ColumnKind::Attribute => "DSHRAJ",
     }
 }
 
@@ -1141,17 +1228,21 @@ impl FileListState {
             ColumnKind::FileName => item.name.clone(),
             ColumnKind::FileBaseName => item.base_name.clone(),
             ColumnKind::FileExtension => item.extension.clone(),
-            ColumnKind::Length => match item.size {
-                // サイズが取れていればディレクトリでも数値表示（書庫内 dir 等）。
-                Some(sz) => format_size_styled(sz, size_format),
-                // サイズ不明：ディレクトリは "<DIR>"、ファイルは 0 と詐称せず "--"。
-                None => {
-                    if item.is_dir {
-                        "<DIR>".to_owned()
-                    } else {
-                        "--".to_owned()
+            // リンクはサイズの代わりに種別ラベル（cmd の dir 表示と同様）。
+            ColumnKind::Length => match item.link_kind().length_label(item.is_dir) {
+                Some(label) => label.to_owned(),
+                None => match item.size {
+                    // サイズが取れていればディレクトリでも数値表示（書庫内 dir 等）。
+                    Some(sz) => format_size_styled(sz, size_format),
+                    // サイズ不明：ディレクトリは "<DIR>"、ファイルは 0 と詐称せず "--"。
+                    None => {
+                        if item.is_dir {
+                            "<DIR>".to_owned()
+                        } else {
+                            "--".to_owned()
+                        }
                     }
-                }
+                },
             },
             ColumnKind::CreateTime => format_time(item.created, "%Y/%m/%d %H:%M"),
             ColumnKind::LastWriteTime => format_time(item.modified, "%Y/%m/%d %H:%M"),
@@ -1174,8 +1265,10 @@ impl FileListState {
                 if item.archive {
                     s.push('A');
                 }
-                if item.reparse {
-                    s.push('J');
+                // リンク種別は1文字で分別（J=junction / L=symlink / W=WSL / C=Cygwin /
+                // P=その他 reparse）。
+                if let Some(c) = item.link_kind().attribute_char() {
+                    s.push(c);
                 }
                 s
             }
@@ -1225,9 +1318,215 @@ pub fn read_items(path: impl AsRef<Path>) -> std::io::Result<Vec<FileItem>> {
         let ent = ent?;
         let meta = ent.metadata()?;
         let name = ent.file_name().to_string_lossy().into_owned();
-        items.push(FileItem::from_metadata(name, &meta));
+        let mut item = FileItem::from_metadata(name, &meta);
+        (item.link, item.link_target) = classify_link(&ent, &item);
+        items.push(item);
     }
     Ok(items)
+}
+
+/// 実 FS 項目のリンク種別とリンク先を判定する。reparse point は tag で分別し、SYSTEM 属性の
+/// 小さな通常ファイルは Cygwin 旧来型 symlink の cookie を内容で確認する。
+#[cfg(windows)]
+fn classify_link(ent: &std::fs::DirEntry, item: &FileItem) -> (LinkKind, Option<String>) {
+    if item.reparse {
+        let path = ent.path();
+        return match win_reparse::tag(&path) {
+            Some(tag) => {
+                let kind = LinkKind::from_reparse_tag(tag);
+                let target = match kind {
+                    LinkKind::Junction | LinkKind::Symlink => {
+                        std::fs::read_link(&path).ok().map(|t| link_display_target(&t))
+                    }
+                    LinkKind::WslSymlink => win_reparse::lx_target(&path),
+                    _ => None,
+                };
+                (kind, target)
+            }
+            None => (LinkKind::OtherReparse, None),
+        };
+    }
+    if !item.is_dir && item.system {
+        if let Some(target) = cygwin_symlink_target(&ent.path(), item.size) {
+            return (LinkKind::CygwinSymlink, Some(target));
+        }
+    }
+    (LinkKind::None, None)
+}
+
+/// `read_link` の結果を表示用文字列へ（verbatim/NT 前置は見た目のノイズなので落とす）。
+fn link_display_target(target: &Path) -> String {
+    let s = target.to_string_lossy();
+    s.strip_prefix(r"\\?\")
+        .or_else(|| s.strip_prefix(r"\??\"))
+        .unwrap_or(&s)
+        .to_owned()
+}
+
+/// Cygwin 旧来型 symlink の先頭マジック（この後にリンク先が続く）。
+const CYGWIN_SYMLINK_COOKIE: &[u8; 10] = b"!<symlink>";
+
+/// SYSTEM 属性の通常ファイルが Cygwin 旧来型 symlink（cookie 形式）ならリンク先を返す。
+/// cookie 形式はリンク先を含めてもごく小さいので、サイズが範囲外なら読まずに除外する。
+/// リンク先は UTF-16（BOM 付き・現行）と生バイト列（旧式）の両対応で、NUL 終端まで読む。
+#[cfg(windows)]
+fn cygwin_symlink_target(path: &Path, size: Option<u64>) -> Option<String> {
+    const MIN: u64 = CYGWIN_SYMLINK_COOKIE.len() as u64;
+    const MAX: u64 = 8192;
+    if !size.is_some_and(|sz| (MIN..=MAX).contains(&sz)) {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let rest = bytes.strip_prefix(CYGWIN_SYMLINK_COOKIE.as_slice())?;
+    let target = if let Some(utf16) = rest.strip_prefix(&[0xff, 0xfe][..]) {
+        let units: Vec<u16> = utf16
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .take_while(|&u| u != 0)
+            .collect();
+        String::from_utf16(&units).ok()?
+    } else {
+        let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+        String::from_utf8(rest[..end].to_vec()).ok()?
+    };
+    (!target.is_empty()).then_some(target)
+}
+
+/// reparse point の tag とリンク先を取得するための最小限の Win32 FFI。core は Win32
+/// バインディングクレートに依存しないため、必要な関数だけを直接宣言する。tag は
+/// `FindFirstFileW`（`dwReserved0`）で、WSL 形式のリンク先は `read_link` が非対応なので
+/// `DeviceIoControl(FSCTL_GET_REPARSE_POINT)` で reparse バッファから読む。
+#[cfg(windows)]
+mod win_reparse {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    /// `WIN32_FIND_DATAW`。使うのは属性と `dwReserved0`（reparse tag）のみで、残りは
+    /// レイアウト合わせ。
+    #[repr(C)]
+    struct FindDataW {
+        attributes: u32,
+        create_access_write_times: [u32; 6],
+        file_size_high: u32,
+        file_size_low: u32,
+        reserved0: u32,
+        reserved1: u32,
+        file_name: [u16; 260],
+        alternate_file_name: [u16; 14],
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn FindFirstFileW(file_name: *const u16, data: *mut FindDataW) -> isize;
+        fn FindClose(handle: isize) -> i32;
+        fn CreateFileW(
+            file_name: *const u16,
+            desired_access: u32,
+            share_mode: u32,
+            security_attributes: *mut core::ffi::c_void,
+            creation_disposition: u32,
+            flags_and_attributes: u32,
+            template_file: isize,
+        ) -> isize;
+        fn DeviceIoControl(
+            device: isize,
+            control_code: u32,
+            in_buffer: *const core::ffi::c_void,
+            in_size: u32,
+            out_buffer: *mut core::ffi::c_void,
+            out_size: u32,
+            bytes_returned: *mut u32,
+            overlapped: *mut core::ffi::c_void,
+        ) -> i32;
+        fn CloseHandle(handle: isize) -> i32;
+    }
+
+    const INVALID_HANDLE_VALUE: isize = -1;
+
+    fn to_wide(path: &Path) -> Vec<u16> {
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    /// `path` の reparse tag。reparse point でない・取得失敗時は `None`。
+    pub(super) fn tag(path: &Path) -> Option<u32> {
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        let wide = to_wide(path);
+        let mut data: FindDataW = unsafe { std::mem::zeroed() };
+        let handle = unsafe { FindFirstFileW(wide.as_ptr(), &mut data) };
+        if handle == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        unsafe { FindClose(handle) };
+        (data.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0).then_some(data.reserved0)
+    }
+
+    /// WSL 形式（IO_REPARSE_TAG_LX_SYMLINK）のリンク先。reparse バッファを読んで
+    /// UTF-8 の POSIX パスを取り出す。取得失敗・形式不一致は `None`。
+    pub(super) fn lx_target(path: &Path) -> Option<String> {
+        const FILE_SHARE_ALL: u32 = 0x7; // READ | WRITE | DELETE
+        const OPEN_EXISTING: u32 = 3;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        const FSCTL_GET_REPARSE_POINT: u32 = 0x0009_00A8;
+        const MAXIMUM_REPARSE_DATA_BUFFER_SIZE: usize = 16 * 1024;
+        let wide = to_wide(path);
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                0,
+                FILE_SHARE_ALL,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+                0,
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut buf = vec![0u8; MAXIMUM_REPARSE_DATA_BUFFER_SIZE];
+        let mut returned: u32 = 0;
+        let ok = unsafe {
+            DeviceIoControl(
+                handle,
+                FSCTL_GET_REPARSE_POINT,
+                std::ptr::null(),
+                0,
+                buf.as_mut_ptr().cast(),
+                buf.len() as u32,
+                &mut returned,
+                std::ptr::null_mut(),
+            )
+        };
+        unsafe { CloseHandle(handle) };
+        if ok == 0 {
+            return None;
+        }
+        buf.truncate(returned as usize);
+        lx_target_from_buffer(&buf)
+    }
+
+    /// `REPARSE_DATA_BUFFER`（tag 4B + データ長 2B + 予約 2B + データ）から WSL 形式の
+    /// リンク先を取り出す。データはバージョン 4B に UTF-8 の POSIX パスが続く。
+    pub(super) fn lx_target_from_buffer(buf: &[u8]) -> Option<String> {
+        const IO_REPARSE_TAG_LX_SYMLINK: u32 = 0xA000_001D;
+        const HEADER_LEN: usize = 8;
+        const VERSION_LEN: usize = 4;
+        let tag = u32::from_le_bytes(buf.get(0..4)?.try_into().ok()?);
+        if tag != IO_REPARSE_TAG_LX_SYMLINK {
+            return None;
+        }
+        let data_len = u16::from_le_bytes(buf.get(4..6)?.try_into().ok()?) as usize;
+        if data_len < VERSION_LEN {
+            return None;
+        }
+        let path = buf.get(HEADER_LEN + VERSION_LEN..HEADER_LEN + data_len)?;
+        let s = std::str::from_utf8(path).ok()?;
+        (!s.is_empty()).then(|| s.to_owned())
+    }
 }
 
 /// カンマ区切りのグロブパターン（`*`=任意長, `?`=任意1文字）のいずれかに
@@ -2128,12 +2427,14 @@ mod tests {
             column_sample(ColumnKind::LastWriteTime).chars().count(),
             cell.chars().count()
         );
-        // 属性の代表は全フラグ立ての実セル以上の長さ。
-        let mut attr = file("x");
+        // 属性の代表は全フラグ立て（リンク文字込み）の実セル以上の長さ。
+        let mut attr = dir("x");
         attr.system = true;
         attr.hidden = true;
         attr.readonly = true;
         attr.archive = true;
+        attr.reparse = true;
+        attr.link = LinkKind::Junction;
         let acell = FileListState::new().cell_text(&attr, ColumnKind::Attribute, SizeFormat::Detail);
         assert!(column_sample(ColumnKind::Attribute).chars().count() >= acell.chars().count());
         // サイズの代表は12桁＋3桁区切り。
@@ -2151,5 +2452,143 @@ mod tests {
         let mut none: Vec<Column> = Vec::new();
         auto_adjust_columns(&mut none, &[], 400, 0, 4, 0.25, 8);
         assert!(none.is_empty());
+    }
+
+    #[test]
+    fn link_kind_maps_tags_chars_and_tokens() {
+        assert_eq!(LinkKind::from_reparse_tag(0xA000_0003), LinkKind::Junction);
+        assert_eq!(LinkKind::from_reparse_tag(0xA000_000C), LinkKind::Symlink);
+        assert_eq!(LinkKind::from_reparse_tag(0xA000_001D), LinkKind::WslSymlink);
+        // 未知の tag（クラウドプレースホルダ等）はその他扱い。
+        assert_eq!(LinkKind::from_reparse_tag(0x9000_601A), LinkKind::OtherReparse);
+        assert_eq!(LinkKind::Junction.attribute_char(), Some('J'));
+        assert_eq!(LinkKind::Symlink.attribute_char(), Some('L'));
+        assert_eq!(LinkKind::WslSymlink.attribute_char(), Some('W'));
+        assert_eq!(LinkKind::CygwinSymlink.attribute_char(), Some('C'));
+        assert_eq!(LinkKind::OtherReparse.attribute_char(), Some('P'));
+        assert_eq!(LinkKind::None.attribute_char(), None);
+        assert_eq!(LinkKind::Symlink.as_token(), Some("symlink"));
+        assert_eq!(LinkKind::None.as_token(), None);
+    }
+
+    #[test]
+    fn attribute_cell_distinguishes_link_kinds() {
+        let st = FileListState::new();
+        let cell = |it: &FileItem| st.cell_text(it, ColumnKind::Attribute, SizeFormat::Detail);
+        let mut junction = dir("j");
+        junction.reparse = true;
+        junction.link = LinkKind::Junction;
+        assert_eq!(cell(&junction), "DJ");
+        let mut symlink = file("l");
+        symlink.reparse = true;
+        symlink.link = LinkKind::Symlink;
+        assert_eq!(cell(&symlink), "L");
+        let mut cygwin = file("c");
+        cygwin.system = true;
+        cygwin.link = LinkKind::CygwinSymlink;
+        assert_eq!(cell(&cygwin), "SC");
+        // tag 未判定の reparse（書庫・合成項目）はその他の reparse に寄せる。
+        let mut unknown = file("u");
+        unknown.reparse = true;
+        assert_eq!(cell(&unknown), "P");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn lx_symlink_buffer_parses_utf8_target() {
+        let path = b"/mnt/c/tmp";
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0xA000_001Du32.to_le_bytes());
+        buf.extend_from_slice(&((path.len() as u16 + 4).to_le_bytes()));
+        buf.extend_from_slice(&[0, 0]); // 予約
+        buf.extend_from_slice(&2u32.to_le_bytes()); // バージョン
+        buf.extend_from_slice(path);
+        assert_eq!(
+            win_reparse::lx_target_from_buffer(&buf),
+            Some("/mnt/c/tmp".to_owned())
+        );
+        // tag 不一致・データ長不足は None。
+        assert_eq!(win_reparse::lx_target_from_buffer(&[0u8; 4]), None);
+    }
+
+    #[test]
+    fn length_cell_shows_link_labels() {
+        let st = FileListState::new();
+        let cell = |it: &FileItem| st.cell_text(it, ColumnKind::Length, SizeFormat::Detail);
+        let mut junction = dir("j");
+        junction.reparse = true;
+        junction.link = LinkKind::Junction;
+        assert_eq!(cell(&junction), "<JUNCTION>");
+        let mut dir_symlink = dir("ld");
+        dir_symlink.reparse = true;
+        dir_symlink.link = LinkKind::Symlink;
+        assert_eq!(cell(&dir_symlink), "<SYMLINKD>");
+        let mut file_symlink = file("lf");
+        file_symlink.reparse = true;
+        file_symlink.link = LinkKind::Symlink;
+        file_symlink.size = Some(0);
+        assert_eq!(cell(&file_symlink), "<SYMLINK>");
+        let mut wsl = file("w");
+        wsl.reparse = true;
+        wsl.link = LinkKind::WslSymlink;
+        assert_eq!(cell(&wsl), "<WSLLINK>");
+        let mut cygwin = file("c");
+        cygwin.link = LinkKind::CygwinSymlink;
+        cygwin.size = Some(22);
+        assert_eq!(cell(&cygwin), "<CYGLINK>");
+        // その他の reparse（クラウドプレースホルダ等）は実サイズ表示のまま。
+        let mut placeholder = file("p");
+        placeholder.reparse = true;
+        placeholder.size = Some(123);
+        assert_eq!(cell(&placeholder), "123");
+        // 通常のディレクトリ・ファイルは従来表示。
+        assert_eq!(cell(&dir("d")), "<DIR>");
+        assert_eq!(cell(&file("f")), "--");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn read_items_classifies_junction_and_cygwin_cookie() {
+        let root = std::env::temp_dir().join(format!("rerics_linkkind_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        // Cygwin 旧来型 symlink：cookie + UTF-16 BOM + リンク先、SYSTEM 属性付き。
+        let mut content = CYGWIN_SYMLINK_COOKIE.to_vec();
+        content.extend_from_slice(&[0xff, 0xfe]);
+        for u in "target\0".encode_utf16() {
+            content.extend_from_slice(&u.to_le_bytes());
+        }
+        std::fs::write(root.join("cyg"), &content).unwrap();
+        let has_system = std::process::Command::new("cmd")
+            .args(["/C", "attrib", "+S", "cyg"])
+            .current_dir(&root)
+            .status()
+            .is_ok_and(|s| s.success());
+        // junction（作成に管理者権限は不要）。
+        let has_junction = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J", "jlink", "target"])
+            .current_dir(&root)
+            .output()
+            .is_ok_and(|o| o.status.success());
+        let items = read_items(&root).unwrap();
+        let find = |n: &str| items.iter().find(|i| i.name == n).unwrap();
+        assert_eq!(find("target").link, LinkKind::None);
+        if has_junction {
+            let j = find("jlink");
+            assert!(j.reparse);
+            // reparse なディレクトリも dir 扱い（並び・侵入のため）。
+            assert!(j.is_dir);
+            assert_eq!(j.link, LinkKind::Junction);
+            // リンク先は実 target の絶対パス（verbatim 前置は落ちている）。
+            let t = j.link_target.as_deref().unwrap();
+            assert!(t.ends_with("target") && !t.starts_with(r"\\?\"), "target: {t}");
+        }
+        if has_system {
+            let c = find("cyg");
+            assert!(!c.reparse);
+            assert_eq!(c.link, LinkKind::CygwinSymlink);
+            assert_eq!(c.link_target.as_deref(), Some("target"));
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

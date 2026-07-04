@@ -302,6 +302,10 @@ pub struct PaneItem {
     pub archive: bool,
     /// 再解析ポイント（シンボリックリンク・ジャンクション等）。
     pub reparse: bool,
+    /// リンク種別（"junction"/"symlink"/"wsl"/"cygwin"/"reparse"。リンクでなければ null）。
+    pub link: Option<&'static str>,
+    /// リンク先の表示文字列（取れなければ null。WSL/Cygwin 形式は POSIX パス）。
+    pub link_target: Option<String>,
     /// 書庫など仮想ディレクトリ内の項目か（JS では `virtual`）。
     #[serde(rename = "virtual")]
     pub is_virtual: bool,
@@ -1303,6 +1307,8 @@ const BOOTSTRAP: &str = r#"
         system: raw.system,
         archive: raw.archive,
         reparse: raw.reparse,
+        link: raw.link,
+        linkTarget: raw.linkTarget,
         virtual: raw.virtual,
       };
       Object.defineProperty(it, "selected", {
@@ -2271,6 +2277,8 @@ mod tests {
         a.system = true;
         a.archive = true;
         a.reparse = true;
+        a.link = Some("symlink");
+        a.link_target = Some("D:\\dir".to_string());
         a.is_virtual = true;
         a.ctime = 1000;
         a.atime = 2000;
@@ -2291,6 +2299,7 @@ mod tests {
             r#"
               const it = rerics.activePane().items[1];
               rerics.log("attr=" + it.system + "," + it.archive + "," + it.reparse);
+              rerics.log("link=" + it.link + "," + it.linkTarget + "," + rerics.activePane().items[0].link);
               rerics.log("time=" + it.ctime + "," + it.atime + "," + it.mtime);
               rerics.log("virtual=" + it.virtual);
             "#
@@ -2301,6 +2310,7 @@ mod tests {
             *host.logs.borrow(),
             vec![
                 "attr=true,true,true".to_string(),
+                "link=symlink,D:\\dir,null".to_string(),
                 "time=1000,2000,3000".to_string(),
                 "virtual=true".to_string(),
             ]

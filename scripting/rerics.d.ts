@@ -58,6 +58,14 @@ interface RericsItem {
   readonly archive: boolean;
   /** 再解析ポイント（シンボリックリンク・ジャンクション等）。 */
   readonly reparse: boolean;
+  /**
+   * リンク種別。junction=ディレクトリジャンクション、symlink=NTFS シンボリックリンク、
+   * wsl=WSL 形式（Cygwin 3.4+ の既定もこれ）、cygwin=Cygwin 旧来型（cookie ファイル）、
+   * reparse=その他の再解析ポイント。リンクでなければ null。
+   */
+  readonly link: "junction" | "symlink" | "wsl" | "cygwin" | "reparse" | null;
+  /** リンク先の表示文字列（取れなければ null。WSL/Cygwin 形式は POSIX パス）。 */
+  readonly linkTarget: string | null;
   /** 書庫など仮想ディレクトリ内の項目なら true。 */
   readonly virtual: boolean;
 }

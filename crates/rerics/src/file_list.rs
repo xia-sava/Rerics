@@ -937,7 +937,14 @@ impl FileListView {
         }
         let (ci, left, right) = hit?;
         let kind = s.columns[ci].kind;
-        let text = s.cell_text(&s.items[row], kind, self.inner.size_format.get());
+        let item = &s.items[row];
+        let mut text = s.cell_text(item, kind, self.inner.size_format.get());
+        // 名前列のリンクはリンク先込みで全文を出す（描画が薄色で添える内容と揃える）。
+        if matches!(kind, ColumnKind::FileName | ColumnKind::FileBaseName)
+            && let Some(target) = &item.link_target
+        {
+            text = format!("{text} → {target}");
+        }
         if text.is_empty() {
             return None;
         }
@@ -1205,6 +1212,23 @@ impl FileListView {
                 let rect = w::RECT { left: text_left, top: y, right, bottom: y + item_h };
                 let shown = elide_to_width(dc, &text, right - text_left);
                 dc.DrawText(&shown, rect, flags)?;
+                // 名前列のリンクは、余り幅にリンク先を薄色（行の文字色を行背景へ寄せた色）・
+                // 右寄せで添える。名前が幅を先取りし、足りない分はリンク先側から削る。
+                if is_name_col && let Some(target) = &item.link_target {
+                    let name_w = dc.GetTextExtentPoint32(&shown).map(|z| z.cx).unwrap_or(0);
+                    let t_left = text_left + name_w + margin * 2;
+                    let arrow = format!("→ {target}");
+                    let shown_t = elide_to_width(dc, &arrow, right - t_left);
+                    // 矢印すら残らない幅なら出さない（"…" だけの断片は無意味）。
+                    if shown_t.chars().count() > 2 {
+                        let row_bg =
+                            if item.selected { sel_bg_color } else { colors.background };
+                        dc.SetTextColor(rgb(text_color.blend(row_bg, 2, 5)))?;
+                        let t_rect = w::RECT { left: t_left, top: y, right, bottom: y + item_h };
+                        dc.DrawText(&shown_t, t_rect, flags | co::DT::RIGHT)?;
+                        dc.SetTextColor(rgb(text_color))?;
+                    }
+                }
             }
             // 4. カーソル下線。
             if cursor_visible && i == s.cursor {

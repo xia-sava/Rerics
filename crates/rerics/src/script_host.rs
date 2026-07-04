@@ -1179,6 +1179,8 @@ impl MainWindow {
                 system: it.system,
                 archive: it.archive,
                 reparse: it.reparse,
+                link: it.link_kind().as_token(),
+                link_target: it.link_target.clone(),
                 // 書庫など仮想ペインの項目はすべて仮想扱い。
                 is_virtual: is_archive,
             })

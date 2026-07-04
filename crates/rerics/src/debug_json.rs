@@ -58,6 +58,9 @@ pub fn item_json(it: &FileItem, is_cursor: bool) -> Value {
         "attrs": attrs_string(it),
         "cursor": is_cursor,
         "modified": modified,
+        // リンク項目のみ非 null（種別トークンとリンク先）。
+        "link": it.link_kind().as_token(),
+        "link_target": it.link_target.as_deref(),
         // 検索・比較の結果項目のみ非 null（出自の場所と補助情報）。通常一覧では null。
         "source": it.source.as_ref().map(|l| l.loc_display()),
         "info": it.info,
@@ -136,6 +139,8 @@ mod tests {
             system: false,
             archive: false,
             reparse: false,
+            link: rerics_core::LinkKind::None,
+            link_target: None,
             selected,
             source: None,
             info: None,
