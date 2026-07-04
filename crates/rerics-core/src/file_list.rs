@@ -268,7 +268,7 @@ pub fn format_size_styled(n: u64, fmt: SizeFormat) -> String {
     const GB: u64 = MB * 1024;
     const TB: u64 = GB * 1024;
     match fmt {
-        SizeFormat::Detail => format_size(n),
+        SizeFormat::Detail => group_digits(n),
         SizeFormat::Simple1 => {
             let (v, u) = if n >= TB {
                 (n as f64 / TB as f64, " TB")
@@ -289,12 +289,12 @@ pub fn format_size_styled(n: u64, fmt: SizeFormat) -> String {
             } else if n >= MB {
                 format!("{} MB", decimal1_grouped(n as f64 / MB as f64))
             } else {
-                format_size(n)
+                group_digits(n)
             }
         }
         SizeFormat::Explorer => {
             let kb = ((n as f64) / KB as f64).round() as u64;
-            format!("{} KB", format_size(kb))
+            format!("{} KB", group_digits(kb))
         }
     }
 }
@@ -303,7 +303,7 @@ pub fn format_size_styled(n: u64, fmt: SizeFormat) -> String {
 fn decimal1_grouped(v: f64) -> String {
     let s = format!("{v:.1}");
     let (int_part, frac) = s.split_once('.').unwrap_or((s.as_str(), "0"));
-    let int_grouped = int_part.parse::<u64>().map(format_size).unwrap_or_else(|_| int_part.to_owned());
+    let int_grouped = int_part.parse::<u64>().map(group_digits).unwrap_or_else(|_| int_part.to_owned());
     format!("{int_grouped}.{frac}")
 }
 
@@ -1299,8 +1299,8 @@ impl FileListState {
     }
 }
 
-/// 桁区切りカンマの10進バイト数表記。
-fn format_size(n: u64) -> String {
+/// 桁区切りカンマの10進表記（バイト数・件数の表示用）。
+pub(crate) fn group_digits(n: u64) -> String {
     let s = n.to_string();
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len() + s.len() / 3);

@@ -235,16 +235,22 @@ pub fn directory_name_question() -> String {
 }
 
 /// ディレクトリ使用量の結果（{0}=対象・{1}=バイト・{2}=ファイル数・{3}=フォルダ数）。
+/// 数値は桁区切りカンマ表記。
 pub fn directory_information(target: &str, bytes: u64, files: u64, dirs: u64) -> String {
-    format!("{target} : {bytes} バイト（{files} ファイル / {dirs} フォルダ）")
+    format!(
+        "{target} : {} バイト（{} ファイル / {} フォルダ）",
+        crate::file_list::group_digits(bytes),
+        crate::file_list::group_digits(files),
+        crate::file_list::group_digits(dirs),
+    )
 }
 
 /// 使用量計算の進捗（走査済み件数。インプレース更新行）。
 pub fn calc_size_progress(scanned: u64) -> String {
-    format!("使用量計算中… {scanned} 件")
+    format!("使用量計算中… {} 件", crate::file_list::group_digits(scanned))
 }
 
 /// 使用量計算の完了（インプレース更新行を確定させる）。
 pub fn calc_size_done(scanned: u64) -> String {
-    format!("使用量計算 完了（{scanned} 件）")
+    format!("使用量計算 完了（{} 件）", crate::file_list::group_digits(scanned))
 }
