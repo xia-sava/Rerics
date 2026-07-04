@@ -1884,6 +1884,26 @@ impl Engine {
         self.runtime.v8_isolate().thread_safe_handle().cancel_terminate_execution();
     }
 
+    /// ブートストラップが生やした補助グローバル（`__commandMetas` 等）を評価する。これらは
+    /// 書換え可能なグローバルで、ユーザースクリプトが上書き/削除でき、また停止(terminate)が
+    /// 直後の評価に残ることもある。評価に失敗してもエンジンスレッドを巻き込んで落とさず
+    /// `None` を返す。getter 経路は `run_script_task` を通らないので、ここで前回の停止フラグを
+    /// 解除してから評価する。
+    fn eval_bootstrap_helper(
+        &mut self,
+        name: &'static str,
+        code: &'static str,
+    ) -> Option<deno_core::v8::Global<deno_core::v8::Value>> {
+        self.clear_terminate();
+        match self.runtime.execute_script(name, code) {
+            Ok(g) => Some(g),
+            Err(e) => {
+                eprintln!("{code} の評価に失敗（スクリプトが上書き/削除した可能性）: {e}");
+                None
+            }
+        }
+    }
+
     /// 並列ワーカー（`r.parallel`）を有効にする。`factory` は各ワーカースレッドの中で呼ばれ、
     /// そのスレッド専有のホストを作る。常駐ワーカー数（＝同時実行数）は CPU 数。`pool_stopped` は
     /// UI 側が停止時に立てるフラグで、次の `parallel()` でプールを畳んで作り直す。メインエンジン
@@ -1910,10 +1930,10 @@ impl Engine {
     /// 登録済みコマンドのメタ情報（名前・表示名・ジャンル）を登録順で返す。設定 UI が
     /// スクリプト行のラベル／ジャンルを描くのに使う。`label`/`genre` 未指定は `None`。
     pub fn registered_command_metas(&mut self) -> Vec<ScriptCommand> {
-        let global = self
-            .runtime
-            .execute_script("rerics:list-metas", "globalThis.__commandMetas()")
-            .expect("__commandMetas must not fail");
+        let Some(global) = self.eval_bootstrap_helper("rerics:list-metas", "globalThis.__commandMetas()")
+        else {
+            return Vec::new();
+        };
         deno_core::scope!(scope, &mut self.runtime);
         let local = deno_core::v8::Local::new(scope, global);
         deno_core::serde_v8::from_v8::<Vec<ScriptCommand>>(scope, local).unwrap_or_default()
@@ -1922,10 +1942,10 @@ impl Engine {
     /// `registerMenu` で登録された名前付きメニュー定義を登録順で返す。`menu("名前")` の解決時に
     /// config 定義とマージする。
     pub fn registered_menus(&mut self) -> Vec<rerics_core::MenuDef> {
-        let global = self
-            .runtime
-            .execute_script("rerics:list-menus", "globalThis.__menuDefs()")
-            .expect("__menuDefs must not fail");
+        let Some(global) = self.eval_bootstrap_helper("rerics:list-menus", "globalThis.__menuDefs()")
+        else {
+            return Vec::new();
+        };
         deno_core::scope!(scope, &mut self.runtime);
         let local = deno_core::v8::Local::new(scope, global);
         deno_core::serde_v8::from_v8::<Vec<rerics_core::MenuDef>>(scope, local).unwrap_or_default()
@@ -1934,10 +1954,10 @@ impl Engine {
     /// `globalThis` に実在する名前の一覧を返す（JS 標準グローバル＋ユーザースクリプトが
     /// 生やしたもの込み）。式エディタの未解決識別子チェックの許容リストに使う。
     pub fn global_names(&mut self) -> Vec<String> {
-        let global = self
-            .runtime
-            .execute_script("rerics:list-globals", "globalThis.__globalNames()")
-            .expect("__globalNames must not fail");
+        let Some(global) = self.eval_bootstrap_helper("rerics:list-globals", "globalThis.__globalNames()")
+        else {
+            return Vec::new();
+        };
         deno_core::scope!(scope, &mut self.runtime);
         let local = deno_core::v8::Local::new(scope, global);
         deno_core::serde_v8::from_v8::<Vec<String>>(scope, local).unwrap_or_default()
@@ -1946,10 +1966,10 @@ impl Engine {
     /// `r.` で呼べるメンバーを名前昇順で返す（組込ホスト API＋公開済み登録コマンド）。設定 UI の
     /// 引数/コード欄の補完候補に使う。
     pub fn registered_members(&mut self) -> Vec<MemberInfo> {
-        let global = self
-            .runtime
-            .execute_script("rerics:list-members", "globalThis.__memberNames()")
-            .expect("__memberNames must not fail");
+        let Some(global) = self.eval_bootstrap_helper("rerics:list-members", "globalThis.__memberNames()")
+        else {
+            return Vec::new();
+        };
         deno_core::scope!(scope, &mut self.runtime);
         let local = deno_core::v8::Local::new(scope, global);
         deno_core::serde_v8::from_v8::<Vec<MemberInfo>>(scope, local).unwrap_or_default()
