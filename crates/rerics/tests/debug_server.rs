@@ -1495,10 +1495,14 @@ fn sort_command_changes_sort_type() {
     // 既定は名前順。
     let before = server.req("GET", "/state/panes/left/sort/type", "").unwrap().1;
     assert_eq!(before.trim(), "\"FileName\"", "default sort should be FileName");
+    let flag = server.req("GET", "/state/panes/left/sort/default", "").unwrap().1;
+    assert_eq!(flag.trim(), "true", "initial sort should match the configured default");
 
     server.req("POST", "/command/sort", r#"["size"]"#).unwrap();
     let after = server.req("GET", "/state/panes/left/sort/type", "").unwrap().1;
     assert_eq!(after.trim(), "\"Length\"", "sort(\"size\") should switch to Length");
+    let flag = server.req("GET", "/state/panes/left/sort/default", "").unwrap().1;
+    assert_eq!(flag.trim(), "false", "non-default sort should clear the default flag");
 }
 
 /// 引数無しの `sort()` は config の既定ソート（既定は FileName）に従う（原作準拠）。
@@ -1517,6 +1521,11 @@ fn sort_command_without_arg_applies_default() {
         server.req("GET", "/state/panes/left/sort/type", "").unwrap().1.trim(),
         "\"FileName\"",
         "argless sort() should fall back to the configured default (FileName)",
+    );
+    assert_eq!(
+        server.req("GET", "/state/panes/left/sort/default", "").unwrap().1.trim(),
+        "true",
+        "returning to the configured default should set the default flag again",
     );
 }
 

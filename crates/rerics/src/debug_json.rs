@@ -17,6 +17,8 @@ pub struct PaneChrome<'a> {
     pub path_bar: &'a str,
     pub status_left: &'a str,
     pub status_right: &'a str,
+    /// 現在ソートが設定の既定ソートと一致しているか（ヘッダ三角の強調色と同じ判定）。
+    pub sort_default: bool,
 }
 
 /// 属性フラグを D/R/H/S/A の文字列へ（表示の属性列と同趣旨）。
@@ -99,7 +101,11 @@ pub fn pane_state_json(state: &FileListState, chrome: &PaneChrome) -> Value {
         "page_rows": chrome.page_rows,
         "visible": [state.scroll_top, visible_end],
         "mask": chrome.mask,
-        "sort": { "type": format!("{:?}", state.sort_type), "reverse": state.sort_reverse },
+        "sort": {
+            "type": format!("{:?}", state.sort_type),
+            "reverse": state.sort_reverse,
+            "default": chrome.sort_default,
+        },
         "find_result": state.find_result,
         "selected_count": sel_count,
         "selected_size": sel_size,
@@ -165,6 +171,7 @@ mod tests {
             path_bar: "C:\\work",
             status_left: "1 selected",
             status_right: "C: free",
+            sort_default: true,
         };
         let v = pane_state_json(&state, &chrome);
 

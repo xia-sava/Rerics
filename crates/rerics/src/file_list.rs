@@ -24,6 +24,16 @@ const THUMB_SHELL_ICON_LOGICAL: i32 = 32;
 /// サムネイル表示の行間の隙間（物理 px）。画像を行ピッチより，この分だけ小さく描く。
 const THUMB_ROW_GAP_PX: i32 = 1;
 
+/// ヘッダのソート三角を本文フォントサイズに対して縮小する割合（%）。
+const SORT_GLYPH_SIZE_PERCENT: i32 = 70;
+
+/// ヘッダのソート三角の最小フォントサイズ（論理 px）。
+const SORT_GLYPH_MIN_SIZE: i32 = 6;
+
+/// 既定ソートと異なるソート中に三角へ付ける強調色（朱）。ヘッダはシステム色ベースで
+/// テーマの影響を受けないため固定色とする。
+const SORT_GLYPH_HIGHLIGHT_RGB: (u8, u8, u8) = (208, 64, 0);
+
 /// FileItem の更新時刻を per-file アイコンキャッシュのキー用 u64 秒へ。取得不能は 0。
 fn item_mtime(it: &FileItem) -> u64 {
     it.modified
@@ -102,6 +112,9 @@ struct Inner {
     auto_adjust: Cell<bool>,
     /// 一覧セルの文字間隔（設定・論理 px・負で詰める）。描画と幅実測の両方へ効かせる。
     char_spacing: Cell<i32>,
+    /// 既定ソート（設定）。現在ソートとの一致判定でヘッダのソート三角の強調色を決める。
+    default_sort: Cell<SortType>,
+    default_sort_reverse: Cell<bool>,
     /// 現在表示中の実FSディレクトリ（per-file アイコン取得用。書庫内など実体が無ければ None）。
     dir: RefCell<Option<PathBuf>>,
     /// 切り詰めセルの全文を出す hover ツールチップ部品（生成後に設定）。
@@ -165,6 +178,8 @@ impl FileListView {
             size_format: Cell::new(cfg.size_format),
             auto_adjust: Cell::new(cfg.auto_adjust_columns),
             char_spacing: Cell::new(cfg.char_spacing_px),
+            default_sort: Cell::new(cfg.default_sort),
+            default_sort_reverse: Cell::new(cfg.default_sort_reverse),
             dir: RefCell::new(None),
             cell_tip: RefCell::new(None),
         });
@@ -349,6 +364,8 @@ impl FileListView {
         self.inner.size_format.set(cfg.size_format);
         self.inner.auto_adjust.set(cfg.auto_adjust_columns);
         self.inner.char_spacing.set(cfg.char_spacing_px);
+        self.inner.default_sort.set(cfg.default_sort);
+        self.inner.default_sort_reverse.set(cfg.default_sort_reverse);
         self.inner.progress_delay.set(Duration::from_millis(cfg.progress_delay_ms));
         // 列構成をライブ反映（表示中ペイン）。幅は自動調整 on なら autofit が、off なら設定値が効く。
         {
@@ -1306,8 +1323,29 @@ impl FileListView {
         if sort_match {
             let tw = fonts.width(dc, &col.text);
             let x0 = left + margin + tw + 8;
-            // 線分描画ではなく三角グリフを文字として描く（昇順=△ 上向き／降順=▽ 下向き）。
-            let glyph = if s.sort_reverse { "▽" } else { "△" };
+            // 三角グリフを文字として描く（上向き=昇順／下向き=降順、塗り=自然順ソート）。
+            let exp_like = matches!(
+                s.sort_type,
+                SortType::FileNameExpLike | SortType::ExtensionExpLike
+            );
+            let glyph = match (exp_like, s.sort_reverse) {
+                (false, false) => "△",
+                (false, true) => "▽",
+                (true, false) => "▲",
+                (true, true) => "▼",
+            };
+            // 既定ソートと異なるソート中は強調色にする。
+            let is_default = (s.sort_type, s.sort_reverse)
+                == (self.inner.default_sort.get(), self.inner.default_sort_reverse.get());
+            if !is_default {
+                let (r, g, b) = SORT_GLYPH_HIGHLIGHT_RGB;
+                dc.SetTextColor(w::COLORREF::from_rgb(r, g, b))?;
+            }
+            // ラベルより控えめに、本文フォントを縮小した専用フォントで描く。
+            let size = (self.inner.font_size.get() * SORT_GLYPH_SIZE_PERCENT / 100)
+                .max(SORT_GLYPH_MIN_SIZE);
+            let small = self.create_font_family(&self.inner.font_family.borrow(), size)?;
+            let _small_sel = dc.SelectObject(&*small)?;
             let rect = w::RECT { left: x0, top: 0, right, bottom: header_h };
             dc.DrawText(glyph, rect, co::DT::SINGLELINE | co::DT::NOPREFIX | co::DT::VCENTER)?;
         }

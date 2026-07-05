@@ -1604,6 +1604,12 @@ impl MainWindow {
         let path_bar = self.bar(is_left).text();
         let status_left = self.status(is_left).left_text();
         let status_right = self.status(is_left).right_text();
+        let st = view.state();
+        let s = st.borrow();
+        let sort_default = {
+            let cfg = self.config.borrow();
+            (s.sort_type, s.sort_reverse) == (cfg.default_sort, cfg.default_sort_reverse)
+        };
         let chrome = debug_json::PaneChrome {
             location: &location,
             is_archive,
@@ -1612,9 +1618,8 @@ impl MainWindow {
             path_bar: &path_bar,
             status_left: &status_left,
             status_right: &status_right,
+            sort_default,
         };
-        let st = view.state();
-        let s = st.borrow();
         debug_json::pane_state_json(&s, &chrome)
     }
 
