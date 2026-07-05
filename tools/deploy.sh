@@ -72,5 +72,18 @@ cp -f "${src_exe}" "${deploy_dir}/rerics.exe"
 echo "[deploy] コピー完了: ${deploy_dir}/rerics.exe"
 
 # --- 4. 起動（窓が開く）---
-powershell.exe -NoProfile -Command "Start-Process -FilePath '${target_exe}'"
+#     git bash から継いだ HOME・MSYS 系変数・PATH 追加分を落とし、ショートカット起動と
+#     同じクリーンな環境で起動する。HOME が残ると Cygwin 系の子プロセス（cygterm/zsh 等）
+#     がホームディレクトリを誤認する。
+powershell.exe -NoProfile -Command "
+  foreach (\$name in @('HOME','SHELL','TERM','HOSTNAME','MSYSTEM','MSYSTEM_PREFIX',
+                       'MSYSTEM_CARCH','MSYSTEM_CHOST','MINGW_PREFIX','MINGW_CHOST',
+                       'MINGW_PACKAGE_PREFIX','ORIGINAL_PATH','ORIGINAL_TEMP','ORIGINAL_TMP',
+                       'EXEPATH','PLINK_PROTOCOL','SHLVL','PS1','OLDPWD')) {
+    Remove-Item \"Env:\$name\" -ErrorAction SilentlyContinue
+  }
+  \$env:PATH = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
+               [Environment]::GetEnvironmentVariable('Path', 'User')
+  Start-Process -FilePath '${target_exe}'
+"
 echo "[deploy] 起動した"
