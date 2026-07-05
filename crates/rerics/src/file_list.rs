@@ -353,6 +353,8 @@ impl FileListView {
 
     /// 設定の配色・フォント・スクロールバー幅を反映して再描画する。
     pub fn apply_config(&self, cfg: &Config) {
+        let old_default =
+            (self.inner.default_sort.get(), self.inner.default_sort_reverse.get());
         self.inner.colors.set(cfg.active_colors());
         *self.inner.font_family.borrow_mut() = cfg.font.family.clone();
         *self.inner.font_fallback.borrow_mut() = cfg.font.fallback.clone();
@@ -372,6 +374,12 @@ impl FileListView {
             let mut s = self.inner.state.borrow_mut();
             s.columns = cfg.columns.clone();
             s.reverse_sort_date = cfg.reverse_sort_date;
+            // 既定のまま使っているペインは、既定ソートの変更に並びごと追従させる。
+            s.follow_default_sort(
+                old_default,
+                (cfg.default_sort, cfg.default_sort_reverse),
+                self.page_rows(),
+            );
         }
         let _ = self.autofit_columns();
         let _ = self.refresh();

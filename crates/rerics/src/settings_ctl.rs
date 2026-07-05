@@ -46,6 +46,10 @@ impl MainWindow {
     /// 新しい設定をライブ反映する（配色・フォント・レイアウト寸法・キーバインド）。
     /// 列構成の変更は再起動後に反映される。
     pub(crate) fn apply_config(&self, new: Config) -> w::AnyResult<()> {
+        let old_default = {
+            let cfg = self.config.borrow();
+            (cfg.default_sort, cfg.default_sort_reverse)
+        };
         *self.config.borrow_mut() = new;
         let km = self.config.borrow().keymap();
         *self.keymap.borrow_mut() = km;
@@ -59,6 +63,14 @@ impl MainWindow {
             self.right.apply_config(&cfg);
             self.tab_bar.apply_config(&cfg);
             self.log.apply_config(&cfg);
+            // 既定ソートの変更は非アクティブタブのスナップショットにも追従させる
+            // （表示中ペインは FileListView::apply_config が行う）。
+            let new_default = (cfg.default_sort, cfg.default_sort_reverse);
+            let (pl, pr) = (self.view(true).page_rows(), self.view(false).page_rows());
+            for t in self.tabs.borrow_mut().iter_mut() {
+                t.left_state.follow_default_sort(old_default, new_default, pl);
+                t.right_state.follow_default_sort(old_default, new_default, pr);
+            }
         }
         self.layout()?;
         self.refresh_tab_bar()?;

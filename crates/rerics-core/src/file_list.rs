@@ -1244,6 +1244,25 @@ impl FileListState {
             .sort_by(|a, b| compare_items(a, b, sort, effective));
     }
 
+    /// 既定ソート設定の変更に追従する。現在の並びが旧既定 `old` と一致している（＝既定の
+    /// まま使っている）場合だけ新既定 `new` で並べ替え、カーソルは同名項目へ追従させる。
+    /// 個別に並びを変えたペインは対象外。`old`/`new` は (種別, 降順) の対。
+    pub fn follow_default_sort(
+        &mut self,
+        old: (SortType, bool),
+        new: (SortType, bool),
+        page_rows: usize,
+    ) {
+        if old == new || (self.sort_type, self.sort_reverse) != old {
+            return;
+        }
+        let name = self.items.get(self.cursor).map(|i| i.name.clone());
+        self.sort(new.0, new.1);
+        if let Some(n) = name {
+            self.set_cursor_position(&n, page_rows);
+        }
+    }
+
     /// 列のセルテキストを生成する。
     pub fn cell_text(&self, item: &FileItem, kind: ColumnKind, size_format: SizeFormat) -> String {
         match kind {
@@ -2108,6 +2127,37 @@ mod tests {
         s.sort(SortType::FileName, false);
         let names: Vec<&str> = s.items.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, vec!["..", "adir", "zdir", "a.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn follow_default_sort_resorts_only_default_panes() {
+        // 既定（名前昇順）のまま → 新既定（サイズ昇順）へ追従し、カーソルは同名項目を保つ。
+        let mut s = FileListState::new();
+        let mut big = file("big.txt");
+        big.size = Some(100);
+        let mut small = file("small.txt");
+        small.size = Some(1);
+        s.items = vec![big, small];
+        s.sort(SortType::FileName, false);
+        s.cursor = s.items.iter().position(|i| i.name == "small.txt").unwrap();
+        s.follow_default_sort((SortType::FileName, false), (SortType::Length, false), 10);
+        assert_eq!(s.sort_type, SortType::Length);
+        assert_eq!(s.items[0].name, "small.txt");
+        assert_eq!(s.items[s.cursor].name, "small.txt", "カーソルは同名項目へ追従する");
+
+        // 個別に並びを変えたペイン → 既定変更に追従しない。
+        let mut s = FileListState::new();
+        s.items = vec![file("b.txt"), file("a.txt")];
+        s.sort(SortType::Extension, false);
+        s.follow_default_sort((SortType::FileName, false), (SortType::Length, false), 10);
+        assert_eq!(s.sort_type, SortType::Extension, "個別指定した並びは維持する");
+
+        // 既定が変わっていなければ何もしない。
+        let mut s = FileListState::new();
+        s.items = vec![file("b.txt"), file("a.txt")];
+        s.sort(SortType::FileName, false);
+        s.follow_default_sort((SortType::FileName, false), (SortType::FileName, false), 10);
+        assert_eq!(s.items[0].name, "a.txt");
     }
 
     #[test]
