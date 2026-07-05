@@ -108,11 +108,29 @@ pub struct FontSpec {
     pub family: String,
     /// 論理 pt 相当（GUI 層で DPI スケールする）。
     pub size: i32,
+    /// `family` にグリフが無い文字の代替フォント（優先順）。各要素は `"ファミリ名"` または
+    /// `"ファミリ名:サイズ"`（[`FontSpec::parse_fallback_entry`]）。空ならシステム既定の
+    /// フォールバックに任せる。
+    #[serde(default)]
+    pub fallback: Vec<String>,
 }
 
 impl Default for FontSpec {
     fn default() -> Self {
-        Self { family: "BIZ UDGothic".to_owned(), size: 13 }
+        Self { family: "BIZ UDGothic".to_owned(), size: 13, fallback: Vec::new() }
+    }
+}
+
+impl FontSpec {
+    /// フォールバック 1 エントリを（ファミリ名, サイズ指定）へ分解する。サイズは `size` と
+    /// 同じ論理 pt 相当の絶対値で、省略時（`:` 無し・整数として読めない）は `None`＝主
+    /// フォントと同サイズ。
+    pub fn parse_fallback_entry(entry: &str) -> (&str, Option<i32>) {
+        if let Some((family, size)) = entry.rsplit_once(':')
+            && let Ok(size) = size.trim().parse::<i32>() {
+                return (family.trim(), Some(size));
+            }
+        (entry.trim(), None)
     }
 }
 
@@ -828,6 +846,19 @@ mod tests {
     fn embedded_default_matches_rust_defaults() {
         let parsed: Config = toml::from_str(DEFAULT_CONFIG_TOML).unwrap();
         assert_eq!(parsed, Config::default());
+    }
+
+    #[test]
+    fn parse_fallback_entry_splits_family_and_size() {
+        assert_eq!(
+            FontSpec::parse_fallback_entry("Microsoft YaHei UI:12"),
+            ("Microsoft YaHei UI", Some(12))
+        );
+        assert_eq!(FontSpec::parse_fallback_entry(" Noto Sans SC "), ("Noto Sans SC", None));
+        assert_eq!(FontSpec::parse_fallback_entry("Meiryo : 10 "), ("Meiryo", Some(10)));
+        // サイズ部が整数でなければ全体をファミリ名として扱う。
+        assert_eq!(FontSpec::parse_fallback_entry("Foo:Bar"), ("Foo:Bar", None));
+        assert_eq!(FontSpec::parse_fallback_entry(""), ("", None));
     }
 
     #[test]

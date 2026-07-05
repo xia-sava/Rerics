@@ -9,10 +9,13 @@ use std::rc::Rc;
 use rerics_core::{Colors, Config, LogLevel, LogState, Rgb, Spinner};
 use winsafe::{self as w, co, gui, prelude::*};
 
+use crate::font_fallback::FontSet;
+
 struct Inner {
     state: RefCell<LogState>,
     colors: Cell<Colors>,
     font_family: RefCell<String>,
+    font_fallback: RefCell<Vec<String>>,
     font_size: Cell<i32>,
     scrollbar_width: Cell<i32>,
     /// 1行の高さ（描画時にフォントメトリクスから更新）。
@@ -54,6 +57,7 @@ impl LogView {
             state: RefCell::new(LogState::new()),
             colors: Cell::new(cfg.active_colors()),
             font_family: RefCell::new(cfg.font.family.clone()),
+            font_fallback: RefCell::new(cfg.font.fallback.clone()),
             font_size: Cell::new(cfg.font.size),
             scrollbar_width: Cell::new(cfg.layout.scrollbar_width),
             line_height: Cell::new(gui::dpi_y(cfg.font.size + 2)),
@@ -219,7 +223,11 @@ impl LogView {
     /// 直近のキャッシュ値を返す。
     fn measure_line_height(&self) -> i32 {
         if let Ok(dc) = self.hwnd().GetDC()
-            && let Ok(font) = self.create_font(false) {
+            && let Ok(font) = self.create_font_family(
+                false,
+                &self.inner.font_family.borrow(),
+                self.inner.font_size.get(),
+            ) {
                 let _sel = dc.SelectObject(&*font);
                 if let Ok(tm) = dc.GetTextMetrics() {
                     let lh = tm.tmHeight + tm.tmExternalLeading;
@@ -264,6 +272,7 @@ impl LogView {
     pub fn apply_config(&self, cfg: &Config) {
         self.inner.colors.set(cfg.active_colors());
         *self.inner.font_family.borrow_mut() = cfg.font.family.clone();
+        *self.inner.font_fallback.borrow_mut() = cfg.font.fallback.clone();
         self.inner.font_size.set(cfg.font.size);
         self.inner.scrollbar_width.set(cfg.layout.scrollbar_width);
         let _ = self.refresh();
@@ -295,11 +304,16 @@ impl LogView {
         Some((bar_x, track_top, track_h, thumb_top, thumb_h))
     }
 
-    /// フォントを生成する（設定のファミリ・サイズ、太字指定）。
-    fn create_font(&self, bold: bool) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
+    /// 指定ファミリ・サイズのフォントを生成する（太字指定）。
+    fn create_font_family(
+        &self,
+        bold: bool,
+        family: &str,
+        size: i32,
+    ) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
         let weight = if bold { co::FW::BOLD } else { co::FW::NORMAL };
         w::HFONT::CreateFont(
-            w::SIZE { cx: 0, cy: -gui::dpi_y(self.inner.font_size.get()) },
+            w::SIZE { cx: 0, cy: -gui::dpi_y(size) },
             0,
             0,
             weight,
@@ -311,7 +325,19 @@ impl LogView {
             co::CLIP::DEFAULT_PRECIS,
             co::QUALITY::CLEARTYPE,
             co::PITCH::FIXED,
+            family,
+        )
+    }
+
+    /// 設定のファミリ＋フォールバックのフォント一式を生成する（太字指定）。
+    fn create_fonts(&self, bold: bool) -> w::SysResult<FontSet> {
+        let main = self.inner.font_size.get();
+        FontSet::new(
             &self.inner.font_family.borrow(),
+            &self.inner.font_fallback.borrow(),
+            |f, s| {
+                self.create_font_family(bold, f, crate::font_fallback::effective_size(s, main, main))
+            },
         )
     }
 
@@ -442,10 +468,10 @@ impl LogView {
         }
         let bold = matches!(line.level, LogLevel::Info | LogLevel::Error);
         let Ok(dc) = self.hwnd().GetDC() else { return None };
-        let Ok(font) = self.create_font(bold) else { return None };
-        let Ok(_sel) = dc.SelectObject(&*font) else { return None };
+        let Ok(fonts) = self.create_fonts(bold) else { return None };
+        let Ok(_sel) = dc.SelectObject(fonts.primary()) else { return None };
         let avail = text_right - 4;
-        let truncated = avail <= 0 || dc.GetTextExtentPoint32(&line.text).map(|z| z.cx).unwrap_or(0) > avail;
+        let truncated = avail <= 0 || fonts.width(&dc, &line.text) > avail;
         if !truncated {
             return None;
         }
@@ -510,14 +536,14 @@ impl LogView {
 
     /// ターゲットビットマップ選択済みの任意 DC へ全面描画する（フォント2種準備＋`paint_to`）。
     pub(crate) fn render_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
-        let font = self.create_font(false)?;
-        let font_bold = self.create_font(true)?;
-        let _font_sel = dc.SelectObject(&*font)?;
+        let fonts = self.create_fonts(false)?;
+        let fonts_bold = self.create_fonts(true)?;
+        let _font_sel = dc.SelectObject(fonts.primary())?;
         if let Ok(tm) = dc.GetTextMetrics() {
             self.inner.line_height.set(tm.tmHeight + tm.tmExternalLeading);
         }
         dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
-        self.paint_to(dc, cw, ch, &font, &font_bold)
+        self.paint_to(dc, cw, ch, &fonts, &fonts_bold)
     }
 
     fn paint_to(
@@ -525,8 +551,8 @@ impl LogView {
         dc: &w::HDC,
         cw: i32,
         ch: i32,
-        font: &w::HFONT,
-        font_bold: &w::HFONT,
+        font: &FontSet,
+        font_bold: &FontSet,
     ) -> w::AnyResult<()> {
         let colors = self.inner.colors.get();
 
@@ -563,7 +589,8 @@ impl LogView {
                         LogLevel::Warning => (colors.log_warning, false),
                         LogLevel::Error => (colors.log_error, true),
                     };
-                    let _sel = dc.SelectObject(if bold { font_bold } else { font })?;
+                    let fonts = if bold { font_bold } else { font };
+                    let _sel = dc.SelectObject(fonts.primary())?;
                     dc.SetTextColor(rgb(color))?;
                     let flags = co::DT::SINGLELINE | co::DT::NOPREFIX | co::DT::END_ELLIPSIS;
                     let rect = w::RECT { left: 4, top: y, right: text_right, bottom: y + lh };
@@ -577,7 +604,7 @@ impl LogView {
                         },
                         None => std::borrow::Cow::Borrowed(line.text.as_str()),
                     };
-                    dc.DrawText(&display, rect, flags)?;
+                    fonts.draw_text(dc, &display, rect, flags)?;
                 }
                 y += lh;
                 i += 1;

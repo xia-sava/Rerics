@@ -3,7 +3,6 @@
 //! 状態は `rerics_core::FileListState` に持たせ、本モジュールは描画・入力・スクロールの
 //! GUI 配線に徹する。ダブルバッファでちらつきを抑える。
 
-use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -15,6 +14,7 @@ use rerics_core::{
 };
 use winsafe::{self as w, co, gui, prelude::*};
 
+use crate::font_fallback::FontSet;
 use crate::icons::{ICON_LOGICAL, IconBox, IconCache};
 
 /// サムネイル表示時、画像でないファイルのシェルアイコンを描く一辺の上限（論理 px）。
@@ -23,32 +23,6 @@ const THUMB_SHELL_ICON_LOGICAL: i32 = 32;
 
 /// サムネイル表示の行間の隙間（物理 px）。画像を行ピッチより，この分だけ小さく描く。
 const THUMB_ROW_GAP_PX: i32 = 1;
-
-/// 一覧セルの省略記号。GDI の `DT_END_ELLIPSIS` は "..." 固定なので使わず，これで自前に詰める。
-const ELLIPSIS: char = '…';
-
-/// テキストを幅 `avail`（物理 px）に収める。収まればそのまま，超えるなら文字境界で末尾を
-/// 詰めて [`ELLIPSIS`] を付す。測定は描画と同じ DC（同じフォント・文字間隔）で行なうこと。
-fn elide_to_width<'a>(dc: &w::HDC, text: &'a str, avail: i32) -> Cow<'a, str> {
-    if avail <= 0 {
-        return Cow::Borrowed("");
-    }
-    let width = |s: &str| dc.GetTextExtentPoint32(s).map(|z| z.cx).unwrap_or(i32::MAX);
-    if width(text) <= avail {
-        return Cow::Borrowed(text);
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let mut cut = chars.len();
-    while cut > 0 {
-        cut -= 1;
-        let mut s: String = chars[..cut].iter().collect();
-        s.push(ELLIPSIS);
-        if width(&s) <= avail {
-            return Cow::Owned(s);
-        }
-    }
-    Cow::Owned(ELLIPSIS.to_string())
-}
 
 /// FileItem の更新時刻を per-file アイコンキャッシュのキー用 u64 秒へ。取得不能は 0。
 fn item_mtime(it: &FileItem) -> u64 {
@@ -86,6 +60,7 @@ struct Inner {
     state: Rc<RefCell<FileListState>>,
     colors: Cell<Colors>,
     font_family: RefCell<String>,
+    font_fallback: RefCell<Vec<String>>,
     font_size: Cell<i32>,
     /// 自前スクロールバーの幅（論理 px）。
     scrollbar_width: Cell<i32>,
@@ -165,6 +140,7 @@ impl FileListView {
             state: Rc::new(RefCell::new(FileListState::new())),
             colors: Cell::new(cfg.active_colors()),
             font_family: RefCell::new(cfg.font.family.clone()),
+            font_fallback: RefCell::new(cfg.font.fallback.clone()),
             font_size: Cell::new(cfg.font.size),
             scrollbar_width: Cell::new(cfg.layout.scrollbar_width),
             font_height: Cell::new(gui::dpi_y(cfg.font.size)),
@@ -364,6 +340,7 @@ impl FileListView {
     pub fn apply_config(&self, cfg: &Config) {
         self.inner.colors.set(cfg.active_colors());
         *self.inner.font_family.borrow_mut() = cfg.font.family.clone();
+        *self.inner.font_fallback.borrow_mut() = cfg.font.fallback.clone();
         self.inner.font_size.set(cfg.font.size);
         self.inner.scrollbar_width.set(cfg.layout.scrollbar_width);
         self.inner.icon_show.set(cfg.icons.show);
@@ -399,8 +376,8 @@ impl FileListView {
             return Ok(());
         }
         let dc = self.hwnd().GetDC()?;
-        let font = self.create_font()?;
-        let _font_sel = dc.SelectObject(&*font)?;
+        let fonts = self.create_fonts()?;
+        let _font_sel = dc.SelectObject(fonts.primary())?;
         crate::winutil::set_char_spacing(&dc, self.inner.char_spacing.get());
         let dpi = gui::dpi_x(96).max(1);
         let to_logical = |phys: i32| (phys * 96 + dpi / 2) / dpi;
@@ -427,8 +404,7 @@ impl FileListView {
                     if text.is_empty() {
                         continue;
                     }
-                    let w = dc.GetTextExtentPoint32(&text).map(|sz| sz.cx).unwrap_or(0);
-                    m = m.max(w);
+                    m = m.max(fonts.width(&dc, &text));
                 }
                 m
             } else {
@@ -463,6 +439,7 @@ impl FileListView {
             "colors": serde_json::to_value(self.inner.colors.get()).unwrap_or_default(),
             "font": {
                 "family": self.inner.font_family.borrow().clone(),
+                "fallback": self.inner.font_fallback.borrow().clone(),
                 "size": self.inner.font_size.get(),
             },
             "header_height": self.header_height(),
@@ -551,10 +528,14 @@ impl FileListView {
         base.max(self.icon_px())
     }
 
-    /// フォントを生成する（設定のファミリ・サイズ）。
-    fn create_font(&self) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
+    /// 指定ファミリ・サイズのフォントを生成する（他の条件は一覧の描画用で固定）。
+    fn create_font_family(
+        &self,
+        family: &str,
+        size: i32,
+    ) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
         w::HFONT::CreateFont(
-            w::SIZE { cx: 0, cy: -gui::dpi_y(self.inner.font_size.get()) },
+            w::SIZE { cx: 0, cy: -gui::dpi_y(size) },
             0,
             0,
             co::FW::NORMAL,
@@ -566,7 +547,19 @@ impl FileListView {
             co::CLIP::DEFAULT_PRECIS,
             co::QUALITY::CLEARTYPE,
             co::PITCH::FIXED,
+            family,
+        )
+    }
+
+    /// 設定のファミリ＋フォールバックのフォント一式を生成する。
+    fn create_fonts(&self) -> w::SysResult<FontSet> {
+        let main = self.inner.font_size.get();
+        FontSet::new(
             &self.inner.font_family.borrow(),
+            &self.inner.font_fallback.borrow(),
+            |family, size| {
+                self.create_font_family(family, crate::font_fallback::effective_size(size, main, main))
+            },
         )
     }
 
@@ -949,15 +942,15 @@ impl FileListView {
             return None;
         }
         let Ok(dc) = self.hwnd().GetDC() else { return None };
-        let Ok(font) = self.create_font() else { return None };
-        let Ok(_sel) = dc.SelectObject(&*font) else { return None };
+        let Ok(fonts) = self.create_fonts() else { return None };
+        let Ok(_sel) = dc.SelectObject(fonts.primary()) else { return None };
         crate::winutil::set_char_spacing(&dc, self.inner.char_spacing.get());
         let mut text_left = left + Self::text_margin(&dc);
         if matches!(kind, ColumnKind::FileName | ColumnKind::FileBaseName) && self.icons_visible() {
             text_left += self.icon_px() + gui::dpi_x(2);
         }
         let avail = right - text_left;
-        let truncated = avail <= 0 || dc.GetTextExtentPoint32(&text).map(|z| z.cx).unwrap_or(0) > avail;
+        let truncated = avail <= 0 || fonts.width(&dc, &text) > avail;
         if !truncated {
             return None;
         }
@@ -1062,18 +1055,18 @@ impl FileListView {
     /// ターゲットビットマップ選択済みの任意 DC へ全面描画する（フォント準備＋`paint_to`）。
     /// `on_paint` のダブルバッファと、デバッグ制御サーバの窓非依存スナップショットの両方から呼ぶ。
     pub(crate) fn render_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
-        let font = self.create_font()?;
-        let _font_sel = dc.SelectObject(&*font)?;
+        let fonts = self.create_fonts()?;
+        let _font_sel = dc.SelectObject(fonts.primary())?;
         crate::winutil::set_char_spacing(dc, self.inner.char_spacing.get());
         // フォント高さ実測。
         if let Ok(tm) = dc.GetTextMetrics() {
             self.inner.font_height.set(tm.tmHeight);
         }
         dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
-        self.paint_to(dc, cw, ch)
+        self.paint_to(dc, &fonts, cw, ch)
     }
 
-    fn paint_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
+    fn paint_to(&self, dc: &w::HDC, fonts: &FontSet, cw: i32, ch: i32) -> w::AnyResult<()> {
         // 閾値を過ぎた読込中なら一覧の代わりに進捗を出す（閾値前は通常の一覧を描く）。
         let show_loading = self
             .inner
@@ -1115,7 +1108,7 @@ impl FileListView {
         for (i, col) in s.columns.iter().enumerate() {
             let left = col_lefts[i];
             let right = col_lefts[i + 1];
-            self.draw_header_cell(dc, &s, left, right, header_h, &face_brush, hl, sh, wtext, Some(col))?;
+            self.draw_header_cell(dc, fonts, &s, left, right, header_h, &face_brush, hl, sh, wtext, Some(col))?;
         }
         // 末尾余白列。
         if total_w < cw {
@@ -1210,22 +1203,22 @@ impl FileListView {
                     }
                 // 左は n 幅マージン（＋アイコン幅）、右パディングは 0（原作の左 4/右 0 に倣う）。
                 let rect = w::RECT { left: text_left, top: y, right, bottom: y + item_h };
-                let shown = elide_to_width(dc, &text, right - text_left);
-                dc.DrawText(&shown, rect, flags)?;
+                let shown = fonts.elide(dc, &text, right - text_left);
+                fonts.draw_text(dc, &shown, rect, flags)?;
                 // 名前列のリンクは、余り幅にリンク先を薄色（行の文字色を行背景へ寄せた色）・
                 // 右寄せで添える。名前が幅を先取りし、足りない分はリンク先側から削る。
                 if is_name_col && let Some(target) = &item.link_target {
-                    let name_w = dc.GetTextExtentPoint32(&shown).map(|z| z.cx).unwrap_or(0);
+                    let name_w = fonts.width(dc, &shown);
                     let t_left = text_left + name_w + margin * 2;
                     let arrow = format!("→ {target}");
-                    let shown_t = elide_to_width(dc, &arrow, right - t_left);
+                    let shown_t = fonts.elide(dc, &arrow, right - t_left);
                     // 矢印すら残らない幅なら出さない（"…" だけの断片は無意味）。
                     if shown_t.chars().count() > 2 {
                         let row_bg =
                             if item.selected { sel_bg_color } else { colors.background };
                         dc.SetTextColor(rgb(text_color.blend(row_bg, 2, 5)))?;
                         let t_rect = w::RECT { left: t_left, top: y, right, bottom: y + item_h };
-                        dc.DrawText(&shown_t, t_rect, flags | co::DT::RIGHT)?;
+                        fonts.draw_text(dc, &shown_t, t_rect, flags | co::DT::RIGHT)?;
                         dc.SetTextColor(rgb(text_color))?;
                     }
                 }
@@ -1275,6 +1268,7 @@ impl FileListView {
     fn draw_header_cell(
         &self,
         dc: &w::HDC,
+        fonts: &FontSet,
         s: &FileListState,
         left: i32,
         right: i32,
@@ -1295,7 +1289,7 @@ impl FileListView {
         dc.SetTextColor(wtext)?;
         if !col.text.is_empty() {
             let rect = w::RECT { left: left + margin, top: 4, right: right - margin, bottom: header_h };
-            dc.DrawText(&col.text, rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
+            fonts.draw_text(dc, &col.text, rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
         }
         // ソート三角。
         let sort_match = matches!(
@@ -1310,7 +1304,7 @@ impl FileListView {
                 | (ColumnKind::Attribute, SortType::Attribute)
         );
         if sort_match {
-            let tw = dc.GetTextExtentPoint32(&col.text).map(|sz| sz.cx).unwrap_or(0);
+            let tw = fonts.width(dc, &col.text);
             let x0 = left + margin + tw + 8;
             // 線分描画ではなく三角グリフを文字として描く（昇順=△ 上向き／降順=▽ 下向き）。
             let glyph = if s.sort_reverse { "▽" } else { "△" };

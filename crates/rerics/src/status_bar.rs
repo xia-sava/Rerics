@@ -10,11 +10,13 @@ use rerics_core::Config;
 use winsafe::{self as w, co, gui, prelude::*};
 
 use crate::chrome;
+use crate::font_fallback::FontSet;
 
 struct Inner {
     left: RefCell<String>,
     right: RefCell<String>,
     font_family: RefCell<String>,
+    font_fallback: RefCell<Vec<String>>,
     font_size: Cell<i32>,
 }
 
@@ -47,6 +49,7 @@ impl StatusBarView {
             left: RefCell::new(String::new()),
             right: RefCell::new(String::new()),
             font_family: RefCell::new(cfg.font.family.clone()),
+            font_fallback: RefCell::new(cfg.font.fallback.clone()),
             font_size: Cell::new(cfg.font.size),
         });
         let me = Self { wnd, inner };
@@ -95,13 +98,18 @@ impl StatusBarView {
     /// 設定のフォントを反映して再描画する（chrome の色はシステム固定なので対象外）。
     pub fn apply_config(&self, cfg: &Config) {
         *self.inner.font_family.borrow_mut() = cfg.font.family.clone();
+        *self.inner.font_fallback.borrow_mut() = cfg.font.fallback.clone();
         self.inner.font_size.set(cfg.font.size);
         let _ = self.refresh();
     }
 
-    fn create_font(&self) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
+    fn create_font_family(
+        &self,
+        family: &str,
+        size: i32,
+    ) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
         w::HFONT::CreateFont(
-            w::SIZE { cx: 0, cy: -gui::dpi_y(self.inner.font_size.get() - 2) },
+            w::SIZE { cx: 0, cy: -gui::dpi_y(size) },
             0,
             0,
             co::FW::NORMAL,
@@ -113,8 +121,17 @@ impl StatusBarView {
             co::CLIP::DEFAULT_PRECIS,
             co::QUALITY::CLEARTYPE,
             co::PITCH::FIXED,
-            &self.inner.font_family.borrow(),
+            family,
         )
+    }
+
+    /// 設定のファミリ＋フォールバックのフォント一式を生成する（バーは本文より 2 小さく描く）。
+    fn create_fonts(&self) -> w::SysResult<FontSet> {
+        let main = self.inner.font_size.get();
+        let render = main - 2;
+        FontSet::new(&self.inner.font_family.borrow(), &self.inner.font_fallback.borrow(), |f, s| {
+            self.create_font_family(f, crate::font_fallback::effective_size(s, render, main))
+        })
     }
 
     fn setup_events(&self) {
@@ -150,13 +167,13 @@ impl StatusBarView {
 
     /// ターゲットビットマップ選択済みの任意 DC へ全面描画する（フォント準備＋`paint_to`）。
     pub(crate) fn render_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
-        let font = self.create_font()?;
-        let _font_sel = dc.SelectObject(&*font)?;
+        let fonts = self.create_fonts()?;
+        let _font_sel = dc.SelectObject(fonts.primary())?;
         dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
-        self.paint_to(dc, cw, ch)
+        self.paint_to(dc, &fonts, cw, ch)
     }
 
-    fn paint_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
+    fn paint_to(&self, dc: &w::HDC, fonts: &FontSet, cw: i32, ch: i32) -> w::AnyResult<()> {
         chrome::fill_bar(dc, cw, ch)?;
 
         dc.SetTextColor(chrome::text())?;
@@ -170,8 +187,8 @@ impl StatusBarView {
         if !left.is_empty() {
             let flags = co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX | co::DT::END_ELLIPSIS;
             let rect = w::RECT { left: pad, top: 0, right: cw - pad, bottom: ch };
-            dc.DrawText(&left, rect, flags)?;
-            left_edge = pad + dc.GetTextExtentPoint32(&left)?.cx;
+            fonts.draw_text(dc, &left, rect, flags)?;
+            left_edge = pad + fonts.width(dc, &left);
         }
 
         // ドライブ容量（右）を選択情報の右側の残り幅に右寄せで入れる（足りなければ省略）。
@@ -179,7 +196,7 @@ impl StatusBarView {
         if !right.is_empty() {
             let flags = co::DT::SINGLELINE | co::DT::VCENTER | co::DT::RIGHT | co::DT::NOPREFIX | co::DT::END_ELLIPSIS;
             let rect = w::RECT { left: (left_edge + pad).min(cw - pad), top: 0, right: cw - pad, bottom: ch };
-            dc.DrawText(&right, rect, flags)?;
+            fonts.draw_text(dc, &right, rect, flags)?;
         }
         Ok(())
     }

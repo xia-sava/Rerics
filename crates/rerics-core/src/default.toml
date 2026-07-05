@@ -13,6 +13,7 @@ editor = "notepad.exe"
 [font]
 family = "BIZ UDGothic"
 size = 13
+fallback = []
 
 [layout]
 margin = 2

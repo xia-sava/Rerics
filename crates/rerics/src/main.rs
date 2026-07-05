@@ -13,6 +13,7 @@ mod ui_marshal;
 mod script_host;
 mod dialog;
 mod file_list;
+mod font_fallback;
 mod help;
 mod hostsig;
 mod icons;

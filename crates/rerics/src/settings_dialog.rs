@@ -11,11 +11,12 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rerics_core::{
-    Bookmark, Colors, Column, ColumnKind, Config, FileOpSettings, IconSize, Layout,
+    Bookmark, Colors, Column, ColumnKind, Config, FileOpSettings, FontSpec, IconSize, Layout,
     MenuDef, MenuItem, Rgb, ResolvedTheme, SizeFormat, SortType, Theme, WheelAction,
 };
 use winsafe::{self as w, co, gui, msg::lb, prelude::*};
 
+use crate::font_fallback::FontSet;
 use crate::key_editor::{KeyCategory, KeyEditor};
 
 /// 自前描画コントロールをオフスクリーン DC へ描かせるメッセージ。`PrintWindow`
@@ -168,6 +169,15 @@ fn parse_or(edit: &gui::Edit, cur: i32) -> i32 {
         .unwrap_or(cur)
 }
 
+/// フォールバック欄の文字列をファミリ名のリストへ分解する（カンマ・読点区切り、空要素は捨てる）。
+fn parse_fallback(text: &str) -> Vec<String> {
+    text.split([',', '、', '，'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 /// プレビュー一覧のフォント（設定のファミリ・サイズ）。実ファイル一覧と同じ生成条件。
 fn list_font(
     family: &str,
@@ -261,6 +271,7 @@ fn draw_tabs(dc: &w::HDC, x: i32, y: i32, w: i32, h: i32, fh: i32, c: &Colors) -
 #[allow(clippy::too_many_arguments)]
 fn draw_pane(
     dc: &w::HDC,
+    fonts: &FontSet,
     x: i32,
     y: i32,
     w: i32,
@@ -310,12 +321,14 @@ fn draw_pane(
     // 行（色割り当てとカーソル／選択の見え方を一通り示す）。アイコン表示時は左に代用の
     // 四角を置き、その分だけ行高も伸ばして（中・大で行が高くなる挙動を反映）名前を右へ寄せる。
     let row_h = if icons_show { (fh + pad * 2).max(icon_px) } else { fh + pad * 2 };
-    let rows: [(&str, Rgb, Deco); 6] = [
+    let rows: [(&str, Rgb, Deco); 7] = [
         ("src", c.directory, Deco::Plain),
         ("readme.md", c.file_normal, Deco::Cursor),
         ("LICENSE", c.readonly, Deco::Plain),
         ("pagefile.sys", c.system, Deco::Plain),
         (".gitignore", c.hidden, Deco::Plain),
+        // 简体字…はフォールバックの効きを見るサンプル（主フォントに無いグリフを含む）。
+        ("简体字样本.txt", c.file_normal, Deco::Plain),
         // archive.zip は通常ファイル＝自然色は file_normal（マーク時のみ選択色になる）。
         ("archive.zip", c.file_normal, Deco::Selected),
     ];
@@ -346,7 +359,7 @@ fn draw_pane(
             fill(dc, left, iy, left + icon_px, iy + icon_px, color)?;
             text_left = left + icon_px + gui::dpi_x(2);
         }
-        dc.TextOut(text_left, ry + (row_h - fh) / 2, name)?;
+        fonts.text_out(dc, text_left, ry + (row_h - fh) / 2, name)?;
         // カーソルはアクティブ側だけに出す（実リストも非アクティブ側にカーソルを描かない）。
         // 実リストのカーソルは行全体の枠ではなく文字直下の下線（`colors.cursor`）。
         if active && matches!(deco, Deco::Cursor) {
@@ -361,7 +374,7 @@ fn draw_pane(
         fill(dc, x, status_y, x + w, y + h, c.background2)?;
         dc.SetTextColor(to_colorref(c.file_normal))?;
         if status_h >= fh {
-            dc.TextOut(left, status_y + (status_h - fh) / 2, "6 個  1 選択")?;
+            dc.TextOut(left, status_y + (status_h - fh) / 2, "7 個  1 選択")?;
         }
     }
     Ok(())
@@ -377,8 +390,8 @@ fn draw_log(
     h: i32,
     fh: i32,
     c: &Colors,
-    font: &w::HFONT,
-    font_bold: &w::HFONT,
+    font: &FontSet,
+    font_bold: &FontSet,
 ) -> w::AnyResult<()> {
     if w <= 0 || h <= 0 {
         return Ok(());
@@ -399,12 +412,13 @@ fn draw_log(
         if ly + row_h > y + h {
             break;
         }
-        dc.SelectObject(if bold { font_bold } else { font })?;
+        let fonts = if bold { font_bold } else { font };
+        dc.SelectObject(fonts.primary())?;
         dc.SetTextColor(to_colorref(color))?;
-        dc.TextOut(left, ly, text)?;
+        fonts.text_out(dc, left, ly, text)?;
         ly += row_h;
     }
-    dc.SelectObject(font)?;
+    dc.SelectObject(font.primary())?;
     Ok(())
 }
 
@@ -480,15 +494,22 @@ impl Preview {
         if cw <= 0 || ch <= 0 {
             return Ok(());
         }
-        let (family, fsize, lay, icons) = {
+        let (family, fallback, fsize, lay, icons) = {
             let cfg = self.shared.cfg.borrow();
-            (cfg.font.family.clone(), cfg.font.size, cfg.layout.clone(), cfg.icons.clone())
+            (
+                cfg.font.family.clone(),
+                cfg.font.fallback.clone(),
+                cfg.font.size,
+                cfg.layout.clone(),
+                cfg.icons.clone(),
+            )
         };
         let colors = self.shared.target_colors();
 
-        let font = list_font(&family, fsize, false)?;
-        let font_bold = list_font(&family, fsize, true)?;
-        let _fsel = dc.SelectObject(&*font)?;
+        let eff = |s: Option<i32>| crate::font_fallback::effective_size(s, fsize, fsize);
+        let font = FontSet::new(&family, &fallback, |f, s| list_font(f, eff(s), false))?;
+        let font_bold = FontSet::new(&family, &fallback, |f, s| list_font(f, eff(s), true))?;
+        let _fsel = dc.SelectObject(font.primary())?;
         let tm = dc.GetTextMetrics().ok();
         let fh = tm.as_ref().map(|t| t.tmHeight).unwrap_or(16);
         // ログ窓はフォントの行高（tmHeight + 外部レディング）× 行数で高さを決める。
@@ -526,8 +547,8 @@ impl Preview {
         // 余白・溝・スプリッタの地色。残りの矩形を上から punch していく。
         fill(dc, 0, 0, cw, ch, colors.background2)?;
         draw_tabs(dc, 0, 0, cw, tab_h, fh, &colors)?;
-        draw_pane(dc, left_x, pane_top, left_w, pane_h, bar_h, bar_gap, status_h, sb_w, fh, icons.show, icon_px, &colors, true)?;
-        draw_pane(dc, right_x, pane_top, right_w, pane_h, bar_h, bar_gap, status_h, sb_w, fh, icons.show, icon_px, &colors, false)?;
+        draw_pane(dc, &font, left_x, pane_top, left_w, pane_h, bar_h, bar_gap, status_h, sb_w, fh, icons.show, icon_px, &colors, true)?;
+        draw_pane(dc, &font, right_x, pane_top, right_w, pane_h, bar_h, bar_gap, status_h, sb_w, fh, icons.show, icon_px, &colors, false)?;
         draw_log(dc, left_x, log_y, log_w, log_h, fh, &colors, &font, &font_bold)?;
         Ok(())
     }
@@ -1211,27 +1232,26 @@ fn build_appearance(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &
         ],
     );
 
-    group_box(parent, "フォント", 12, 112, 344, 116);
-    label(parent, "フォント名", 24, 138, 90);
+    group_box(parent, "フォント", 12, 112, 344, 96);
+    label(parent, "フォント名", 24, 138, 84);
     let font_family = gui::Edit::new(
         parent,
         gui::EditOpts {
             text: &cfg.font.family,
             control_style: co::ES::AUTOHSCROLL,
             position: gui::dpi(108, 136),
-            width: gui::dpi_x(232),
+            width: gui::dpi_x(150),
             height: gui::dpi_y(22),
             ..Default::default()
         },
     );
-    label(parent, "サイズ", 24, 170, 90);
     let font_size = gui::Edit::new(
         parent,
         gui::EditOpts {
             text: &cfg.font.size.to_string(),
             control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
-            position: gui::dpi(108, 168),
-            width: gui::dpi_x(60),
+            position: gui::dpi(262, 136),
+            width: gui::dpi_x(40),
             height: gui::dpi_y(22),
             ..Default::default()
         },
@@ -1239,68 +1259,92 @@ fn build_appearance(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &
     let font_btn = gui::Button::new(
         parent,
         gui::ButtonOpts {
-            text: "フォント選択(&F)...",
-            position: gui::dpi(108, 196),
-            width: gui::dpi_x(150),
-            height: gui::dpi_y(26),
+            text: "...",
+            position: gui::dpi(306, 136),
+            width: gui::dpi_x(34),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+    // フォールバック＝カンマ区切りの「ファミリ名[:サイズ]」列。空ならシステム既定の
+    // フォールバックに任せる。[...] は選択したフォントを先頭（最優先）へ挿入する。
+    label(parent, "フォールバック", 24, 170, 84);
+    let font_fallback = gui::Edit::new(
+        parent,
+        gui::EditOpts {
+            text: &cfg.font.fallback.join(", "),
+            control_style: co::ES::AUTOHSCROLL,
+            position: gui::dpi(108, 168),
+            width: gui::dpi_x(194),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+    let fallback_btn = gui::Button::new(
+        parent,
+        gui::ButtonOpts {
+            text: "...",
+            position: gui::dpi(306, 168),
+            width: gui::dpi_x(34),
+            height: gui::dpi_y(22),
             ..Default::default()
         },
     );
 
     // アイコン（表示の有無とサイズ）。フォントの下に縦に積む（右側はプレビューが占有）。
-    group_box(parent, "アイコン", 12, 236, 344, 246);
+    group_box(parent, "アイコン", 12, 216, 344, 246);
     let icon_show = gui::CheckBox::new(
         parent,
         gui::CheckBoxOpts {
             text: "ファイル一覧にアイコンを表示する(&I)",
-            position: gui::dpi(24, 264),
+            position: gui::dpi(24, 244),
             size: gui::dpi(320, 22),
             check_state: if cfg.icons.show { co::BST::CHECKED } else { co::BST::UNCHECKED },
             ..Default::default()
         },
     );
-    label(parent, "サイズ", 24, 302, 100);
+    label(parent, "サイズ", 24, 282, 100);
     let icon_size = gui::RadioGroup::new(
         parent,
         &[
             gui::RadioButtonOpts {
                 text: "自動（行に合わせる）(&U)",
-                position: gui::dpi(44, 326),
+                position: gui::dpi(44, 306),
                 size: gui::dpi(290, 20),
                 selected: cfg.icons.size == IconSize::Auto,
                 ..Default::default()
             },
             gui::RadioButtonOpts {
                 text: "小 (16)(&A)",
-                position: gui::dpi(44, 350),
+                position: gui::dpi(44, 330),
                 size: gui::dpi(290, 20),
                 selected: cfg.icons.size == IconSize::Small,
                 ..Default::default()
             },
             gui::RadioButtonOpts {
                 text: "中 (24)(&M)",
-                position: gui::dpi(44, 374),
+                position: gui::dpi(44, 354),
                 size: gui::dpi(290, 20),
                 selected: cfg.icons.size == IconSize::Medium,
                 ..Default::default()
             },
             gui::RadioButtonOpts {
                 text: "大 (32)(&G)",
-                position: gui::dpi(44, 398),
+                position: gui::dpi(44, 378),
                 size: gui::dpi(290, 20),
                 selected: cfg.icons.size == IconSize::Large,
                 ..Default::default()
             },
         ],
     );
-    label(parent, "（中・大を選ぶと行の高さが広がります）", 24, 424, 320);
-    label(parent, "サムネイルモード時のサイズ", 24, 452, 180);
+    label(parent, "（中・大を選ぶと行の高さが広がります）", 24, 404, 320);
+    label(parent, "サムネイルモード時のサイズ", 24, 432, 180);
     let thumb_size = gui::Edit::new(
         parent,
         gui::EditOpts {
             text: &cfg.icons.thumbnail_size.to_string(),
             control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
-            position: gui::dpi(210, 450),
+            position: gui::dpi(210, 430),
             width: gui::dpi_x(44),
             height: gui::dpi_y(22),
             ..Default::default()
@@ -1309,7 +1353,7 @@ fn build_appearance(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &
     let _thumb_spin = gui::UpDown::new(
         parent,
         gui::UpDownOpts {
-            position: gui::dpi(254, 450),
+            position: gui::dpi(254, 430),
             height: gui::dpi_y(22),
             range: (16, 256),
             value: cfg.icons.thumbnail_size,
@@ -1320,7 +1364,7 @@ fn build_appearance(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &
             ..Default::default()
         },
     );
-    label(parent, "px", 280, 452, 24);
+    label(parent, "px", 280, 432, 24);
     drop(cfg);
 
     // テーマ選択を即反映し、プレビュー／配色編集の対象サイドもこれに追従させる。
@@ -1376,6 +1420,19 @@ fn build_appearance(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &
             Ok(())
         });
     }
+    // フォールバック欄はカンマ区切り（読点も可）で分解して反映する。空＝システム任せも有効。
+    {
+        let shared = shared.clone();
+        let preview = preview.clone();
+        let edit = font_fallback.clone();
+        font_fallback.on().en_change(move || {
+            if let Ok(t) = edit.text() {
+                shared.cfg.borrow_mut().font.fallback = parse_fallback(&t);
+                preview.refresh();
+            }
+            Ok(())
+        });
+    }
 
     // フォント選択ダイアログ。選んだ値を Edit へ書き戻すと en_change が cfg・プレビューへ反映する。
     {
@@ -1391,6 +1448,36 @@ fn build_appearance(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &
             if let Some((new_family, new_size)) = choose_font(btn.hwnd(), &family, size) {
                 let _ = ff.hwnd().SetWindowText(&new_family);
                 let _ = fs.hwnd().SetWindowText(&new_size.to_string());
+            }
+            Ok(())
+        });
+    }
+
+    // フォールバックの選択ダイアログ。選んだ「ファミリ名:サイズ」をリスト先頭（最優先）へ
+    // 挿入して Edit へ書き戻す（en_change が cfg・プレビューへ反映する）。削除・並び替えは
+    // Edit の手編集で行なう。ダイアログの初期値は先頭エントリ、無ければ主フォント。
+    {
+        let shared = shared.clone();
+        let fb = font_fallback.clone();
+        let btn = fallback_btn.clone();
+        fallback_btn.on().bn_clicked(move || {
+            let (family, size) = {
+                let cfg = shared.cfg.borrow();
+                match cfg.font.fallback.first() {
+                    Some(entry) => {
+                        let (f, s) = FontSpec::parse_fallback_entry(entry);
+                        (f.to_owned(), s.unwrap_or(cfg.font.size))
+                    }
+                    None => (cfg.font.family.clone(), cfg.font.size),
+                }
+            };
+            if let Some((new_family, new_size)) = choose_font(btn.hwnd(), &family, size) {
+                let entry = format!("{new_family}:{new_size}");
+                let rest = fb.text().unwrap_or_default();
+                let rest = rest.trim();
+                let text =
+                    if rest.is_empty() { entry } else { format!("{entry}, {rest}") };
+                let _ = fb.hwnd().SetWindowText(&text);
             }
             Ok(())
         });

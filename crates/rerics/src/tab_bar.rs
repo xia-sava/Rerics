@@ -10,6 +10,7 @@ use rerics_core::Config;
 use winsafe::{self as w, co, gui, prelude::*};
 
 use crate::chrome;
+use crate::font_fallback::FontSet;
 
 /// タブクリック時に index を渡すコールバック。
 type ClickHandler = Box<dyn Fn(usize)>;
@@ -18,6 +19,7 @@ struct Inner {
     labels: RefCell<Vec<String>>,
     active: Cell<usize>,
     font_family: RefCell<String>,
+    font_fallback: RefCell<Vec<String>>,
     font_size: Cell<i32>,
     font_height: Cell<i32>,
     on_click: RefCell<Option<ClickHandler>>,
@@ -52,6 +54,7 @@ impl TabBar {
             labels: RefCell::new(Vec::new()),
             active: Cell::new(0),
             font_family: RefCell::new(cfg.font.family.clone()),
+            font_fallback: RefCell::new(cfg.font.fallback.clone()),
             font_size: Cell::new(cfg.font.size),
             font_height: Cell::new(gui::dpi_y(cfg.font.size)),
             on_click: RefCell::new(None),
@@ -91,14 +94,19 @@ impl TabBar {
     /// 設定のフォントを反映して再描画する（chrome の色はシステム固定なので対象外）。
     pub fn apply_config(&self, cfg: &Config) {
         *self.inner.font_family.borrow_mut() = cfg.font.family.clone();
+        *self.inner.font_fallback.borrow_mut() = cfg.font.fallback.clone();
         self.inner.font_size.set(cfg.font.size);
         let _ = self.refresh();
     }
 
-    /// フォントを生成する（設定のファミリ・サイズ）。
-    fn create_font(&self) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
+    /// 指定ファミリ・サイズのフォントを生成する。
+    fn create_font_family(
+        &self,
+        family: &str,
+        size: i32,
+    ) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
         w::HFONT::CreateFont(
-            w::SIZE { cx: 0, cy: -gui::dpi_y(self.inner.font_size.get()) },
+            w::SIZE { cx: 0, cy: -gui::dpi_y(size) },
             0,
             0,
             co::FW::NORMAL,
@@ -110,8 +118,16 @@ impl TabBar {
             co::CLIP::DEFAULT_PRECIS,
             co::QUALITY::CLEARTYPE,
             co::PITCH::FIXED,
-            &self.inner.font_family.borrow(),
+            family,
         )
+    }
+
+    /// 設定のファミリ＋フォールバックのフォント一式を生成する。
+    fn create_fonts(&self) -> w::SysResult<FontSet> {
+        let main = self.inner.font_size.get();
+        FontSet::new(&self.inner.font_family.borrow(), &self.inner.font_fallback.borrow(), |f, s| {
+            self.create_font_family(f, crate::font_fallback::effective_size(s, main, main))
+        })
     }
 
     fn setup_events(&self) {
@@ -169,16 +185,16 @@ impl TabBar {
 
     /// ターゲットビットマップ選択済みの任意 DC へ全面描画する（フォント準備＋`paint_to`）。
     pub(crate) fn render_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
-        let font = self.create_font()?;
-        let _font_sel = dc.SelectObject(&*font)?;
+        let fonts = self.create_fonts()?;
+        let _font_sel = dc.SelectObject(fonts.primary())?;
         if let Ok(tm) = dc.GetTextMetrics() {
             self.inner.font_height.set(tm.tmHeight);
         }
         dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
-        self.paint_to(dc, cw, ch)
+        self.paint_to(dc, &fonts, cw, ch)
     }
 
-    fn paint_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
+    fn paint_to(&self, dc: &w::HDC, fonts: &FontSet, cw: i32, ch: i32) -> w::AnyResult<()> {
         let sh = chrome::shadow();
 
         // タブが乗る背後（BTNFACE）。
@@ -217,7 +233,7 @@ impl TabBar {
                     | co::DT::NOPREFIX
                     | co::DT::PATH_ELLIPSIS;
                 let rect = w::RECT { left: left + 6, top: 0, right: right - 6, bottom: ch };
-                dc.DrawText(label, rect, flags)?;
+                fonts.draw_text(dc, label, rect, flags)?;
             }
         }
         Ok(())

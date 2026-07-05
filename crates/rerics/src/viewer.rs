@@ -16,6 +16,7 @@ use unicode_width::UnicodeWidthChar;
 use winsafe::{self as w, co, gui, prelude::*};
 
 use crate::chrome;
+use crate::font_fallback::FontSet;
 
 /// 表示行内の位置（表示行 index, 行内の char 数オフセット）。
 type Pos = (usize, usize);
@@ -42,6 +43,7 @@ struct Inner {
     truncated: Cell<bool>,
     colors: Colors,
     font_family: String,
+    font_fallback: Vec<String>,
     font_size: i32,
     line_height: Cell<i32>,
     char_width: Cell<i32>,
@@ -193,6 +195,7 @@ impl ViewerView {
             truncated: Cell::new(false),
             colors: cfg.active_colors(),
             font_family: cfg.font.family.clone(),
+            font_fallback: cfg.font.fallback.clone(),
             font_size: cfg.font.size,
             line_height: Cell::new(gui::dpi_y(cfg.font.size + 2)),
             char_width: Cell::new(gui::dpi_x(cfg.font.size).max(1)),
@@ -779,8 +782,8 @@ impl ViewerView {
         // 入力欄ミラー（白地・枠・検索語）。
         self.draw_bar_input(dc, g.edit, g.y, g.h, &term)?;
         // トグル3つ（[x]/[ ]＋ラベル）。「大小」は ON＝大小無視。
-        let sfont = self.create_font_sized((self.inner.font_size - 1).max(6))?;
-        let _sel = dc.SelectObject(&*sfont)?;
+        let sfonts = self.create_fonts_sized((self.inner.font_size - 1).max(6))?;
+        let _sel = dc.SelectObject(sfonts.primary())?;
         dc.SetTextColor(chrome::text())?;
         self.draw_bar_button(dc, g.history, g.y, g.h, "▼")?;
         self.draw_bar_toggle(dc, g.case, g.y, g.h, "ケースを無視", !o.case_sensitive)?;
@@ -825,12 +828,12 @@ impl ViewerView {
         chrome::vline(dc, x, y, y + h, chrome::shadow())?;
         chrome::vline(dc, x + w - 1, y, y + h, chrome::shadow())?;
         if !term.is_empty() {
-            let efont = self.create_font_sized((self.inner.font_size - 1).max(6))?;
-            let _sel = dc.SelectObject(&*efont)?;
+            let efonts = self.create_fonts_sized((self.inner.font_size - 1).max(6))?;
+            let _sel = dc.SelectObject(efonts.primary())?;
             dc.SetTextColor(chrome::text())?;
             let pad = gui::dpi_x(4);
             let tr = w::RECT { left: x + pad, top: y, right: x + w - pad, bottom: y + h };
-            dc.DrawText(term, tr, co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX | co::DT::END_ELLIPSIS)?;
+            efonts.draw_text(dc, term, tr, co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX | co::DT::END_ELLIPSIS)?;
         }
         Ok(())
     }
@@ -986,11 +989,11 @@ impl ViewerView {
         self.inner.line_height.get() + gui::dpi_y(6)
     }
 
-    fn create_font(&self) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
-        self.create_font_sized(self.inner.font_size)
-    }
-
-    fn create_font_sized(&self, size: i32) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
+    fn create_font_family(
+        &self,
+        size: i32,
+        family: &str,
+    ) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
         w::HFONT::CreateFont(
             w::SIZE { cx: 0, cy: -gui::dpi_y(size) },
             0,
@@ -1004,8 +1007,16 @@ impl ViewerView {
             co::CLIP::DEFAULT_PRECIS,
             co::QUALITY::CLEARTYPE,
             co::PITCH::FIXED,
-            &self.inner.font_family,
+            family,
         )
+    }
+
+    /// 設定のファミリ＋フォールバックのフォント一式を、指定サイズで生成する。
+    fn create_fonts_sized(&self, size: i32) -> w::SysResult<FontSet> {
+        let main = self.inner.font_size;
+        FontSet::new(&self.inner.font_family, &self.inner.font_fallback, |family, s| {
+            self.create_font_family(crate::font_fallback::effective_size(s, size, main), family)
+        })
     }
 
     /// 行番号欄の (右端 x, 縦線 x, 本文左 x) を返す（物理 px）。
@@ -1302,6 +1313,7 @@ impl ViewerView {
     fn draw_body_line(
         &self,
         dc: &w::HDC,
+        fonts: &FontSet,
         line: &DisplayLine,
         spans: &[(usize, usize)],
         cur_off: Option<usize>,
@@ -1333,7 +1345,10 @@ impl ViewerView {
                 *slot = oc;
             }
         }
-        // 同色のランごとに TextOut。
+        // 同色のランごとに TextOut。フォールバックフォントが混ざる行は、フォントの
+        // 変わり目でさらに割る。フォールバック run は字幅が主フォントのセル幅と一致
+        // しないので、1 文字ずつセルグリッド（col_x）へ固定して主フォントと桁を揃える。
+        let char_fonts = fonts.char_fonts(dc, &line.body);
         let mut p = 0;
         while p < n {
             let c0 = col[p];
@@ -1341,10 +1356,33 @@ impl ViewerView {
             while q < n && col[q] == c0 {
                 q += 1;
             }
-            let sub: String = chars[p..q].iter().collect();
-            let x = self.col_x(&line.body, p, content_left, cwd);
             dc.SetTextColor(rgb(c0))?;
-            dc.TextOut(x, y, &sub)?;
+            let Some(cf) = &char_fonts else {
+                let sub: String = chars[p..q].iter().collect();
+                let x = self.col_x(&line.body, p, content_left, cwd);
+                dc.TextOut(x, y, &sub)?;
+                p = q;
+                continue;
+            };
+            let mut a = p;
+            while a < q {
+                let fi = cf[a];
+                let mut b = a + 1;
+                while b < q && cf[b] == fi {
+                    b += 1;
+                }
+                if fi == 0 {
+                    let sub: String = chars[a..b].iter().collect();
+                    let x = self.col_x(&line.body, a, content_left, cwd);
+                    dc.TextOut(x, y, &sub)?;
+                } else {
+                    for (k, c) in chars[a..b].iter().enumerate() {
+                        let x = self.col_x(&line.body, a + k, content_left, cwd);
+                        fonts.text_out_at(dc, fi, x, y, &c.to_string())?;
+                    }
+                }
+                a = b;
+            }
             p = q;
         }
         Ok(())
@@ -1462,18 +1500,18 @@ impl ViewerView {
 
     /// ターゲットビットマップ選択済みの任意 DC へ全面描画する（フォント準備＋`paint_to`）。
     pub(crate) fn render_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
-        let font = self.create_font()?;
-        let _font_sel = dc.SelectObject(&*font)?;
+        let fonts = self.create_fonts_sized(self.inner.font_size)?;
+        let _font_sel = dc.SelectObject(fonts.primary())?;
         // メトリクス実測（行高・文字幅）。
         if let Ok(tm) = dc.GetTextMetrics() {
             self.inner.line_height.set(tm.tmHeight + gui::dpi_y(2));
             self.inner.char_width.set((tm.tmAveCharWidth).max(1));
         }
         dc.SetBkMode(co::BKMODE::TRANSPARENT)?;
-        self.paint_to(dc, cw, ch)
+        self.paint_to(dc, &fonts, cw, ch)
     }
 
-    fn paint_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
+    fn paint_to(&self, dc: &w::HDC, fonts: &FontSet, cw: i32, ch: i32) -> w::AnyResult<()> {
         let colors = self.inner.colors;
         let wrap_cols = self.wrap_cols();
         self.rebuild_if_needed(wrap_cols);
@@ -1538,7 +1576,7 @@ impl ViewerView {
                 dc.DrawText(&line.gutter, rect, co::DT::SINGLELINE | co::DT::RIGHT | co::DT::NOPREFIX)?;
             }
             if !line.body.is_empty() {
-                self.draw_body_line(dc, line, &spans, cur_off, y, content_left, cwd, &colors)?;
+                self.draw_body_line(dc, fonts, line, &spans, cur_off, y, content_left, cwd, &colors)?;
             }
             // 現在一致のある行に下線（検索カーソル行）。
             if cur_off.is_some() {
@@ -1588,13 +1626,14 @@ impl ViewerView {
         dc.FillRect(w::RECT { left: 0, top: sy, right: cw, bottom: sy + sh }, &brush)?;
         chrome::hline(dc, 0, cw, sy, chrome::highlight())?;
         // 状態行は本文より少し小さいフォントで（パスバー等と同じ流儀）。
-        let sfont = self.create_font_sized((self.inner.font_size - 2).max(6))?;
-        let _sfont_sel = dc.SelectObject(&*sfont)?;
+        let sfonts = self.create_fonts_sized((self.inner.font_size - 2).max(6))?;
+        let _sfont_sel = dc.SelectObject(sfonts.primary())?;
         dc.SetTextColor(chrome::text())?;
         let text = self.status_text();
         let pad = self.inner.char_width.get().max(1);
         let rect = w::RECT { left: pad, top: sy, right: cw - pad, bottom: sy + sh };
-        dc.DrawText(
+        sfonts.draw_text(
+            dc,
             &text,
             rect,
             co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX | co::DT::END_ELLIPSIS,

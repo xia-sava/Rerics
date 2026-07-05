@@ -22,6 +22,7 @@ const CHECKER_SQ: u32 = 8;
 use winsafe::{self as w, co, gui, prelude::*};
 
 use crate::chrome;
+use crate::font_fallback::FontSet;
 
 /// 画像として読み込むファイルサイズの上限（これを超えるファイルは読まない）。
 pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
@@ -132,6 +133,7 @@ struct Inner {
     pan_origin: Cell<(f64, f64)>,
     colors: Colors,
     font_family: String,
+    font_fallback: Vec<String>,
     font_size: i32,
     /// ズーム1段あたりの拡大率（倍率係数）。設定の `zoom_step_percent` から決まる。
     zoom_step: f64,
@@ -197,6 +199,7 @@ impl MediaView {
             pan_origin: Cell::new((0.0, 0.0)),
             colors: cfg.active_colors(),
             font_family: cfg.font.family.clone(),
+            font_fallback: cfg.font.fallback.clone(),
             font_size: cfg.font.size,
             zoom_step: 1.0 + cfg.image.zoom_step_percent.max(1) as f64 / 100.0,
             pan_step: cfg.image.pan_step_px.max(1) as i32,
@@ -788,7 +791,11 @@ impl MediaView {
         gui::dpi_y(self.inner.font_size + 8)
     }
 
-    fn create_font(&self, size: i32) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
+    fn create_font_family(
+        &self,
+        size: i32,
+        family: &str,
+    ) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
         w::HFONT::CreateFont(
             w::SIZE { cx: 0, cy: -gui::dpi_y(size) },
             0,
@@ -802,8 +809,16 @@ impl MediaView {
             co::CLIP::DEFAULT_PRECIS,
             co::QUALITY::CLEARTYPE,
             co::PITCH::DEFAULT,
-            &self.inner.font_family,
+            family,
         )
+    }
+
+    /// 設定のファミリ＋フォールバックのフォント一式を、指定サイズで生成する。
+    fn create_fonts(&self, size: i32) -> w::SysResult<FontSet> {
+        let main = self.inner.font_size;
+        FontSet::new(&self.inner.font_family, &self.inner.font_fallback, |family, s| {
+            self.create_font_family(crate::font_fallback::effective_size(s, size, main), family)
+        })
     }
 
     fn on_paint(&self) -> w::AnyResult<()> {
@@ -882,7 +897,10 @@ impl MediaView {
             dc.FillRect(w::RECT { left: fx - 2, top: cy - 5, right: fx + 3, bottom: cy + 6 }, &thumb)?;
         }
         // 再生状態＋時間（トラック左の固定枠）。
-        let sfont = self.create_font((self.inner.font_size - 2).max(6))?;
+        let sfont = self.create_font_family(
+            (self.inner.font_size - 2).max(6),
+            &self.inner.font_family,
+        )?;
         let _sel = dc.SelectObject(&*sfont)?;
         dc.SetTextColor(chrome::text())?;
         let mark = if self.inner.playing.get() { "▶" } else { "‖" };
@@ -943,11 +961,12 @@ impl MediaView {
     }
 
     fn draw_message(&self, dc: &w::HDC, cw: i32, body_h: i32, msg: &str) -> w::AnyResult<()> {
-        let font = self.create_font(self.inner.font_size + 2)?;
-        let _sel = dc.SelectObject(&*font)?;
+        let fonts = self.create_fonts(self.inner.font_size + 2)?;
+        let _sel = dc.SelectObject(fonts.primary())?;
         dc.SetTextColor(rgb(self.inner.colors.file_normal))?;
         let rect = w::RECT { left: 0, top: 0, right: cw, bottom: body_h };
-        dc.DrawText(
+        fonts.draw_text(
+            dc,
             msg,
             rect,
             co::DT::SINGLELINE | co::DT::CENTER | co::DT::VCENTER | co::DT::NOPREFIX,
@@ -959,13 +978,14 @@ impl MediaView {
         let brush = w::HBRUSH::CreateSolidBrush(chrome::face())?;
         dc.FillRect(w::RECT { left: 0, top: sy, right: cw, bottom: sy + sh }, &brush)?;
         chrome::hline(dc, 0, cw, sy, chrome::highlight())?;
-        let sfont = self.create_font((self.inner.font_size - 2).max(6))?;
-        let _sfont_sel = dc.SelectObject(&*sfont)?;
+        let sfonts = self.create_fonts((self.inner.font_size - 2).max(6))?;
+        let _sfont_sel = dc.SelectObject(sfonts.primary())?;
         dc.SetTextColor(chrome::text())?;
         let text = self.status_text();
         let pad = gui::dpi_x(self.inner.font_size).max(1);
         let rect = w::RECT { left: pad, top: sy, right: cw - pad, bottom: sy + sh };
-        dc.DrawText(
+        sfonts.draw_text(
+            dc,
             &text,
             rect,
             co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX | co::DT::END_ELLIPSIS,
