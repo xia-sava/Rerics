@@ -1177,6 +1177,29 @@ fn op_fs_mkdir(#[string] path: &str) -> Result<(), deno_error::JsErrorBox> {
         .map_err(|e| deno_error::JsErrorBox::generic(format!("ディレクトリ作成に失敗しました [{path}]: {e}")))
 }
 
+/// fs プリミティブ：NTFS シンボリックリンク作成。対象がディレクトリかどうかで
+/// ファイル/ディレクトリリンクを自動で振り分ける。要特権か開発者モード。
+#[op2(fast)]
+fn op_fs_symlink(
+    #[string] target: &str,
+    #[string] link: &str,
+) -> Result<(), deno_error::JsErrorBox> {
+    crate::shell::create_symlink(std::path::Path::new(target), std::path::Path::new(link)).map_err(
+        |e| deno_error::JsErrorBox::generic(format!("シンボリックリンクの作成に失敗しました [{target}] → [{link}]: {e}")),
+    )
+}
+
+/// fs プリミティブ：NTFS ジャンクション作成（ディレクトリ専用・特権不要）。
+#[op2(fast)]
+fn op_fs_junction(
+    #[string] target: &str,
+    #[string] link: &str,
+) -> Result<(), deno_error::JsErrorBox> {
+    crate::shell::create_junction(std::path::Path::new(target), std::path::Path::new(link)).map_err(
+        |e| deno_error::JsErrorBox::generic(format!("ジャンクションの作成に失敗しました [{target}] → [{link}]: {e}")),
+    )
+}
+
 /// fs プリミティブ：存在判定（エラーは投げず false 寄せ）。
 #[op2(fast)]
 fn op_fs_exists(#[string] path: &str) -> bool {
@@ -1269,6 +1292,8 @@ extension!(
         op_fs_copy_file,
         op_fs_rename,
         op_fs_mkdir,
+        op_fs_symlink,
+        op_fs_junction,
         op_fs_exists,
         op_fs_remove,
         op_fs_stat
@@ -1625,6 +1650,8 @@ const BOOTSTRAP: &str = r#"
       copyFile: (s, d) => ops.op_fs_copy_file(String(s), String(d)),
       rename: (s, d) => ops.op_fs_rename(String(s), String(d)),
       mkdir: (p) => ops.op_fs_mkdir(String(p)),
+      symlink: (t, l) => ops.op_fs_symlink(String(t), String(l)),
+      junction: (t, l) => ops.op_fs_junction(String(t), String(l)),
       exists: (p) => ops.op_fs_exists(String(p)),
       remove: (p) => ops.op_fs_remove(String(p)),
       stat: (p) => {
@@ -3512,6 +3539,36 @@ mod tests {
                 "renamed=true".to_string(),
                 "removed=true".to_string(),
             ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ジャンクションはディレクトリ専用・特権不要（シンボリックリンクは要特権のためテストしない）。
+    #[test]
+    fn fs_junction_links_directory() {
+        let dir = std::env::temp_dir().join(format!("rerics-junction-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("target")).unwrap();
+        std::fs::write(dir.join("target").join("inner.txt"), "x").unwrap();
+        let base = dir.display().to_string().replace('\\', "/");
+
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        let code = format!(
+            r#"
+              const b = "{base}";
+              r.fs.junction(b + "/target", b + "/jct");
+              rerics.log("linked=" + r.fs.exists(b + "/jct/inner.txt"));
+              // ファイル対象は例外。
+              try {{ r.fs.junction(b + "/target/inner.txt", b + "/jct2"); rerics.log("nofail"); }}
+              catch (e) {{ rerics.log("rejected=" + String(e).includes("ディレクトリのみ")); }}
+            "#
+        );
+        eng.run_to_completion("test:junction", code).unwrap();
+
+        assert_eq!(
+            *host.logs.borrow(),
+            vec!["linked=true".to_string(), "rejected=true".to_string()]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

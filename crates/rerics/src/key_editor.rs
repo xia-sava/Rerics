@@ -162,8 +162,8 @@ pub(crate) fn command_genre(cmd: Command) -> (u8, &'static str) {
         | BorderRight | BorderReset => (5, "ペイン"),
         MakeDirectoryDialog | Copy | Move | RenameDialog | RenameSequenceDialog | Delete
         | SendToRecycled | ShellCopy | ShellMove | ShellDelete | ShellRename | CreateShortcut
-        | ClipCopy | ClipCut | ClipPaste | CreateFileDialog | Edit | PropertyDialog | ContextMenu
-        | CompressDialog | Extract => (6, "ファイル操作"),
+        | CreateLinkDialog | ClipCopy | ClipCut | ClipPaste | CreateFileDialog | Edit
+        | PropertyDialog | ContextMenu | CompressDialog | Extract => (6, "ファイル操作"),
         OpenTaskManager | OpenSettings | OpenHelp | About | KeyBindsDialog | CommandDirect | Menu
         | CopyLog | ClearLog | Nop | End | Restart | Quit | MaximizeWindow | MinimizeWindow => {
             (7, "アプリ・その他")

@@ -154,6 +154,7 @@ pub enum Command {
     ShellDelete,
     ShellRename,
     CreateShortcut,
+    CreateLinkDialog,
     ClipCopy,
     ClipCut,
     ClipPaste,
@@ -393,6 +394,7 @@ impl Command {
             (ShellDelete, "shellDelete", "シェルで完全削除", "選択した項目を Explorer のダイアログで完全に削除する"),
             (ShellRename, "shellRename", "シェルで名前変更", "カーソル位置の項目を Explorer のダイアログで名前変更する"),
             (CreateShortcut, "createShortcut", "ショートカットの作成", "選択した項目のショートカットを作成する"),
+            (CreateLinkDialog, "createLinkDialog", "リンクの作成", "選択した項目へのリンク（ショートカット・シンボリックリンク・ジャンクション）を種類を選んで作成する"),
             (ClipCopy, "clipCopy", "クリップボードにコピー", "選択した項目をクリップボードへコピーする"),
             (ClipCut, "clipCut", "クリップボードに切り取り", "選択した項目をクリップボードへ切り取る"),
             (ClipPaste, "clipPaste", "クリップボードから貼り付け", "クリップボードの項目を現在のディレクトリへ貼り付ける"),
@@ -1101,7 +1103,7 @@ impl Default for KeyMap {
         m.bind(KeyChord::key(vk::M), Move);
         m.bind(KeyChord::key(vk::D), Delete);
         m.bind(KeyChord::key(vk::DELETE), SendToRecycled);
-        m.bind(KeyChord::key(vk::T), CreateShortcut);
+        m.bind(KeyChord::key(vk::T), CreateLinkDialog);
         m.bind(KeyChord::new(vk::C, true, false, false), ClipCopy);
         m.bind(KeyChord::new(vk::X, true, false, false), ClipCut);
         m.bind(KeyChord::new(vk::V, true, false, false), ClipPaste);

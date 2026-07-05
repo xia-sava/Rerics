@@ -15,6 +15,7 @@ mod message;
 mod input;
 mod conflict;
 mod archive_add;
+mod link;
 mod compare;
 mod compress;
 mod find;
@@ -30,6 +31,7 @@ pub use input::{
 pub use input::completion_probe;
 pub use conflict::conflict_box;
 pub use archive_add::archive_add_box;
+pub use link::link_kind_box;
 pub use compare::compare_options_box;
 pub use compress::compress_box;
 pub use find::find_file_box;
@@ -760,6 +762,17 @@ impl InputSelect {
             InputSelect::AsIs => {}
         }
     }
+}
+
+/// 作成するリンクの種類。[`link_kind_box`] の選択結果で、リンク作成の実処理の分岐に使う。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LinkKind {
+    /// Windows ショートカット（`.lnk`）。
+    Shortcut,
+    /// NTFS シンボリックリンク（ファイル/ディレクトリ両用・要特権か開発者モード）。
+    Symlink,
+    /// NTFS ジャンクション（ディレクトリ専用・特権不要）。
+    Junction,
 }
 
 /// 書庫への追加方式。同名エントリがあるときの分岐に使う。

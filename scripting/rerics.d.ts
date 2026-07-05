@@ -176,6 +176,10 @@ interface RericsFs {
   rename(src: string, dst: string): void;
   /** ディレクトリを作る（途中の階層も再帰作成・既存はそのまま成功）。 */
   mkdir(path: string): void;
+  /** `target` を指す NTFS シンボリックリンクを `link` に作る（ファイル/ディレクトリは自動判別・要特権か開発者モード）。 */
+  symlink(target: string, link: string): void;
+  /** `target` ディレクトリを指す NTFS ジャンクションを `link` に作る（ディレクトリ専用・特権不要）。 */
+  junction(target: string, link: string): void;
   /** 存在すれば true（エラーでも false 寄せ）。 */
   exists(path: string): boolean;
   /** ファイル／空ディレクトリを削除する（非再帰・中身ありディレクトリは例外）。 */

@@ -1173,46 +1173,110 @@ impl MainWindow {
         Ok(())
     }
 
-    /// 選択（無ければカーソル）の各項目を指すショートカット（.lnk）を同じ場所に作る。
-    pub(crate) fn create_shortcut(&self, is_left: bool) -> w::AnyResult<()> {
+    /// リンクの作成先を決める。結果一覧では各項目の出自の隣（`Some(None)`）、通常モードは
+    /// copy/move と同じく反対ペイン（`Some(Some(dir))`）。作成できない構成（アクティブ側が
+    /// 書庫・反対側が書庫/検索結果）は警告ログを出して `None`。
+    fn link_dst_dir(&self, is_left: bool) -> Option<Option<PathBuf>> {
         if self.pane(is_left).borrow().is_archive() {
-            self.log.warn("書庫内ではショートカット作成は未対応です。");
-            return Ok(());
+            self.log.warn("書庫内ではリンク作成は未対応です。");
+            return None;
         }
-        // 検索・比較の結果一覧は複数フォルダ由来の寄せ集めなので、各項目の出自ディレクトリの隣へ
-        // 作る。通常モードは copy/move と同じく反対ペインを宛先にする（反対が書庫/結果一覧なら不可）。
-        let find_result = self.view(is_left).state().borrow().find_result;
-        let dst_dir = if find_result {
-            None
-        } else {
-            if self.pane(!is_left).borrow().is_archive() {
-                self.log.warn("反対側が書庫のためショートカットを作成できません。");
-                return Ok(());
-            }
-            if self.view(!is_left).state().borrow().find_result {
-                self.log.warn("反対側が検索結果のためショートカットを作成できません。");
-                return Ok(());
-            }
-            Some(self.pane(!is_left).borrow().path().to_path_buf())
+        // 検索・比較の結果一覧は複数フォルダ由来の寄せ集めなので、各項目の出自ディレクトリの隣へ。
+        if self.view(is_left).state().borrow().find_result {
+            return Some(None);
+        }
+        if self.pane(!is_left).borrow().is_archive() {
+            self.log.warn("反対側が書庫のためリンクを作成できません。");
+            return None;
+        }
+        if self.view(!is_left).state().borrow().find_result {
+            self.log.warn("反対側が検索結果のためリンクを作成できません。");
+            return None;
+        }
+        Some(Some(self.pane(!is_left).borrow().path().to_path_buf()))
+    }
+
+    /// 作成するリンクの種類をダイアログで尋ねて [`Self::create_links`] を呼ぶ（表層：値集めのみ）。
+    /// 選択項目と作成先から選べる種類と既定を決める：ジャンクションは対象がディレクトリのみ・
+    /// かつネットワークを介さないとき、シンボリックリンクは作成権限（開発者モードか管理者）が
+    /// あるときだけ有効。既定は全ディレクトリならジャンクション、それ以外はシンボリックリンク
+    /// （無効なら次の有効な種類へ倒す）。
+    pub(crate) fn create_link_dialog(&self, is_left: bool) -> w::AnyResult<()> {
+        use dialog::LinkKind;
+        let Some(dst_dir) = self.link_dst_dir(is_left) else {
+            return Ok(());
         };
         let targets = self.selected_real_targets(is_left);
         if targets.is_empty() {
             self.log.error(&messages::not_selected_error());
             return Ok(());
         }
+        let all_dirs = targets.iter().all(|(p, _)| p.is_dir());
+        let network = targets.iter().any(|(p, _)| shell::is_network_path(p))
+            || dst_dir.as_ref().is_some_and(|d| shell::is_network_path(d));
+        let junction_enabled = all_dirs && !network;
+        let symlink_enabled = shell::can_create_symlink();
+        if !symlink_enabled {
+            self.log.warn(
+                "シンボリックリンクを作成する権限がありません（開発者モードを有効にするか管理者で実行して下さい）。",
+            );
+        }
+        let default = if all_dirs && junction_enabled {
+            LinkKind::Junction
+        } else if symlink_enabled {
+            LinkKind::Symlink
+        } else {
+            LinkKind::Shortcut
+        };
+        let Some(kind) = dialog::link_kind_box(&self.wnd, symlink_enabled, junction_enabled, default)
+        else {
+            return Ok(());
+        };
+        self.create_links(is_left, kind)
+    }
+
+    /// 選択（無ければカーソル）の各項目を指すリンクを作る（実処理）。種類は `kind`
+    /// （ショートカット .lnk／シンボリックリンク／ジャンクション）。作成先に同名が既に
+    /// あればその項目はエラーログでスキップする（ショートカットは `.lnk` を上書き）。
+    pub(crate) fn create_links(&self, is_left: bool, kind: dialog::LinkKind) -> w::AnyResult<()> {
+        use dialog::LinkKind;
+        let Some(dst_dir) = self.link_dst_dir(is_left) else {
+            return Ok(());
+        };
+        let find_result = dst_dir.is_none();
+        let targets = self.selected_real_targets(is_left);
+        if targets.is_empty() {
+            self.log.error(&messages::not_selected_error());
+            return Ok(());
+        }
+        let kind_name = match kind {
+            LinkKind::Shortcut => "ショートカット",
+            LinkKind::Symlink => "シンボリックリンク",
+            LinkKind::Junction => "ジャンクション",
+        };
         let mut ok = 0usize;
         for (target, name) in &targets {
-            let lnk = match &dst_dir {
-                Some(dir) => dir.join(format!("{name}.lnk")),
-                None => target.with_file_name(format!("{name}.lnk")),
+            // ショートカットのみ .lnk が付く。symlink/junction は対象と同名で作る。
+            let link_name = match kind {
+                LinkKind::Shortcut => format!("{name}.lnk"),
+                LinkKind::Symlink | LinkKind::Junction => name.clone(),
             };
-            match shell::create_shortcut(target, &lnk) {
+            let link = match &dst_dir {
+                Some(dir) => dir.join(&link_name),
+                None => target.with_file_name(&link_name),
+            };
+            let result = match kind {
+                LinkKind::Shortcut => shell::create_shortcut(target, &link),
+                LinkKind::Symlink => shell::create_symlink(target, &link),
+                LinkKind::Junction => shell::create_junction(target, &link),
+            };
+            match result {
                 Ok(()) => ok += 1,
-                Err(e) => self.log.error(&format!("ショートカット作成に失敗しました（{name}）：{e}")),
+                Err(e) => self.log.error(&format!("{kind_name}の作成に失敗しました（{name}）：{e}")),
             }
         }
         if ok > 0 {
-            self.log.normal(&format!("ショートカットを作成しました: {ok} 件"));
+            self.log.normal(&format!("{kind_name}を作成しました: {ok} 件"));
         }
         // 反対ペインに作ったら増えた項目を見せるためそちらを、結果一覧なら出自に散らばり一覧へは
         // 現れないのでアクティブ側を（結果モードを保ったまま）再読込する。

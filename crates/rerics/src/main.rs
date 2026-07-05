@@ -110,7 +110,8 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
     use Command::*;
     match cmd {
         MakeDirectoryDialog | CreateFileDialog | RenameDialog | Delete | Copy | Move | CompressDialog
-        | Extract | RenameSequenceDialog | SendToRecycled | CreateShortcut | ClipPaste => {
+        | Extract | RenameSequenceDialog | SendToRecycled | CreateShortcut | CreateLinkDialog
+        | ClipPaste => {
             DebugCmdClass::ModalWrite
         }
         // view/viewFile は暗号化書庫でパスワード入力モーダルを開き得る（書込みではない）。
@@ -1395,7 +1396,11 @@ impl MainWindow {
                 return Ok(());
             }
             Command::CreateShortcut => {
-                self.create_shortcut(is_left)?;
+                self.create_links(is_left, dialog::LinkKind::Shortcut)?;
+                return Ok(());
+            }
+            Command::CreateLinkDialog => {
+                self.create_link_dialog(is_left)?;
                 return Ok(());
             }
             Command::ClipCopy => {

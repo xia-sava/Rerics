@@ -502,6 +502,145 @@ pub fn resolve_shortcut(lnk: &Path) -> Option<PathBuf> {
     }
 }
 
+/// `target` を指す NTFS シンボリックリンクを `link` に作る。対象がディレクトリなら
+/// ディレクトリリンク、それ以外はファイルリンクにする。管理者権限か開発者モードが必要
+/// （開発者モード有効時は Rust std が非昇格作成フラグを付けてくれる）。
+pub fn create_symlink(target: &Path, link: &Path) -> Result<(), String> {
+    let target_abs = absolute(target);
+    let result = if target_abs.is_dir() {
+        std::os::windows::fs::symlink_dir(&target_abs, link)
+    } else {
+        std::os::windows::fs::symlink_file(&target_abs, link)
+    };
+    result.map_err(|e| e.to_string())
+}
+
+/// パスがネットワーク先（UNC またはネットワークドライブ）かを判定する。
+pub fn is_network_path(p: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    use windows::Win32::Storage::FileSystem::GetDriveTypeW;
+    use windows::core::PCWSTR;
+    const DRIVE_REMOTE: u32 = 4;
+
+    let abs = absolute(p);
+    match abs.components().next() {
+        Some(Component::Prefix(pre)) => match pre.kind() {
+            Prefix::UNC(..) | Prefix::VerbatimUNC(..) => true,
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+                let root: Vec<u16> = format!("{}:\\", letter as char)
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+                let drive_type = unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) };
+                drive_type == DRIVE_REMOTE
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// シンボリックリンクを作成できる権限があるか（開発者モード有効か管理者昇格）。
+/// 設定の推測でなく、テンポラリに実際にダミーリンクを作って確かめる（リンク先は不在でよい）。
+pub fn can_create_symlink() -> bool {
+    let dir = std::env::temp_dir();
+    let link = dir.join(format!("rerics-symcheck-{}", std::process::id()));
+    let _ = std::fs::remove_file(&link);
+    match std::os::windows::fs::symlink_file(dir.join("rerics-symcheck-target"), &link) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&link);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+// ジャンクション作成用（Win32 ヘッダの値をそのまま写す）。
+const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
+const FSCTL_SET_REPARSE_POINT: u32 = 0x000900A4;
+
+/// `target` ディレクトリを指す NTFS ジャンクション（マウントポイント）を `link` に作る。
+/// symlink と違い特権が要らない。専用 API がないため、空ディレクトリを作って
+/// `FSCTL_SET_REPARSE_POINT` でリパースポイントを書き込む。
+pub fn create_junction(target: &Path, link: &Path) -> Result<(), String> {
+    use windows::Win32::Foundation::{CloseHandle, GENERIC_WRITE};
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows::Win32::System::IO::DeviceIoControl;
+    use windows::core::PCWSTR;
+
+    let target_abs = absolute(target);
+    // リモート宛てはリパースポイント自体は書けてしまうが解決できない（壊れたリンクになる）
+    // ので先に拒否する。
+    if is_network_path(&target_abs) {
+        return Err("ジャンクションはネットワーク先を指せません（シンボリックリンクを使って下さい）".into());
+    }
+    if !target_abs.is_dir() {
+        return Err("ジャンクションの対象はディレクトリのみです".into());
+    }
+    std::fs::create_dir(link).map_err(|e| e.to_string())?;
+
+    // REPARSE_DATA_BUFFER（mount point）。SubstituteName は NT パス（`\??\C:\...`）、
+    // PrintName は表示用の Win32 パス。PathBuffer には両者を null 区切りで並べる。
+    let mut substitute: Vec<u16> = r"\??\".encode_utf16().collect();
+    substitute.extend(target_abs.as_os_str().encode_wide());
+    let print: Vec<u16> = target_abs.as_os_str().encode_wide().collect();
+    let sub_bytes = (substitute.len() * 2) as u16;
+    let print_bytes = (print.len() * 2) as u16;
+    // mount point 部 = 名前オフセット/長さ4フィールド(8B) + PathBuffer（null 終端2つを含む）。
+    let reparse_data_len = 8 + sub_bytes + 2 + print_bytes + 2;
+
+    let mut data: Vec<u8> = Vec::new();
+    data.extend_from_slice(&IO_REPARSE_TAG_MOUNT_POINT.to_le_bytes());
+    data.extend_from_slice(&reparse_data_len.to_le_bytes());
+    data.extend_from_slice(&0u16.to_le_bytes()); // Reserved
+    data.extend_from_slice(&0u16.to_le_bytes()); // SubstituteNameOffset
+    data.extend_from_slice(&sub_bytes.to_le_bytes());
+    data.extend_from_slice(&(sub_bytes + 2).to_le_bytes()); // PrintNameOffset
+    data.extend_from_slice(&print_bytes.to_le_bytes());
+    for u in substitute.iter().chain(std::iter::once(&0)).chain(print.iter()).chain(std::iter::once(&0)) {
+        data.extend_from_slice(&u.to_le_bytes());
+    }
+
+    let link_w = wide(link);
+    let done = unsafe {
+        CreateFileW(
+            PCWSTR(link_w.as_ptr()),
+            GENERIC_WRITE.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+        .map_err(|e| e.to_string())
+        .and_then(|handle| {
+            let mut returned = 0u32;
+            let result = DeviceIoControl(
+                handle,
+                FSCTL_SET_REPARSE_POINT,
+                Some(data.as_ptr() as *const c_void),
+                data.len() as u32,
+                None,
+                0,
+                Some(&mut returned),
+                None,
+            )
+            .map_err(|e| e.to_string());
+            let _ = CloseHandle(handle);
+            result
+        })
+    };
+    if let Err(e) = done {
+        // リパースポイントを書けなかった空ディレクトリは残さない。
+        let _ = std::fs::remove_dir(link);
+        return Err(e);
+    }
+    Ok(())
+}
+
 /// シェル（`IFileOperation`）操作の共通処理。COM を初期化して `IFileOperation` を作り、`queue`
 /// で対象を積み、`PerformOperations` で実行する。Explorer 純正の進捗・衝突・確認ダイアログが出て、
 /// 完了（または中止）までブロックする。中止されず完了で `Ok(true)`、ユーザー中止で `Ok(false)`、
@@ -720,5 +859,22 @@ mod tests {
     fn build_path_text_single_path_has_no_separator() {
         let bytes = build_path_text(&[PathBuf::from(r"C:\x\only.png")]);
         assert_eq!(decode_utf16le(&bytes), "C:\\x\\only.png");
+    }
+
+    #[test]
+    fn network_path_detects_unc_and_local() {
+        assert!(is_network_path(Path::new(r"\\server\share\dir")));
+        assert!(is_network_path(Path::new(r"\\?\UNC\server\share\dir")));
+        // システムドライブは常にローカル。
+        let system = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+        assert!(!is_network_path(Path::new(&format!("{system}\\"))));
+    }
+
+    #[test]
+    fn junction_rejects_network_target() {
+        let link = std::env::temp_dir().join(format!("rerics-jcttest-{}", std::process::id()));
+        let err = create_junction(Path::new(r"\\server\share\dir"), &link).unwrap_err();
+        assert!(err.contains("ネットワーク"), "err: {err}");
+        assert!(!link.exists(), "no leftover directory should remain");
     }
 }

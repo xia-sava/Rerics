@@ -2376,6 +2376,56 @@ fn shell_create_shortcut() {
     );
 }
 
+/// createLinkDialog＝種類選択モーダルで選んだリンクを反対ペインに作る。ディレクトリのみの
+/// 選択では既定がジャンクションに自動選択され、そのまま OK で junction が作られる
+/// （特権不要。シンボリックリンクは要特権のため e2e にしない）。
+#[test]
+fn create_link_dialog_makes_junction() {
+    let server = Server::start_writable_split(&[]);
+    std::fs::create_dir_all(server.base.join("sbxL").join("realdir")).unwrap();
+    std::fs::write(server.base.join("sbxL").join("realdir").join("inner.txt"), "x").unwrap();
+    server.req("POST", "/command/reload", "").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"realdir\""));
+    server.req("POST", "/command/cursorDown", "").unwrap(); // .. -> realdir
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+
+    server.req("POST", "/command/createLinkDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"link_kind\""), "link kind dialog should open: {modal}");
+    // ディレクトリのみの選択＝ジャンクションが既定で選択されている。
+    assert!(
+        modal.contains(r#"{"label":"ジャンクション（ディレクトリのみ）(&J)","enabled":true,"checked":true}"#),
+        "junction should be the enabled default for directory targets: {modal}"
+    );
+    server.req("POST", "/modal/command/ok", "").unwrap();
+
+    // 反対（右）ペインに同名で現れ、junction 越しに対象の中身へ届く。
+    let items = poll(&server, "/state/panes/right/items", |b| b.contains("\"name\":\"realdir\""));
+    assert!(
+        items.contains("\"name\":\"realdir\""),
+        "a junction should be created in the opposite pane: {items}"
+    );
+    let linked = server.base.join("sbxR").join("realdir").join("inner.txt");
+    assert!(linked.exists(), "the junction should resolve to the target contents");
+}
+
+/// ファイルを含む選択ではジャンクションが選べない（グレーアウト）。
+#[test]
+fn create_link_dialog_disables_junction_for_files() {
+    let server = Server::start_writable_split(&["doc.txt"]);
+    server.req("POST", "/command/cursorDown", "").unwrap(); // .. -> doc.txt
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+
+    server.req("POST", "/command/createLinkDialog", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"link_kind\""), "link kind dialog should open: {modal}");
+    assert!(
+        modal.contains(r#"{"label":"ジャンクション（ディレクトリのみ）(&J)","enabled":false"#),
+        "junction should be disabled for file targets: {modal}"
+    );
+    server.req("POST", "/modal/command/cancel", "").unwrap();
+}
+
 /// clipCopy→（サブフォルダへ移動して）clipPaste で実コピーされる。
 /// ※検証で OS のクリップボードを上書きする（汚染許容・テスト実行時のみ）。
 #[test]
