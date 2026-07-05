@@ -733,6 +733,30 @@ impl MainWindow {
         debug_server::Response::Json(self.debug_state_value().to_string())
     }
 
+    /// モーダル内のラジオボタンを列挙し、ラベル・有効・選択状態を返す（`/state` の
+    /// `modal.radios` 用）。並びは [`Self::debug_modal_radio`] の index と一致する。
+    #[cfg(feature = "debug-server")]
+    fn debug_modal_radios(modal: &w::HWND) -> Vec<serde_json::Value> {
+        use serde_json::json;
+        let mut radios: Vec<serde_json::Value> = Vec::new();
+        modal.EnumChildWindows(|c| {
+            let is_btn =
+                c.GetClassName().map(|s| s.eq_ignore_ascii_case("Button")).unwrap_or(false);
+            let style = c.GetWindowLongPtr(co::GWLP::STYLE) as u32;
+            if is_btn && matches!(style & 0xF, 4 | 9) {
+                let checked =
+                    unsafe { c.SendMessage(w::msg::bm::GetCheck {}) } == co::BST::CHECKED;
+                radios.push(json!({
+                    "label": c.GetWindowText().unwrap_or_default(),
+                    "enabled": c.IsWindowEnabled(),
+                    "checked": checked,
+                }));
+            }
+            true
+        });
+        radios
+    }
+
     /// モーダル内の最初の ListBox 子コントロールを探す。
     #[cfg(feature = "debug-server")]
     pub(crate) fn debug_modal_listbox(modal: &w::HWND) -> Option<w::HWND> {
@@ -1509,6 +1533,10 @@ impl MainWindow {
                         (Vec::new(), Vec::new(), selected, top)
                     }
                 };
+                let radios = {
+                    let m = unsafe { w::HWND::from_ptr(e.modal_ptr as *mut std::ffi::c_void) };
+                    Self::debug_modal_radios(&m)
+                };
                 json!({
                     "kind": e.kind,
                     "title": e.title,
@@ -1521,6 +1549,7 @@ impl MainWindow {
                     "selected": selected,
                     "top": top,
                     "buttons": e.buttons.iter().map(|(l, id)| json!({ "label": l, "id": id })).collect::<Vec<_>>(),
+                    "radios": radios,
                 })
             }
         });
