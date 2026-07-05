@@ -373,7 +373,8 @@ impl FileListView {
         {
             let mut s = self.inner.state.borrow_mut();
             s.columns = cfg.columns.clone();
-            s.reverse_sort_date = cfg.reverse_sort_date;
+            // 日付ソート表示中に変わったときは並べ直しまで行なう。
+            s.set_reverse_sort_date(cfg.reverse_sort_date, self.page_rows());
             // 既定のまま使っているペインは、既定ソートの変更に並びごと追従させる。
             s.follow_default_sort(
                 old_default,

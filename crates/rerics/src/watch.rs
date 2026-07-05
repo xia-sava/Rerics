@@ -31,6 +31,8 @@ const DRIVE_FIXED: u32 = 3;
 pub(crate) struct WatchHandle {
     /// 監視中の実ディレクトリ。再アーム時に「同じ場所なら張り替えない」判定に使う。
     dir: PathBuf,
+    /// この監視スレッドが使っている静穏待ち時間（ms）。設定変更時の張り替え判定に使う。
+    wait_ms: u64,
     /// 停止合図用の手動リセットイベント（`HANDLE` の生ポインタを `isize` で保持）。
     stop: isize,
     thread: Option<JoinHandle<()>>,
@@ -53,7 +55,7 @@ impl WatchHandle {
             .spawn(move || run(thread_dir, stop_raw, hwnd_ptr, is_left, wait_ms))
             .ok();
         match thread {
-            Some(thread) => Some(WatchHandle { dir, stop: stop_raw, thread: Some(thread) }),
+            Some(thread) => Some(WatchHandle { dir, wait_ms, stop: stop_raw, thread: Some(thread) }),
             None => {
                 unsafe {
                     let _ = CloseHandle(HANDLE(stop_raw as *mut c_void));
@@ -66,6 +68,11 @@ impl WatchHandle {
     /// この監視が指す実ディレクトリ。
     pub(crate) fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// この監視スレッドが使っている静穏待ち時間（ms）。
+    pub(crate) fn wait_ms(&self) -> u64 {
+        self.wait_ms
     }
 }
 

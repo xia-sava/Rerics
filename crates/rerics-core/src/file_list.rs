@@ -1263,6 +1263,24 @@ impl FileListState {
         }
     }
 
+    /// `reverse_sort_date` を変更する。日付ソートを表示中に値が変わったときはその場で
+    /// 並べ直し、カーソルは同名項目へ追従させる。
+    pub fn set_reverse_sort_date(&mut self, on: bool, page_rows: usize) {
+        if self.reverse_sort_date == on {
+            return;
+        }
+        self.reverse_sort_date = on;
+        if self.sort_type != SortType::LastWriteTime {
+            return;
+        }
+        let name = self.items.get(self.cursor).map(|i| i.name.clone());
+        let (sort, reverse) = (self.sort_type, self.sort_reverse);
+        self.sort(sort, reverse);
+        if let Some(n) = name {
+            self.set_cursor_position(&n, page_rows);
+        }
+    }
+
     /// 列のセルテキストを生成する。
     pub fn cell_text(&self, item: &FileItem, kind: ColumnKind, size_format: SizeFormat) -> String {
         match kind {
@@ -2209,6 +2227,37 @@ mod tests {
         s.sort(SortType::FileName, false);
         let names: Vec<&str> = s.items.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, vec!["new", "old"]);
+    }
+
+    #[test]
+    fn set_reverse_sort_date_resorts_date_panes() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let t1 = t0 + std::time::Duration::from_secs(100);
+        let mut a = file("old");
+        a.modified = Some(t0);
+        let mut b = file("new");
+        b.modified = Some(t1);
+        let mut s = FileListState::new();
+        s.items = vec![a, b];
+        s.sort(SortType::LastWriteTime, false);
+        assert_eq!(s.items[0].name, "new");
+        s.cursor = s.items.iter().position(|i| i.name == "old").unwrap();
+        // 日付ソート表示中に有効化すると即並べ直し、カーソルは同名項目へ追従する。
+        s.set_reverse_sort_date(true, 10);
+        assert!(s.reverse_sort_date);
+        assert_eq!(s.items[0].name, "old");
+        assert_eq!(s.items[s.cursor].name, "old", "カーソルは同名項目へ追従する");
+        // 同値なら並びに触らない。
+        s.set_reverse_sort_date(true, 10);
+        assert_eq!(s.items[0].name, "old");
+
+        // 日付ソート以外ではフラグだけ変えて並びに触らない。
+        let mut s = FileListState::new();
+        s.items = vec![file("b"), file("a")];
+        s.sort(SortType::FileName, false);
+        s.set_reverse_sort_date(true, 10);
+        assert!(s.reverse_sort_date);
+        assert_eq!(s.items[0].name, "a");
     }
 
     #[test]

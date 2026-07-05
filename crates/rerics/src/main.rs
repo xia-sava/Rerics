@@ -1940,9 +1940,10 @@ impl MainWindow {
         };
         let idx = if is_left { 0 } else { 1 };
         let mut slot = self.watchers.borrow_mut();
-        // 既に同じ場所を監視中なら張り替えない（無用なスレッド再生成を避ける）。
+        // 既に同じ場所を同じ待ち時間で監視中なら張り替えない（無用なスレッド再生成を避ける）。
         if let (Some(h), Some(dir)) = (slot[idx].as_ref(), want_dir.as_ref())
             && h.dir() == dir
+            && h.wait_ms() == rw.wait_ms
         {
             return;
         }

@@ -63,15 +63,20 @@ impl MainWindow {
             self.right.apply_config(&cfg);
             self.tab_bar.apply_config(&cfg);
             self.log.apply_config(&cfg);
-            // 既定ソートの変更は非アクティブタブのスナップショットにも追従させる
-            // （表示中ペインは FileListView::apply_config が行う）。
+            // 既定ソート・日付ソート反転の変更は非アクティブタブのスナップショットにも
+            // 追従させる（表示中ペインは FileListView::apply_config が行う）。
             let new_default = (cfg.default_sort, cfg.default_sort_reverse);
             let (pl, pr) = (self.view(true).page_rows(), self.view(false).page_rows());
             for t in self.tabs.borrow_mut().iter_mut() {
+                t.left_state.set_reverse_sort_date(cfg.reverse_sort_date, pl);
+                t.right_state.set_reverse_sort_date(cfg.reverse_sort_date, pr);
                 t.left_state.follow_default_sort(old_default, new_default, pl);
                 t.right_state.follow_default_sort(old_default, new_default, pr);
             }
         }
+        // 更新監視の設定変更を反映して張り替える（対象外になった監視は止め、有効化は張る）。
+        self.arm_watch(true);
+        self.arm_watch(false);
         self.layout()?;
         self.refresh_tab_bar()?;
         Ok(())

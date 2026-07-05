@@ -1650,7 +1650,8 @@ fn build_layout(parent: &gui::WindowControl, shared: &Rc<Shared>, preview: &Prev
     }
 }
 
-/// 「動作」ページ（全般の動作設定）。今は待機表示の遅延のみ。操作を即 `Shared` へ反映する。
+/// 「動作」ページ（待機表示の遅延・既定エディタ・ディレクトリの自動再読込）。
+/// 各操作を即 `Shared` へ反映する。
 fn build_behavior(parent: &gui::WindowControl, shared: &Rc<Shared>) {
     let delay_ms = shared.cfg.borrow().progress_delay_ms;
     label(parent, "「読込中」表示までの時間(ms)", 16, 18, 240);
@@ -1742,6 +1743,90 @@ fn build_behavior(parent: &gui::WindowControl, shared: &Rc<Shared>) {
             if let Some(p) = crate::shell::choose_file(parent_hwnd, "既定エディタの選択", false) {
                 let _ = ee.set_text(&p.to_string_lossy());
             }
+            Ok(())
+        });
+    }
+
+    // 表示中ディレクトリの更新監視（原作 AutoReload/AutoReload2/WaitTime 相当）。
+    let rw = shared.cfg.borrow().reload_watch;
+    group_box(parent, "ディレクトリの自動再読込", 12, 150, 752, 126);
+    let watch_check = gui::CheckBox::new(
+        parent,
+        gui::CheckBoxOpts {
+            text: "表示中ディレクトリの変更を監視して自動で再読込する(&A)",
+            position: gui::dpi(28, 174),
+            size: gui::dpi(420, 22),
+            check_state: if rw.enabled { co::BST::CHECKED } else { co::BST::UNCHECKED },
+            ..Default::default()
+        },
+    );
+    let non_fixed_check = gui::CheckBox::new(
+        parent,
+        gui::CheckBoxOpts {
+            text: "リムーバブル・ネットワークドライブなども監視する(&N)",
+            position: gui::dpi(48, 206),
+            size: gui::dpi(400, 22),
+            check_state: if rw.watch_non_fixed { co::BST::CHECKED } else { co::BST::UNCHECKED },
+            ..Default::default()
+        },
+    );
+    label(parent, "再読込までの静穏時間(ms)", 48, 240, 170);
+    let wait_edit = gui::Edit::new(
+        parent,
+        gui::EditOpts {
+            text: &rw.wait_ms.to_string(),
+            control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
+            position: gui::dpi(222, 238),
+            width: gui::dpi_x(64),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+    let _wait_spin = gui::UpDown::new(
+        parent,
+        gui::UpDownOpts {
+            position: gui::dpi(286, 238),
+            height: gui::dpi_y(22),
+            range: (0, 10000),
+            value: rw.wait_ms.min(10000) as i32,
+            control_style: co::UDS::AUTOBUDDY
+                | co::UDS::SETBUDDYINT
+                | co::UDS::ALIGNRIGHT
+                | co::UDS::ARROWKEYS,
+            ..Default::default()
+        },
+    );
+    label(parent, "（変更が続く間は待ち、静まってから一度だけ再読込します）", 330, 240, 400);
+    let _ = non_fixed_check.hwnd().EnableWindow(rw.enabled);
+    let _ = wait_edit.hwnd().EnableWindow(rw.enabled);
+    {
+        let shared = shared.clone();
+        let wc = watch_check.clone();
+        let nf = non_fixed_check.clone();
+        let we = wait_edit.clone();
+        watch_check.on().bn_clicked(move || {
+            let on = wc.is_checked();
+            shared.cfg.borrow_mut().reload_watch.enabled = on;
+            let _ = nf.hwnd().EnableWindow(on);
+            let _ = we.hwnd().EnableWindow(on);
+            Ok(())
+        });
+    }
+    {
+        let shared = shared.clone();
+        let nf = non_fixed_check.clone();
+        non_fixed_check.on().bn_clicked(move || {
+            shared.cfg.borrow_mut().reload_watch.watch_non_fixed = nf.is_checked();
+            Ok(())
+        });
+    }
+    {
+        let shared = shared.clone();
+        let we = wait_edit.clone();
+        wait_edit.on().en_change(move || {
+            let cur = shared.cfg.borrow().reload_watch.wait_ms as i32;
+            let v = parse_or(&we, cur).clamp(0, 10000);
+            shared.cfg.borrow_mut().reload_watch.wait_ms = v as u64;
             Ok(())
         });
     }
@@ -1842,6 +1927,50 @@ fn build_cursor(parent: &gui::WindowControl, shared: &Rc<Shared>) {
         let dc = down_check.clone();
         down_check.on().bn_clicked(move || {
             shared.cfg.borrow_mut().cursor.down_after_select = dc.is_checked();
+            Ok(())
+        });
+    }
+
+    // ディレクトリ作成後にその新ディレクトリへ移動（原作 CreateDirectoryAndMove・既定オフ）。
+    let create_and_move = shared.cfg.borrow().cursor.create_directory_and_move;
+    let create_check = gui::CheckBox::new(
+        parent,
+        gui::CheckBoxOpts {
+            text: "ディレクトリ作成後にその中へ移動する(&C)",
+            position: gui::dpi(16, 244),
+            size: gui::dpi(320, 22),
+            check_state: if create_and_move { co::BST::CHECKED } else { co::BST::UNCHECKED },
+            ..Default::default()
+        },
+    );
+    label(parent, "（オフのときは作成した新ディレクトリへカーソルを合わせるだけです）", 16, 272, 360);
+    {
+        let shared = shared.clone();
+        let cc = create_check.clone();
+        create_check.on().bn_clicked(move || {
+            shared.cfg.borrow_mut().cursor.create_directory_and_move = cc.is_checked();
+            Ok(())
+        });
+    }
+
+    // ファイルを関連付けで開いた後のカーソル下移動（原作 DownAfterViewer・既定オフ）。
+    let down_viewer = shared.cfg.borrow().cursor.down_after_viewer;
+    let viewer_check = gui::CheckBox::new(
+        parent,
+        gui::CheckBoxOpts {
+            text: "ファイルを開いたあとカーソルを下へ移動する(&V)",
+            position: gui::dpi(16, 304),
+            size: gui::dpi(320, 22),
+            check_state: if down_viewer { co::BST::CHECKED } else { co::BST::UNCHECKED },
+            ..Default::default()
+        },
+    );
+    label(parent, "（関連付けでファイルを開いたあと、自動でカーソルが1つ下へ進みます）", 16, 332, 360);
+    {
+        let shared = shared.clone();
+        let vc = viewer_check.clone();
+        viewer_check.on().bn_clicked(move || {
+            shared.cfg.borrow_mut().cursor.down_after_viewer = vc.is_checked();
             Ok(())
         });
     }
@@ -2154,7 +2283,7 @@ impl ColumnsEditor {
             gui::CheckBoxOpts {
                 text: "自然順(&X)",
                 position: gui::dpi(24, 108),
-                size: gui::dpi(220, 18),
+                size: gui::dpi(106, 18),
                 check_state: if init_exp { co::BST::CHECKED } else { co::BST::UNCHECKED },
                 ..Default::default()
             },
@@ -2163,9 +2292,24 @@ impl ColumnsEditor {
             parent,
             gui::CheckBoxOpts {
                 text: "降順(&R)",
+                position: gui::dpi(134, 108),
+                size: gui::dpi(90, 18),
+                check_state: if shared.cfg.borrow().default_sort_reverse {
+                    co::BST::CHECKED
+                } else {
+                    co::BST::UNCHECKED
+                },
+                ..Default::default()
+            },
+        );
+        // 日付ソートのときだけ昇降を追加反転する（既定に限らず全ペインのソートに効く）。
+        let sort_date_flip = gui::CheckBox::new(
+            parent,
+            gui::CheckBoxOpts {
+                text: "日付ソートは昇降を反転する(&T)",
                 position: gui::dpi(24, 130),
                 size: gui::dpi(220, 18),
-                check_state: if shared.cfg.borrow().default_sort_reverse {
+                check_state: if shared.cfg.borrow().reverse_sort_date {
                     co::BST::CHECKED
                 } else {
                     co::BST::UNCHECKED
@@ -2196,6 +2340,14 @@ impl ColumnsEditor {
             let rev = sort_reverse.clone();
             sort_reverse.on().bn_clicked(move || {
                 shared.cfg.borrow_mut().default_sort_reverse = rev.is_checked();
+                Ok(())
+            });
+        }
+        {
+            let shared = shared.clone();
+            let flip = sort_date_flip.clone();
+            sort_date_flip.on().bn_clicked(move || {
+                shared.cfg.borrow_mut().reverse_sort_date = flip.is_checked();
                 Ok(())
             });
         }
