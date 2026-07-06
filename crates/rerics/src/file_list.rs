@@ -1196,9 +1196,14 @@ impl FileListView {
                     && let Some(cache) = icon_cache.as_ref().filter(|_| show_icons) {
                         let iy = y + (item_h - icon_px) / 2;
                         let mut drawn = false;
-                        // 実FSのファイル（ディレクトリ・親・書庫内を除く）は per-file の固有
-                        // アイコン/サムネを試み、未取得なら汎用を描いて非同期取得を依頼する。
-                        if !item.is_dir && !item.is_parent
+                        // 実FSのファイル（ディレクトリ・親・書庫内を除く）のうち、拡張子ごとに
+                        // アイコンが変わりうるものだけ per-file の固有アイコン/サムネを試み、
+                        // 未取得なら汎用を描いて非同期取得を依頼する。書庫等の「同じ拡張子なら
+                        // 常に同じ汎用アイコン」なものは同期・軽量な汎用パスだけで済ませる
+                        // （非同期取得はシェルのアイコンオーバーレイハンドラを経由するため）。
+                        if !item.is_dir
+                            && !item.is_parent
+                            && rerics_core::has_instance_icon(&item.extension)
                             && let Some(d) = dir.as_ref() {
                                 let full = d.join(&item.name);
                                 let mtime = item_mtime(item);

@@ -353,6 +353,18 @@ impl MediaKind {
     }
 }
 
+/// 拡張子が「ファイルごとに異なるアイコンを持ちうる」か。画像はサムネイルとして中身を
+/// 見せる価値があり、実行体・ショートカット等は埋め込みアイコンがインスタンスごとに違う。
+/// それ以外（多くの文書・書庫等）は同じ拡張子ならどれも同じ汎用アイコンにしかならないので、
+/// per-file の実体取得（非同期・シェルのオーバーレイハンドラ経由）を試す価値が無い。
+pub fn has_instance_icon(ext: &str) -> bool {
+    if MediaKind::from_extension(ext).is_some() {
+        return true;
+    }
+    let e = ext.trim_start_matches('.').to_ascii_lowercase();
+    matches!(e.as_str(), "exe" | "dll" | "lnk" | "scr" | "cpl" | "msi" | "ocx" | "url")
+}
+
 /// 回転後の論理サイズ（90/270 度で幅・高さが入れ替わる）。`degrees` は 0/90/180/270。
 pub fn rotated_dims(w: u32, h: u32, degrees: u32) -> (u32, u32) {
     if (degrees / 90) % 2 == 1 {
@@ -530,6 +542,20 @@ mod tests {
         assert_eq!(MediaKind::from_extension(".mp4"), Some(MediaKind::Video));
         assert_eq!(MediaKind::from_extension(".txt"), None);
         assert_eq!(MediaKind::from_extension(""), None);
+    }
+
+    #[test]
+    fn has_instance_icon_classifies_by_extension() {
+        // 画像はサムネイル対象。
+        assert!(has_instance_icon(".png"));
+        // 実行体・ショートカット等は埋め込みアイコンがファイルごとに違う。
+        assert!(has_instance_icon("EXE"));
+        assert!(has_instance_icon(".lnk"));
+        // 書庫・文書等は拡張子ごとに同じ汎用アイコンなので対象外。
+        assert!(!has_instance_icon(".7z"));
+        assert!(!has_instance_icon(".rar"));
+        assert!(!has_instance_icon(".txt"));
+        assert!(!has_instance_icon(""));
     }
 
     #[test]
