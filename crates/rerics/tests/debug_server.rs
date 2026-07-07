@@ -1180,14 +1180,15 @@ fn nav_path_history_dialog() {
     server.req("POST", "/modal/key/enter", "").unwrap();
     poll(&server, "/state/panes/left/location", |b| b.trim() == sbx);
 
-    // 履歴ダイアログを開く（新しい順＝[sbx, 親]）。訪問した sbx が一覧に出る。
+    // 履歴ダイアログを開く（訪問ログは新しい順＝[sbx, 親]だが、先頭の sbx は現在地なので
+    // 表示からは除かれ、親だけが一覧に出る）。
     server.req("POST", "/command/pathHistoryDialog", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"list\""), "should open a list modal: {modal}");
-    assert!(modal.contains("sbx"), "visited sbx should be listed: {modal}");
+    assert!(!modal.contains("sbx"), "current location should be hidden from the list: {modal}");
 
-    // 現在地でない親（index 1）を選んで OK＝そこへジャンプ。
-    server.req("POST", "/modal/select/1", "").unwrap();
+    // 親（index 0）を選んで OK＝そこへジャンプ。
+    server.req("POST", "/modal/select/0", "").unwrap();
     server.req("POST", "/modal/command/ok", "").unwrap();
     let now = poll(&server, "/state/panes/left/location", |b| b.trim() == parent);
     assert_eq!(now.trim(), parent, "selecting the parent entry should navigate there");
@@ -1403,11 +1404,11 @@ fn path_history_records_and_persists() {
     server.req("POST", "/modal/key/enter", "").unwrap();
     poll(&server, "/state/panes/left/location", |b| b.trim() == sbx_json);
 
-    // pathHistoryDialog：訪問した sbx が一覧に出る（新しい順の先頭）。
+    // pathHistoryDialog：訪問ログの先頭は sbx（現在地）だが表示からは除かれ、親だけが出る。
     server.req("POST", "/command/pathHistoryDialog", "").unwrap();
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"list\""), "path history should open a list modal: {modal}");
-    assert!(modal.contains("sbx"), "visited sbx should be listed: {modal}");
+    assert!(!modal.contains("sbx"), "current location should be hidden from the list: {modal}");
     server.req("POST", "/modal/command/cancel", "").unwrap();
     poll(&server, "/state/modal", |b| b.trim() == "null");
 

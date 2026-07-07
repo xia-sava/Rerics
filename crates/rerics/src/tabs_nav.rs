@@ -270,8 +270,17 @@ impl MainWindow {
 
     /// パス移動履歴（訪問ログ＝グローバル・永続・新しい順）から選んでそこへジャンプする。
     /// 履歴が空なら情報ログのみ。原作 PathHistoryDialog 相当。
+    ///
+    /// 訪問ログには到着のたびに現在地が積まれるため先頭が現在地そのものになりがちだが、
+    /// ジャンプ先として選ぶ意味がないので表示直前に取り除く（ログ自体は毎回の到着を
+    /// 漏れなく記録し続ける＝フィルタは表示専用）。
     pub(crate) fn path_history_dialog(&self, is_left: bool) -> w::AnyResult<()> {
-        let history = rerics_core::InputHistory::load().get(rerics_core::PATH_HISTORY_KEY);
+        let current = self.pane(is_left).borrow().loc_display();
+        let history: Vec<String> = rerics_core::InputHistory::load()
+            .get(rerics_core::PATH_HISTORY_KEY)
+            .into_iter()
+            .filter(|disp| disp != &current)
+            .collect();
         if history.is_empty() {
             self.log.info("移動履歴がありません。");
             return Ok(());
