@@ -249,18 +249,13 @@ impl MainWindow {
                         if let Some(refocus) = self.find_refocus.borrow_mut()[idx].take() {
                             let pr = self.view(is_left).page_rows();
                             let state = self.view(is_left).state();
-                            let mut s = state.borrow_mut();
-                            let found = refocus
-                                .name
-                                .as_deref()
-                                .map(|n| {
-                                    s.set_cursor_position_sourced(n, refocus.source.as_ref(), pr)
-                                })
-                                .unwrap_or(false);
-                            if !found {
-                                s.set_cursor(refocus.index as isize, pr);
-                            }
-                            s.select_start = s.cursor;
+                            state.borrow_mut().restore_cursor_after_rebuild(
+                                refocus.name.as_deref(),
+                                refocus.source.as_ref(),
+                                refocus.index,
+                                None,
+                                pr,
+                            );
                         }
                         find_dirty[idx] = true;
                     }

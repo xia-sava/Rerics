@@ -1138,6 +1138,30 @@ impl FileListState {
         }
     }
 
+    /// 一覧を作り直した（再読込・再検索・並べ替え）後に、元のカーソル位置へ戻す共通口。
+    /// 名前＋出自で探し（結果一覧は別フォルダの同名が並びうるため）、見つからなければ
+    /// 元の行位置（`prev_index`）へ寄せる。`prev_scroll_top` があればスクロール位置も
+    /// 復元する。選択アンカー（`select_start`）はカーソルへ揃える。
+    pub fn restore_cursor_after_rebuild(
+        &mut self,
+        prev_name: Option<&str>,
+        prev_source: Option<&crate::vfs::Location>,
+        prev_index: usize,
+        prev_scroll_top: Option<usize>,
+        page_rows: usize,
+    ) {
+        let found = prev_name
+            .map(|n| self.set_cursor_position_sourced(n, prev_source, page_rows))
+            .unwrap_or(false);
+        if !found {
+            self.set_cursor(prev_index as isize, page_rows);
+        }
+        if let Some(top) = prev_scroll_top {
+            self.set_scroll_top(top as isize, page_rows);
+        }
+        self.select_start = self.cursor;
+    }
+
     /// index のマークを立てる（親はスキップ）。カーソルも idx へ・select_start=idx。
     pub fn select_file(&mut self, idx: usize, page_rows: usize) {
         if idx >= self.count() {
@@ -1256,11 +1280,20 @@ impl FileListState {
         if old == new || (self.sort_type, self.sort_reverse) != old {
             return;
         }
-        let name = self.items.get(self.cursor).map(|i| i.name.clone());
+        let (name, source, index) = self.cursor_identity();
         self.sort(new.0, new.1);
-        if let Some(n) = name {
-            self.set_cursor_position(&n, page_rows);
-        }
+        self.restore_cursor_after_rebuild(name.as_deref(), source.as_ref(), index, None, page_rows);
+    }
+
+    /// 現在カーソル下の項目の（名前・出自・行位置）。一覧を作り直す前に退避し、
+    /// [`restore_cursor_after_rebuild`](Self::restore_cursor_after_rebuild) で戻すのに使う。
+    pub fn cursor_identity(&self) -> (Option<String>, Option<crate::vfs::Location>, usize) {
+        let it = self.items.get(self.cursor);
+        (
+            it.map(|it| it.name.clone()),
+            it.and_then(|it| it.source.clone()),
+            self.cursor,
+        )
     }
 
     /// ソートに関わる設定変更をまとめて一覧へ反映する共通口。`reverse_sort_date` の切替を
@@ -1291,12 +1324,10 @@ impl FileListState {
         if self.sort_type != SortType::LastWriteTime {
             return;
         }
-        let name = self.items.get(self.cursor).map(|i| i.name.clone());
+        let (name, source, index) = self.cursor_identity();
         let (sort, reverse) = (self.sort_type, self.sort_reverse);
         self.sort(sort, reverse);
-        if let Some(n) = name {
-            self.set_cursor_position(&n, page_rows);
-        }
+        self.restore_cursor_after_rebuild(name.as_deref(), source.as_ref(), index, None, page_rows);
     }
 
     /// 列のセルテキストを生成する。
@@ -2276,6 +2307,39 @@ mod tests {
         s.set_reverse_sort_date(true, 10);
         assert!(s.reverse_sort_date);
         assert_eq!(s.items[0].name, "a");
+    }
+
+    #[test]
+    fn restore_cursor_after_rebuild_matches_source_in_result_lists() {
+        use crate::vfs::Location;
+        use std::path::PathBuf;
+        // 別フォルダの同名ファイルが並ぶ結果一覧を並べ替えても、カーソルは同じ出自の
+        // 項目に残る（名前一致だけだと先頭側の同名へ飛ぶ）。
+        let mut s = FileListState::new();
+        let mut x1 = file("x.txt");
+        x1.source = Some(Location::Real(PathBuf::from("C:\\d1")));
+        let mut x2 = file("x.txt");
+        x2.source = Some(Location::Real(PathBuf::from("C:\\d2")));
+        let mut a = file("a.txt");
+        a.source = Some(Location::Real(PathBuf::from("C:\\d2")));
+        s.items = vec![x1, x2, a];
+        s.cursor = 1; // d2 の x.txt
+        let (name, source, index) = s.cursor_identity();
+        s.sort(SortType::FileName, false); // [a.txt, x.txt(d1), x.txt(d2)]
+        s.restore_cursor_after_rebuild(name.as_deref(), source.as_ref(), index, None, 10);
+        assert_eq!(s.items[s.cursor].name, "x.txt");
+        assert_eq!(
+            s.items[s.cursor].source,
+            Some(Location::Real(PathBuf::from("C:\\d2"))),
+            "出自込みで照合して同じ項目へ戻る"
+        );
+        assert_eq!(s.select_start, s.cursor, "選択アンカーもカーソルへ揃う");
+
+        // 元の項目が消えていれば元の行位置へ寄せる。
+        let (name, source, index) = s.cursor_identity();
+        s.items.retain(|it| it.name != "x.txt");
+        s.restore_cursor_after_rebuild(name.as_deref(), source.as_ref(), index, None, 10);
+        assert_eq!(s.cursor, s.count() - 1, "index フォールバック（末尾へクランプ）");
     }
 
     #[test]

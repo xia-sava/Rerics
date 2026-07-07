@@ -18,11 +18,9 @@ impl MainWindow {
             return;
         };
         let mut s = state.borrow_mut();
-        let name = s.items.get(s.cursor).map(|i| i.name.clone());
+        let (name, source, index) = s.cursor_identity();
         s.sort(sort, reverse);
-        if let Some(n) = name {
-            s.set_cursor_position(&n, pr);
-        }
+        s.restore_cursor_after_rebuild(name.as_deref(), source.as_ref(), index, None, pr);
         drop(s);
         let _ = view.refresh();
     }
@@ -32,12 +30,10 @@ impl MainWindow {
         let pr = view.page_rows();
         let state = view.state();
         let mut s = state.borrow_mut();
-        let name = s.items.get(s.cursor).map(|i| i.name.clone());
+        let (name, source, index) = s.cursor_identity();
         let reverse = if toggle { !s.sort_reverse } else { false };
         s.sort(sort, reverse);
-        if let Some(n) = name {
-            s.set_cursor_position(&n, pr);
-        }
+        s.restore_cursor_after_rebuild(name.as_deref(), source.as_ref(), index, None, pr);
         drop(s);
         let _ = view.refresh();
     }

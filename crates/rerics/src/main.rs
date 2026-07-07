@@ -464,8 +464,9 @@ struct Refocus {
 /// 読込開始時に UI スレッドで確定し、ワーカーの結果と共に取り込み時へ運ぶ。
 struct LoadPlan {
     mode: ReloadCursor,
-    /// Keep 用：再読込前のカーソル下名・スクロール・index。
+    /// Keep 用：再読込前のカーソル下名・出自・スクロール・index。
     keep_name: Option<String>,
+    keep_source: Option<Location>,
     keep_scroll: usize,
     keep_idx: usize,
     /// Recall/RecallAlways 用：このパスで覚えたカーソル名。
@@ -1912,13 +1913,14 @@ impl MainWindow {
             return Ok(None);
         }
         let view = self.view(is_left);
-        // Keep のときだけ、再読込前のカーソル下ファイル名・index・スクロール位置を退避する。
-        let (keep_name, keep_scroll, keep_idx) = if matches!(mode, ReloadCursor::Keep) {
+        // Keep のときだけ、再読込前のカーソル下ファイル名・出自・index・スクロール位置を退避する。
+        let (keep_name, keep_source, keep_scroll, keep_idx) = if matches!(mode, ReloadCursor::Keep) {
             let st = view.state();
             let s = st.borrow();
-            (s.items.get(s.cursor).map(|it| it.name.clone()), s.scroll_top, s.cursor)
+            let (name, source, index) = s.cursor_identity();
+            (name, source, s.scroll_top, index)
         } else {
-            (None, 0, 0)
+            (None, None, 0, 0)
         };
         let path = self.pane(is_left).borrow().loc_display();
         // 戻る/進む（RecallAlways）は常に、通常移動（Recall）は記憶オンのときだけ、
@@ -1951,7 +1953,8 @@ impl MainWindow {
         let generation = view.bump_load_gen();
         view.set_loading();
 
-        let plan = LoadPlan { mode, keep_name, keep_scroll, keep_idx, recalled, mask, generation };
+        let plan =
+            LoadPlan { mode, keep_name, keep_source, keep_scroll, keep_idx, recalled, mask, generation };
         Ok(Some((read_loc, plan)))
     }
 
@@ -2035,16 +2038,14 @@ impl MainWindow {
             s.sort(sort, reverse);
             match &plan.mode {
                 ReloadCursor::Keep => {
-                    let found = plan
-                        .keep_name
-                        .as_deref()
-                        .map(|n| s.set_cursor_position(n, pr))
-                        .unwrap_or(false);
-                    if !found {
-                        s.set_cursor(plan.keep_idx as isize, pr);
-                    }
-                    // スクロール位置を復元（カーソルが画面内に収まる限り見た目を維持）。
-                    s.set_scroll_top(plan.keep_scroll as isize, pr);
+                    // スクロール位置まで復元（カーソルが画面内に収まる限り見た目を維持）。
+                    s.restore_cursor_after_rebuild(
+                        plan.keep_name.as_deref(),
+                        plan.keep_source.as_ref(),
+                        plan.keep_idx,
+                        Some(plan.keep_scroll),
+                        pr,
+                    );
                 }
                 ReloadCursor::Recall | ReloadCursor::RecallAlways => {
                     let found = plan
