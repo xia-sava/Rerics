@@ -78,6 +78,21 @@ pub trait ArchiveBackend {
         let _ = password;
         self.read(inner)
     }
+    /// パスワード付きの上限付き読取（[`read_capped`](Self::read_capped) のパスワード版）。
+    /// パスワードの検証（`cap` を小さくして試し読み）とプレビューの展開爆弾対策を兼ねる。
+    /// 既定実装は `read_with_password` 後に切り詰めるだけ＝ストリーム読みできる backend は
+    /// 解凍自体を打ち切るよう override する。
+    fn read_capped_with_password(
+        &self,
+        inner: &str,
+        cap: usize,
+        password: Option<&[u8]>,
+    ) -> io::Result<(Vec<u8>, bool)> {
+        let mut bytes = self.read_with_password(inner, password)?;
+        let truncated = bytes.len() > cap;
+        bytes.truncate(cap);
+        Ok((bytes, truncated))
+    }
     /// 全エントリを `dest` 配下へ展開する（非ランダムアクセス＝ソリッド書庫の一括展開用）。
     /// 各ファイルを展開する直前に `each(inner, done, total)` を呼び、`false` が返ったら
     /// その時点で中断する（done は中断前まで展開できた件数）。`dest` は呼び側が用意した

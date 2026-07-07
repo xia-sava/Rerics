@@ -194,6 +194,15 @@ impl ArchiveBackend for ZipBackend {
         Ok(self.read_entry(inner, None, password)?.0)
     }
 
+    fn read_capped_with_password(
+        &self,
+        inner: &str,
+        cap: usize,
+        password: Option<&[u8]>,
+    ) -> io::Result<(Vec<u8>, bool)> {
+        self.read_entry(inner, Some(cap), password)
+    }
+
     /// 各エントリを丸ごとメモリへ取らず、復号ストリームから直接ファイルへ流す。zip は
     /// ランダムアクセスなので既定実装でも O(n) だが、巨大エントリでメモリを食わないよう
     /// override する。

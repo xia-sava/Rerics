@@ -42,11 +42,6 @@ impl MainWindow {
     ) -> std::io::Result<(Vec<u8>, bool)> {
         // 申告サイズが巨大/展開爆弾のエントリでフル解凍して OOM しないよう、常に cap で
         // 上限を掛けて読む（表示は先頭 cap バイトあれば足りる）。
-        let cap_it = |mut b: Vec<u8>| {
-            let truncated = b.len() > cap;
-            b.truncate(cap);
-            (b, truncated)
-        };
         // 既に temp に在れば実FS から上限付きで読む（一括展開済み or per-file 展開済み）。
         let root = self.register_archive_temp(archive);
         if let Some(rel) = Self::safe_inner_path(inner) {
@@ -66,11 +61,37 @@ impl MainWindow {
             // ストリーム解凍できる backend は cap で解凍自体を打ち切る。
             return backend.read_capped(inner, cap);
         }
-        // キャッシュ済みパスワードを先に試す。
-        if let Some(pw) = self.archive_passwords.borrow().get(archive).cloned()
-            && let Ok(b) = backend.read_with_password(inner, Some(&pw)) {
-                return Ok(cap_it(b));
+        // パスワードを確保して読む。検証＝実際の上限付き読み出しそのもので、読めた本文は
+        // 二度解凍しないよう受けておく（cap 付きなので巨大エントリでも膨らまない）。
+        let body = std::cell::RefCell::new(None);
+        self.ensure_archive_password(archive, |pw| {
+            match backend.read_capped_with_password(inner, cap, Some(pw)) {
+                Ok(r) => {
+                    *body.borrow_mut() = Some(r);
+                    true
+                }
+                Err(_) => false,
             }
+        })?;
+        Ok(body.into_inner().unwrap_or_default())
+    }
+
+    /// 暗号化書庫のパスワードを確保する唯一の入口。キャッシュを試し、無ければ（または
+    /// 検証に失敗すれば）入力を求め、`verify` で検証して誤りならログで報せて最大3回まで
+    /// 再入力を求める。**成功したときだけ**キャッシュへ保存する＝誤ったパスワードが
+    /// キャッシュに居座らない。キャンセル・3回失敗は `PermissionDenied`。
+    /// 検証手段は経路で異なる（プレビュー＝上限付き読み・ビューア＝試し読み）ため
+    /// クロージャで受ける。
+    pub(crate) fn ensure_archive_password(
+        &self,
+        archive: &Path,
+        verify: impl Fn(&[u8]) -> bool,
+    ) -> std::io::Result<Vec<u8>> {
+        if let Some(pw) = self.archive_passwords.borrow().get(archive).cloned()
+            && verify(&pw)
+        {
+            return Ok(pw);
+        }
         for _ in 0..3 {
             let Some(pw) = self.prompt_password(archive) else {
                 return Err(std::io::Error::new(
@@ -78,15 +99,12 @@ impl MainWindow {
                     "パスワードが必要です",
                 ));
             };
-            match backend.read_with_password(inner, Some(pw.as_bytes())) {
-                Ok(b) => {
-                    self.archive_passwords
-                        .borrow_mut()
-                        .insert(archive.to_path_buf(), pw.into_bytes());
-                    return Ok(cap_it(b));
-                }
-                Err(_) => self.log.warn("パスワードが違うようです"),
+            let pw = pw.into_bytes();
+            if verify(&pw) {
+                self.archive_passwords.borrow_mut().insert(archive.to_path_buf(), pw.clone());
+                return Ok(pw);
             }
+            self.log.warn("パスワードが違うようです");
         }
         Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,

@@ -752,23 +752,20 @@ impl MainWindow {
         }
     }
 
-    /// 暗号化メディアを開く前にパスワードを確保する（キャッシュ→無ければプロンプト→保存）。
-    /// 平文なら `None`。書庫メディアの resolver が展開時に用いる。
+    /// 暗号化メディアを開く前にパスワードを確保する。平文なら `None`。書庫メディアの
+    /// resolver が展開時に用いる。確保は [`ensure_archive_password`]
+    /// (crate::MainWindow::ensure_archive_password) に委譲し、検証はそのエントリの先頭を
+    /// 試し読みして行う（誤入力を無検証でキャッシュしない）。
     pub(crate) fn ensure_media_password(&self, archive: &Path, target_inner: Option<&str>) -> Option<Vec<u8>> {
-        let enc = target_inner
-            .map(|t| self.entry_is_encrypted(archive, t))
-            .unwrap_or(false);
-        if !enc {
+        let inner = target_inner?;
+        if !self.entry_is_encrypted(archive, inner) {
             return None;
         }
-        if let Some(pw) = self.cached_password(archive) {
-            return Some(pw);
-        }
-        let pw = self.prompt_password(archive)?.into_bytes();
-        self.archive_passwords
-            .borrow_mut()
-            .insert(archive.to_path_buf(), pw.clone());
-        Some(pw)
+        let backend = open_archive(archive).ok()?;
+        self.ensure_archive_password(archive, |pw| {
+            backend.read_capped_with_password(inner, 1, Some(pw)).is_ok()
+        })
+        .ok()
     }
 
     /// 書庫のパスワードを入力ダイアログで尋ねる（伏せ字）。
@@ -784,11 +781,6 @@ impl MainWindow {
             "",
             dialog::InputMode::Password,
         )
-    }
-
-    /// 書庫にキャッシュ済みのパスワードがあれば返す（メディア展開で再利用する）。
-    pub(crate) fn cached_password(&self, archive: &Path) -> Option<Vec<u8>> {
-        self.archive_passwords.borrow().get(archive).cloned()
     }
 
     /// 書庫内エントリ `inner` が暗号化されているか（list の is_encrypted を見る）。
