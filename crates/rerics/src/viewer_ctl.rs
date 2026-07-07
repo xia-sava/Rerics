@@ -50,7 +50,7 @@ impl MainWindow {
                 // RefMut は enter_reported の行で解放してから判定（reload が再借用するため）。
                 let outcome = self.pane(is_left).borrow_mut().enter_reported(&name, true);
                 match outcome {
-                    Ok(()) => self.reload_side(is_left)?,
+                    Ok(()) => self.reload_side_navigated(is_left)?,
                     // 入れない dir（ACL 拒否の互換 junction 等）は黙殺せずログで報せる。
                     Err(e) => self
                         .log
@@ -59,7 +59,7 @@ impl MainWindow {
                 return Ok(());
             }
             if self.pane(is_left).borrow_mut().enter(&name, false) {
-                self.reload_side(is_left)?;
+                self.reload_side_navigated(is_left)?;
                 return Ok(());
             }
             return self.view_file(is_left);
