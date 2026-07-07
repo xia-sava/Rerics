@@ -32,7 +32,7 @@ pub use attrs::{
     FileAttrs, created_time, floor_to_local_midnight, format_local, format_stamp_compact,
     modified_time, parse_local, read_attrs, set_created_time, set_modified_time, write_attrs,
 };
-pub use dts::{commands_dts, reserved_member};
+pub use dts::{HOST_API_MEMBERS, commands_dts, reserved_member};
 pub use config::{
     Bookmark, Config, DEFAULT_CONFIG_TOML, DialogSizes, FileOpSettings, FontSpec, IconSettings, IconSize, ImageSettings,
     InputHistory, Layout, PATH_HISTORY_CAP, PATH_HISTORY_KEY, ResolvedTheme, State, TabState,

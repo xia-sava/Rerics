@@ -2093,6 +2093,83 @@ impl Engine {
 mod tests {
     use super::*;
 
+    /// bootstrap（正本）の `globalThis.rerics = { ... }` からトップレベルメンバー名を拾う。
+    /// メンバーは 4 スペースインデントの `name:` 行（ネストした行はより深いインデント）。
+    fn bootstrap_members() -> Vec<String> {
+        let mut out = Vec::new();
+        let mut in_literal = false;
+        for line in BOOTSTRAP.lines() {
+            if line.trim_start().starts_with("globalThis.rerics = {") {
+                in_literal = true;
+                continue;
+            }
+            if !in_literal {
+                continue;
+            }
+            if line == "  };" {
+                break;
+            }
+            if let Some(rest) = line.strip_prefix("    ")
+                && !rest.starts_with(' ')
+                && let Some((name, _)) = rest.split_once(':')
+                && !name.is_empty()
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                out.push(name.to_string());
+            }
+        }
+        out
+    }
+
+    /// 契約: `globalThis.rerics` のトップレベルメンバー（bootstrap＝正本）と、手書きの
+    /// 2 ミラー＝`HOST_API_MEMBERS`（`registerCommand` の予約名判定）・`scripting/rerics.d.ts`
+    /// の `RericsApi`（型定義）が一致すること。ここが崩れると、予約名の判定漏れで
+    /// `registerCommand("renameFiles", fn)` がユーザー関数を黙って無視して本物を実行したり、
+    /// ドキュメント推奨の `rerics.` 呼び出しが型エラーになる。
+    #[test]
+    fn host_api_members_match_bootstrap_and_dts() {
+        let boot = bootstrap_members();
+        assert!(boot.len() > 40, "bootstrap メンバーの抽出に失敗: {boot:?}");
+
+        // HOST_API_MEMBERS（rerics-core/src/dts.rs）との一致。
+        let host: Vec<&str> = rerics_core::HOST_API_MEMBERS.to_vec();
+        let missing: Vec<&String> = boot.iter().filter(|m| !host.contains(&m.as_str())).collect();
+        let stale: Vec<&&str> = host.iter().filter(|m| !boot.iter().any(|b| b == **m)).collect();
+        assert!(missing.is_empty(), "HOST_API_MEMBERS に無い bootstrap メンバー: {missing:?}");
+        assert!(stale.is_empty(), "bootstrap に無い HOST_API_MEMBERS: {stale:?}");
+
+        // rerics.d.ts の RericsApi インターフェースとの一致。メンバー宣言は 2 スペース
+        // インデントで `name(`／`name:`／`name<` のいずれかで始まる。
+        let dts_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripting/rerics.d.ts");
+        let dts = std::fs::read_to_string(&dts_path).expect("rerics.d.ts を読める");
+        let api = dts
+            .split("interface RericsApi")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}").next())
+            .expect("RericsApi インターフェースがある");
+        let mut declared: Vec<String> = Vec::new();
+        for line in api.lines() {
+            if let Some(rest) = line.strip_prefix("  ")
+                && !rest.starts_with(' ')
+                && !rest.starts_with('*')
+                && !rest.starts_with('/')
+            {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                if !name.is_empty() && rest[name.len()..].starts_with(['(', ':', '<', '?']) {
+                    declared.push(name);
+                }
+            }
+        }
+        let missing: Vec<&String> = boot.iter().filter(|m| !declared.contains(m)).collect();
+        let stale: Vec<&String> = declared.iter().filter(|m| !boot.contains(m)).collect();
+        assert!(missing.is_empty(), "rerics.d.ts の RericsApi に無い bootstrap メンバー: {missing:?}");
+        assert!(stale.is_empty(), "bootstrap に無い RericsApi 宣言: {stale:?}");
+    }
+
     /// `apply_selection` 1 回ぶんの記録＝(is_left, 変更 (index, selected) の列)。
     type AppliedSelection = (bool, Vec<(usize, bool)>);
 

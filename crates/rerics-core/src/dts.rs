@@ -7,14 +7,18 @@ use crate::input::{ArgType, Command};
 
 /// host API（bootstrap が `r`/`rerics` に直に生やすメンバー）と同名の組込コマンドは、実行時に
 /// 組込側を生やさず host を優先する。型定義でも二重宣言を避けるためここで除外する。
-const HOST_API_MEMBERS: &[&str] = &[
+/// 正本は `script.rs` の bootstrap（`globalThis.rerics` リテラル）。この一覧と
+/// `scripting/rerics.d.ts` の `RericsApi` が正本と一致することは、`rerics` 側の契約テスト
+/// `host_api_members_match_bootstrap_and_dts` が検査する。
+pub const HOST_API_MEMBERS: &[&str] = &[
     "log", "info", "warning", "error", "getLog", "version", "config", "currentDir", "currentDrive",
     "isLeft", "isRight", "getSortType", "getSortReverse", "getPathMask", "incrementalSearch",
     "changeOppositeDirectory", "changeOppositeDirectoryToParent", "changeOppositeDirectoryToRoot",
     "selectMask", "pathMask", "makeDirectory", "compress", "compare", "navigate", "confirm",
     "prompt", "select", "listDir", "activePane", "oppositePane", "command", "copy", "move",
-    "delete", "open", "folderDialog", "openDialog", "saveDialog", "modifiers", "spawn", "execute",
-    "run", "unpack", "fs", "str", "env", "registerCommand", "registerMenu", "on",
+    "delete", "renameFiles", "open", "folderDialog", "openDialog", "saveDialog", "modifiers",
+    "spawn", "execute", "run", "unpack", "parallel", "fs", "str", "env", "clipboard",
+    "registerCommand", "registerMenu", "on",
 ];
 
 /// `r`/`rerics` で組込側が優先される名前か（host API メンバー or 組込コマンド token）。

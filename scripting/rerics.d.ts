@@ -467,6 +467,18 @@ interface RericsApi {
   /** 一覧から 1 つ選ばせる。選んだ行の index、キャンセルなら null。 */
   select(title: string, items: string[]): number | null;
 
+  /** パスを OS の関連付けで開く（ファイル・フォルダ・URL）。起動を待たない。 */
+  open(path: string): void;
+
+  /** フォルダ選択ダイアログを出す。選んだパス、キャンセルなら null。 */
+  folderDialog(title?: string): string | null;
+
+  /** ファイルを開くダイアログを出す。選んだパス、キャンセルなら null。 */
+  openDialog(title?: string): string | null;
+
+  /** ファイル保存ダイアログを出す。選んだパス、キャンセルなら null。 */
+  saveDialog(title?: string): string | null;
+
   /**
    * アクティブペインの現在状態（現在地・項目一覧・選択・カーソル）を取得する。
    * 返るのは取得時点のスナップショットで、以後の変化は反映されない。
@@ -650,6 +662,16 @@ interface RericsApi {
   ): void;
 
   /**
+   * 名前付きメニューを登録する。機能欄の式 `menu("名前")` やキー割り当てから開ける。
+   * 各項目は `label`（表示名）と `command`（機能欄と同じ式）。`separator: true` の項目は
+   * 区切り線になる。同名で再登録すると後勝ちで上書きする。
+   */
+  registerMenu(
+    name: string,
+    items: { label?: string; command?: string; separator?: boolean }[],
+  ): void;
+
+  /**
    * ファイラー本体のイベントにハンドラを登録する。同じイベントに複数登録でき、登録順に
    * 呼ばれる。ハンドラは同期でも `async` でもよい。引数はイベントごとに異なる（{@link RericsEvent}）。
    *
@@ -698,6 +720,18 @@ interface RericsApi {
    */
   delete(options?: RericsOpOptions): RericsJob;
   delete(items: string[], options?: RericsOpOptions): RericsJob;
+
+  /**
+   * `(旧フルパス, 新フルパス)` の組を順に改名する（同期・実 FS のみ）。同名衝突は
+   * 衝突ダイアログ（上書き/強制上書き/別名/スキップ/新しい方・「全部に適用」付き）で
+   * 解決する。結果の件数サマリを返す。
+   */
+  renameFiles(pairs: { from: string; to: string }[]): {
+    ok: number;
+    skip: number;
+    err: number;
+    cancelled: boolean;
+  };
 }
 
 /**
