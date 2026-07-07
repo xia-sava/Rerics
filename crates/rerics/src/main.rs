@@ -560,13 +560,13 @@ impl MainWindow {
             TabSnapshot {
                 left_state: Self::build_state_for(
                     &left_path,
-                    &config.columns,
+                    &config,
                     config.default_sort,
                     config.default_sort_reverse,
                 ),
                 right_state: Self::build_state_for(
                     &right_path,
-                    &config.columns,
+                    &config,
                     config.default_sort,
                     config.default_sort_reverse,
                 ),

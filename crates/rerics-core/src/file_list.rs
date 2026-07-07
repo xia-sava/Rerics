@@ -1263,6 +1263,24 @@ impl FileListState {
         }
     }
 
+    /// ソートに関わる設定変更をまとめて一覧へ反映する共通口。`reverse_sort_date` の切替を
+    /// 反映し、旧既定ソート `old_default` のまま使っている一覧は新しい既定へ並びごと
+    /// 追従させる。表示中ペインと非アクティブタブのスナップショットの両方がこれを通る
+    /// （追従判定を反映経路ごとに再実装しない）。
+    pub fn apply_sort_config_change(
+        &mut self,
+        old_default: (SortType, bool),
+        cfg: &crate::Config,
+        page_rows: usize,
+    ) {
+        self.set_reverse_sort_date(cfg.reverse_sort_date, page_rows);
+        self.follow_default_sort(
+            old_default,
+            (cfg.default_sort, cfg.default_sort_reverse),
+            page_rows,
+        );
+    }
+
     /// `reverse_sort_date` を変更する。日付ソートを表示中に値が変わったときはその場で
     /// 並べ直し、カーソルは同名項目へ追従させる。
     pub fn set_reverse_sort_date(&mut self, on: bool, page_rows: usize) {
@@ -2258,6 +2276,29 @@ mod tests {
         s.set_reverse_sort_date(true, 10);
         assert!(s.reverse_sort_date);
         assert_eq!(s.items[0].name, "a");
+    }
+
+    #[test]
+    fn apply_sort_config_change_applies_reverse_date_and_default_follow() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let t1 = t0 + std::time::Duration::from_secs(100);
+        let mut a = file("old");
+        a.modified = Some(t0);
+        let mut b = file("new");
+        b.modified = Some(t1);
+        // 既定（名前昇順）のまま使っている一覧が、新既定（日付）＋日付反転の変更へ一括で追従する。
+        let mut s = FileListState::new();
+        s.items = vec![a, b];
+        s.sort(SortType::FileName, false);
+        let cfg = crate::Config {
+            default_sort: SortType::LastWriteTime,
+            reverse_sort_date: true,
+            ..crate::Config::default()
+        };
+        s.apply_sort_config_change((SortType::FileName, false), &cfg, 10);
+        assert_eq!(s.sort_type, SortType::LastWriteTime);
+        assert!(s.reverse_sort_date);
+        assert_eq!(s.items[0].name, "old", "反転日付ソート＝古い順が先頭になる");
     }
 
     #[test]

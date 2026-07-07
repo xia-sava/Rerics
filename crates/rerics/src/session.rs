@@ -1,5 +1,5 @@
 use winsafe::{self as w, prelude::*};
-use rerics_core::{Column, FileListState, Pane, SortType};
+use rerics_core::{Config, FileListState, Pane, SortType};
 use crate::window_state;
 use crate::{MainWindow, TabSnapshot};
 
@@ -7,7 +7,7 @@ use crate::{MainWindow, TabSnapshot};
 /// 含み、オフラインパスではブロックし得るので UI スレッドでは呼ばない。
 fn build_restored_tabs(
     state: &rerics_core::State,
-    columns: &[Column],
+    cfg: &Config,
     home: &str,
 ) -> (Vec<TabSnapshot>, usize) {
     let tabs: Vec<TabSnapshot> = state
@@ -19,13 +19,13 @@ fn build_restored_tabs(
             TabSnapshot {
                 left_state: MainWindow::build_state_for(
                     &left_path,
-                    columns,
+                    cfg,
                     t.sort_left,
                     t.sort_left_reverse,
                 ),
                 right_state: MainWindow::build_state_for(
                     &right_path,
-                    columns,
+                    cfg,
                     t.sort_right,
                     t.sort_right_reverse,
                 ),
@@ -70,16 +70,19 @@ impl MainWindow {
         }
     }
 
-    /// 指定パスの一覧を読み、既定ソートでカーソル先頭の `FileListState` を組む。
+    /// 指定パスの一覧を読み、指定ソートでカーソル先頭の `FileListState` を組む。
+    /// 列構成・日付ソート反転など config 由来のフィールドは、呼び出し元が個別に
+    /// 覚えておかなくて済むよう、ここで `cfg` から一括して引き継ぐ。
     pub(crate) fn build_state_for(
         path: &str,
-        columns: &[Column],
+        cfg: &Config,
         sort_type: SortType,
         sort_reverse: bool,
     ) -> FileListState {
         let items = Pane::restore(path).read();
         let mut s = FileListState::new();
-        s.columns = columns.to_vec();
+        s.columns = cfg.columns.clone();
+        s.reverse_sort_date = cfg.reverse_sort_date;
         s.sort_type = sort_type;
         s.sort_reverse = sort_reverse;
         s.items = items;
@@ -96,10 +99,10 @@ impl MainWindow {
         let Some(state) = self.pending_restore.borrow_mut().take() else {
             return;
         };
-        let columns = self.config.borrow().columns.clone();
+        let cfg = self.config.borrow().clone();
         let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "..".to_owned());
         self.spawn_job(
-            move || build_restored_tabs(&state, &columns, &home),
+            move || build_restored_tabs(&state, &cfg, &home),
             move |mw, (tabs, active)| mw.apply_restored_tabs(tabs, active),
         );
     }

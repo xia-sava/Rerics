@@ -61,7 +61,6 @@ impl MainWindow {
         self.save_active();
         let left_path = self.left_pane.borrow().loc_display();
         let right_path = self.right_pane.borrow().loc_display();
-        let columns = self.config.borrow().columns.clone();
         // 複製元の現在ソートを引き継ぐ（見えているままの新タブにする）。
         let (sl, slr) = {
             let st = self.view(true).state();
@@ -73,12 +72,15 @@ impl MainWindow {
             let s = st.borrow();
             (s.sort_type, s.sort_reverse)
         };
-        let snap = TabSnapshot {
-            left_state: Self::build_state_for(&left_path, &columns, sl, slr),
-            right_state: Self::build_state_for(&right_path, &columns, sr, srr),
-            left_path,
-            right_path,
-            active_right: self.active_right.get(),
+        let snap = {
+            let cfg = self.config.borrow();
+            TabSnapshot {
+                left_state: Self::build_state_for(&left_path, &cfg, sl, slr),
+                right_state: Self::build_state_for(&right_path, &cfg, sr, srr),
+                left_path,
+                right_path,
+                active_right: self.active_right.get(),
+            }
         };
         let index = self.active.get() + 1;
         self.tabs.borrow_mut().insert(index, snap);

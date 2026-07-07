@@ -1543,6 +1543,33 @@ fn input_history_changedir_persists() {
     assert!(hist.contains("sbx"), "entered path should be recorded: {hist}");
 }
 
+/// 回帰: config の `reverse_sort_date=true` は起動直後のペインから効く。かつて
+/// `build_state_for` が config から引き継がず、設定ダイアログを一度 OK するまで
+/// 反転が効かなかった。
+#[test]
+fn reverse_sort_date_from_config_applies_at_startup() {
+    let server = Server::start(&["old.txt", "new.txt"], "reverse_sort_date = true\n");
+    // mtime を明確に離してから再読込する（一覧の日時は読込時点のもの）。
+    let past = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(server.base.join("sbx").join("old.txt"))
+        .unwrap();
+    f.set_times(std::fs::FileTimes::new().set_modified(past)).unwrap();
+    drop(f);
+    server.req("POST", "/command/reload", "").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("old.txt"));
+
+    // 日付ソートへ切り替えると、起動時に引き継いだ反転フラグで古い順になる: [.., old, new]。
+    server.req("POST", "/command/sort", r#"["date"]"#).unwrap();
+    let items = poll(&server, "/state/panes/left/items", |b| {
+        matches!((b.find("old.txt"), b.find("new.txt")), (Some(o), Some(n)) if o < n)
+    });
+    let o = items.find("old.txt").unwrap();
+    let n = items.find("new.txt").unwrap();
+    assert!(o < n, "reverse_sort_date in config should apply from startup: {items}");
+}
+
 /// リテラル引数版 `sort("size")` がソート種別を切り替える（段階3＝リテラル引数コマンド）。
 #[test]
 fn sort_command_changes_sort_type() {
