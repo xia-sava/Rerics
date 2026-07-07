@@ -3932,7 +3932,7 @@ pub fn show(
         });
     }
 
-    let _ = wnd.show_modal(parent);
+    crate::dialog::show_modal_guarded(&wnd, parent);
     // 閉じたらキー編集フックを捨てる（破棄済みウィンドウを debug 経路が触らないように）。
     #[cfg(feature = "debug-server")]
     crate::debug_server::modal_registry::clear_key_editors();

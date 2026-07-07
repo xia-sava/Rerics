@@ -202,7 +202,7 @@ pub fn show(parent: &impl GuiParent, tasks: &Registry) {
         });
     }
 
-    let _ = wnd.show_modal(parent);
+    crate::dialog::show_modal_guarded(&wnd, parent);
     let _ = (stop, suspend, resume, refresh, close);
 }
 

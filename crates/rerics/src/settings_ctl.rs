@@ -6,12 +6,11 @@ impl MainWindow {
     /// 設定ダイアログを開く。開いた時点で OS テーマを再判定し、OK なら設定をライブ反映して
     /// 差分を `config.toml` へ保存する。
     pub(crate) fn open_settings(&self) -> w::AnyResult<()> {
-        if self.in_dialog.get() {
+        if dialog::modal_active() {
             return Ok(());
         }
         let mut current = self.config.borrow().clone();
         current.resolve_theme(system_is_light());
-        self.in_dialog.set(true);
         let scripts = self.script_list_commands();
         let members = self.script_list_members();
         let globals = self.script_list_globals();
@@ -25,7 +24,6 @@ impl MainWindow {
                 me.log.error(&format!("設定の保存に失敗: {}", e));
             }
         });
-        self.in_dialog.set(false);
         self.key_sink.hwnd().SetFocus();
         Ok(())
     }

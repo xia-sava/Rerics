@@ -683,9 +683,7 @@ impl MainWindow {
             });
         }
 
-        self.in_dialog.set(true);
-        let _ = wnd.show_modal(&self.wnd);
-        self.in_dialog.set(false);
+        dialog::show_modal_guarded(&wnd, &self.wnd);
         alive.set(false);
         let _ = (ok, cancel, list);
 
@@ -871,9 +869,7 @@ impl MainWindow {
             });
         }
 
-        self.in_dialog.set(true);
-        let _ = wnd.show_modal(&self.wnd);
-        self.in_dialog.set(false);
+        dialog::show_modal_guarded(&wnd, &self.wnd);
         let _ = (ok, cancel, list);
 
         let sel = *result.borrow();

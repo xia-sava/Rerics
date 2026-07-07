@@ -159,7 +159,7 @@ pub fn message_box(
             });
         }
 
-    let _ = wnd.show_modal(parent);
+    super::show_modal_guarded(&wnd, parent);
     if has_all {
         keyhook::pop();
     }

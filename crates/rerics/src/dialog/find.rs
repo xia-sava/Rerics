@@ -135,7 +135,7 @@ pub fn find_file_box(parent: &impl GuiParent, initial_name: &str) -> Option<(Fin
         });
     }
 
-    let _ = wnd.show_modal(parent);
+    super::show_modal_guarded(&wnd, parent);
     let _ = (ok, cancel, date_btns);
 
     result.borrow_mut().take()

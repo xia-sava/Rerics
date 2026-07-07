@@ -550,7 +550,7 @@ impl MainWindow {
             });
         }
 
-        let _ = wnd.show_modal(&self.wnd);
+        crate::dialog::show_modal_guarded(&wnd, &self.wnd);
         crate::dialog::keyhook::pop();
         let _ = (edit, prev, next, ok, cancel);
         Ok(())

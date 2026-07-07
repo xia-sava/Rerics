@@ -123,7 +123,7 @@ pub fn link_kind_box(
         });
     }
 
-    let _ = wnd.show_modal(parent);
+    super::show_modal_guarded(&wnd, parent);
     let _ = (ok, cancel);
 
     *result.borrow()

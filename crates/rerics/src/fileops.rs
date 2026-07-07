@@ -1727,7 +1727,7 @@ impl MainWindow {
             });
         }
 
-        let _ = wnd.show_modal(&self.wnd);
+        dialog::show_modal_guarded(&wnd, &self.wnd);
         let _ = (template, start, step, base_case, ext_case, preview, ok, cancel);
         Ok(())
     }

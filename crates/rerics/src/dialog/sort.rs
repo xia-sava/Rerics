@@ -120,7 +120,7 @@ pub fn sort_box(parent: &impl GuiParent, cur: SortType, reverse: bool) -> Option
         });
     }
 
-    let _ = wnd.show_modal(parent);
+    super::show_modal_guarded(&wnd, parent);
     let _ = (ok, cancel);
     
     *result.borrow()

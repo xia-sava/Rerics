@@ -65,6 +65,6 @@ pub fn about_box(parent: &impl GuiParent, title: &str, body: &str) {
         });
     }
 
-    let _ = wnd.show_modal(parent);
+    super::show_modal_guarded(&wnd, parent);
     let _ = (text, close);
 }

@@ -404,7 +404,7 @@ pub fn rename_box(
         });
     }
 
-    let _ = wnd.show_modal(parent);
+    super::show_modal_guarded(&wnd, parent);
     let _ = (
         ok, cancel, checks, name_edit, mtime_edit, ctime_edit, mtime_btn, ctime_btn, name_btn,
         sub_checks,

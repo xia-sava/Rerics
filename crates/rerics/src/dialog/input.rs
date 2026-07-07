@@ -176,7 +176,7 @@ pub fn input_box_full(
         });
     }
 
-    let _ = wnd.show_modal(parent);
+    super::show_modal_guarded(&wnd, parent);
     let _ = cancel;
 
     result.borrow().clone()
@@ -1589,7 +1589,7 @@ pub fn code_box(
         completion_probe::set_hint(Box::new(move || hint.hwnd().GetWindowText().unwrap_or_default()));
     }
 
-    let _ = wnd.show_modal(parent);
+    super::show_modal_guarded(&wnd, parent);
     keyhook::pop();
     #[cfg(feature = "debug-server")]
     completion_probe::clear();
@@ -1730,7 +1730,7 @@ pub fn command_box(
     let rows = install_completion(&arm, &edit, &cand, complete, None);
     install_candidate_drawing(&wnd, &cand, rows);
 
-    let _ = wnd.show_modal(parent);
+    super::show_modal_guarded(&wnd, parent);
     keyhook::pop();
     #[cfg(feature = "debug-server")]
     completion_probe::clear();

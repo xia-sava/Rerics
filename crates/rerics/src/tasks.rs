@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -5,6 +6,22 @@ use winsafe::{self as w, prelude::*};
 use rerics_core::{LogLevel, messages};
 use crate::task::{self, ArchiveOutcome, OpKind, TaskControl, TaskEntry, TaskKind, WorkerEvent};
 use crate::{MainWindow, dialog, task_manager};
+
+thread_local! {
+    /// [`MainWindow::pump_tasks`] 実行中フラグ（UI スレッド専有）。取り込み中に開く
+    /// モーダル（同名衝突・削除確認）の内部メッセージループが `WM_TIMER` を汲むと
+    /// 取り込みの途中から再入するため、再入側はキューに触らず戻る。
+    static PUMPING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// [`PUMPING`] を Drop で確実に戻すガード（`?` の早期リターンでも解除漏れしない）。
+struct PumpingReset;
+
+impl Drop for PumpingReset {
+    fn drop(&mut self) {
+        PUMPING.with(|p| p.set(false));
+    }
+}
 
 impl MainWindow {
     /// 新しいタスク ID を払い出す。
@@ -54,7 +71,7 @@ impl MainWindow {
     /// 任意の仕事をワーカースレッドで回し、結果を UI スレッドの継続 `done` に渡す汎用ジョブ。
     /// `work` はワーカースレッドで走る（`Send`）、結果 `T` も `Send`。`done` は UI スレッドで
     /// 走るので `Send` 不要＝開いているダイアログのコントロール等を自由にキャプチャできる。
-    /// 継続は `in_dialog` 中も配達されるので、モーダルを開いたまま後追いで内容を埋められる
+    /// 継続はモーダル表示中も配達されるので、モーダルを開いたまま後追いで内容を埋められる
     /// （Android の Main looper 相当を winsafe 向けに手で用意したもの）。
     pub(crate) fn spawn_job<T, W, D>(&self, work: W, done: D)
     where
@@ -103,10 +120,12 @@ impl MainWindow {
 
     /// ワーカーからのイベントを取り込み、ログ反映・完了処理を行う。
     ///
-    /// 衝突モーダル表示中はモーダルの内部ループから `WM_TIMER` が再入するため、
-    /// `in_dialog` ガードで多重取り込みを抑止する。
+    /// 取り込み中に開くモーダル（同名衝突・削除確認）の内部ループから `WM_TIMER` で
+    /// 再入し得るため、自分自身への再入をガードして多重取り込みを抑止する。
+    /// モーダル表示中でも（再入でなければ）取り込みは行う＝タスクマネージャを開いたまま
+    /// 完了が反映され、裏のタスクも進む。
     pub(crate) fn pump_tasks(&self) -> w::AnyResult<()> {
-        // 汎用ジョブの継続は自己完結で安全なので、モーダル表示中（in_dialog）でも配達する。
+        // 汎用ジョブの継続は自己完結で安全なので、再入中でも配達する。
         // 取り込み中に継続が別のジョブを積むこともあるので、対応表から取り出してから呼ぶ。
         while let Ok((id, result)) = self.ui_job_rx.try_recv() {
             let done = self.ui_jobs.borrow_mut().remove(&id);
@@ -114,9 +133,11 @@ impl MainWindow {
                 done(self, result)?;
             }
         }
-        if self.in_dialog.get() {
+        if PUMPING.with(|p| p.get()) {
             return Ok(());
         }
+        PUMPING.with(|p| p.set(true));
+        let _pumping = PumpingReset;
         // スクリプトのログ出力（追記・更新）はこの取り込みでまとめて反映する。
         self.drain_log_events();
         // 検索・比較のライブ追加は1取り込みぶんをまとめて1回だけ再描画する（項目ごとの
@@ -142,13 +163,10 @@ impl MainWindow {
                     self.log.stop_progress(id);
                 }
                 WorkerEvent::AskConflict { name, reply } => {
-                    self.in_dialog.set(true);
                     let (choice, all) = dialog::conflict_box(&self.wnd, &name);
-                    self.in_dialog.set(false);
                     let _ = reply.send(task::ConflictReply { choice, all });
                 }
                 WorkerEvent::AskDeleteWarn { name, attr, reply } => {
-                    self.in_dialog.set(true);
                     let msg = messages::delete_warning_question(&name, &attr);
                     let r = dialog::message_box(
                         &self.wnd,
@@ -156,7 +174,6 @@ impl MainWindow {
                         &msg,
                         dialog::MessageStyle::YesNoCancelAll,
                     );
-                    self.in_dialog.set(false);
                     let _ = reply.send(r);
                 }
                 WorkerEvent::Done { id, kind, src_dir, dst_dir, cancelled, failed, single_name } => {

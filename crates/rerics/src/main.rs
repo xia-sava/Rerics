@@ -159,7 +159,37 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         ShellRename => DebugCmdClass::MaybeModal,
         // 終了・再起動は実行中タスクがあるときだけ確認モーダル（YesNo）を開く（無ければ即実行）。
         End | Restart => DebugCmdClass::MaybeModal,
-        _ => DebugCmdClass::NonModal,
+        // ここから下はモーダルを開かない＝即実行して状態を返せるコマンド。**網羅 match を
+        // 維持すること**（ワイルドカードで畳まない）。モーダルを開く新規 Command をここへ
+        // 誤分類（または追加漏れ＝コンパイルエラー）すると、単一スレッドの debug-server が
+        // exec の同期呼び出しでブロックし e2e がデッドロックする。
+        CursorUp | CursorDown | CursorTop | CursorEnd | CursorPageUp | CursorPageDown
+        | CursorName | CursorPath | CursorOpposite | CenterCursor | SetCursorIndex
+        | SetCursorPosition => DebugCmdClass::NonModal,
+        MarkToggle | SelectFile | SelectAll | SelectAllFile | ReverseAll | ReverseAllFile
+        | ClearAll | HasMarks | MarkedCount => DebugCmdClass::NonModal,
+        Sort | SortByName | SortByExtension | SortBySize | SortByDate | SortReverseToggle => {
+            DebugCmdClass::NonModal
+        }
+        EnterDir | ToParent | ToRoot | HistoryBack | HistoryForward | NextDrive | PreviousDrive
+        | ChangeDrive | FocusLeft | FocusRight | SwapPath | CurrentToOpposite
+        | OppositeToCurrent | Reload | Refresh => DebugCmdClass::NonModal,
+        PageNext | PagePrevious | NewFiler | Quit | Exit | MaximizeWindow | MinimizeWindow
+        | MaximizeCurrent | MaximizeLeft | MaximizeLeftForce | MaximizeRight
+        | MaximizeRightForce | BorderLeft | BorderRight | BorderReset => DebugCmdClass::NonModal,
+        FindFile | DirectoryCompare | DirectoryInformation => DebugCmdClass::NonModal,
+        Edit | Menu | ContextMenu | PropertyDialog | OpenHelp | ClipCopy | ClipCut | ShellCopy
+        | ShellMove | ShellDelete | ClearLog | CopyLog | ThumbnailMode | Nop => {
+            DebugCmdClass::NonModal
+        }
+        ViewerClose | ViewerToggleMode | ViewerChangeEncoding | ViewerCopy | ViewerSelectAll
+        | ViewerScrollUp | ViewerScrollDown | ViewerScrollTop | ViewerScrollBottom
+        | ViewerPageUp | ViewerPageDown | ViewerSearchDialog | ViewerFindNext
+        | ViewerFindPrevious | ViewerContextMenu => DebugCmdClass::NonModal,
+        ImageNext | ImagePrevious | ImageZoomIn | ImageZoomOut | ImageFitWindow | ImageFitWidth
+        | ImageFitHeight | ImageFitLarge | ImageActualSize | ImageRotateLeft | ImageRotateRight
+        | ImageFlipHorizontal | ImageFlipVertical | ImagePanUp | ImagePanDown | ImagePanLeft
+        | ImagePanRight | ImageCopy | MediaTogglePlay => DebugCmdClass::NonModal,
     }
 }
 
@@ -355,7 +385,7 @@ struct MainWindow {
     /// drain して読めるようにする（read-your-writes・モーダル等に触れない）。
     log_tx: Sender<task::LogEvent>,
     log_rx: Rc<Receiver<task::LogEvent>>,
-    /// 汎用ジョブのワーカー → UI レーン。レガシーの `task_*` と別建てで、`in_dialog` 中も
+    /// 汎用ジョブのワーカー → UI レーン。レガシーの `task_*` と別建てで、モーダル表示中も
     /// 配達する（モーダルを後追いで埋めるため）。`ui_jobs` は id → 継続の対応表。
     ui_job_tx: Sender<(u64, UiJobResult)>,
     ui_job_rx: Rc<Receiver<(u64, UiJobResult)>>,
@@ -393,7 +423,6 @@ struct MainWindow {
     script_progress: Rc<RefCell<std::collections::HashSet<u64>>>,
     progress_seq: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
-    in_dialog: Rc<Cell<bool>>,
     /// 書庫内メディア閲覧中の先読み（BG プリフェッチ）スレッドへの停止フラグ。
     /// 別の書庫を開く/ビューアを閉じる際に立てて旧スレッドを止める（§7.6）。
     media_prefetch: Rc<RefCell<Option<Arc<AtomicBool>>>>,
@@ -646,7 +675,6 @@ impl MainWindow {
             script_progress: Rc::new(RefCell::new(std::collections::HashSet::new())),
             progress_seq: Arc::new(AtomicU64::new(0)),
             shutdown: Arc::new(AtomicBool::new(false)),
-            in_dialog: Rc::new(Cell::new(false)),
             media_prefetch: Rc::new(RefCell::new(None)),
             archive_passwords: Rc::new(RefCell::new(std::collections::HashMap::new())),
             archive_extracted: Rc::new(RefCell::new(std::collections::HashMap::new())),
@@ -1663,12 +1691,10 @@ impl MainWindow {
 
     /// バージョンとサードパーティライセンス一覧のダイアログを開く。
     fn open_about(&self) {
-        if self.in_dialog.get() {
+        if dialog::modal_active() {
             return;
         }
-        self.in_dialog.set(true);
         dialog::about_box(&self.wnd, "Rerics について", &about_text());
-        self.in_dialog.set(false);
         self.key_sink.hwnd().SetFocus();
     }
 

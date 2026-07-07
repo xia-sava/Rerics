@@ -96,7 +96,7 @@ pub fn archive_add_box(parent: &impl GuiParent, summary: &str) -> Option<Archive
         });
     }
 
-    let _ = wnd.show_modal(parent);
+    super::show_modal_guarded(&wnd, parent);
     let _ = (ok, cancel);
     
     *result.borrow()

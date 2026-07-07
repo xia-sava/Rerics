@@ -225,7 +225,7 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
         });
     }
 
-    let _ = wnd.show_modal(parent);
+    super::show_modal_guarded(&wnd, parent);
     keyhook::pop();
     let _ = (ok, cancel);
     

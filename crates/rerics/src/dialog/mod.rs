@@ -277,6 +277,40 @@ pub fn modal_window(title: &str, w: i32, h: i32) -> (gui::WindowModal, ModalArm)
     modal_window_styled(title, w, h, co::WS::default())
 }
 
+thread_local! {
+    /// モーダル表示中の入れ子深さ（UI スレッド専有）。表示行為そのもの
+    /// （[`show_modal_guarded`]）が管理し、[`modal_active`] で読む。
+    static MODAL_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// モーダルダイアログが1つでも表示中か。モーダルの内部メッセージループは `WM_TIMER` を
+/// 汲むため、タイマ駆動の取り込み（`pump_tasks`）はこれを見て、多重取り込みと
+/// 「モーダルの下でペイン再読込などの完了処理が走る」再入を抑止する。
+pub fn modal_active() -> bool {
+    MODAL_DEPTH.with(|d| d.get()) > 0
+}
+
+/// モーダル表示の唯一の関門。`show_modal` を直接呼ばず必ずこれを通す（表示中フラグの
+/// 管理を、呼び出し元の規約ではなく表示行為そのものに内包させる）。深さカウンタなので
+/// 設定→キーエディタのような入れ子でも、内側の復帰が外側のガードを外さない。
+/// 直呼びの混入は `show_modal_is_called_only_through_the_guarded_wrapper` が検出する。
+pub fn show_modal_guarded(wnd: &gui::WindowModal, parent: &impl GuiParent) {
+    struct DepthGuard;
+    impl DepthGuard {
+        fn arm() -> Self {
+            MODAL_DEPTH.with(|d| d.set(d.get() + 1));
+            DepthGuard
+        }
+    }
+    impl Drop for DepthGuard {
+        fn drop(&mut self) {
+            MODAL_DEPTH.with(|d| d.set(d.get() - 1));
+        }
+    }
+    let _guard = DepthGuard::arm();
+    let _ = wnd.show_modal(parent);
+}
+
 /// [`modal_window`] にタイトルバーの × （システムメニュー）を足したもの。設定のように
 /// 大きく、× で閉じられると自然なモーダルで使う。
 pub fn modal_window_sysmenu(title: &str, w: i32, h: i32) -> (gui::WindowModal, ModalArm) {
@@ -879,3 +913,45 @@ fn cb_tristate(cb: &gui::CheckBox) -> Option<bool> {
 }
 
 
+
+#[cfg(test)]
+mod guard_tests {
+    /// 契約: `show_modal` の直呼びは [`super::show_modal_guarded`]（このモジュール）だけが
+    /// 行う。直呼びのモーダルが増えると、表示中フラグが立たず `pump_tasks` がモーダルの
+    /// 内部ループから再入して、モーダルの下でペイン再読込などの完了処理が走ってしまう。
+    #[test]
+    fn show_modal_is_called_only_through_the_guarded_wrapper() {
+        let src_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        scan(&src_root, &mut offenders);
+        assert!(
+            offenders.is_empty(),
+            "show_modal は dialog::show_modal_guarded 経由で呼ぶこと: {offenders:?}"
+        );
+    }
+
+    fn scan(dir: &std::path::Path, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                scan(&path, out);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            // 関門自身（このファイル）は除外する。
+            if path.ends_with("dialog/mod.rs") || path.ends_with(r"dialog\mod.rs") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for (i, line) in text.lines().enumerate() {
+                if line.contains(".show_modal(") {
+                    out.push(format!("{}:{}", path.display(), i + 1));
+                }
+            }
+        }
+    }
+}
