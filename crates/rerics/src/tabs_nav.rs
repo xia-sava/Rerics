@@ -142,8 +142,7 @@ impl MainWindow {
             self.remember_cursor_for_nav(is_left);
             let moved = self.pane(is_left).borrow_mut().navigate(target);
             if moved {
-                self.record_visit(is_left);
-                self.reload_side_focus(is_left, &name, true)?;
+                self.reload_side_navigated_focus(is_left, &name, true)?;
             } else {
                 self.reload_side(is_left)?;
             }
@@ -237,8 +236,7 @@ impl MainWindow {
         let Some(prev_name) = prev else {
             return Ok(());
         };
-        self.record_visit(is_left);
-        self.reload_side_focus(is_left, &prev_name, true)?;
+        self.reload_side_navigated_focus(is_left, &prev_name, true)?;
         Ok(())
     }
 

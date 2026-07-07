@@ -780,7 +780,7 @@ impl MainWindow {
                         if m.is_empty() || m == "*" { None } else { Some(m.to_owned()) };
                     // マスクはファイルセットを変えず表示を絞るだけなので、カーソルはファイル名で
                     // 保つ（解除でカーソル下ファイルが戻れば同じファイルに残る）。
-                    let _ = self.reload_side_impl(is_left, crate::ReloadCursor::Keep);
+                    let _ = self.reload_side_impl(is_left, crate::ReloadCursor::Keep, false);
                     let _ = tx.send(HostResp::Done);
                 }
                 HostCall::CreateDirectory(name) => {

@@ -1427,6 +1427,35 @@ fn path_history_records_and_persists() {
     assert!(hist.contains("sbx"), "the visited path should be saved: {hist}");
 }
 
+/// #66 回帰: `view()`（Enter に割り当てられることが多い）でディレクトリへ侵入したときも
+/// 訪問ログへ記録される。かつて `reload_side`（記録なし）を使っていて、`enterDir` 経由の
+/// 侵入は記録されるのに `view()` 経由だけ記録が漏れる不整合があった。
+#[test]
+fn view_command_entering_directory_records_path_history() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx = server.base.join("sbx");
+    std::fs::create_dir_all(sbx.join("sub")).unwrap();
+    server.req("POST", "/command/reload", "").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"sub\""));
+
+    server.req("POST", "/command/setCursorPosition", r#"["sub"]"#).unwrap();
+    server.req("POST", "/command/view", "").unwrap();
+    let loc = poll(&server, "/state/panes/left/location", |b| b.contains("sub"));
+    assert!(loc.contains("sub"), "view() should enter the directory: {loc}");
+
+    let hist_path = server.base.join("data").join("history.toml");
+    let mut hist = String::new();
+    for _ in 0..50 {
+        if let Ok(s) = std::fs::read_to_string(&hist_path)
+            && s.contains("pathhistory") {
+                hist = s;
+                break;
+            }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    assert!(hist.contains("sub"), "entering a directory via view() should record to path history: {hist}");
+}
+
 /// #66: 戻る/進む（履歴の再生）は訪問ログに新たな記録を増やさない（往復で増殖しない）。
 #[test]
 fn path_history_back_forward_does_not_grow_log() {

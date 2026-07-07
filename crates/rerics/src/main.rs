@@ -782,7 +782,7 @@ impl MainWindow {
         let reload_watch = winutil::msg::RELOAD_WATCH;
         self.wnd.on().wm(reload_watch, move |p| {
             let is_left = p.wparam != 0;
-            let _ = this.reload_side_impl(is_left, ReloadCursor::Keep);
+            let _ = this.reload_side_impl(is_left, ReloadCursor::Keep, false);
             Ok(0)
         });
 
@@ -1258,7 +1258,7 @@ impl MainWindow {
                     if self.view(side).state().borrow().find_result {
                         self.refresh_side(side, None)?;
                     } else {
-                        self.reload_side_impl(side, ReloadCursor::Keep)?;
+                        self.reload_side_impl(side, ReloadCursor::Keep, false)?;
                     }
                 }
                 return Ok(());
@@ -1808,34 +1808,41 @@ impl MainWindow {
     }
 
     fn reload_side(&self, is_left: bool) -> w::AnyResult<()> {
-        self.reload_side_impl(is_left, ReloadCursor::Reset)
+        self.reload_side_impl(is_left, ReloadCursor::Reset, false)
     }
 
     /// ディレクトリ移動後の再読込。移動先パスで以前覚えたカーソル位置を復元し、
     /// 移動先をパス移動履歴（訪問ログ・グローバル・永続）へ記録する。ユーザが行き先を
     /// 指定した移動（侵入・パス入力・ジャンプ・ドライブ変更・親/ルート移動）で使う。
     fn reload_side_navigated(&self, is_left: bool) -> w::AnyResult<()> {
-        self.record_visit(is_left);
-        self.reload_side_impl(is_left, ReloadCursor::Recall)
+        self.reload_side_impl(is_left, ReloadCursor::Recall, true)
     }
 
     /// 移動後の再読込だが、パス移動履歴へは記録しない。ペイン入替・左右同期のように
     /// 「新しい行き先の指定」ではない移動で使う。カーソル復元は通常の移動と同じ
     /// （`cursor.history` 連動）。
     fn reload_side_navigated_nolog(&self, is_left: bool) -> w::AnyResult<()> {
-        self.reload_side_impl(is_left, ReloadCursor::Recall)
+        self.reload_side_impl(is_left, ReloadCursor::Recall, false)
     }
 
     /// 戻る/進む用の再読込。パス移動履歴へは記録せず、`cursor.history` 設定に関係なく
     /// 移動先で覚えたカーソル位置を常に復元する（原作 HistoryBack/Forward 準拠）。
     fn reload_side_history(&self, is_left: bool) -> w::AnyResult<()> {
-        self.reload_side_impl(is_left, ReloadCursor::RecallAlways)
+        self.reload_side_impl(is_left, ReloadCursor::RecallAlways, false)
     }
 
     /// 再読込し、完了後に `name` の行へカーソルを置く（無ければ先頭・`center` で中央寄せ）。
-    /// ディレクトリ作成・連番リネーム・親移動など、読込直後に特定行へ寄せたい操作で使う。
+    /// ディレクトリ作成・連番リネーム・親移動など、読込直後に特定行へ寄せたい操作で使う
+    /// （同一ディレクトリ内の後始末＝訪問ログには記録しない）。
     fn reload_side_focus(&self, is_left: bool, name: &str, center: bool) -> w::AnyResult<()> {
-        self.reload_side_impl(is_left, ReloadCursor::Focus { name: name.to_owned(), center })
+        self.reload_side_impl(is_left, ReloadCursor::Focus { name: name.to_owned(), center }, false)
+    }
+
+    /// [`reload_side_focus`](Self::reload_side_focus) の訪問ログ記録版。ユーザが行き先を
+    /// 指定した移動で、かつ移動後に特定の行へカーソルを寄せたい場合に使う（親移動・結果一覧
+    /// からの侵入など）。
+    fn reload_side_navigated_focus(&self, is_left: bool, name: &str, center: bool) -> w::AnyResult<()> {
+        self.reload_side_impl(is_left, ReloadCursor::Focus { name: name.to_owned(), center }, true)
     }
 
     /// 移動先（そのペインの現在地）をパス移動履歴へ記録する。同一パスは最新へ集約、
@@ -1850,7 +1857,13 @@ impl MainWindow {
     /// ペインを再読込する。`mode` でカーソルの行き先を決める：`Keep`＝再読込前のカーソル下
     /// ファイル名へ戻す（無ければ元 index 付近・F5 用）、`Recall`＝移動先パスで以前覚えた
     /// カーソル位置へ戻す（無ければ先頭・ディレクトリ移動用）、`Reset`＝常に先頭（在席再読込）。
-    fn reload_side_impl(&self, is_left: bool, mode: ReloadCursor) -> w::AnyResult<()> {
+    /// `record` は訪問ログへの記録要否——ラッパ関数名ではなくここ一箇所に集約し、新しい
+    /// 呼び出し元が記録を書き忘れる余地を無くす（各ラッパは意図を示す名前で `record` を固定
+    /// 渡しするだけ）。
+    fn reload_side_impl(&self, is_left: bool, mode: ReloadCursor, record: bool) -> w::AnyResult<()> {
+        if record {
+            self.record_visit(is_left);
+        }
         let Some((read_loc, plan)) = self.prepare_reload(is_left, mode)? else {
             return Ok(());
         };
