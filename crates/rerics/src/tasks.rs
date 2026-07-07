@@ -93,6 +93,14 @@ impl MainWindow {
         Ok(())
     }
 
+    /// 完了したタスクを登録簿から外す。完了系 `WorkerEvent` の処理は必ずこれを呼ぶ
+    /// （書き忘れるとタスクマネージャに「実行中」の幽霊行が残り、`self.tasks` が空に
+    /// ならず取り込みタイマも止まらない）。タイマ停止は `pump_tasks` 末尾の無条件
+    /// `maybe_kill_task_timer` に一本化している。
+    fn finish_task(&self, id: u64) {
+        self.tasks.borrow_mut().retain(|e| e.id != id);
+    }
+
     /// ワーカーからのイベントを取り込み、ログ反映・完了処理を行う。
     ///
     /// 衝突モーダル表示中はモーダルの内部ループから `WM_TIMER` が再入するため、
@@ -155,15 +163,14 @@ impl MainWindow {
                     // 中止・失敗時は届いたか不確かなので、カーソル寄せはしない。
                     let focus = if cancelled || failed { None } else { single_name };
                     self.on_op_done(kind, &src_dir, &dst_dir, focus.as_deref())?;
-                    self.tasks.borrow_mut().retain(|e| e.id != id);
+                    self.finish_task(id);
                     self.notify_script_op_done(id, cancelled, failed);
-                    self.maybe_kill_task_timer();
                 }
                 WorkerEvent::Progress { task_id, text } => {
                     self.notify_script_op_progress(task_id, &text);
                 }
                 WorkerEvent::ArchiveDone { id, archive, temp_root, outcome } => {
-                    self.tasks.borrow_mut().retain(|e| e.id != id);
+                    self.finish_task(id);
                     self.archive_extracting.borrow_mut().remove(&archive);
                     // この書庫を指して読込中のペイン（両側あり得る）をまとめて反映する。
                     let sides: Vec<bool> = [true, false]
@@ -197,19 +204,16 @@ impl MainWindow {
                             }
                         }
                     }
-                    self.maybe_kill_task_timer();
                 }
                 WorkerEvent::ArchiveWriteDone { id, src_is_left } => {
-                    self.tasks.borrow_mut().retain(|e| e.id != id);
+                    self.finish_task(id);
                     // 同期系ファイル操作と同じ「その場のリフレッシュ」＝カーソルを保ち、
                     // 結果一覧（検索・比較）なら再検索して結果モードを保つ。
                     self.refresh_side(src_is_left, None)?;
                     self.refresh_side(!src_is_left, None)?;
-                    self.maybe_kill_task_timer();
                 }
                 WorkerEvent::DirInfoDone { id, is_left, label, bytes, files, dirs, entries } => {
-                    self.tasks.borrow_mut().retain(|e| e.id != id);
-                    self.maybe_kill_task_timer();
+                    self.finish_task(id);
                     let msg = messages::directory_information(&label, bytes, files, dirs);
                     self.log.normal(&msg);
                     self.apply_dir_sizes(is_left, &entries)?;
@@ -237,7 +241,7 @@ impl MainWindow {
                 }
                 WorkerEvent::FindDone { id, is_left } => {
                     // タスク登録解除は id 一致で必ず行う（追い越された旧タスクの後始末も）。
-                    self.tasks.borrow_mut().retain(|e| e.id != id);
+                    self.finish_task(id);
                     let idx = if is_left { 0 } else { 1 };
                     if self.find_task.borrow()[idx] == Some(id) {
                         self.find_task.borrow_mut()[idx] = None;
@@ -259,7 +263,6 @@ impl MainWindow {
                         }
                         find_dirty[idx] = true;
                     }
-                    self.maybe_kill_task_timer();
                 }
                 WorkerEvent::ScriptEngineReady { handle } => {
                     *self.script_isolate.borrow_mut() = Some(handle);
@@ -274,7 +277,7 @@ impl MainWindow {
                 }
                 WorkerEvent::ScriptEnd => {
                     if let Some(id) = self.script_task.borrow_mut().take() {
-                        self.tasks.borrow_mut().retain(|e| e.id != id);
+                        self.finish_task(id);
                     }
                     self.script_terminated.set(false);
                     // 回しっぱなしのスクリプト進行表示を回収する（stopProgress 忘れの保険）。
@@ -284,7 +287,6 @@ impl MainWindow {
                     for id in self.script_progress.borrow_mut().drain() {
                         self.log.stop_progress(id);
                     }
-                    self.maybe_kill_task_timer();
                 }
             }
         }
