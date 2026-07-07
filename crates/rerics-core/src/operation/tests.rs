@@ -193,6 +193,45 @@
         assert_eq!(lines.last().map(String::as_str), Some("削除終了"));
     }
 
+    /// 中止時は結果行・枠ログとも Warning になる（共通ドライバの規約）。かつて結果行は
+    /// err の有無だけで重大度を決め、中止でも Info（正常終了）として出ていた。
+    #[test]
+    fn compress_cancel_logs_warning_result_and_abort_frame() {
+        let src = TempDir::new();
+        src.write_file("a.txt", "x");
+        let out = TempDir::new();
+        let host = FakeHost::cancelling(0);
+        let sum = run_compress(&host, &src.path, &["a.txt".to_owned()], &out.join("a.zip"));
+        assert!(sum.cancelled);
+        let logs = host.logs.borrow();
+        let n = logs.len();
+        assert_eq!(
+            (logs[n - 2].0, logs[n - 2].1.as_str()),
+            (LogLevel::Warning, "0 Success, 0 Skip, 0 Error"),
+            "中止の結果行は Warning: {logs:?}"
+        );
+        assert_eq!(
+            (logs[n - 1].0, logs[n - 1].1.as_str()),
+            (LogLevel::Warning, "圧縮中止"),
+            "中止の枠ログ: {logs:?}"
+        );
+    }
+
+    /// 書庫内の改名も結果行と枠ログを出す（かつては成功の Rename 行以外、結果行自体が
+    /// 出なかった）。
+    #[test]
+    fn archive_rename_logs_result_and_end_frame() {
+        let dir = TempDir::new();
+        let zip = dir.join("a.zip");
+        build_stored_zip_raw(&zip, &[(b"a.txt", b"x")]);
+        let host = FakeHost::new();
+        let sum = run_archive_rename(&host, &zip, "", "a.txt", "b.txt");
+        assert_eq!(sum.ok, 1);
+        let lines = host.lines();
+        assert!(lines.iter().any(|l| l == "1 Success, 0 Error"), "結果行が出る: {lines:?}");
+        assert_eq!(lines.last().map(String::as_str), Some("改名終了"));
+    }
+
     #[test]
     fn calc_size_counts_files_dirs_and_bytes() {
         let base = TempDir::new();

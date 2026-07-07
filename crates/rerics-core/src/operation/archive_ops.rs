@@ -29,44 +29,42 @@ pub fn run_archive_add(
     dst_zip: &Path,
     inner_prefix: &str,
 ) -> OpSummary {
-    let mut sum = OpSummary::default();
-    let file = match std::fs::OpenOptions::new().read(true).write(true).open(dst_zip) {
-        Ok(f) => f,
-        Err(e) => {
+    run_operation(host, "追加", ResultStyle::Copy, || {
+        let mut sum = OpSummary::default();
+        let file = match std::fs::OpenOptions::new().read(true).write(true).open(dst_zip) {
+            Ok(f) => f,
+            Err(e) => {
+                host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
+                sum.err += 1;
+                return sum;
+            }
+        };
+        let mut zw = match zip::ZipWriter::new_append(file) {
+            Ok(z) => z,
+            Err(e) => {
+                host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
+                sum.err += 1;
+                return sum;
+            }
+        };
+        for name in names {
+            if should_stop(host) {
+                sum.cancelled = true;
+                break;
+            }
+            let src = src_dir.join(name);
+            let rel = join_inner(inner_prefix, name);
+            if let Flow::Cancel = add_archive_item(host, &mut zw, &src, &rel, &mut sum) {
+                sum.cancelled = true;
+                break;
+            }
+        }
+        if let Err(e) = zw.finish() {
             host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
             sum.err += 1;
-            host.log(LogLevel::Error, &messages::copy_result(sum.ok, sum.skip, sum.err));
-            return sum;
         }
-    };
-    let mut zw = match zip::ZipWriter::new_append(file) {
-        Ok(z) => z,
-        Err(e) => {
-            host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
-            sum.err += 1;
-            host.log(LogLevel::Error, &messages::copy_result(sum.ok, sum.skip, sum.err));
-            return sum;
-        }
-    };
-    for name in names {
-        if should_stop(host) {
-            sum.cancelled = true;
-            break;
-        }
-        let src = src_dir.join(name);
-        let rel = join_inner(inner_prefix, name);
-        if let Flow::Cancel = add_archive_item(host, &mut zw, &src, &rel, &mut sum) {
-            sum.cancelled = true;
-            break;
-        }
-    }
-    if let Err(e) = zw.finish() {
-        host.log(LogLevel::Error, &messages::archive_add_failure(&file_name(dst_zip), &e.to_string()));
-        sum.err += 1;
-    }
-    let level = if sum.err == 0 { LogLevel::Info } else { LogLevel::Error };
-    host.log(level, &messages::copy_result(sum.ok, sum.skip, sum.err));
-    sum
+        sum
+    })
 }
 
 /// 既存 zip を読み直し、各エントリに `decide` を適用して新しい一時 zip に書き戻し、元へ
@@ -204,20 +202,19 @@ pub fn run_archive_rebuild(
 ) -> OpSummary {
     // 追加項目の書庫内パス。これに一致 or その配下の既存エントリは捨てて置換する。
     let new_tops: Vec<String> = names.iter().map(|n| join_inner(inner_prefix, n)).collect();
-    let sum = rewrite_archive(
-        host,
-        dst_zip,
-        |name, _is_dir| {
-            let replaced = new_tops
-                .iter()
-                .any(|t| name == t.as_str() || name.starts_with(&format!("{t}/")));
-            if replaced { None } else { Some(name.to_string()) }
-        },
-        Some((src_dir, names, inner_prefix)),
-    );
-    let level = if sum.err == 0 && !sum.cancelled { LogLevel::Info } else { LogLevel::Error };
-    host.log(level, &messages::copy_result(sum.ok, sum.skip, sum.err));
-    sum
+    run_operation(host, "追加", ResultStyle::Copy, || {
+        rewrite_archive(
+            host,
+            dst_zip,
+            |name, _is_dir| {
+                let replaced = new_tops
+                    .iter()
+                    .any(|t| name == t.as_str() || name.starts_with(&format!("{t}/")));
+                if replaced { None } else { Some(name.to_string()) }
+            },
+            Some((src_dir, names, inner_prefix)),
+        )
+    })
 }
 
 /// 書庫内の `names`（`inner` 直下のエントリ名）を削除する。全体を再構築して該当エントリ
@@ -230,26 +227,26 @@ pub fn run_archive_delete(
     names: &[String],
 ) -> OpSummary {
     let targets: Vec<String> = names.iter().map(|n| join_inner(inner, n)).collect();
-    let mut sum = rewrite_archive(
-        host,
-        archive,
-        |name, _is_dir| {
-            let removed = targets
-                .iter()
-                .any(|t| name == t.as_str() || name.starts_with(&format!("{t}/")));
-            if removed { None } else { Some(name.to_string()) }
-        },
-        None,
-    );
-    if !sum.cancelled && sum.err == 0 {
-        for name in names {
-            host.log(LogLevel::Normal, &messages::delete(name));
+    run_operation(host, "削除", ResultStyle::Delete, || {
+        let mut sum = rewrite_archive(
+            host,
+            archive,
+            |name, _is_dir| {
+                let removed = targets
+                    .iter()
+                    .any(|t| name == t.as_str() || name.starts_with(&format!("{t}/")));
+                if removed { None } else { Some(name.to_string()) }
+            },
+            None,
+        );
+        if !sum.cancelled && sum.err == 0 {
+            for name in names {
+                host.log(LogLevel::Normal, &messages::delete(name));
+            }
+            sum.ok = names.len();
         }
-        sum.ok = names.len();
-    }
-    let level = if sum.err == 0 && !sum.cancelled { LogLevel::Info } else { LogLevel::Error };
-    host.log(level, &messages::delete_result(sum.ok, sum.err));
-    sum
+        sum
+    })
 }
 
 /// 書庫内の `old`（`inner` 直下）を `new` へ改名する。ディレクトリはその配下のパスも
@@ -265,25 +262,27 @@ pub fn run_archive_rename(
     let from = join_inner(inner, old);
     let to = join_inner(inner, new);
     let from_pfx = format!("{from}/");
-    let mut sum = rewrite_archive(
-        host,
-        archive,
-        |name, _is_dir| {
-            if name == from.as_str() {
-                Some(to.clone())
-            } else if let Some(rest) = name.strip_prefix(&from_pfx) {
-                Some(format!("{to}/{rest}"))
-            } else {
-                Some(name.to_string())
-            }
-        },
-        None,
-    );
-    if !sum.cancelled && sum.err == 0 {
-        host.log(LogLevel::Normal, &messages::rename(old, new));
-        sum.ok = 1;
-    }
-    sum
+    run_operation(host, "改名", ResultStyle::Delete, || {
+        let mut sum = rewrite_archive(
+            host,
+            archive,
+            |name, _is_dir| {
+                if name == from.as_str() {
+                    Some(to.clone())
+                } else if let Some(rest) = name.strip_prefix(&from_pfx) {
+                    Some(format!("{to}/{rest}"))
+                } else {
+                    Some(name.to_string())
+                }
+            },
+            None,
+        );
+        if !sum.cancelled && sum.err == 0 {
+            host.log(LogLevel::Normal, &messages::rename(old, new));
+            sum.ok = 1;
+        }
+        sum
+    })
 }
 
 /// 1項目を zip へ追記する（ディレクトリは再帰）。`rel` は書庫内パス（'/' 区切り）。

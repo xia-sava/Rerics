@@ -16,18 +16,16 @@ enum Removal {
 /// 削除を実行する。ディレクトリは配下を個別に確認・削除してから（ボトムアップで）本体を消す。
 pub fn run_delete(host: &dyn OperationHost, dir: &Path, names: &[String]) -> OpSummary {
     host.log(LogLevel::Info, &messages::op_started("削除"));
-    let mut sum = OpSummary::default();
-    for name in names {
-        if let Removal::Cancel = delete_item(host, &dir.join(name), name, &mut sum) {
-            sum.cancelled = true;
-            break;
+    run_operation(host, "削除", ResultStyle::Delete, || {
+        let mut sum = OpSummary::default();
+        for name in names {
+            if let Removal::Cancel = delete_item(host, &dir.join(name), name, &mut sum) {
+                sum.cancelled = true;
+                break;
+            }
         }
-    }
-    let line = messages::delete_result(sum.ok, sum.err);
-    let level = if sum.err == 0 { LogLevel::Info } else { LogLevel::Error };
-    host.log(level, &line);
-    log_op_end(host, "削除", &sum);
-    sum
+        sum
+    })
 }
 
 /// `target`（`name` 表示）を削除する。ディレクトリなら配下を再帰的に処理してから本体を消す。

@@ -13,39 +13,38 @@ pub fn run_compress(
     names: &[String],
     dst_zip: &Path,
 ) -> OpSummary {
-    let mut sum = OpSummary::default();
-    let file = match std::fs::File::create(dst_zip) {
-        Ok(f) => f,
-        Err(e) => {
+    run_operation(host, "圧縮", ResultStyle::Copy, || {
+        let mut sum = OpSummary::default();
+        let file = match std::fs::File::create(dst_zip) {
+            Ok(f) => f,
+            Err(e) => {
+                host.log(LogLevel::Error, &messages::compress_failure(&file_name(dst_zip), &e.to_string()));
+                sum.err += 1;
+                return sum;
+            }
+        };
+        let mut zw = zip::ZipWriter::new(file);
+        for name in names {
+            if should_stop(host) {
+                sum.cancelled = true;
+                break;
+            }
+            let src = src_dir.join(name);
+            if let Flow::Cancel = add_to_zip(host, &mut zw, &src, name, &mut sum) {
+                sum.cancelled = true;
+                break;
+            }
+        }
+        let finished = zw.finish();
+        if sum.cancelled {
+            drop(finished);
+            let _ = std::fs::remove_file(dst_zip);
+        } else if let Err(e) = finished {
             host.log(LogLevel::Error, &messages::compress_failure(&file_name(dst_zip), &e.to_string()));
             sum.err += 1;
-            host.log(LogLevel::Error, &messages::copy_result(sum.ok, sum.skip, sum.err));
-            return sum;
         }
-    };
-    let mut zw = zip::ZipWriter::new(file);
-    for name in names {
-        if should_stop(host) {
-            sum.cancelled = true;
-            break;
-        }
-        let src = src_dir.join(name);
-        if let Flow::Cancel = add_to_zip(host, &mut zw, &src, name, &mut sum) {
-            sum.cancelled = true;
-            break;
-        }
-    }
-    let finished = zw.finish();
-    if sum.cancelled {
-        drop(finished);
-        let _ = std::fs::remove_file(dst_zip);
-    } else if let Err(e) = finished {
-        host.log(LogLevel::Error, &messages::compress_failure(&file_name(dst_zip), &e.to_string()));
-        sum.err += 1;
-    }
-    let level = if sum.err == 0 { LogLevel::Info } else { LogLevel::Error };
-    host.log(level, &messages::copy_result(sum.ok, sum.skip, sum.err));
-    sum
+        sum
+    })
 }
 
 /// 実FSの選択項目から新しい 7z を作る（LZMA2）。`names` は `src_dir` 直下のファイル/
@@ -58,38 +57,37 @@ pub fn run_compress_7z(
     names: &[String],
     dst: &Path,
 ) -> OpSummary {
-    let mut sum = OpSummary::default();
-    let mut sz = match sevenz_rust2::ArchiveWriter::create(dst) {
-        Ok(w) => w,
-        Err(e) => {
+    run_operation(host, "圧縮", ResultStyle::Copy, || {
+        let mut sum = OpSummary::default();
+        let mut sz = match sevenz_rust2::ArchiveWriter::create(dst) {
+            Ok(w) => w,
+            Err(e) => {
+                host.log(LogLevel::Error, &messages::compress_failure(&file_name(dst), &e.to_string()));
+                sum.err += 1;
+                return sum;
+            }
+        };
+        for name in names {
+            if should_stop(host) {
+                sum.cancelled = true;
+                break;
+            }
+            let src = src_dir.join(name);
+            if let Flow::Cancel = add_to_7z(host, &mut sz, &src, name, &mut sum) {
+                sum.cancelled = true;
+                break;
+            }
+        }
+        let finished = sz.finish();
+        if sum.cancelled {
+            drop(finished);
+            let _ = std::fs::remove_file(dst);
+        } else if let Err(e) = finished {
             host.log(LogLevel::Error, &messages::compress_failure(&file_name(dst), &e.to_string()));
             sum.err += 1;
-            host.log(LogLevel::Error, &messages::copy_result(sum.ok, sum.skip, sum.err));
-            return sum;
         }
-    };
-    for name in names {
-        if should_stop(host) {
-            sum.cancelled = true;
-            break;
-        }
-        let src = src_dir.join(name);
-        if let Flow::Cancel = add_to_7z(host, &mut sz, &src, name, &mut sum) {
-            sum.cancelled = true;
-            break;
-        }
-    }
-    let finished = sz.finish();
-    if sum.cancelled {
-        drop(finished);
-        let _ = std::fs::remove_file(dst);
-    } else if let Err(e) = finished {
-        host.log(LogLevel::Error, &messages::compress_failure(&file_name(dst), &e.to_string()));
-        sum.err += 1;
-    }
-    let level = if sum.err == 0 { LogLevel::Info } else { LogLevel::Error };
-    host.log(level, &messages::copy_result(sum.ok, sum.skip, sum.err));
-    sum
+        sum
+    })
 }
 
 /// 1項目を 7z へ追加する。ディレクトリは再帰（空ディレクトリもエントリとして残す）。
@@ -162,68 +160,67 @@ pub fn run_compress_xz_single(
     dst: &Path,
 ) -> OpSummary {
     use std::io::{Read, Write};
-    let mut sum = OpSummary::default();
-    let src = src_dir.join(name);
-    let mut reader = match std::fs::File::open(&src) {
-        Ok(f) => f,
-        Err(e) => return xz_fail(host, name, &e.to_string(), &mut sum),
-    };
-    let out = match std::fs::File::create(dst) {
-        Ok(f) => f,
-        Err(e) => return xz_fail(host, &file_name(dst), &e.to_string(), &mut sum),
-    };
-    let mut xzw = match lzma_rust2::XzWriter::new(out, lzma_rust2::XzOptions::with_preset(6)) {
-        Ok(w) => w,
-        Err(e) => {
-            let _ = std::fs::remove_file(dst);
-            return xz_fail(host, &file_name(dst), &e.to_string(), &mut sum);
-        }
-    };
-    host.log(LogLevel::Normal, &messages::compress(name));
-    let mut buf = vec![0u8; 256 * 1024];
-    let mut failed = false;
-    loop {
-        if should_stop(host) {
-            sum.cancelled = true;
-            break;
-        }
-        let n = match reader.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => n,
+    run_operation(host, "圧縮", ResultStyle::Copy, || {
+        let mut sum = OpSummary::default();
+        let src = src_dir.join(name);
+        let mut reader = match std::fs::File::open(&src) {
+            Ok(f) => f,
+            Err(e) => return xz_fail(host, name, &e.to_string(), &mut sum),
+        };
+        let out = match std::fs::File::create(dst) {
+            Ok(f) => f,
+            Err(e) => return xz_fail(host, &file_name(dst), &e.to_string(), &mut sum),
+        };
+        let mut xzw = match lzma_rust2::XzWriter::new(out, lzma_rust2::XzOptions::with_preset(6)) {
+            Ok(w) => w,
             Err(e) => {
+                let _ = std::fs::remove_file(dst);
+                return xz_fail(host, &file_name(dst), &e.to_string(), &mut sum);
+            }
+        };
+        host.log(LogLevel::Normal, &messages::compress(name));
+        let mut buf = vec![0u8; 256 * 1024];
+        let mut failed = false;
+        loop {
+            if should_stop(host) {
+                sum.cancelled = true;
+                break;
+            }
+            let n = match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => {
+                    host.log(LogLevel::Error, &messages::compress_failure(name, &e.to_string()));
+                    sum.err += 1;
+                    failed = true;
+                    break;
+                }
+            };
+            if let Err(e) = xzw.write_all(&buf[..n]) {
                 host.log(LogLevel::Error, &messages::compress_failure(name, &e.to_string()));
                 sum.err += 1;
                 failed = true;
                 break;
             }
-        };
-        if let Err(e) = xzw.write_all(&buf[..n]) {
-            host.log(LogLevel::Error, &messages::compress_failure(name, &e.to_string()));
-            sum.err += 1;
-            failed = true;
-            break;
         }
-    }
-    let finished = xzw.finish();
-    if sum.cancelled || failed {
-        drop(finished);
-        let _ = std::fs::remove_file(dst);
-    } else if let Err(e) = finished {
-        host.log(LogLevel::Error, &messages::compress_failure(&file_name(dst), &e.to_string()));
-        sum.err += 1;
-    } else {
-        sum.ok += 1;
-    }
-    let level = if sum.err == 0 { LogLevel::Info } else { LogLevel::Error };
-    host.log(level, &messages::copy_result(sum.ok, sum.skip, sum.err));
-    sum
+        let finished = xzw.finish();
+        if sum.cancelled || failed {
+            drop(finished);
+            let _ = std::fs::remove_file(dst);
+        } else if let Err(e) = finished {
+            host.log(LogLevel::Error, &messages::compress_failure(&file_name(dst), &e.to_string()));
+            sum.err += 1;
+        } else {
+            sum.ok += 1;
+        }
+        sum
+    })
 }
 
 /// xz 単体圧縮の初期化失敗をログして返すヘルパ。
 fn xz_fail(host: &dyn OperationHost, name: &str, reason: &str, sum: &mut OpSummary) -> OpSummary {
     host.log(LogLevel::Error, &messages::compress_failure(name, reason));
     sum.err += 1;
-    host.log(LogLevel::Error, &messages::copy_result(sum.ok, sum.skip, sum.err));
     *sum
 }
 
@@ -236,61 +233,59 @@ pub fn run_compress_tar_xz(
     names: &[String],
     dst: &Path,
 ) -> OpSummary {
-    let mut sum = OpSummary::default();
-    let out = match std::fs::File::create(dst) {
-        Ok(f) => f,
-        Err(e) => {
-            host.log(LogLevel::Error, &messages::compress_failure(&file_name(dst), &e.to_string()));
-            sum.err += 1;
-            host.log(LogLevel::Error, &messages::copy_result(sum.ok, sum.skip, sum.err));
-            return sum;
+    run_operation(host, "圧縮", ResultStyle::Copy, || {
+        let mut sum = OpSummary::default();
+        let out = match std::fs::File::create(dst) {
+            Ok(f) => f,
+            Err(e) => {
+                host.log(LogLevel::Error, &messages::compress_failure(&file_name(dst), &e.to_string()));
+                sum.err += 1;
+                return sum;
+            }
+        };
+        let xzw = match lzma_rust2::XzWriter::new(out, lzma_rust2::XzOptions::with_preset(6)) {
+            Ok(w) => w,
+            Err(e) => {
+                let _ = std::fs::remove_file(dst);
+                host.log(LogLevel::Error, &messages::compress_failure(&file_name(dst), &e.to_string()));
+                sum.err += 1;
+                return sum;
+            }
+        };
+        let mut builder = tar::Builder::new(xzw);
+        for name in names {
+            if should_stop(host) {
+                sum.cancelled = true;
+                break;
+            }
+            let src = src_dir.join(name);
+            if let Flow::Cancel = add_to_tar(host, &mut builder, &src, name, &mut sum) {
+                sum.cancelled = true;
+                break;
+            }
         }
-    };
-    let xzw = match lzma_rust2::XzWriter::new(out, lzma_rust2::XzOptions::with_preset(6)) {
-        Ok(w) => w,
-        Err(e) => {
+        // tar トレーラを書いて内側の xz writer を取り出し、xz ストリームを閉じる。
+        match builder.into_inner() {
+            Ok(xzw) => {
+                if let Err(e) = xzw.finish()
+                    && !sum.cancelled
+                {
+                    host.log(LogLevel::Error, &messages::compress_failure(&file_name(dst), &e.to_string()));
+                    sum.err += 1;
+                }
+            }
+            Err(e) => {
+                if !sum.cancelled {
+                    host.log(LogLevel::Error, &messages::compress_failure(&file_name(dst), &e.to_string()));
+                    sum.err += 1;
+                }
+            }
+        }
+        if sum.cancelled {
             let _ = std::fs::remove_file(dst);
-            host.log(LogLevel::Error, &messages::compress_failure(&file_name(dst), &e.to_string()));
-            sum.err += 1;
-            host.log(LogLevel::Error, &messages::copy_result(sum.ok, sum.skip, sum.err));
-            return sum;
         }
-    };
-    let mut builder = tar::Builder::new(xzw);
-    for name in names {
-        if should_stop(host) {
-            sum.cancelled = true;
-            break;
-        }
-        let src = src_dir.join(name);
-        if let Flow::Cancel = add_to_tar(host, &mut builder, &src, name, &mut sum) {
-            sum.cancelled = true;
-            break;
-        }
-    }
-    // tar トレーラを書いて内側の xz writer を取り出し、xz ストリームを閉じる。
-    match builder.into_inner() {
-        Ok(xzw) => {
-            if let Err(e) = xzw.finish()
-                && !sum.cancelled
-            {
-                host.log(LogLevel::Error, &messages::compress_failure(&file_name(dst), &e.to_string()));
-                sum.err += 1;
-            }
-        }
-        Err(e) => {
-            if !sum.cancelled {
-                host.log(LogLevel::Error, &messages::compress_failure(&file_name(dst), &e.to_string()));
-                sum.err += 1;
-            }
-        }
-    }
-    if sum.cancelled {
-        let _ = std::fs::remove_file(dst);
-    }
-    let level = if sum.err == 0 && !sum.cancelled { LogLevel::Info } else { LogLevel::Error };
-    host.log(level, &messages::copy_result(sum.ok, sum.skip, sum.err));
-    sum
+        sum
+    })
 }
 
 /// 1項目を tar へ追加する。ディレクトリは再帰（空ディレクトリもエントリとして残す）。

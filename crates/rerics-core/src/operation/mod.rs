@@ -174,17 +174,54 @@ fn meta_is_dir(m: &std::fs::Metadata) -> bool {
 }
 
 
-/// 操作の締めくくりに、結果に応じた枠ログ（終了/警告終了/中止）を出す。`verb` は
-/// `コピー`/`移動`/`削除`。
-fn log_op_end(host: &dyn OperationHost, verb: &str, sum: &OpSummary) {
-    let (level, line) = if sum.cancelled {
-        (LogLevel::Warning, crate::messages::op_aborted(verb))
+/// 結果サマリ行の形式。コピー系＝`ok/skip/err`、削除系＝`ok/err`。
+pub(crate) enum ResultStyle {
+    Copy,
+    Delete,
+}
+
+/// 結果に応じたログ重大度（結果行・枠ログ共通の規約）。
+/// 中止＝警告・エラーあり＝エラー・正常＝情報。
+fn result_level(sum: &OpSummary) -> LogLevel {
+    if sum.cancelled {
+        LogLevel::Warning
     } else if sum.err > 0 {
-        (LogLevel::Error, crate::messages::op_finished_with_errors(verb))
+        LogLevel::Error
     } else {
-        (LogLevel::Info, crate::messages::op_finished(verb))
+        LogLevel::Info
+    }
+}
+
+/// 操作本体 `op` を実行し、締めくくりの結果サマリ行と枠ログ（終了/警告終了/中止）を
+/// 必ず1回だけ出す共通ドライバ。重大度の判定はここに集約し、各 `run_*` は本体ロジック
+/// だけを持つ（結果ログを個別に出さない）。
+pub(crate) fn run_operation(
+    host: &dyn OperationHost,
+    verb: &str,
+    style: ResultStyle,
+    op: impl FnOnce() -> OpSummary,
+) -> OpSummary {
+    let sum = op();
+    let line = match style {
+        ResultStyle::Copy => crate::messages::copy_result(sum.ok, sum.skip, sum.err),
+        ResultStyle::Delete => crate::messages::delete_result(sum.ok, sum.err),
     };
-    host.log(level, &line);
+    host.log(result_level(&sum), &line);
+    log_op_end(host, verb, &sum);
+    sum
+}
+
+/// 操作の締めくくりに、結果に応じた枠ログ（終了/警告終了/中止）を出す。`verb` は
+/// `コピー`/`移動`/`削除`/`展開`/`圧縮`/`追加`/`改名`。
+fn log_op_end(host: &dyn OperationHost, verb: &str, sum: &OpSummary) {
+    let line = if sum.cancelled {
+        crate::messages::op_aborted(verb)
+    } else if sum.err > 0 {
+        crate::messages::op_finished_with_errors(verb)
+    } else {
+        crate::messages::op_finished(verb)
+    };
+    host.log(result_level(sum), &line);
 }
 
 /// dst の読み込み専用/隠し/システム属性を解除する（強制上書き用）。

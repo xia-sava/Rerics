@@ -13,41 +13,39 @@ pub fn run_copy(
 ) -> OpSummary {
     let verb = if move_it { "移動" } else { "コピー" };
     host.log(LogLevel::Info, &messages::op_started(verb));
-    let mut sum = OpSummary::default();
-    for name in names {
-        if should_stop(host) {
-            sum.cancelled = true;
-            break;
+    run_operation(host, verb, ResultStyle::Copy, || {
+        let mut sum = OpSummary::default();
+        for name in names {
+            if should_stop(host) {
+                sum.cancelled = true;
+                break;
+            }
+            let src = src_dir.join(name);
+            let dst = dst_dir.join(name);
+            // 同一パス（Windows はケース違いも同一とみなす）はエラー。
+            if same_path(&src, &dst) {
+                let line = if move_it {
+                    messages::same_move_path(name)
+                } else {
+                    messages::same_copy_path(name)
+                };
+                host.log(LogLevel::Error, &line);
+                sum.err += 1;
+                continue;
+            }
+            // ディレクトリを自分自身の配下へコピー/移動すると無限再帰になるので拒否する。
+            if src.is_dir() && dst_within_src(&src, &dst) {
+                host.log(LogLevel::Error, &messages::copy_into_self(verb, name));
+                sum.err += 1;
+                continue;
+            }
+            if let Flow::Cancel = copy_item(host, &src, &dst, move_it, &mut sum) {
+                sum.cancelled = true;
+                break;
+            }
         }
-        let src = src_dir.join(name);
-        let dst = dst_dir.join(name);
-        // 同一パス（Windows はケース違いも同一とみなす）はエラー。
-        if same_path(&src, &dst) {
-            let line = if move_it {
-                messages::same_move_path(name)
-            } else {
-                messages::same_copy_path(name)
-            };
-            host.log(LogLevel::Error, &line);
-            sum.err += 1;
-            continue;
-        }
-        // ディレクトリを自分自身の配下へコピー/移動すると無限再帰になるので拒否する。
-        if src.is_dir() && dst_within_src(&src, &dst) {
-            host.log(LogLevel::Error, &messages::copy_into_self(verb, name));
-            sum.err += 1;
-            continue;
-        }
-        if let Flow::Cancel = copy_item(host, &src, &dst, move_it, &mut sum) {
-            sum.cancelled = true;
-            break;
-        }
-    }
-    let line = messages::copy_result(sum.ok, sum.skip, sum.err);
-    let level = if sum.err == 0 { LogLevel::Info } else { LogLevel::Error };
-    host.log(level, &line);
-    log_op_end(host, verb, &sum);
-    sum
+        sum
+    })
 }
 
 /// 1項目（ファイルまたはディレクトリ）を再帰的にコピー/移動する。

@@ -18,28 +18,27 @@ pub fn run_extract(
     names: &[String],
     dst_dir: &Path,
 ) -> OpSummary {
-    let mut sum = OpSummary::default();
-    for name in names {
-        if should_stop(host) {
-            sum.cancelled = true;
-            break;
+    run_operation(host, "展開", ResultStyle::Copy, || {
+        let mut sum = OpSummary::default();
+        for name in names {
+            if should_stop(host) {
+                sum.cancelled = true;
+                break;
+            }
+            let Some(comp) = safe_component(name) else {
+                host.log(LogLevel::Error, &messages::copy_failure(name, "不正な名前です"));
+                sum.err += 1;
+                continue;
+            };
+            let inner = join_inner_seg(src_inner, name);
+            let dst = dst_dir.join(comp);
+            if let Flow::Cancel = extract_item(host, backend, entries, &inner, &dst, &mut sum) {
+                sum.cancelled = true;
+                break;
+            }
         }
-        let Some(comp) = safe_component(name) else {
-            host.log(LogLevel::Error, &messages::copy_failure(name, "不正な名前です"));
-            sum.err += 1;
-            continue;
-        };
-        let inner = join_inner_seg(src_inner, name);
-        let dst = dst_dir.join(comp);
-        if let Flow::Cancel = extract_item(host, backend, entries, &inner, &dst, &mut sum) {
-            sum.cancelled = true;
-            break;
-        }
-    }
-    let line = messages::copy_result(sum.ok, sum.skip, sum.err);
-    let level = if sum.err == 0 { LogLevel::Info } else { LogLevel::Error };
-    host.log(level, &line);
-    sum
+        sum
+    })
 }
 
 /// 書庫内の1エントリ（ファイル or ディレクトリ）を再帰的に取り出す。
