@@ -1456,6 +1456,31 @@ fn view_command_entering_directory_records_path_history() {
     assert!(hist.contains("sub"), "entering a directory via view() should record to path history: {hist}");
 }
 
+/// 回帰: `view()` でディレクトリへ侵入するときも直前のカーソル位置が記憶され、
+/// 戻る（historyBack）で復元される。かつて `view()` 経由の侵入だけカーソル記憶が漏れ、
+/// 戻ったときカーソルが先頭へ戻る不整合があった（`enterDir` 経由は復元される）。
+#[test]
+fn view_command_entering_directory_remembers_cursor() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx = server.base.join("sbx");
+    std::fs::create_dir_all(sbx.join("sub1")).unwrap();
+    std::fs::create_dir_all(sbx.join("sub2")).unwrap();
+    server.req("POST", "/command/reload", "").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"sub2\""));
+    let sbx_loc = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+
+    // items: [.., sub1, sub2, a.txt]。sub2（index 2）にカーソルを置いて view() で侵入。
+    server.req("POST", "/command/setCursorPosition", r#"["sub2"]"#).unwrap();
+    server.req("POST", "/command/view", "").unwrap();
+    poll(&server, "/state/panes/left/location", |b| b.contains("sub2"));
+
+    // 戻ると sbx に復帰し、カーソルは侵入元の sub2（index 2）へ復元される。
+    server.req("POST", "/command/historyBack", "").unwrap();
+    poll(&server, "/state/panes/left/location", |b| b.trim() == sbx_loc);
+    let restored = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
+    assert_eq!(restored.trim(), "2", "returning after view() entry should restore the cursor: {restored}");
+}
+
 /// #66: 戻る/進む（履歴の再生）は訪問ログに新たな記録を増やさない（往復で増殖しない）。
 #[test]
 fn path_history_back_forward_does_not_grow_log() {

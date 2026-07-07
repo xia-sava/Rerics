@@ -47,19 +47,9 @@ impl MainWindow {
                 return self.to_parent(is_left);
             }
             if is_dir {
-                // RefMut は enter_reported の行で解放してから判定（reload が再借用するため）。
-                let outcome = self.pane(is_left).borrow_mut().enter_reported(&name, true);
-                match outcome {
-                    Ok(()) => self.reload_side_navigated(is_left)?,
-                    // 入れない dir（ACL 拒否の互換 junction 等）は黙殺せずログで報せる。
-                    Err(e) => self
-                        .log
-                        .error(&crate::tabs_nav::enter_dir_error_message(&name, &e)),
-                }
-                return Ok(());
+                return self.enter_dir(is_left, &name);
             }
-            if self.pane(is_left).borrow_mut().enter(&name, false) {
-                self.reload_side_navigated(is_left)?;
+            if self.enter_archive(is_left, &name)? {
                 return Ok(());
             }
             return self.view_file(is_left);

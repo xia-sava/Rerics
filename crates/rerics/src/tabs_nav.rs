@@ -121,6 +121,58 @@ impl MainWindow {
         Ok(())
     }
 
+    /// ディレクトリへ潜る唯一の入口。侵入直前のカーソル記憶（再訪時の復元用）と、
+    /// 成功時の再読込（訪問ログ記録つき）・失敗時のログ報告までを内包する。
+    /// 侵入する経路を増やすときは、前処理を個別に書かずこれを呼ぶ。
+    pub(crate) fn enter_dir(&self, is_left: bool, name: &str) -> w::AnyResult<()> {
+        self.remember_cursor_for_nav(is_left);
+        // RefMut は enter_reported の行で解放してから結果を判定する（reload が再借用するため）。
+        let outcome = self.pane(is_left).borrow_mut().enter_reported(name, true);
+        match outcome {
+            Ok(()) => self.reload_side_navigated(is_left)?,
+            // 入れない dir（ACL 拒否の互換 junction・消えた dir 等）は黙殺せずログで報せる。
+            Err(e) => self.log.error(&enter_dir_error_message(name, &e)),
+        }
+        Ok(())
+    }
+
+    /// 書庫ファイルへ潜る唯一の入口。潜れたら再読込して true、書庫でなければ何もせず false。
+    /// カーソル記憶は [`enter_dir`](Self::enter_dir) と同様に内包する。
+    pub(crate) fn enter_archive(&self, is_left: bool, name: &str) -> w::AnyResult<bool> {
+        self.remember_cursor_for_nav(is_left);
+        if self.pane(is_left).borrow_mut().enter(name, false) {
+            self.reload_side_navigated(is_left)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// 指定 Location へ移動して再読込する入口（移動できなければ何もせず false）。
+    /// カーソル記憶を内包する。移動失敗を報せたい場面は
+    /// [`navigate_to_reported`](Self::navigate_to_reported) を使う。
+    pub(crate) fn navigate_to(&self, is_left: bool, loc: Location) -> w::AnyResult<bool> {
+        self.remember_cursor_for_nav(is_left);
+        if self.pane(is_left).borrow_mut().navigate(loc) {
+            self.reload_side_navigated(is_left)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// 指定 Location へ移動して再読込する入口（移動失敗はログ＋ダイアログで報せる）。
+    /// パス入力・移動履歴・登録ディレクトリなど、ユーザが行き先を指定するジャンプで使う。
+    fn navigate_to_reported(&self, is_left: bool, loc: Location) -> w::AnyResult<()> {
+        self.remember_cursor_for_nav(is_left);
+        // navigate_reported の RefMut はこの行で解放してから（reload が同じ pane を再借用するため）
+        // 結果を判定する。match の scrutinee に直接書くと借用が match 末尾まで延命して panic する。
+        let outcome = self.pane(is_left).borrow_mut().navigate_reported(loc);
+        match outcome {
+            Ok(()) => self.reload_side_navigated(is_left)?,
+            Err(e) => self.report_change_directory_error(&e),
+        }
+        Ok(())
+    }
+
     /// カーソル行を侵入する（dir/親なら移動、file は無視）。
     pub(crate) fn activate(&self, is_left: bool, index: usize) -> w::AnyResult<()> {
         let view = self.view(is_left);
@@ -151,74 +203,62 @@ impl MainWindow {
         if is_parent {
             return self.to_parent(is_left);
         }
-        // ディレクトリ/書庫へ潜る前に、今のカーソル位置を覚えておく（再訪時に復元）。
-        self.remember_cursor_for_nav(is_left);
         if is_dir {
-            // RefMut は enter_reported の行で解放してから結果を判定する（reload が再借用するため）。
-            let outcome = self.pane(is_left).borrow_mut().enter_reported(&name, is_dir);
-            match outcome {
-                Ok(()) => self.reload_side_navigated(is_left)?,
-                // 入れない dir（ACL 拒否の互換 junction・消えた dir 等）は黙殺せずログで報せる。
-                Err(e) => self.log.error(&enter_dir_error_message(&name, &e)),
-            }
-        } else {
-            // 書庫ファイルなら潜る（zip 等）。
-            if self.pane(is_left).borrow_mut().enter(&name, is_dir) {
-                self.reload_side_navigated(is_left)?;
-                return Ok(());
-            }
-            // 開く対象の実パスを得る（書庫内は一時展開してから関連付け起動）。
-            let loc = self.pane(is_left).borrow().loc().clone();
-            let src_is_real = matches!(&loc, Location::Real(_));
-            let path = match loc {
-                Location::Real(dir) => dir.join(&name),
-                Location::Archive { archive, inner } => {
-                    let inner_file = join_inner_path(&inner, &name);
-                    let pw = self.ensure_media_password(&archive, Some(&inner_file));
-                    match self.resolve_archive_file(&archive, &inner_file, &name, pw.as_deref()) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            self.log
-                                .error(&format!("書庫内ファイルを展開できません: {}: {}", name, e));
-                            return Ok(());
-                        }
+            return self.enter_dir(is_left, &name);
+        }
+        // 書庫ファイルなら潜る（zip 等）。
+        if self.enter_archive(is_left, &name)? {
+            return Ok(());
+        }
+        // 開く対象の実パスを得る（書庫内は一時展開してから関連付け起動）。
+        let loc = self.pane(is_left).borrow().loc().clone();
+        let src_is_real = matches!(&loc, Location::Real(_));
+        let path = match loc {
+            Location::Real(dir) => dir.join(&name),
+            Location::Archive { archive, inner } => {
+                let inner_file = join_inner_path(&inner, &name);
+                let pw = self.ensure_media_password(&archive, Some(&inner_file));
+                match self.resolve_archive_file(&archive, &inner_file, &name, pw.as_deref()) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        self.log
+                            .error(&format!("書庫内ファイルを展開できません: {}: {}", name, e));
+                        return Ok(());
                     }
                 }
-            };
-            // ショートカット（.lnk）がフォルダを指すなら、開かずにその中へ入る（原作 ExecuteShortCut 相当）。
-            if src_is_real
-                && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk"))
-                && let Some(target) = crate::shell::resolve_shortcut(&path)
-                && target.is_dir()
-            {
-                if self.pane(is_left).borrow_mut().navigate(Location::Real(target)) {
-                    self.reload_side_navigated(is_left)?;
-                }
-                return Ok(());
             }
-            // 関連付けで開く。開けたら設定に応じてカーソルを1つ下へ（原作 DownAfterViewer 相当）。
-            match self
-                .wnd
-                .hwnd()
-                .ShellExecute("open", &path.to_string_lossy(), None, None, co::SW::SHOWNORMAL)
-            {
-                Ok(_) => {
-                    if self.config.borrow().cursor.down_after_viewer {
-                        let view = self.view(is_left);
-                        let pr = view.page_rows();
-                        let state = view.state();
-                        {
-                            let mut s = state.borrow_mut();
-                            let c = s.cursor as isize;
-                            s.move_cursor(c + 1, pr, false);
-                        }
-                        let _ = view.refresh();
+        };
+        // ショートカット（.lnk）がフォルダを指すなら、開かずにその中へ入る（原作 ExecuteShortCut 相当）。
+        if src_is_real
+            && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk"))
+            && let Some(target) = crate::shell::resolve_shortcut(&path)
+            && target.is_dir()
+        {
+            self.navigate_to(is_left, Location::Real(target))?;
+            return Ok(());
+        }
+        // 関連付けで開く。開けたら設定に応じてカーソルを1つ下へ（原作 DownAfterViewer 相当）。
+        match self
+            .wnd
+            .hwnd()
+            .ShellExecute("open", &path.to_string_lossy(), None, None, co::SW::SHOWNORMAL)
+        {
+            Ok(_) => {
+                if self.config.borrow().cursor.down_after_viewer {
+                    let view = self.view(is_left);
+                    let pr = view.page_rows();
+                    let state = view.state();
+                    {
+                        let mut s = state.borrow_mut();
+                        let c = s.cursor as isize;
+                        s.move_cursor(c + 1, pr, false);
                     }
+                    let _ = view.refresh();
                 }
-                Err(e) => {
-                    self.log
-                        .error(&format!("ファイルを開けません: {}: {}", name, e));
-                }
+            }
+            Err(e) => {
+                self.log
+                    .error(&format!("ファイルを開けません: {}: {}", name, e));
             }
         }
         Ok(())
@@ -246,10 +286,7 @@ impl MainWindow {
         let Some(root) = root else {
             return Ok(());
         };
-        self.remember_cursor_for_nav(is_left);
-        if self.pane(is_left).borrow_mut().navigate(root) {
-            self.reload_side_navigated(is_left)?;
-        }
+        self.navigate_to(is_left, root)?;
         Ok(())
     }
 
@@ -289,13 +326,7 @@ impl MainWindow {
         let Some(disp) = history.get(idx).cloned() else {
             return Ok(());
         };
-        let loc = Location::parse(&disp);
-        self.remember_cursor_for_nav(is_left);
-        let outcome = self.pane(is_left).borrow_mut().navigate_reported(loc);
-        match outcome {
-            Ok(()) => self.reload_side_navigated(is_left)?,
-            Err(e) => self.report_change_directory_error(&e),
-        }
+        self.navigate_to_reported(is_left, Location::parse(&disp))?;
         Ok(())
     }
 
@@ -305,15 +336,7 @@ impl MainWindow {
         let Some(input) = target.map(str::trim).filter(|s| !s.is_empty()) else {
             return Ok(());
         };
-        let loc = Location::parse(input);
-        self.remember_cursor_for_nav(is_left);
-        // navigate_reported の RefMut はこの行で解放してから（reload が同じ pane を再借用するため）
-        // 結果を判定する。match の scrutinee に直接書くと借用が match 末尾まで延命して panic する。
-        let outcome = self.pane(is_left).borrow_mut().navigate_reported(loc);
-        match outcome {
-            Ok(()) => self.reload_side_navigated(is_left)?,
-            Err(e) => self.report_change_directory_error(&e),
-        }
+        self.navigate_to_reported(is_left, Location::parse(input))?;
         Ok(())
     }
 
@@ -328,13 +351,7 @@ impl MainWindow {
         if input.is_empty() {
             return Ok(());
         }
-        let loc = Location::parse(input);
-        self.remember_cursor_for_nav(is_left);
-        let outcome = self.pane(is_left).borrow_mut().navigate_reported(loc);
-        match outcome {
-            Ok(()) => self.reload_side_navigated(is_left)?,
-            Err(e) => self.report_change_directory_error(&e),
-        }
+        self.navigate_to_reported(is_left, Location::parse(input))?;
         Ok(())
     }
 
@@ -859,13 +876,7 @@ impl MainWindow {
 
         let sel = *result.borrow();
         if let Some((_, _, path)) = sel.and_then(|idx| entries.get(idx)) {
-            let loc = Location::parse(path);
-            self.remember_cursor_for_nav(is_left);
-            let outcome = self.pane(is_left).borrow_mut().navigate_reported(loc);
-            match outcome {
-                Ok(()) => self.reload_side_navigated(is_left)?,
-                Err(e) => self.report_change_directory_error(&e),
-            }
+            self.navigate_to_reported(is_left, Location::parse(path))?;
         }
         Ok(())
     }

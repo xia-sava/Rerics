@@ -108,10 +108,7 @@ impl MainWindow {
             Ok(dir) => {
                 // 設定が有効なら、作成した新ディレクトリへ入る（原作 CreateDirectoryAndMove 相当）。
                 if self.config.borrow().cursor.create_directory_and_move {
-                    self.remember_cursor_for_nav(is_left);
-                    if self.pane(is_left).borrow_mut().navigate(Location::parse(&dir)) {
-                        self.reload_side_navigated(is_left)?;
-                    }
+                    self.navigate_to(is_left, Location::parse(&dir))?;
                 }
             }
             Err(line) => {
