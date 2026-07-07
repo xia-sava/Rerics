@@ -266,13 +266,21 @@ impl FileListView {
     pub fn set_cursor_visible(&self, visible: bool) {
         if self.inner.cursor_visible.get() != visible {
             self.inner.cursor_visible.set(visible);
-            let _ = self.hwnd().InvalidateRect(None, false);
+            let _ = self.invalidate_only();
         }
     }
 
-    /// 再描画を促す。
-    pub fn refresh(&self) -> w::AnyResult<()> {
+    /// 再描画だけを促す（選択変更の通知はしない）。カーソル下線・スピナーのような選択に
+    /// 無関係な見た目の更新で使う。選択が変わりうる操作は [`refresh`](Self::refresh) を通し、
+    /// ステータスバーの選択件数がサイレントに古くならないようにする。
+    fn invalidate_only(&self) -> w::AnyResult<()> {
         self.hwnd().InvalidateRect(None, false)?;
+        Ok(())
+    }
+
+    /// 再描画を促し、選択サマリが変わっていればステータスバーへ通知する。
+    pub fn refresh(&self) -> w::AnyResult<()> {
+        self.invalidate_only()?;
         self.notify_selection_changed();
         Ok(())
     }
@@ -316,7 +324,7 @@ impl FileListView {
     /// ＝チラつかない。遅延 0 なら即時表示。
     pub fn set_loading(&self) {
         *self.inner.loading.borrow_mut() = Some(Spinner::with_delay(self.inner.progress_delay.get()));
-        let _ = self.hwnd().InvalidateRect(None, false);
+        let _ = self.invalidate_only();
     }
 
     /// 非同期読込の世代を1つ進めて新しい世代値を返す（読込開始・タブ切替で呼ぶ）。
@@ -334,7 +342,7 @@ impl FileListView {
     /// 読込中表示を終了する。
     pub fn clear_loading(&self) {
         if self.inner.loading.borrow_mut().take().is_some() {
-            let _ = self.hwnd().InvalidateRect(None, false);
+            let _ = self.invalidate_only();
         }
     }
 
@@ -348,7 +356,7 @@ impl FileListView {
             Some(s) => s.tick(),
             None => return,
         }
-        let _ = self.hwnd().InvalidateRect(None, false);
+        let _ = self.invalidate_only();
     }
 
     /// 設定の配色・フォント・スクロールバー幅を反映して再描画する。

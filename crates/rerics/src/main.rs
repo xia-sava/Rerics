@@ -1101,52 +1101,59 @@ impl MainWindow {
     /// 引数解決は `exec` 側で済ませる（現状はマクロ展開・将来は式評価）。文脈外のビューア専用
     /// コマンドは何もしない。
     fn exec_resolved(&self, is_left: bool, cmd: Command, args: Args) -> w::AnyResult<()> {
-        let view = self.view(is_left);
-        let state = view.state();
-        let pr = view.page_rows();
+        let state = self.view(is_left).state();
         match cmd {
             Command::CursorUp => {
-                let mut s = state.borrow_mut();
-                let c = s.cursor as isize;
-                s.move_cursor(c - 1, pr, args.is_select());
+                return self.mutate_state(is_left, |s, pr| {
+                    let c = s.cursor as isize;
+                    s.move_cursor(c - 1, pr, args.is_select());
+                });
             }
             Command::CursorDown => {
-                let mut s = state.borrow_mut();
-                let c = s.cursor as isize;
-                s.move_cursor(c + 1, pr, args.is_select());
+                return self.mutate_state(is_left, |s, pr| {
+                    let c = s.cursor as isize;
+                    s.move_cursor(c + 1, pr, args.is_select());
+                });
             }
             Command::CursorTop => {
-                state.borrow_mut().move_cursor(0, pr, args.is_select());
+                return self.mutate_state(is_left, |s, pr| s.move_cursor(0, pr, args.is_select()));
             }
             Command::CursorEnd => {
-                let mut s = state.borrow_mut();
-                let last = s.count() as isize - 1;
-                s.move_cursor(last, pr, args.is_select());
+                return self.mutate_state(is_left, |s, pr| {
+                    let last = s.count() as isize - 1;
+                    s.move_cursor(last, pr, args.is_select());
+                });
             }
             Command::CursorPageUp => {
-                let step = pr.saturating_sub(1).max(1) as isize;
-                let mut s = state.borrow_mut();
-                let c = s.cursor as isize;
-                s.move_cursor(c - step, pr, args.is_select());
+                return self.mutate_state(is_left, |s, pr| {
+                    let step = pr.saturating_sub(1).max(1) as isize;
+                    let c = s.cursor as isize;
+                    s.move_cursor(c - step, pr, args.is_select());
+                });
             }
             Command::CursorPageDown => {
-                let step = pr.saturating_sub(1).max(1) as isize;
-                let mut s = state.borrow_mut();
-                let c = s.cursor as isize;
-                s.move_cursor(c + step, pr, args.is_select());
+                return self.mutate_state(is_left, |s, pr| {
+                    let step = pr.saturating_sub(1).max(1) as isize;
+                    let c = s.cursor as isize;
+                    s.move_cursor(c + step, pr, args.is_select());
+                });
             }
             Command::SetCursorPosition => {
-                if let Some(name) = args.str(0) {
-                    state.borrow_mut().set_cursor_position(name, pr);
-                }
+                return self.mutate_state(is_left, |s, pr| {
+                    if let Some(name) = args.str(0) {
+                        s.set_cursor_position(name, pr);
+                    }
+                });
             }
             Command::SetCursorIndex => {
-                if let Some(idx) = args.int(0) {
-                    state.borrow_mut().set_cursor(idx as isize, pr);
-                }
+                return self.mutate_state(is_left, |s, pr| {
+                    if let Some(idx) = args.int(0) {
+                        s.set_cursor(idx as isize, pr);
+                    }
+                });
             }
             Command::CenterCursor => {
-                state.borrow_mut().center_cursor(pr);
+                return self.mutate_state(is_left, |s, pr| s.center_cursor(pr));
             }
             Command::EnterDir => {
                 let cursor = state.borrow().cursor;
@@ -1241,44 +1248,51 @@ impl MainWindow {
             }
             Command::MarkToggle => {
                 let delta = args.move_delta(self.config.borrow().cursor.down_after_select);
-                let mut s = state.borrow_mut();
-                let c = s.cursor;
-                s.reverse_file(c, pr);
-                let c = s.cursor as isize;
-                s.set_cursor(c + delta, pr);
+                return self.mutate_state(is_left, |s, pr| {
+                    let c = s.cursor;
+                    s.reverse_file(c, pr);
+                    let c = s.cursor as isize;
+                    s.set_cursor(c + delta, pr);
+                });
             }
             Command::SelectFile => {
                 let delta = args.move_delta(self.config.borrow().cursor.down_after_select);
-                let mut s = state.borrow_mut();
-                let c = s.cursor;
-                s.select_file(c, pr);
-                let c = s.cursor as isize;
-                s.set_cursor(c + delta, pr);
+                return self.mutate_state(is_left, |s, pr| {
+                    let c = s.cursor;
+                    s.select_file(c, pr);
+                    let c = s.cursor as isize;
+                    s.set_cursor(c + delta, pr);
+                });
             }
             Command::SelectAll => {
-                let mut s = state.borrow_mut();
-                s.select_all(false);
-                s.select_start = s.cursor;
+                return self.mutate_state(is_left, |s, _| {
+                    s.select_all(false);
+                    s.select_start = s.cursor;
+                });
             }
             Command::SelectAllFile => {
-                let mut s = state.borrow_mut();
-                s.select_all(true);
-                s.select_start = s.cursor;
+                return self.mutate_state(is_left, |s, _| {
+                    s.select_all(true);
+                    s.select_start = s.cursor;
+                });
             }
             Command::ReverseAll => {
-                let mut s = state.borrow_mut();
-                s.reverse_all(false);
-                s.select_start = s.cursor;
+                return self.mutate_state(is_left, |s, _| {
+                    s.reverse_all(false);
+                    s.select_start = s.cursor;
+                });
             }
             Command::ReverseAllFile => {
-                let mut s = state.borrow_mut();
-                s.reverse_all(true);
-                s.select_start = s.cursor;
+                return self.mutate_state(is_left, |s, _| {
+                    s.reverse_all(true);
+                    s.select_start = s.cursor;
+                });
             }
             Command::ClearAll => {
-                let mut s = state.borrow_mut();
-                s.clear_all();
-                s.select_start = s.cursor;
+                return self.mutate_state(is_left, |s, _| {
+                    s.clear_all();
+                    s.select_start = s.cursor;
+                });
             }
             Command::Reload => {
                 // カーソル位置を保って再読込（結果一覧は reload_side_impl が再検索へ差し替えて
@@ -1289,10 +1303,22 @@ impl MainWindow {
                 }
                 return Ok(());
             }
-            Command::SortByName => self.sort_active(is_left, SortType::FileName, false),
-            Command::SortByExtension => self.sort_active(is_left, SortType::Extension, false),
-            Command::SortBySize => self.sort_active(is_left, SortType::Length, false),
-            Command::SortByDate => self.sort_active(is_left, SortType::LastWriteTime, false),
+            Command::SortByName => {
+                self.sort_active(is_left, SortType::FileName, false);
+                return Ok(());
+            }
+            Command::SortByExtension => {
+                self.sort_active(is_left, SortType::Extension, false);
+                return Ok(());
+            }
+            Command::SortBySize => {
+                self.sort_active(is_left, SortType::Length, false);
+                return Ok(());
+            }
+            Command::SortByDate => {
+                self.sort_active(is_left, SortType::LastWriteTime, false);
+                return Ok(());
+            }
             Command::Sort => {
                 // 種別指定が無い/不正なら config の既定ソート（種別・昇降とも）に従う（原作準拠）。
                 let (t, reverse) = match args.str(0).and_then(SortType::from_token) {
@@ -1303,10 +1329,12 @@ impl MainWindow {
                     }
                 };
                 self.sort_active(is_left, t, reverse);
+                return Ok(());
             }
             Command::SortReverseToggle => {
                 let t = state.borrow().sort_type;
                 self.sort_active(is_left, t, true);
+                return Ok(());
             }
             Command::SortDialog => {
                 self.sort_dialog(is_left);
@@ -1602,8 +1630,26 @@ impl MainWindow {
             // ビューア専用コマンドはファイラー文脈では何もしない。
             _ => {}
         }
-        view.refresh()?;
         Ok(())
+    }
+
+    /// 指定側ペインの一覧 state を書き換え、続けて必ず再描画する。カーソル移動・マーク変更の
+    /// ような「一覧の見た目に直結する小さな状態変更」はこれを通し、変更と repaint の対応が
+    /// 呼び出し元の書き方（早期 return するかどうか）に依存しないようにする。
+    /// クロージャには state と page_rows が渡る。
+    fn mutate_state(
+        &self,
+        is_left: bool,
+        f: impl FnOnce(&mut FileListState, usize),
+    ) -> w::AnyResult<()> {
+        let view = self.view(is_left);
+        let pr = view.page_rows();
+        {
+            let state = view.state();
+            let mut s = state.borrow_mut();
+            f(&mut s, pr);
+        }
+        view.refresh()
     }
 
     /// 終了・再起動の直前確認。実行中タスクが無ければそのまま続行（`true`）。あれば「それでも
