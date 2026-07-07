@@ -2301,9 +2301,6 @@ fn find_result_survives_path_mask_change() {
 /// 回帰: 結果一覧の表示中にディレクトリ監視の自動再読込が走っても、通常一覧へ差し戻さず
 /// 再検索して結果モードを保つ。かつて `RELOAD_WATCH` が `find_result` を見ずに再読込し、
 /// 監視対象でファイルが増減しただけで検索結果が黙って消えていた。
-///
-/// 起動後・検索前にサンドボックスへ書き込まないこと（exec は読込中のコマンドを無視するため、
-/// 監視由来の再読込と findFile が競合すると検索が始まらないままテストが空回りする）。
 #[test]
 fn find_result_survives_watch_reload() {
     let server =

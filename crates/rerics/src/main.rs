@@ -989,14 +989,15 @@ impl MainWindow {
 
 
     fn exec(&self, is_left: bool, call: &Call) -> w::AnyResult<()> {
-        let view = self.view(is_left);
         match call {
             // 組込呼び出し（リテラル引数）はホットパスで同期実行する。
             Call::Builtin { command, args } => {
                 let cmd = *command;
-                // 書庫の読込中はキー入力を抑止し、Esc（clearAll）と「親へ戻る」（toParent・既定 BS）を
-                // 展開中止に割り当てる。デカい書庫にうっかり潜った時、咄嗟の「出る」操作で抜けられる。
-                if view.is_loading() {
+                // 書庫の一括展開を待っている間はキー入力を抑止し、Esc（clearAll）と
+                // 「親へ戻る」（toParent・既定 BS）を展開中止に割り当てる。デカい書庫に
+                // うっかり潜った時、咄嗟の「出る」操作で抜けられる。通常のディレクトリ
+                // 再読込（監視の自動再読込を含む）では抑止しない＝打鍵を黙って捨てない。
+                if self.archive_extract_pending(is_left) {
                     if matches!(cmd, Command::ClearAll | Command::ToParent) {
                         self.cancel_archive_load();
                     }
@@ -1007,13 +1008,26 @@ impl MainWindow {
             }
             // 簡約できない式（ネスト呼び出し・スクリプト関数・制御構文など）はエンジンへ丸投げ。
             Call::Script { source } => {
-                if view.is_loading() {
+                if self.archive_extract_pending(is_left) {
                     return Ok(());
                 }
                 self.script_send(script_host::EngineCmd::Eval(source.clone()));
                 Ok(())
             }
         }
+    }
+
+    /// 指定側ペインが「書庫の一括展開の完了待ち」（現在地の書庫が展開中でスピナー表示中）か。
+    /// 通常のディレクトリ読込のスピナーとは区別する（そちらは操作を抑止しない）。
+    fn archive_extract_pending(&self, is_left: bool) -> bool {
+        if !self.view(is_left).is_loading() {
+            return false;
+        }
+        matches!(
+            self.pane(is_left).borrow().loc(),
+            Location::Archive { archive, .. }
+                if self.archive_extracting.borrow().contains(archive)
+        )
     }
 
     /// 任意コマンド実行（原作 `CommandDirect`）。コマンド名補完つきの入力ボックスを開き、打った
