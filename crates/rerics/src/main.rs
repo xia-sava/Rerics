@@ -1252,14 +1252,11 @@ impl MainWindow {
                 s.select_start = s.cursor;
             }
             Command::Reload => {
-                // 結果一覧は再検索して最新化（結果モードを保つ）、通常はカーソル位置を保って再読込。
-                // side 引数で対象を選べる（無指定/both＝両方・active/opposite/left/right）。
+                // カーソル位置を保って再読込（結果一覧は reload_side_impl が再検索へ差し替えて
+                // 結果モードを保つ）。side 引数で対象を選べる（無指定/both＝両方・
+                // active/opposite/left/right）。
                 for side in Self::arg_sides(is_left, args.str(0)) {
-                    if self.view(side).state().borrow().find_result {
-                        self.refresh_side(side, None)?;
-                    } else {
-                        self.reload_side_impl(side, ReloadCursor::Keep, false)?;
-                    }
+                    self.reload_side_impl(side, ReloadCursor::Keep, false)?;
                 }
                 return Ok(());
             }
@@ -1861,6 +1858,9 @@ impl MainWindow {
     /// 呼び出し元が記録を書き忘れる余地を無くす（各ラッパは意図を示す名前で `record` を固定
     /// 渡しするだけ）。
     fn reload_side_impl(&self, is_left: bool, mode: ReloadCursor, record: bool) -> w::AnyResult<()> {
+        if self.redirect_reload_to_research(is_left, &mode) {
+            return Ok(());
+        }
         if record {
             self.record_visit(is_left);
         }
@@ -1874,10 +1874,26 @@ impl MainWindow {
         Ok(())
     }
 
+    /// 結果一覧（検索・比較）表示中の「その場の再読込」（`Keep`）なら、通常一覧へ差し戻さず
+    /// 再検索に差し替えて結果モードを保つ（true＝差し替えた）。ディレクトリ監視・パスマスク
+    /// 変更のような自動再読込の経路が増えても、呼び出し元が個別に `find_result` を確認する
+    /// 必要はない。ナビゲーション系のモード（`Recall`/`Focus`/`Reset`）は結果一覧からの離脱を
+    /// 意味するので対象外（通常読込の取り込み `apply_loaded_items` が `find_result` を落とす）。
+    ///
+    /// 判定は `find_result` フラグではなく検索条件（`find_query`）の有無＝`research_side` の
+    /// 成否で行う。フラグは検索開始イベント（`FindBegin`）の取り込みで立つため、検索開始直後の
+    /// 取り込み前に自動再読込が割り込むと、フラグ判定では素通りして結果一覧を潰してしまう。
+    fn redirect_reload_to_research(&self, is_left: bool, mode: &ReloadCursor) -> bool {
+        matches!(mode, ReloadCursor::Keep) && self.research_side(is_left, None)
+    }
+
     /// 再読込を同期実行する（読込もUIスレッドで行い、その場で一覧へ反映する）。ファイル操作の
     /// 完了直後など、ワーカ完了の取り込み（タイマ駆動）を待たずに確実に反映したい場面で使う。
     /// 書庫の一括展開が必要な場面は非同期側に委ねる（`prepare_reload` が `None` を返す）。
     fn reload_side_now(&self, is_left: bool, mode: ReloadCursor) -> w::AnyResult<()> {
+        if self.redirect_reload_to_research(is_left, &mode) {
+            return Ok(());
+        }
         let Some((read_loc, plan)) = self.prepare_reload(is_left, mode)? else {
             return Ok(());
         };
@@ -1890,6 +1906,9 @@ impl MainWindow {
     /// （一覧反映は展開完了イベントに委ねる）。
     fn prepare_reload(&self, is_left: bool, mode: ReloadCursor) -> w::AnyResult<Option<(Location, LoadPlan)>> {
         if self.maybe_start_archive_extract(is_left)? {
+            // 一括展開の完了待ちに入る場合も、監視は現在地（書庫内）基準へ張り替えて
+            // 旧ディレクトリの監視を残置しない。
+            self.arm_watch(is_left);
             return Ok(None);
         }
         let view = self.view(is_left);

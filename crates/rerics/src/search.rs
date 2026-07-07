@@ -182,7 +182,7 @@ impl MainWindow {
     /// 即時にストリーム反映する（大きな木でも UI スレッドを止めない）。完了時にカーソルを
     /// `focus`（リネーム後の新名）または現在のカーソル下の名前で追い、結果から消えていれば
     /// 元の行位置へ戻す（`find_refocus`）。
-    fn research_side(&self, is_left: bool, focus: Option<&str>) -> bool {
+    pub(crate) fn research_side(&self, is_left: bool, focus: Option<&str>) -> bool {
         let idx = if is_left { 0 } else { 1 };
         let query = self.find_query.borrow()[idx].clone();
         let Some(query) = query else {

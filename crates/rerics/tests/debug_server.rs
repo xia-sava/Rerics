@@ -1043,9 +1043,9 @@ fn archive_rename() {
         "a.txt should be renamed to z.txt: {r}"
     );
 
-    // 衝突：b.txt -> z.txt（z.txt は既存）はエラー。reload でカーソルは .. に戻る。
-    // items は [.., b.txt, z.txt]。cursorDown×1 で b.txt。
-    server.req("POST", "/command/cursorDown", "").unwrap();
+    // 衝突：b.txt -> z.txt（z.txt は既存）はエラー。リビルド後の再読込はカーソル位置を
+    // 保つ（その場リフレッシュ）ので、b.txt へは明示的に合わせる。
+    server.req("POST", "/command/setCursorPosition", r#"["b.txt"]"#).unwrap();
     server.req("POST", "/command/renameDialog", "").unwrap();
     wait_modal(&server);
     server.req("POST", "/modal/text", "z.txt").unwrap();
@@ -2273,6 +2273,57 @@ fn find_result_reload_researches() {
     assert!(items.contains("\"name\":\"c.txt\""), "reload re-searches and picks up c.txt: {items}");
     let fr = server.req("GET", "/state/panes/left/find_result", "").unwrap().1;
     assert_eq!(fr.trim(), "true", "stays in result mode after reload: {fr}");
+}
+
+/// 回帰: 結果一覧の表示中にスクリプトがパスマスクを変えても、通常一覧へ差し戻さず
+/// 再検索して結果モードを保つ。かつて `SetPathMask` が `find_result` を見ずに再読込し、
+/// 検索結果が黙って通常一覧へ戻っていた。
+#[test]
+fn find_result_survives_path_mask_change() {
+    let server = Server::start(&["note.dat"], "");
+    let sub = server.base.join("sbx").join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("a.txt"), b"x").unwrap();
+
+    server.req("POST", "/command/findFile", "[\"*.txt\"]").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"a.txt\""));
+
+    // 一致ファイルを足してからマスク変更 → 再検索が走って拾う（結果モードのまま）。
+    std::fs::write(sub.join("c.txt"), b"y").unwrap();
+    server.req("POST", "/script/eval", r#"rerics.pathMask("*")"#).unwrap();
+    let pane = poll(&server, "/state/panes/left", |b| {
+        b.contains("\"name\":\"c.txt\"") && b.contains("\"find_result\":true")
+    });
+    assert!(pane.contains("\"name\":\"c.txt\""), "re-search picks up c.txt: {pane}");
+    assert!(pane.contains("\"find_result\":true"), "stays in result mode: {pane}");
+}
+
+/// 回帰: 結果一覧の表示中にディレクトリ監視の自動再読込が走っても、通常一覧へ差し戻さず
+/// 再検索して結果モードを保つ。かつて `RELOAD_WATCH` が `find_result` を見ずに再読込し、
+/// 監視対象でファイルが増減しただけで検索結果が黙って消えていた。
+///
+/// 起動後・検索前にサンドボックスへ書き込まないこと（exec は読込中のコマンドを無視するため、
+/// 監視由来の再読込と findFile が競合すると検索が始まらないままテストが空回りする）。
+#[test]
+fn find_result_survives_watch_reload() {
+    let server =
+        Server::start(&["note.dat", "seed.txt"], "[reload_watch]\nenabled = true\nwait_ms = 50\n");
+    let sbx = server.base.join("sbx");
+
+    server.req("POST", "/command/findFile", "[\"*.txt\"]").unwrap();
+    let pane = poll(&server, "/state/panes/left", |b| {
+        b.contains("\"find_result\":true") && b.contains("\"name\":\"seed.txt\"")
+    });
+    assert!(pane.contains("\"find_result\":true"), "find should enter result mode: {pane}");
+
+    // 監視中の基準ディレクトリに一致ファイルを作る → 監視の再読込が再検索に差し替わり、
+    // 新しい一致も拾って結果モードを保つ。
+    std::fs::write(sbx.join("c.txt"), b"y").unwrap();
+    let pane = poll(&server, "/state/panes/left", |b| {
+        b.contains("\"name\":\"c.txt\"") && b.contains("\"find_result\":true")
+    });
+    assert!(pane.contains("\"name\":\"c.txt\""), "re-search picks up c.txt: {pane}");
+    assert!(pane.contains("\"find_result\":true"), "stays in result mode: {pane}");
 }
 
 /// 結果一覧で削除すると、ディレクトリへ戻らず**再検索して一覧を最新化**する（結果モード維持）。

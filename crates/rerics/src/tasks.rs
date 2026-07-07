@@ -201,8 +201,10 @@ impl MainWindow {
                 }
                 WorkerEvent::ArchiveWriteDone { id, src_is_left } => {
                     self.tasks.borrow_mut().retain(|e| e.id != id);
-                    self.reload_side(src_is_left)?;
-                    self.reload_side(!src_is_left)?;
+                    // 同期系ファイル操作と同じ「その場のリフレッシュ」＝カーソルを保ち、
+                    // 結果一覧（検索・比較）なら再検索して結果モードを保つ。
+                    self.refresh_side(src_is_left, None)?;
+                    self.refresh_side(!src_is_left, None)?;
                     self.maybe_kill_task_timer();
                 }
                 WorkerEvent::DirInfoDone { id, is_left, label, bytes, files, dirs, entries } => {
@@ -217,6 +219,11 @@ impl MainWindow {
                     // 現役タスクの開始だけがペインを結果モードへ切り替える（追い越された
                     // 旧タスクの開始通知は無視する）。
                     if self.find_task.borrow()[idx] == Some(id) {
+                        // ペインは結果一覧が引き継ぐ。走行中の通常読込は世代を進めて破棄し
+                        // （遅れて届く apply が結果一覧を通常一覧で上書きしない）、その
+                        // スピナーも畳む。
+                        self.view(is_left).bump_load_gen();
+                        self.view(is_left).clear_loading();
                         self.view(is_left).state().borrow_mut().begin_find_result();
                         find_dirty[idx] = true;
                     }
