@@ -1992,6 +1992,7 @@ impl MainWindow {
     /// 読み出す `Location` と [`LoadPlan`] を返す。書庫の一括展開を起こした場合は `None`
     /// （一覧反映は展開完了イベントに委ねる）。
     fn prepare_reload(&self, is_left: bool, mode: ReloadCursor) -> w::AnyResult<Option<(Location, LoadPlan)>> {
+        self.recover_missing_current(is_left);
         if self.maybe_start_archive_extract(is_left)? {
             // 一括展開の完了待ちに入る場合も、監視は現在地（書庫内）基準へ張り替えて
             // 旧ディレクトリの監視を残置しない。
@@ -2042,6 +2043,16 @@ impl MainWindow {
         let plan =
             LoadPlan { mode, keep_name, keep_source, keep_scroll, keep_idx, recalled, mask, generation };
         Ok(Some((read_loc, plan)))
+    }
+
+    /// 現在地が外部から削除される等で実在しなくなっていたら、実在する最も近い祖先へ移動する。
+    /// 祖先を辿ってもドライブ/書庫ごと失われていれば、システムドライブのルートへ逃がす。
+    /// 再読込の全経路（監視・明示リロード・ファイル操作後・ナビゲーション後）が
+    /// `prepare_reload` を通るので、消失検知はここに一本化する。
+    fn recover_missing_current(&self, is_left: bool) {
+        let system_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+        let fallback = PathBuf::from(format!("{system_drive}\\"));
+        self.pane(is_left).borrow_mut().recover_missing_location(&fallback);
     }
 
     /// 対象サイドの更新監視を現在の表示先へ合わせて張り替える。実ディレクトリ上にいて設定上の

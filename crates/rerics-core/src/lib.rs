@@ -189,16 +189,39 @@ impl Pane {
         Ok(())
     }
 
-    /// 親へ移動する。移動できたら、元いた場所の名前（書庫ルートからは書庫ファイル名）を返す。
+    /// 親へ移動する。読めなくなった祖先（外部削除等）は飛ばし、読める所まで遡る
+    /// （[`go_back`](Self::go_back) と同様）。移動できたら、直下の元いた場所の名前
+    /// （書庫ルートからは書庫ファイル名）を返す。
     pub fn to_parent(&mut self) -> Option<String> {
-        let (parent, prev) = self.loc.to_parent()?;
-        if parent.read().is_ok() {
-            self.record_history();
-            self.loc = parent;
-            Some(prev)
-        } else {
-            None
+        let (mut candidate, first_prev) = self.loc.to_parent()?;
+        while candidate.read().is_err() {
+            let (next, _) = candidate.to_parent()?;
+            candidate = next;
         }
+        self.record_history();
+        self.loc = candidate;
+        Some(first_prev)
+    }
+
+    /// 現在地が外部から削除される等で実在しなくなっていたら、実在する最も近い祖先へ
+    /// 移動する。ドライブ/書庫ごと失われ、祖先を辿っても見つからなければ `fallback`
+    /// （呼び側が用意するシステムドライブ等）へ移動する。実際に移動したら `true`。
+    pub fn recover_missing_location(&mut self, fallback: &Path) -> bool {
+        if self.loc.exists() {
+            return false;
+        }
+        let mut candidate = self.loc.clone();
+        while let Some((parent, _)) = candidate.to_parent() {
+            if parent.exists() {
+                self.record_history();
+                self.loc = parent;
+                return true;
+            }
+            candidate = parent;
+        }
+        self.record_history();
+        self.loc = Location::Real(fallback.to_path_buf());
+        true
     }
 
     /// 任意の現在地へ移動する（パス入力・ジャンプ・ドライブ変更・ルート移動の共通口）。
@@ -480,5 +503,57 @@ mod tests {
         // 同じディレクトリを ".." のまま再離脱しても実カーソル記憶は消えない。
         p.remember_cursor("..", 100);
         assert_eq!(p.recalled_cursor(&src), Some("lib.rs"));
+    }
+
+    #[test]
+    fn to_parent_skips_deleted_ancestor() {
+        let root = std::env::temp_dir().join(format!("rerics_toparent_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let deep = root.join("mid").join("deep");
+        std::fs::create_dir_all(&deep).unwrap();
+
+        let mut p = Pane::open(&deep);
+        // "mid" ごと削除（cwd の "deep" も道連れ）。
+        std::fs::remove_dir_all(root.join("mid")).unwrap();
+
+        let prev = p.to_parent().expect("実在する祖先 root まで遡れる");
+        assert_eq!(prev, "deep");
+        assert_eq!(p.path(), root.as_path());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recover_missing_location_ascends_to_existing_ancestor() {
+        let root = std::env::temp_dir().join(format!("rerics_recover_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let deep = root.join("mid").join("deep");
+        std::fs::create_dir_all(&deep).unwrap();
+
+        let mut p = Pane::open(&deep);
+        std::fs::remove_dir_all(root.join("mid")).unwrap();
+
+        let fallback = std::env::temp_dir();
+        assert!(p.recover_missing_location(&fallback), "root まで遡って移動する");
+        assert_eq!(p.path(), root.as_path());
+        // 既に実在する現在地では何もしない。
+        assert!(!p.recover_missing_location(&fallback));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recover_missing_location_falls_back_when_no_ancestor_exists() {
+        // ドライブごと失われた状況を、未使用と見なせるドライブ文字で模す
+        // （テスト環境にそのドライブが実在すればスキップ）。
+        let Some(missing_drive) =
+            ('Y'..='Z').map(|c| format!("{c}:\\")).find(|root| !Path::new(root).exists())
+        else {
+            return;
+        };
+        let mut p = Pane::open(format!("{missing_drive}deep\\path"));
+        let fallback = std::env::temp_dir();
+        assert!(p.recover_missing_location(&fallback));
+        assert_eq!(p.path(), fallback.as_path());
     }
 }

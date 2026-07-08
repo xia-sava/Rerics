@@ -276,7 +276,9 @@ impl MainWindow {
         self.remember_cursor_for_nav(is_left);
         let prev = self.pane(is_left).borrow_mut().to_parent();
         let Some(prev_name) = prev else {
-            return Ok(());
+            // 現在地からドライブ/書庫ルートまで実在する祖先が無い（丸ごと消失）。
+            // 復帰は reload 経路（`prepare_reload`）の消失検知に委ねる。
+            return self.reload_side(is_left);
         };
         self.reload_side_navigated_focus(is_left, &prev_name, true)?;
         Ok(())

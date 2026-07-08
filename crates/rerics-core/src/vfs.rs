@@ -171,6 +171,15 @@ impl Location {
         }
     }
 
+    /// 現在地が（実FS上に、または書庫ファイルとして）実在するか、軽量に判定する。
+    /// `read()` と違い一覧までは読まないので、消失検知の事前チェックに使える。
+    pub fn exists(&self) -> bool {
+        match self {
+            Location::Real(p) => p.try_exists().unwrap_or(false),
+            Location::Archive { archive, .. } => archive.try_exists().unwrap_or(false),
+        }
+    }
+
     /// 親へ。`Some((親 Location, 出てきた名前))`。書庫ルートから出ると実FS の親へ。
     pub fn to_parent(&self) -> Option<(Location, String)> {
         match self {
