@@ -2151,35 +2151,35 @@ fn build_viewer(parent: &gui::WindowControl, shared: &Rc<Shared>) {
 fn build_list(parent: &gui::WindowControl, shared: &Rc<Shared>) {
     let fmt = shared.cfg.borrow().size_format;
 
-    group_box(parent, "ファイルサイズの表記", 270, 8, 494, 158);
-    label(parent, "サイズ列の表示形式", 286, 34, 200);
+    group_box(parent, "ファイルサイズの表記", 292, 8, 472, 158);
+    label(parent, "サイズ列の表示形式", 308, 34, 200);
     let group = gui::RadioGroup::new(
         parent,
         &[
             gui::RadioButtonOpts {
                 text: "詳細：全バイトをカンマ区切り（例 1,234,567）(&D)",
-                position: gui::dpi(286, 58),
+                position: gui::dpi(308, 58),
                 size: gui::dpi(440, 20),
                 selected: fmt == SizeFormat::Detail,
                 ..Default::default()
             },
             gui::RadioButtonOpts {
                 text: "省略：小はバイト・大は単位（例 1.2 MB）(&M)",
-                position: gui::dpi(286, 82),
+                position: gui::dpi(308, 82),
                 size: gui::dpi(440, 20),
                 selected: fmt == SizeFormat::Simple2,
                 ..Default::default()
             },
             gui::RadioButtonOpts {
                 text: "省略：常に単位＋小数1桁（例 500.0 KB）(&U)",
-                position: gui::dpi(286, 106),
+                position: gui::dpi(308, 106),
                 size: gui::dpi(440, 20),
                 selected: fmt == SizeFormat::Simple1,
                 ..Default::default()
             },
             gui::RadioButtonOpts {
                 text: "KB 固定：エクスプローラ風（例 1,229 KB）(&K)",
-                position: gui::dpi(286, 130),
+                position: gui::dpi(308, 130),
                 size: gui::dpi(440, 20),
                 selected: fmt == SizeFormat::Explorer,
                 ..Default::default()
@@ -2219,15 +2219,15 @@ fn kind_label(kind: ColumnKind) -> &'static str {
     COLUMN_KINDS.iter().find(|(k, _)| *k == kind).map(|(_, l)| *l).unwrap_or("?")
 }
 
-/// 既定ソートの種別ラジオ／互換チェックの状態から `default_sort` を組み直す。
+/// 既定ソートの種別ラジオの選択から `default_sort` を組み直す。
 /// 種別・表記は S キーの「ソート」ダイアログ（[`crate::dialog::SORT_KINDS`]）と共有する。
-fn apply_default_sort(shared: &Rc<Shared>, kinds: &gui::RadioGroup, explike: &gui::CheckBox) {
-    let base = kinds
+fn apply_default_sort(shared: &Rc<Shared>, kinds: &gui::RadioGroup) {
+    let ty = kinds
         .selected_index()
         .and_then(|i| crate::dialog::SORT_KINDS.get(i))
         .map(|(_, t)| *t)
         .unwrap_or(SortType::FileName);
-    shared.cfg.borrow_mut().default_sort = SortType::with_explike(base, explike.is_checked());
+    shared.cfg.borrow_mut().default_sort = ty;
 }
 
 /// ラベル付きボタンを置く。
@@ -2261,38 +2261,32 @@ struct ColumnsEditor {
 impl ColumnsEditor {
     fn new(parent: &gui::WindowControl, shared: &Rc<Shared>) -> Self {
         // 既定の並び順（state が無い初回起動時に使う）。
-        group_box(parent, "既定の並び順", 12, 8, 250, 158);
-        // 種別（2列）＋自然順＋降順。S キーの「ソート」ダイアログと項目・表記を揃える。
-        let (init_kind, init_exp) = shared.cfg.borrow().default_sort.split_explike();
+        group_box(parent, "既定の並び順", 12, 8, 272, 182);
+        // 種別（2列）＋降順。自然順は名前/拡張子の専用種別として並ぶ。S キーの「ソート」
+        // ダイアログと項目・表記を揃える。右列は自然順表記の分だけ広めにとる。
+        let init_kind = shared.cfg.borrow().default_sort;
         let sort_kinds = gui::RadioGroup::new(
             parent,
             &crate::dialog::SORT_KINDS
                 .iter()
                 .enumerate()
-                .map(|(i, (label, ty))| gui::RadioButtonOpts {
-                    text: label,
-                    position: gui::dpi(24 + (i as i32 % 2) * 114, 30 + (i as i32 / 2) * 24),
-                    size: gui::dpi(110, 20),
-                    selected: *ty == init_kind,
-                    ..Default::default()
+                .map(|(i, (label, ty))| {
+                    let col = i as i32 % 2;
+                    gui::RadioButtonOpts {
+                        text: label,
+                        position: gui::dpi(24 + col * 114, 30 + (i as i32 / 2) * 24),
+                        size: gui::dpi(if col == 1 { 130 } else { 110 }, 20),
+                        selected: *ty == init_kind,
+                        ..Default::default()
+                    }
                 })
                 .collect::<Vec<_>>(),
-        );
-        let sort_explike = gui::CheckBox::new(
-            parent,
-            gui::CheckBoxOpts {
-                text: "自然順(&X)",
-                position: gui::dpi(24, 108),
-                size: gui::dpi(106, 18),
-                check_state: if init_exp { co::BST::CHECKED } else { co::BST::UNCHECKED },
-                ..Default::default()
-            },
         );
         let sort_reverse = gui::CheckBox::new(
             parent,
             gui::CheckBoxOpts {
                 text: "降順(&R)",
-                position: gui::dpi(134, 108),
+                position: gui::dpi(24, 132),
                 size: gui::dpi(90, 18),
                 check_state: if shared.cfg.borrow().default_sort_reverse {
                     co::BST::CHECKED
@@ -2307,7 +2301,7 @@ impl ColumnsEditor {
             parent,
             gui::CheckBoxOpts {
                 text: "日付ソートは昇降を反転する(&T)",
-                position: gui::dpi(24, 130),
+                position: gui::dpi(24, 154),
                 size: gui::dpi(220, 18),
                 check_state: if shared.cfg.borrow().reverse_sort_date {
                     co::BST::CHECKED
@@ -2320,18 +2314,8 @@ impl ColumnsEditor {
         {
             let shared = shared.clone();
             let kinds = sort_kinds.clone();
-            let explike = sort_explike.clone();
             sort_kinds.on().bn_clicked(move || {
-                apply_default_sort(&shared, &kinds, &explike);
-                Ok(())
-            });
-        }
-        {
-            let shared = shared.clone();
-            let kinds = sort_kinds.clone();
-            let explike = sort_explike.clone();
-            sort_explike.on().bn_clicked(move || {
-                apply_default_sort(&shared, &kinds, &explike);
+                apply_default_sort(&shared, &kinds);
                 Ok(())
             });
         }
@@ -2352,14 +2336,14 @@ impl ColumnsEditor {
             });
         }
 
-        group_box(parent, "ファイル一覧の列構成", 12, 174, 752, 360);
+        group_box(parent, "ファイル一覧の列構成", 12, 198, 752, 344);
 
         let auto = shared.cfg.borrow().auto_adjust_columns;
         let auto_check = gui::CheckBox::new(
             parent,
             gui::CheckBoxOpts {
                 text: "列幅を自動で内容に合わせる（オフで指定した幅をそのまま使う）(&W)",
-                position: gui::dpi(24, 198),
+                position: gui::dpi(24, 222),
                 size: gui::dpi(470, 22),
                 check_state: if auto { co::BST::CHECKED } else { co::BST::UNCHECKED },
                 ..Default::default()
@@ -2368,14 +2352,14 @@ impl ColumnsEditor {
 
         // 文字間隔（自動調整トグルと同じ行の右側）。負で詰める＝マイナス入力を許すため
         // ES::NUMBER は付けない。
-        label(parent, "文字間隔（px・負で詰める）", 512, 200, 170);
+        label(parent, "文字間隔（px・負で詰める）", 512, 224, 170);
         let spacing = shared.cfg.borrow().char_spacing_px;
         let spacing_edit = gui::Edit::new(
             parent,
             gui::EditOpts {
                 text: &spacing.to_string(),
                 control_style: co::ES::AUTOHSCROLL,
-                position: gui::dpi(686, 198),
+                position: gui::dpi(686, 222),
                 width: gui::dpi_x(44),
                 height: gui::dpi_y(22),
                 ..Default::default()
@@ -2384,7 +2368,7 @@ impl ColumnsEditor {
         let spacing_spin = gui::UpDown::new(
             parent,
             gui::UpDownOpts {
-                position: gui::dpi(730, 198),
+                position: gui::dpi(730, 222),
                 height: gui::dpi_y(22),
                 range: (-20, 20),
                 value: spacing.clamp(-20, 20),
@@ -2407,27 +2391,27 @@ impl ColumnsEditor {
         }
 
         // 左：使用可能な列（全種類・重複可）。
-        label(parent, "使用可能な列", 24, 228, 200);
+        label(parent, "使用可能な列", 24, 252, 200);
         let available = gui::ListBox::new(
             parent,
             gui::ListBoxOpts {
-                position: gui::dpi(24, 250),
-                size: gui::dpi(230, 248),
+                position: gui::dpi(24, 274),
+                size: gui::dpi(230, 232),
                 ..Default::default()
             },
         );
 
         // 中央：←→ で出し入れ。
-        let to_shown = button(parent, "追加 →", 268, 300, 96);
-        let to_avail = button(parent, "← 削除", 268, 340, 96);
+        let to_shown = button(parent, "追加 →", 268, 324, 96);
+        let to_avail = button(parent, "← 削除", 268, 364, 96);
 
         // 右：表示中の列（順番どおりに表示される）。
-        label(parent, "表示中の列", 376, 228, 200);
+        label(parent, "表示中の列", 376, 252, 200);
         let shown = gui::ListView::<()>::new(
             parent,
             gui::ListViewOpts {
-                position: gui::dpi(376, 250),
-                size: gui::dpi(376, 218),
+                position: gui::dpi(376, 274),
+                size: gui::dpi(376, 202),
                 control_style: co::LVS::REPORT
                     | co::LVS::NOSORTHEADER
                     | co::LVS::SHOWSELALWAYS
@@ -2436,20 +2420,20 @@ impl ColumnsEditor {
                 ..Default::default()
             },
         );
-        label(parent, "幅", 376, 478, 24);
+        label(parent, "幅", 376, 484, 24);
         let width_edit = gui::Edit::new(
             parent,
             gui::EditOpts {
                 control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
-                position: gui::dpi(400, 476),
+                position: gui::dpi(400, 482),
                 width: gui::dpi_x(60),
                 height: gui::dpi_y(22),
                 ..Default::default()
             },
         );
-        label(parent, "（行をダブルクリックで幅編集）", 470, 478, 220);
-        let fwd = button(parent, "列を手前へ", 376, 506, 116);
-        let back = button(parent, "列を後ろへ", 498, 506, 116);
+        label(parent, "（行をダブルクリックで幅編集）", 470, 484, 220);
+        let fwd = button(parent, "列を手前へ", 376, 512, 116);
+        let back = button(parent, "列を後ろへ", 498, 512, 116);
 
         let selected: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
         // プログラム的な幅入力更新中フラグ（en_change の再入で cfg を二重借用しないよう抑制）。
