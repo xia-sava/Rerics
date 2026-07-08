@@ -1987,9 +1987,9 @@ fn sort_dialog_opens_and_closes() {
     assert!(items.contains("\"name\":\"a.txt\""), "list should remain: {items}");
 }
 
-/// ソート設定モーダルで「種別ラジオ＋エクスプローラ互換チェック＋降順チェック」を
-/// ニーモニックで操作し、OK 後の種別/昇降が組み合わせどおりになることを担保する。
-/// （互換チェックは名前/拡張子に直交＝拡張子＋互換で ExtensionExpLike になる。）
+/// ソート設定モーダルで「種別ラジオ＋降順チェック」をニーモニックで操作し、OK 後の
+/// 種別/昇降が組み合わせどおりになることを担保する。エクスプローラ互換（自然順）は
+/// 名前/拡張子それぞれの専用ラジオ項目＝「拡張子（自然）」を選ぶと ExtensionExpLike になる。
 #[test]
 fn sort_dialog_explike_and_reverse() {
     let server = Server::start(&["a.txt", "b.txt"], "");
@@ -2000,11 +2000,11 @@ fn sort_dialog_explike_and_reverse() {
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"sort\""), "should open sort modal: {modal}");
 
-    // 初期フォーカス＝選択中ラジオ（名前順）。↓で拡張子ラジオへ。
-    // Tab で降順チェック→互換チェックの順にフォーカスし、Space でそれぞれトグルする。
-    server.req("POST", "/modal/key/down", "").unwrap();
-    server.req("POST", "/modal/key/tab", "").unwrap();
-    server.req("POST", "/modal/key/space", "").unwrap();
+    // 初期フォーカス＝選択中ラジオ（名前順）。↓×3で「拡張子（自然）」ラジオへ
+    // （名前順→名前順(自然)→拡張子→拡張子(自然)）。Tab で降順チェックへ移り Space でトグル。
+    for _ in 0..3 {
+        server.req("POST", "/modal/key/down", "").unwrap();
+    }
     server.req("POST", "/modal/key/tab", "").unwrap();
     server.req("POST", "/modal/key/space", "").unwrap();
     server.req("POST", "/modal/command/ok", "").unwrap();
