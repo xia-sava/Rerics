@@ -669,6 +669,30 @@ impl MainWindow {
         Ok(id)
     }
 
+    /// D&D のドロップで転送する（絶対パス群を親ディレクトリ別にグループ化し、グループごとに
+    /// [`start_copy`](Self::start_copy) を起動する）。ドラッグ元が複数ディレクトリにまたがって
+    /// いても構わない（外部アプリからの複数選択ドロップ等）。各グループは独立タスクなので、
+    /// 完了ごとに [`on_op_done`](Self::on_op_done) が該当ペイン（転送元・転送先いずれも）を
+    /// 個別に再読込する。
+    pub(crate) fn drop_transfer(&self, sources: Vec<PathBuf>, dst_dir: PathBuf, move_it: bool) -> w::AnyResult<()> {
+        let mut groups: Vec<(PathBuf, Vec<String>)> = Vec::new();
+        for src in sources {
+            let Some(dir) = src.parent().map(Path::to_path_buf) else { continue };
+            let name = file_name_of(&src);
+            if name.is_empty() {
+                continue;
+            }
+            match groups.iter_mut().find(|(d, _)| *d == dir) {
+                Some((_, names)) => names.push(name),
+                None => groups.push((dir, vec![name])),
+            }
+        }
+        for (src_dir, names) in groups {
+            self.start_copy(src_dir, dst_dir.clone(), names, move_it)?;
+        }
+        Ok(())
+    }
+
     /// 検索・比較の結果一覧から、出自ディレクトリ別にまとめた項目を反対側へコピー/移動する。
     /// 1タスクで各グループを順に処理し、完了は基準ペイン（結果一覧）の場所を `src_dir` として
     /// 通知する＝[`on_op_done`](Self::on_op_done) がコピーなら選択解除のみ・移動なら基準へ復帰。

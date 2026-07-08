@@ -2496,6 +2496,7 @@ dependencies = [
  "tokio",
  "unicode-width",
  "windows",
+ "windows-core",
  "winresource",
  "winsafe 0.0.27",
 ]
