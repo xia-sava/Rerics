@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+# 連続 push で古いビルドが後勝ちしないよう、同時実行を1本に絞る。
+concurrency:
+  group: release
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        env:
+          RERICS_BUILD_NUMBER: ${{ github.run_number }}
+        run: cargo build --release --locked -p rerics
+
+      - name: Package
+        id: package
+        shell: pwsh
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/rerics.exe dist/
+          Copy-Item target/release/pdfium.dll dist/
+
+          $zipPath = "rerics-windows.zip"
+          Compress-Archive -Path dist/* -DestinationPath $zipPath -Force
+          $hash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLower()
+
+          [ordered]@{
+            build   = [int]$env:BUILD_NUMBER
+            commit  = $env:COMMIT_SHA
+            version = $version
+            asset   = $zipPath
+            sha256  = $hash
+          } | ConvertTo-Json | Set-Content -Path manifest.json -Encoding utf8
+
+      - name: Publish latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Latest build"
+          body: |
+            push のたびに自動更新される最新ビルド。アプリの「その他」メニュー →
+            「自動更新」から確認・適用できる。
+          prerelease: true
+          files: |
+            rerics-windows.zip
+            manifest.json

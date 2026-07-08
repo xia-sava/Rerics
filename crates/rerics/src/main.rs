@@ -44,6 +44,7 @@ mod settings_ctl;
 mod sort;
 mod tabs_nav;
 mod tasks;
+mod update;
 mod viewer_ctl;
 mod watch;
 #[cfg(feature = "debug-server")]
@@ -155,6 +156,10 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         OpenTaskManager => DebugCmdClass::MaybeModal,
         // バージョン情報は読取専用モーダル（テキストボックス＋閉じる）。modal_registry に登録済み。
         About => DebugCmdClass::MaybeModal,
+        // 自動更新は確認 YesNo モーダルを開き得る（新版がある場合のみ）。単一スレッドの
+        // debug-server がブロックしないよう、確認・DL・適用は spawn_job でワーカースレッドへ
+        // 逃がし、この呼び出し自体は同期でも詰まらない。
+        CheckUpdate => DebugCmdClass::MaybeModal,
         // シェル名前変更は先に名前入力（本体モーダル）を出す。コピー/移動/削除はシェル所有 UI のみ。
         ShellRename => DebugCmdClass::MaybeModal,
         // 終了・再起動は実行中タスクがあるときだけ確認モーダル（YesNo）を開く（無ければ即実行）。
@@ -280,6 +285,7 @@ fn build_resolved_menu(
 }
 
 fn main() {
+    update::cleanup_old_files_if_requested();
     #[cfg(feature = "debug-server")]
     let (debug_port, debug_allow_write, debug_headless) = (
         debug_server::parse_port(),
@@ -1536,6 +1542,10 @@ impl MainWindow {
                 self.open_about();
                 return Ok(());
             }
+            Command::CheckUpdate => {
+                self.check_update();
+                return Ok(());
+            }
             Command::KeyBindsDialog => {
                 self.keybinds_dialog();
                 return Ok(());
@@ -1756,6 +1766,61 @@ impl MainWindow {
         }
         dialog::about_box(&self.wnd, "Rerics について", &about_text());
         self.key_sink.hwnd().SetFocus();
+    }
+
+    /// GitHub Releases の最新ビルドを確認する。新しいビルドがあれば確認のうえダウンロード・
+    /// 適用する。ネットワーク I/O は `spawn_job` でワーカースレッドへ逃がし、UI スレッドは
+    /// 待たない。
+    fn check_update(&self) {
+        if dialog::modal_active() {
+            return;
+        }
+        self.log.info("更新を確認しています…");
+        self.spawn_job(update::check_for_update, |mw, result| {
+            match result {
+                Ok(Some(info)) => mw.confirm_update(info)?,
+                Ok(None) => mw.log.info("お使いのバージョンは最新です。"),
+                Err(e) => mw.log.error(&format!("更新の確認に失敗しました: {e}")),
+            }
+            Ok(())
+        });
+    }
+
+    /// 新しいビルドが見つかったときの確認ダイアログ。承諾すればダウンロード・適用へ進む。
+    fn confirm_update(&self, info: update::UpdateInfo) -> w::AnyResult<()> {
+        let message = format!(
+            "新しいビルドが見つかりました（build {}, commit {}）。\n\
+             ダウンロードして更新しますか？更新後は自動的に再起動します。",
+            info.build,
+            &info.commit[..info.commit.len().min(9)],
+        );
+        if dialog::message_box(&self.wnd, "自動更新", &message, dialog::MessageStyle::YesNo)
+            != dialog::MessageResult::Yes
+        {
+            return Ok(());
+        }
+        self.log.info("更新をダウンロードしています…");
+        self.spawn_job(
+            move || update::download_and_apply(&info),
+            |mw, result| {
+                match result {
+                    Ok(()) => mw.relaunch_after_update(),
+                    Err(e) => mw.log.error(&format!("更新の適用に失敗しました: {e}")),
+                }
+                Ok(())
+            },
+        );
+        Ok(())
+    }
+
+    /// 更新の適用後、置き換えた exe を旧ファイル掃除フラグ付きで起動し直して自分は終了する。
+    fn relaunch_after_update(&self) {
+        if let Ok(exe) = std::env::current_exe() {
+            let mut args: Vec<String> = std::env::args().skip(1).collect();
+            args.push(update::CLEANUP_ARG.to_owned());
+            let _ = std::process::Command::new(exe).args(&args).spawn();
+        }
+        let _ = self.wnd.hwnd().DestroyWindow();
     }
 
     fn wire_key_sink(&self) {

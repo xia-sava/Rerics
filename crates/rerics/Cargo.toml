@@ -25,6 +25,12 @@ tokio = { version = "1.52.3", features = ["rt"] }
 serde = { version = "1.0.228", features = ["derive"] }
 deno_error = "=0.7.1"
 deno_ast = { version = "0.53.2", features = ["transpiling"] }
+# 自動更新（GitHub Releases からの確認・ダウンロード・展開・検証）。TLS は既定の rustls
+# ではなく native-tls（Windows は Schannel）を使い、OS のトラストストアへ一本化する
+# （組込 CA バンドル crate の追加ライセンス条項を持ち込まずに済む）。
+ureq = { version = "2", default-features = false, features = ["json", "native-tls"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
+sha2 = "0.10"
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

@@ -134,7 +134,7 @@ const MENUS: &[MenuDef] = &[
     MenuDef {
         label: "その他(&O)",
         items: &[
-            off("自動更新"),
+            on("自動更新", Command::CheckUpdate),
             on("ログをコピー", Command::CopyLog),
             on("ログクリア", Command::ClearLog),
             off("一時ファイルをクリア"),
