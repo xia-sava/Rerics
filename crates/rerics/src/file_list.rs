@@ -4,7 +4,7 @@
 //! GUI 配線に徹する。ダブルバッファでちらつきを抑える。
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -42,6 +42,38 @@ fn item_mtime(it: &FileItem) -> u64 {
         .unwrap_or(0)
 }
 
+/// パスの先頭がドライブレター（`C:` 等）ならその文字（大文字化）を返す。UNC 等は None。
+fn drive_letter(p: &Path) -> Option<u8> {
+    use std::path::{Component, Prefix};
+    match p.components().next() {
+        Some(Component::Prefix(pfx)) => match pfx.kind() {
+            Prefix::Disk(d) | Prefix::VerbatimDisk(d) => Some(d.to_ascii_uppercase()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// 転送元・転送先が同一ドライブか（判定不能や UNC 等は false＝別ドライブ扱い）。
+fn same_drive(a: &Path, b: &Path) -> bool {
+    match (drive_letter(a), drive_letter(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// D&D の既定コピー/移動判定（Explorer 準拠）。Ctrl で強制コピー・Shift で強制移動、
+/// 無指定は同一ドライブなら既定「移動」・別ドライブなら既定「コピー」。
+fn resolve_move(sources: &[PathBuf], dst_dir: &Path, keys: co::MK) -> bool {
+    if keys.has(co::MK::CONTROL) {
+        return false;
+    }
+    if keys.has(co::MK::SHIFT) {
+        return true;
+    }
+    sources.first().is_some_and(|src| same_drive(src, dst_dir))
+}
+
 /// マウス操作の状態機械。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MouseEvent {
@@ -54,6 +86,8 @@ enum MouseEvent {
 type ActivateCb = Box<dyn Fn(usize)>;
 type WheelCb = Box<dyn Fn(i16, w::POINT)>;
 type SelectionCb = Box<dyn Fn(u64, u64)>;
+type DragQueryCb = Box<dyn Fn() -> Vec<PathBuf>>;
+type DropCb = Box<dyn Fn(Vec<PathBuf>, PathBuf, bool)>;
 
 /// content-fit で各非フレックス列に与える上限（クライアント幅に対する割合）。
 const AUTOFIT_MAX_RATIO: f64 = 0.25;
@@ -119,6 +153,21 @@ struct Inner {
     dir: RefCell<Option<PathBuf>>,
     /// 切り詰めセルの全文を出す hover ツールチップ部品（生成後に設定）。
     cell_tip: RefCell<Option<crate::winutil::CellTooltip>>,
+    /// マウス左ボタン押下点（クライアント座標）＝ドラッグ開始検出の保留状態。ヘッダ／
+    /// スクロールバーのドラッグとは独立（無修飾の行クリックでのみ立つ）。
+    drag_start_pt: Cell<Option<w::POINT>>,
+    /// OLE ドラッグ実行中フラグ（`DoDragDrop` はブロッキングなので再入防止に使う）。
+    dragging: Cell<bool>,
+    /// ドラッグ開始時、送信する絶対パスを問い合わせるコールバック。
+    on_drag_query: RefCell<Option<DragQueryCb>>,
+    /// ドロップ確定時のコールバック（絶対パス列・ドロップ先ディレクトリ・移動か）。
+    on_drop: RefCell<Option<DropCb>>,
+    /// 登録した OLE ドロップターゲット。生存させ続けるために保持するだけで参照はしない。
+    drop_target: RefCell<Option<w::IDropTarget>>,
+    /// DragEnter で読み取ったドラッグ元パス。DragOver は IDataObject を渡さないのでキャッシュする。
+    drag_over_sources: RefCell<Vec<PathBuf>>,
+    /// ドロップ先としてハイライトする行（ホバー中のディレクトリ行）。
+    drop_hover_row: Cell<Option<usize>>,
 }
 
 /// ファイル一覧コントロール。
@@ -182,9 +231,17 @@ impl FileListView {
             default_sort_reverse: Cell::new(cfg.default_sort_reverse),
             dir: RefCell::new(None),
             cell_tip: RefCell::new(None),
+            drag_start_pt: Cell::new(None),
+            dragging: Cell::new(false),
+            on_drag_query: RefCell::new(None),
+            on_drop: RefCell::new(None),
+            drop_target: RefCell::new(None),
+            drag_over_sources: RefCell::new(Vec::new()),
+            drop_hover_row: Cell::new(None),
         });
         let me = Self { wnd, inner };
         me.setup_events();
+        me.install_drop_target();
         me
     }
 
@@ -260,6 +317,16 @@ impl FileListView {
     /// 代わりにこれが呼ばれ、呼び出し側がカーソル下のペインを判定してスクロールする。
     pub fn on_wheel(&self, cb: impl Fn(i16, w::POINT) + 'static) {
         *self.inner.on_wheel.borrow_mut() = Some(Box::new(cb));
+    }
+
+    /// ドラッグ開始時、送信する絶対パスを問い合わせるコールバック。
+    pub fn on_drag_query(&self, cb: impl Fn() -> Vec<PathBuf> + 'static) {
+        *self.inner.on_drag_query.borrow_mut() = Some(Box::new(cb));
+    }
+
+    /// ドロップ確定時のコールバック（絶対パス列・ドロップ先ディレクトリ・移動か）。
+    pub fn on_drop(&self, cb: impl Fn(Vec<PathBuf>, PathBuf, bool) + 'static) {
+        *self.inner.on_drop.borrow_mut() = Some(Box::new(cb));
     }
 
     /// カーソル下線の表示/非表示を切り替える。
@@ -655,7 +722,7 @@ impl FileListView {
 
         let this = self.clone();
         self.wnd.on().wm_mouse_move(move |p| {
-            this.on_mouse_move(p.coords)?;
+            this.on_mouse_move(p.coords, p.vkey_code)?;
             Ok(())
         });
 
@@ -793,6 +860,142 @@ impl FileListView {
         if idx < s.count() { Some(idx) } else { None }
     }
 
+    /// クライアント座標からドロップ先ディレクトリとホバー行を求める。`dir`（現在表示中の
+    /// 実FSディレクトリ）が None（書庫内等）ならドロップ不可＝ None。ディレクトリ行の上なら
+    /// その中へ、それ以外（`..` 行・ファイル行・一覧の空欄）は現在地へ。
+    fn drop_target_at(&self, client_pt: w::POINT) -> Option<(PathBuf, Option<usize>)> {
+        let dir = self.inner.dir.borrow().clone()?;
+        match self.row_at(client_pt.y) {
+            Some(row) => {
+                let s = self.inner.state.borrow();
+                match s.items.get(row) {
+                    Some(item) if item.is_dir && !item.is_parent => {
+                        Some((dir.join(&item.name), Some(row)))
+                    }
+                    _ => Some((dir, None)),
+                }
+            }
+            None => Some((dir, None)),
+        }
+    }
+
+    /// ホバー行を更新し、変化していれば再描画する。
+    fn set_drop_hover(&self, row: Option<usize>) {
+        if self.inner.drop_hover_row.get() != row {
+            self.inner.drop_hover_row.set(row);
+            let _ = self.invalidate_only();
+        }
+    }
+
+    fn clear_drop_hover(&self) {
+        self.set_drop_hover(None);
+    }
+
+    /// `DragEnter`/`DragOver` 共通：カーソル位置からドロップ先・効果（コピー/移動/不可）を
+    /// 決め、`pdwEffect` へ書き戻す。ホバー行のハイライトも更新する。転送元と転送先が
+    /// 同一（親ディレクトリが一致）なら意味の無い操作なので不可にする。
+    fn update_drop_feedback(&self, screen_pt: w::POINT, keys: co::MK, effect: &mut co::DROPEFFECT) {
+        *effect = co::DROPEFFECT::NONE;
+        let Ok(client_pt) = self.hwnd().ScreenToClient(screen_pt) else {
+            self.clear_drop_hover();
+            return;
+        };
+        let Some((dst_dir, hover_row)) = self.drop_target_at(client_pt) else {
+            self.clear_drop_hover();
+            return;
+        };
+        let sources = self.inner.drag_over_sources.borrow().clone();
+        let no_op = sources.is_empty()
+            || sources.iter().any(|s| *s == dst_dir || s.parent() == Some(dst_dir.as_path()));
+        if no_op {
+            self.clear_drop_hover();
+            return;
+        }
+        let move_it = resolve_move(&sources, &dst_dir, keys);
+        *effect = if move_it { co::DROPEFFECT::MOVE } else { co::DROPEFFECT::COPY };
+        self.set_drop_hover(hover_row);
+    }
+
+    /// `Drop` 確定：`update_drop_feedback` と同じ判定で転送先・効果を決め、`on_drop`
+    /// コールバックへ渡す。実転送（コピー/移動）は呼び出し側（`fileops`）が行う。
+    fn finish_drop(&self, sources: Vec<PathBuf>, screen_pt: w::POINT, keys: co::MK, effect: &mut co::DROPEFFECT) {
+        *effect = co::DROPEFFECT::NONE;
+        self.clear_drop_hover();
+        let Ok(client_pt) = self.hwnd().ScreenToClient(screen_pt) else {
+            return;
+        };
+        let Some((dst_dir, _)) = self.drop_target_at(client_pt) else {
+            return;
+        };
+        let no_op = sources.is_empty()
+            || sources.iter().any(|s| *s == dst_dir || s.parent() == Some(dst_dir.as_path()));
+        if no_op {
+            return;
+        }
+        let move_it = resolve_move(&sources, &dst_dir, keys);
+        *effect = if move_it { co::DROPEFFECT::MOVE } else { co::DROPEFFECT::COPY };
+        if let Some(cb) = self.inner.on_drop.borrow().as_ref() {
+            cb(sources, dst_dir, move_it);
+        }
+    }
+
+    /// OLE ドロップターゲットとして自身の HWND を登録する。`OleInitialize` 済み前提
+    /// （呼び出し順はアプリ起動時に保証する）。登録失敗時は静かに諦める＝この一覧では
+    /// ドロップ受付が効かないだけで、他の動作には影響しない。
+    fn install_drop_target(&self) {
+        let target = w::IDropTarget::new_impl();
+
+        let this = self.clone();
+        target.DragEnter(move |data, keys, pt, effect| {
+            *this.inner.drag_over_sources.borrow_mut() = crate::dnd::hdrop_paths(data);
+            this.update_drop_feedback(pt, keys, effect);
+            Ok(())
+        });
+
+        let this = self.clone();
+        target.DragOver(move |keys, pt, effect| {
+            this.update_drop_feedback(pt, keys, effect);
+            Ok(())
+        });
+
+        let this = self.clone();
+        target.DragLeave(move || {
+            this.inner.drag_over_sources.borrow_mut().clear();
+            this.clear_drop_hover();
+            Ok(())
+        });
+
+        let this = self.clone();
+        target.Drop(move |data, keys, pt, effect| {
+            let sources = crate::dnd::hdrop_paths(data);
+            this.inner.drag_over_sources.borrow_mut().clear();
+            this.finish_drop(sources, pt, keys, effect);
+            Ok(())
+        });
+
+        if self.hwnd().RegisterDragDrop(&target).is_ok() {
+            *self.inner.drop_target.borrow_mut() = Some(target);
+        }
+    }
+
+    /// 送信側 OLE ドラッグを開始する（`DoDragDrop` はブロッキング）。送るパスが無ければ
+    /// 何もしない。実転送は受け側（自ペイン／他ペイン／外部アプリ）の `Drop` が担う。
+    fn start_drag(&self) {
+        if self.inner.dragging.get() {
+            return;
+        }
+        let paths = match self.inner.on_drag_query.borrow().as_ref() {
+            Some(cb) => cb(),
+            None => Vec::new(),
+        };
+        if paths.is_empty() {
+            return;
+        }
+        self.inner.dragging.set(true);
+        let _ = crate::dnd::begin_drag(&paths);
+        self.inner.dragging.set(false);
+    }
+
     fn on_l_button_down(&self, pt: w::POINT, keys: co::MK) -> w::AnyResult<()> {
         // クリックされたペインをアクティブにする（Win32 フォーカスは取らず内部状態のみ更新）。
         if let Some(cb) = self.inner.on_got_focus.borrow().as_ref() {
@@ -858,11 +1061,18 @@ impl FileListView {
                 s.select_file(idx, pr);
             }
         }
+        // 無修飾クリックのみドラッグ開始候補にする（Ctrl/Shift はマーク操作を優先）。
+        // 既に選択済みの行なら（複数選択の場合）マークはそのまま保つので、
+        // まとめてドラッグできる。
+        if !ctrl && !shift && !self.inner.state.borrow().items[idx].is_parent {
+            self.inner.drag_start_pt.set(Some(pt));
+        }
         self.refresh()?;
         Ok(())
     }
 
     fn on_l_button_up(&self, _pt: w::POINT) -> w::AnyResult<()> {
+        self.inner.drag_start_pt.set(None);
         if self.inner.sb_drag.get().is_some() {
             self.inner.sb_drag.set(None);
             return Ok(());
@@ -896,7 +1106,20 @@ impl FileListView {
         Ok(())
     }
 
-    fn on_mouse_move(&self, pt: w::POINT) -> w::AnyResult<()> {
+    fn on_mouse_move(&self, pt: w::POINT, keys: co::MK) -> w::AnyResult<()> {
+        if let Some(start) = self.inner.drag_start_pt.get() {
+            if !keys.has(co::MK::LBUTTON) {
+                self.inner.drag_start_pt.set(None);
+            } else {
+                let cx = w::GetSystemMetrics(co::SM::CXDRAG).max(1);
+                let cy = w::GetSystemMetrics(co::SM::CYDRAG).max(1);
+                if (pt.x - start.x).abs() >= cx || (pt.y - start.y).abs() >= cy {
+                    self.inner.drag_start_pt.set(None);
+                    self.start_drag();
+                    return Ok(());
+                }
+            }
+        }
         if let Some(grab) = self.inner.sb_drag.get() {
             let rc = self.hwnd().GetClientRect()?;
             let (cw, ch) = (rc.right - rc.left, rc.bottom - rc.top);
@@ -1266,7 +1489,26 @@ impl FileListView {
             }
         }
 
-        // 5. 自前スクロールバー（生きている state borrow からインラインに算出）。
+        // 5. ドロップホバー行の枠線（D&D でこの行のディレクトリへドロップしようとしている時）。
+        if let Some(row) = self.inner.drop_hover_row.get()
+            && row >= s.scroll_top
+            && row <= bottom
+            && row < s.count()
+        {
+            let y = header_h + ((row - s.scroll_top) as i32) * item_h;
+            let hi_brush = w::HBRUSH::CreateSolidBrush(w::GetSysColor(co::COLOR::HIGHLIGHT))?;
+            let outer = w::RECT { left: 0, top: y, right: total_w.max(1), bottom: y + item_h };
+            dc.FrameRect(outer, &hi_brush)?;
+            let inner = w::RECT {
+                left: outer.left + 1,
+                top: outer.top + 1,
+                right: outer.right - 1,
+                bottom: outer.bottom - 1,
+            };
+            dc.FrameRect(inner, &hi_brush)?;
+        }
+
+        // 6. 自前スクロールバー（生きている state borrow からインラインに算出）。
         // トラック（溝）は常時描画して列幅予約分を「スクロールバーの定位置」に見せ、見た目を
         // 安定させる。thumb はスクロール可能な時だけ出す。
         let sbw = gui::dpi_x(self.inner.scrollbar_width.get());

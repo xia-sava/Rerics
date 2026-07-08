@@ -2589,6 +2589,7 @@ dependencies = [
  "unicode-width",
  "ureq",
  "windows",
+ "windows-core",
  "winresource",
  "winsafe 0.0.27",
  "zip",

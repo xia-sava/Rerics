@@ -36,6 +36,7 @@ mod viewer;
 mod window_state;
 mod winutil;
 mod archive_ctl;
+mod dnd;
 mod fileops;
 mod layout;
 mod search;
@@ -349,6 +350,10 @@ type UiJobDone = Box<dyn FnOnce(&MainWindow, UiJobResult) -> w::AnyResult<()>>;
 
 #[derive(Clone)]
 struct MainWindow {
+    /// OLE 初期化ガード（保持するだけ・参照しない）。ドロップ処理は `IDropTarget`
+    /// 登録済みの各ペインへ COM が直接コールバックするので、drop 時までこれが生きて
+    /// いれば十分。`MainWindow` 自体が Clone なので `Rc` で共有する。
+    _ole: Rc<w::guard::OleUninitializeGuard>,
     wnd: gui::WindowMain,
     left: PaneView,
     right: PaneView,
@@ -515,6 +520,11 @@ struct LoadPlan {
 impl MainWindow {
     #[cfg_attr(not(feature = "debug-server"), allow(unused_variables))]
     fn new(debug_port: Option<u16>, debug_allow_write: bool, debug_headless: bool) -> Self {
+        // OLE ドラッグ＆ドロップ（IDropTarget 登録・DoDragDrop）に必要。ペイン生成（drop
+        // target 登録）より先に済ませ、ガードはアプリ終了まで保持する
+        // （OleUninitialize は Drop に任せる）。
+        let ole = Rc::new(w::OleInitialize().expect("OleInitialize"));
+
         // デバッグ制御サーバ起動時は最初から最小化で出すため、生成時に VISIBLE を付けない
         // （付けると CreateWindowEx が一瞬フル表示してしまう）。表示は run_main の cmd_show に任せる。
         let mut style = co::WS::CAPTION
@@ -632,6 +642,7 @@ impl MainWindow {
         let (ui_job_tx, ui_job_rx) = std::sync::mpsc::channel();
 
         Self {
+            _ole: ole,
             wnd,
             left,
             right,
@@ -990,6 +1001,20 @@ impl MainWindow {
         self.view(is_left).on_selection_changed(move |count, size| {
             let text = rerics_core::format_selected(count, size).unwrap_or_default();
             this.status(is_left).set_left(&text);
+        });
+
+        // OLE ドラッグ開始時、送信する絶対パス（選択・実FS出自のみ）を返す。
+        let this = self.clone();
+        self.view(is_left).on_drag_query(move || {
+            this.selected_real_targets(is_left).into_iter().map(|(p, _)| p).collect()
+        });
+
+        // ドロップ確定：外部アプリ／他ペイン／自ペインいずれから来ても同じ経路で転送する。
+        let this = self.clone();
+        self.view(is_left).on_drop(move |sources, dst_dir, move_it| {
+            if let Err(e) = this.drop_transfer(sources, dst_dir, move_it) {
+                this.log.error(&e.to_string());
+            }
         });
     }
 
