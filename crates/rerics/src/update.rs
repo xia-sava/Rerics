@@ -42,9 +42,18 @@ fn release_asset_url(name: &str) -> String {
     format!("https://github.com/{REPO}/releases/download/{TAG}/{name}")
 }
 
+/// native-tls（Windows は Schannel）を明示的に配線した Agent を作る。`ureq::get` 等の
+/// ショートカット関数は既定の rustls 実装専用で、native-tls feature を有効にしただけでは
+/// 使われない（`AgentBuilder::tls_connector` で渡して初めて有効になる）ため。
+fn http_agent() -> Result<ureq::Agent, String> {
+    let connector = native_tls::TlsConnector::new().map_err(|e| format!("TLS の初期化に失敗しました: {e}"))?;
+    Ok(ureq::AgentBuilder::new().tls_connector(std::sync::Arc::new(connector)).build())
+}
+
 /// 最新ビルドを確認する。現在の自ビルドより新しければ `Some` を返す。
 pub fn check_for_update() -> Result<Option<UpdateInfo>, String> {
-    let manifest: Manifest = ureq::get(&release_asset_url("manifest.json"))
+    let manifest: Manifest = http_agent()?
+        .get(&release_asset_url("manifest.json"))
         .call()
         .map_err(|e| format!("更新情報の取得に失敗しました: {e}"))?
         .into_json()
@@ -83,7 +92,8 @@ pub fn download_and_apply(info: &UpdateInfo) -> Result<(), String> {
 
 fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
     let mut buf = Vec::new();
-    ureq::get(url)
+    http_agent()?
+        .get(url)
         .call()
         .map_err(|e| format!("ダウンロードに失敗しました: {e}"))?
         .into_reader()

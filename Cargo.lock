@@ -2579,6 +2579,7 @@ dependencies = [
  "deno_core",
  "deno_error",
  "image",
+ "native-tls",
  "pdfium-render",
  "rerics-core",
  "serde",

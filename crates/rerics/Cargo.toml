@@ -32,6 +32,7 @@ deno_ast = { version = "0.53.2", features = ["transpiling"] }
 # ではなく native-tls（Windows は Schannel）を使い、OS のトラストストアへ一本化する
 # （組込 CA バンドル crate の追加ライセンス条項を持ち込まずに済む）。
 ureq = { version = "2", default-features = false, features = ["json", "native-tls"] }
+native-tls = "0.2"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
 
