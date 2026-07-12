@@ -11,6 +11,9 @@ use winsafe::{self as w, co, gui, prelude::*};
 
 use crate::font_fallback::FontSet;
 
+/// 右クリック時のコールバック（画面座標・クリックされた行の絶対インデックス）。
+type LineMenuHandler = Box<dyn Fn(w::POINT, usize)>;
+
 struct Inner {
     state: RefCell<LogState>,
     colors: Cell<Colors>,
@@ -26,6 +29,7 @@ struct Inner {
     cell_tip: RefCell<Option<crate::winutil::CellTooltip>>,
     /// 進行表示中の行（行 id → ぐるぐる状態）。空でなければ取り込みタイマがコマを進める。
     progress: RefCell<std::collections::HashMap<u64, Spinner>>,
+    on_menu: RefCell<Option<LineMenuHandler>>,
 }
 
 /// 下部ログウィンドウコントロール。
@@ -64,6 +68,7 @@ impl LogView {
             sb_drag: Cell::new(None),
             cell_tip: RefCell::new(None),
             progress: RefCell::new(std::collections::HashMap::new()),
+            on_menu: RefCell::new(None),
         });
         let me = Self { wnd, inner };
         me.setup_events();
@@ -189,6 +194,22 @@ impl LogView {
             let s = self.inner.state.borrow();
             s.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\r\n")
         };
+        self.copy_text_to_clipboard(&text)
+    }
+
+    /// 指定行（絶対インデックス）だけをクリップボードへコピーする。行が無ければ何もしない。
+    pub fn copy_line(&self, row: usize) -> w::AnyResult<()> {
+        let text = {
+            let s = self.inner.state.borrow();
+            match s.lines.get(row) {
+                Some(l) => l.text.clone(),
+                None => return Ok(()),
+            }
+        };
+        self.copy_text_to_clipboard(&text)
+    }
+
+    fn copy_text_to_clipboard(&self, text: &str) -> w::AnyResult<()> {
         if text.is_empty() {
             return Ok(());
         }
@@ -199,6 +220,28 @@ impl LogView {
         clip.EmptyClipboard()?;
         clip.SetClipboardData(co::CF::UNICODETEXT, &bytes)?;
         Ok(())
+    }
+
+    /// 右クリック時のコールバック（行コンテキストメニュー表示は呼び出し側が担う）を登録する。
+    /// 画面座標とクリックされた行の絶対インデックスを渡す。
+    pub fn on_menu(&self, cb: impl Fn(w::POINT, usize) + 'static) {
+        *self.inner.on_menu.borrow_mut() = Some(Box::new(cb));
+    }
+
+    /// マウス位置（クライアント座標）が指す行の絶対インデックス。行の無い余白・空行は
+    /// コピー対象が無いので `None`。
+    fn row_at(&self, pt: w::POINT) -> Option<usize> {
+        if pt.y < 1 {
+            return None;
+        }
+        let lh = self.inner.line_height.get().max(1);
+        let s = self.inner.state.borrow();
+        let vi = ((pt.y - 1) / lh) as usize;
+        let i = s.scroll_top + vi;
+        if i >= s.count() || s.lines[i].text.is_empty() {
+            return None;
+        }
+        Some(i)
     }
 
     /// ログ全文を返す（行は `\r\n` 区切り・末尾にも改行）。スクリプト `getLog` 用。
@@ -377,6 +420,17 @@ impl LogView {
         let this = self.clone();
         self.wnd.on().wm_mouse_move(move |p| {
             this.on_mouse_move(p.coords)?;
+            Ok(())
+        });
+
+        let this = self.clone();
+        self.wnd.on().wm_r_button_down(move |p| {
+            if let Some(row) = this.row_at(p.coords)
+                && let Some(cb) = this.inner.on_menu.borrow().as_ref()
+            {
+                let screen = this.hwnd().ClientToScreen(p.coords).unwrap_or(p.coords);
+                cb(screen, row);
+            }
             Ok(())
         });
 

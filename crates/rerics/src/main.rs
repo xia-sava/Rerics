@@ -741,6 +741,10 @@ impl MainWindow {
             self.viewer.on_menu(move |pt| {
                 let _ = this.show_text_menu(pt);
             });
+            let this = self.clone();
+            self.log.on_menu(move |pt, row| {
+                let _ = this.show_log_menu(pt, row);
+            });
             // 検索バーを閉じたら、キー入力先を本体（key_sink）へ戻す。
             let this = self.clone();
             self.viewer.on_search_close(move || {
@@ -1846,6 +1850,19 @@ impl MainWindow {
             let _ = std::process::Command::new(exe).args(&args).spawn();
         }
         let _ = self.wnd.hwnd().DestroyWindow();
+    }
+
+    /// ログ行の右クリックメニュー（該当行だけをコピー）。画面座標 `pt`・行の絶対インデックス `row`。
+    fn show_log_menu(&self, pt: w::POINT, row: usize) -> w::AnyResult<()> {
+        const COPY_LINE: u16 = 1;
+        let items: &[(u16, &str)] = &[(COPY_LINE, "この行をコピー(&C)")];
+        let Some(id) = self.popup_menu(items, pt, self.log.hwnd())? else {
+            return Ok(());
+        };
+        if id == COPY_LINE {
+            self.log.copy_line(row)?;
+        }
+        Ok(())
     }
 
     fn wire_key_sink(&self) {
