@@ -2365,6 +2365,121 @@ fn find_incremental_search_origin_not_leaked_across_tabs() {
     assert_eq!(cursor.trim(), "3", "他タブの origin（2）へ漏れて戻らない: {cursor}");
 }
 
+/// PNG バイト列を RGB へデコードし、指定色そのままのピクセル数を数える（検索ハイライト
+/// 背景色の存在確認に使う。既定パレットの `viewer_find_bg`＝純黄はほかの要素と重ならない）。
+fn count_exact_color(png: &[u8], color: [u8; 3]) -> usize {
+    let img = image::load_from_memory(png).expect("decode snapshot png").to_rgb8();
+    img.pixels().filter(|p| p.0 == color).count()
+}
+
+/// インクリメンタルサーチ中は一覧の名前列の一致桁を検索ハイライト色（`viewer_find_bg`）で
+/// 塗る。検索前後でスナップショットの画素を比較し、ハイライト色そのもののピクセルが検索中
+/// だけ現れることを実描画で確認する（アイコンは無効化し、シェルアイコンの偶然の同色と
+/// 区別する）。
+#[test]
+fn file_list_search_highlights_matching_name_pixels() {
+    let server = Server::start(&["alpha.txt", "banana.txt", "cherry.txt"], "[icons]\nshow = false\n");
+    let find_bg = [0xff, 0xff, 0x00];
+
+    let (st0, before_png) = req_bytes(server.port, "GET", "/snapshot").expect("baseline snapshot");
+    assert_eq!(st0, 200, "検索前の /snapshot は 200");
+    assert_eq!(count_exact_color(&before_png, find_bg), 0, "検索前はハイライト色が出ない");
+
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
+    server.req("POST", "/search", "an").unwrap();
+    let query = poll(&server, "/state/panes/left/search/query", |b| b.trim() == "\"an\"");
+    assert_eq!(query.trim(), "\"an\"", "/state に検索語が反映される: {query}");
+    // banana.txt（"an" を含む唯一の項目）へ追従する。
+    let cursor = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
+    assert_eq!(cursor.trim(), "2", "\"an\" で banana.txt（index 2）へ追従: {cursor}");
+
+    let (st1, hit_png) = req_bytes(server.port, "GET", "/snapshot").expect("search snapshot");
+    assert_eq!(st1, 200, "検索中の /snapshot は 200");
+    let hit_count = count_exact_color(&hit_png, find_bg);
+    assert!(hit_count > 0, "検索中は一致桁がハイライト色で塗られる: {hit_count}");
+
+    // Esc で検索バーを閉じるとハイライトも消える（一致桁の強調は active 前提）。
+    server.req("POST", "/search/key/esc", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "false");
+    let (st2, after_png) = req_bytes(server.port, "GET", "/snapshot").expect("after esc snapshot");
+    assert_eq!(st2, 200, "Esc 後の /snapshot は 200");
+    assert_eq!(count_exact_color(&after_png, find_bg), 0, "Esc で閉じるとハイライト色が消える");
+}
+
+/// マーク（選択）した行は検索ハイライトより選択背景を優先し、一致桁を塗らない
+/// （テキストビューアの「選択は検索ハイライトより優先」と同じ流儀）。2 件ヒットのうち
+/// 1 件をマークすると、ハイライト色のピクセル数が減ることで確認する。
+#[test]
+fn file_list_search_highlight_skips_selected_row() {
+    let server = Server::start(&["aa1.txt", "aa2.txt", "b.txt"], "[icons]\nshow = false\n");
+    let find_bg = [0xff, 0xff, 0x00];
+    // items は [.., aa1.txt(1), aa2.txt(2), b.txt(3)]。
+
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
+    server.req("POST", "/search", "aa").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+
+    let (st1, both_png) = req_bytes(server.port, "GET", "/snapshot").expect("both hits snapshot");
+    assert_eq!(st1, 200, "/snapshot は 200");
+    let both_count = count_exact_color(&both_png, find_bg);
+    assert!(both_count > 0, "2 件ともハイライトされる: {both_count}");
+
+    // カーソル下の aa1.txt をマークする（既定でカーソルは1つ進む）。
+    server.req("POST", "/command/markToggle", "").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
+    let marked = server.req("GET", "/state/panes/left/items/1/marked", "").unwrap().1;
+    assert_eq!(marked.trim(), "true", "aa1.txt がマークされる: {marked}");
+
+    let (st2, one_png) = req_bytes(server.port, "GET", "/snapshot").expect("one hit snapshot");
+    assert_eq!(st2, 200, "/snapshot は 200");
+    let one_count = count_exact_color(&one_png, find_bg);
+    assert!(one_count > 0, "マークしていない aa2.txt は引き続きハイライトされる: {one_count}");
+    assert!(
+        one_count < both_count,
+        "マークした行はハイライトが消える分だけ色ピクセルが減る: one={one_count} both={both_count}"
+    );
+}
+
+/// 検索ハイライトは多バイト文字（日本語ファイル名）でも文字単位で正しい桁に塗られる。
+/// 文字インデックス→バイト境界の変換を誤ると全角文字でパニックまたは位置ズレが起きうるため、
+/// 実描画で確認する。
+#[test]
+fn file_list_search_highlight_handles_multibyte_names() {
+    let server = Server::start(
+        &["日本語ファイル.txt", "資料.txt", "b.txt"],
+        "[icons]\nshow = false\n",
+    );
+    let find_bg = [0xff, 0xff, 0x00];
+
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
+    server.req("POST", "/search", "ファイル").unwrap();
+    let query = poll(&server, "/state/panes/left/search/query", |b| {
+        b.trim() == "\"ファイル\""
+    });
+    assert_eq!(query.trim(), "\"ファイル\"", "/state に検索語が反映される: {query}");
+    // "日本語ファイル.txt"（"ファイル" を含む唯一の項目）へ追従する（並び順は問わない）。
+    let items = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    let items: serde_json::Value = serde_json::from_str(&items).unwrap();
+    let at_cursor = items
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|it| it["cursor"] == true)
+        .expect("cursor is on some item");
+    assert_eq!(
+        at_cursor["name"], "日本語ファイル.txt",
+        "\"ファイル\" で日本語ファイル.txt へ追従: {at_cursor}"
+    );
+
+    let (status, png) = req_bytes(server.port, "GET", "/snapshot").expect("search snapshot");
+    assert_eq!(status, 200, "/snapshot は 200");
+    let hit_count = count_exact_color(&png, find_bg);
+    assert!(hit_count > 0, "全角文字の一致桁もハイライト色で塗られる: {hit_count}");
+}
+
 /// 検索結果一覧のビューア：基準直下ではなくサブフォルダ（項目の出自）にある実ファイルを開く。
 /// 出自を見ずに基準直下を引くと「開けません」になるので、ここで出自解決の回帰を防ぐ。
 #[test]

@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use rerics_core::{
-    Align, ColumnKind, Colors, Config, FileItem, FileListState, IconSize, MediaKind, Rgb,
+    Align, ColumnKind, Colors, Config, FileItem, FileListState, IconSize, MediaKind, Matcher, Rgb,
     SizeFormat, SortType, Spinner,
 };
 use winsafe::{self as w, co, gui, prelude::*};
@@ -1386,6 +1386,8 @@ impl FileListView {
         let icon_px = self.icon_px();
         let icon_cap = self.icon_cap();
         let dir = self.inner.dir.borrow();
+        // 検索ハイライト用のマッチャは行ループの外で一度だけ作る（毎行作り直さない）。
+        let matcher: Option<Matcher> = s.search.highlighting().then(|| s.search.matcher());
         for i in s.scroll_top..=bottom {
             if i >= s.count() {
                 break;
@@ -1460,7 +1462,19 @@ impl FileListView {
                 // 左は n 幅マージン（＋アイコン幅）、右パディングは 0（原作の左 4/右 0 に倣う）。
                 let rect = w::RECT { left: text_left, top: y, right, bottom: y + item_h };
                 let shown = fonts.elide(dc, &text, right - text_left);
-                fonts.draw_text(dc, &shown, rect, flags)?;
+                // 検索一致ハイライトは名前列・非マーク行のみ（マーク行は選択色を優先する）。
+                let hit_spans = if is_name_col && !item.selected {
+                    matcher.as_ref().map(|m| m.find(&shown)).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                if hit_spans.is_empty() {
+                    fonts.draw_text(dc, &shown, rect, flags)?;
+                } else {
+                    self.draw_name_with_highlight(
+                        dc, fonts, &shown, &hit_spans, text_left, y, item_h, text_color, &colors,
+                    )?;
+                }
                 // 名前列のリンクは、余り幅にリンク先を薄色（行の文字色を行背景へ寄せた色）・
                 // 右寄せで添える。名前が幅を先取りし、足りない分はリンク先側から削る。
                 if is_name_col && let Some(target) = &item.link_target {
@@ -1534,6 +1548,62 @@ impl FileListView {
                     &thumb_brush,
                 )?;
             }
+        }
+        Ok(())
+    }
+
+    /// 名前列のテキストを検索一致ハイライト付きで描く。一致区間は背景を
+    /// `viewer_find_bg`・文字色を `viewer_find_text` にし、非一致区間は `base_color` で描く
+    /// （地の文字色は呼び出し前に DC へ設定済みのものと同じ値を渡すこと）。
+    #[allow(clippy::too_many_arguments)]
+    fn draw_name_with_highlight(
+        &self,
+        dc: &w::HDC,
+        fonts: &FontSet,
+        text: &str,
+        spans: &[(usize, usize)],
+        left: i32,
+        y: i32,
+        item_h: i32,
+        base_color: Rgb,
+        colors: &Colors,
+    ) -> w::AnyResult<()> {
+        let chars: Vec<char> = text.chars().collect();
+        let n = chars.len();
+        if n == 0 {
+            return Ok(());
+        }
+        let mut hit = vec![false; n];
+        for &(off, len) in spans {
+            let end = (off + len).min(n);
+            for slot in hit.iter_mut().take(end).skip(off.min(n)) {
+                *slot = true;
+            }
+        }
+        let lh = self.font_height();
+        let top = y + (item_h - lh) / 2;
+        let find_bg = w::HBRUSH::CreateSolidBrush(rgb(colors.viewer_find_bg))?;
+        let mut x = left;
+        let mut p = 0;
+        while p < n {
+            let h0 = hit[p];
+            let mut q = p + 1;
+            while q < n && hit[q] == h0 {
+                q += 1;
+            }
+            let seg: String = chars[p..q].iter().collect();
+            let seg_w = fonts.width(dc, &seg);
+            if h0 {
+                let bg_rect = w::RECT { left: x, top: y, right: x + seg_w, bottom: y + item_h };
+                dc.FillRect(bg_rect, &find_bg)?;
+                dc.SetTextColor(rgb(colors.viewer_find_text))?;
+                fonts.text_out(dc, x, top, &seg)?;
+                dc.SetTextColor(rgb(base_color))?;
+            } else {
+                fonts.text_out(dc, x, top, &seg)?;
+            }
+            x += seg_w;
+            p = q;
         }
         Ok(())
     }
