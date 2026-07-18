@@ -16,7 +16,9 @@ impl MainWindow {
         let tab_h = gui::dpi_y(lay.tab_height);
         let log_h = self.log.height_for_rows(lay.log_height);
         let log_gap = gui::dpi_y(lay.log_gap);
-        let bars_y = tab_h;
+        // 検索バー表示中はタブ帯の直下にバーを差し込み、その分ペインを下げる。
+        let search_h = if self.search_bar_visible() { self.search_bar.height() } else { 0 };
+        let bars_y = tab_h + search_h;
         let log_y = total_h - my - log_h;
         let pane_h = (log_y - log_gap - bars_y).max(0);
 
@@ -31,6 +33,10 @@ impl MainWindow {
         let log_w = total_w - m * 2;
 
         place(self.tab_bar.hwnd(), 0, 0, total_w, tab_h)?;
+        if search_h > 0 {
+            place(self.search_bar.hwnd(), 0, tab_h, total_w, search_h)?;
+            self.search_bar.layout_children();
+        }
         place(self.left.hwnd(), left_x, bars_y, left_w, pane_h)?;
         self.left.relayout()?;
         place(self.splitter.hwnd(), splitter_x, bars_y, splitter_w, pane_h)?;

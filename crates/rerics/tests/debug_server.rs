@@ -2050,78 +2050,319 @@ fn sort_dialog_explike_and_reverse() {
     assert_eq!(rev.trim(), "true", "降順チェックで reverse=true: {rev}");
 }
 
-/// incrementalSearchDialog＝打鍵ごとにカーソルが一致項目へ追従し、OK で確定する。
+/// incrementalSearchDialog＝インライン検索バーを開き、打鍵ごとにカーソルが一致項目へ
+/// 追従し、Enter で確定してもカーソルは残る（バーは開いたまま）。
 #[test]
 fn find_incremental_search_follows_typing() {
     let server = Server::start(&["alpha.txt", "banana.txt", "cherry.txt"], "");
     // items は [.., alpha(1), banana(2), cherry(3)]。
     server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
-    let modal = wait_modal(&server);
-    assert!(modal.contains("\"kind\":\"incremental\""), "should open incremental modal: {modal}");
-    assert!(modal.contains("\"has_input\":true"), "should have a text field: {modal}");
+    let active = poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
+    assert_eq!(active.trim(), "true", "検索バーが開く: {active}");
 
     // "ban" と打つとカーソルが banana.txt（index 2）へ追従する。
-    server.req("POST", "/modal/text", "ban").unwrap();
+    server.req("POST", "/search", "ban").unwrap();
     let c = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
-    assert_eq!(c.trim(), "2", "cursor should follow typing to banana.txt: {c}");
+    assert_eq!(c.trim(), "2", "打鍵で banana.txt へ追従: {c}");
+    let q = server.req("GET", "/state/panes/left/search/query", "").unwrap().1;
+    assert_eq!(q.trim(), "\"ban\"", "検索語が状態に載る: {q}");
 
-    // OK で確定。モーダルが閉じてもカーソルは 2 のまま。
-    server.req("POST", "/modal/command/ok", "").unwrap();
-    poll(&server, "/state/modal", |b| b.trim() == "null");
+    // Enter で確定。バーは開いたままカーソルは 2。
+    server.req("POST", "/search/key/enter", "").unwrap();
     let c2 = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
-    assert_eq!(c2.trim(), "2", "cursor should stay put after confirm: {c2}");
+    assert_eq!(c2.trim(), "2", "確定後もカーソルは 2: {c2}");
+    let a2 = server.req("GET", "/state/panes/left/search/active", "").unwrap().1;
+    assert_eq!(a2.trim(), "true", "確定後もバーは開いたまま: {a2}");
 }
 
-/// 中止すると開始時のカーソルへ戻す。
+/// Esc でバーを閉じると絞り込み・ハイライトは解けるが、検索語は残る（次に開くと続けられる）。
+/// カーソルはバーを開く前の位置へ戻る。
 #[test]
 fn find_incremental_search_cancel_restores() {
     let server = Server::start(&["alpha.txt", "banana.txt", "cherry.txt"], "");
-    // 開始カーソルを 1（alpha）にしておく。
-    server.req("POST", "/command/cursorDown", "").unwrap();
-    let origin = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
-    assert_eq!(origin.trim(), "1");
-
+    let origin = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
     server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
-    wait_modal(&server);
-    server.req("POST", "/modal/text", "cher").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
+    server.req("POST", "/search", "cher").unwrap();
     poll(&server, "/state/panes/left/cursor", |b| b.trim() == "3");
 
-    // 中止で origin(1) に戻る。
-    server.req("POST", "/modal/command/cancel", "").unwrap();
-    poll(&server, "/state/modal", |b| b.trim() == "null");
+    // Esc で閉じる：active=false・検索語は残る・カーソルは検索開始前の位置へ戻る。
+    server.req("POST", "/search/key/esc", "").unwrap();
+    let a = poll(&server, "/state/panes/left/search/active", |b| b.trim() == "false");
+    assert_eq!(a.trim(), "false", "Esc でバーが閉じる: {a}");
+    let q = server.req("GET", "/state/panes/left/search/query", "").unwrap().1;
+    assert_eq!(q.trim(), "\"cher\"", "Esc 後も検索語は残る: {q}");
     let c = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
-    assert_eq!(c.trim(), "1", "cancel should restore the original cursor: {c}");
+    assert_eq!(c.trim(), origin.trim(), "Esc で検索開始前のカーソル位置へ戻る: {c}");
 }
 
-/// incrementalSearchDialog の「次(&N)」＝次の一致・「前(&P)」＝前の一致（原作 Next/Previous）。
-/// 打鍵は先頭から追従、次は現在行の次から前方・折り返さない。ボタン id は 次=3・前=4。
+/// ↓＝次の一致・↑＝前の一致（現在行の次/前から探索・折り返さない）。打鍵は先頭から追従。
 #[test]
 fn find_incremental_search_steps_matches() {
     let server = Server::start(&["a1.txt", "a2.txt", "b.txt"], "");
     // items は [.., a1(1), a2(2), b(3)]。
     server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
-    wait_modal(&server);
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
 
     // "a" で先頭一致 a1(1) へ追従。
-    server.req("POST", "/modal/text", "a").unwrap();
+    server.req("POST", "/search", "a").unwrap();
     poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
 
-    // 「次」＝次の一致 a2(2) へ。
-    server.req("POST", "/modal/command/3", "").unwrap();
+    // ↓＝次の一致 a2(2) へ。
+    server.req("POST", "/search/key/down", "").unwrap();
     poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
 
-    // さらに「次」：次の "a" 一致は無く、折り返さないので 2 のまま。
-    server.req("POST", "/modal/command/3", "").unwrap();
+    // さらに ↓：次の "a" 一致は無く、折り返さないので 2 のまま。
+    server.req("POST", "/search/key/down", "").unwrap();
     let c = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
-    assert_eq!(c.trim(), "2", "no wrap: cursor stays at the last match: {c}");
+    assert_eq!(c.trim(), "2", "折り返さず末尾の一致で止まる: {c}");
 
-    // 「前」＝前の一致 a1(1) へ。
-    server.req("POST", "/modal/command/4", "").unwrap();
+    // ↑＝前の一致 a1(1) へ。
+    server.req("POST", "/search/key/up", "").unwrap();
     poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
     let c2 = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
-    assert_eq!(c2.trim(), "1", "prev steps to the previous match: {c2}");
+    assert_eq!(c2.trim(), "1", "↑ で前の一致へ: {c2}");
+}
 
-    server.req("POST", "/modal/command/cancel", "").unwrap();
+/// 左右ペインで検索状態が独立している（左で検索語を入れ、右へフォーカスを移すと
+/// `/state` の search がペインごとに違う値を返す）。
+#[test]
+fn find_incremental_search_panes_independent() {
+    let server = Server::start_writable_split(&["alpha.txt", "beta.txt"]);
+    // 左（アクティブ）で検索を開いて打ち込む。
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
+    server.req("POST", "/search", "al").unwrap();
+    let lq = poll(&server, "/state/panes/left/search/query", |b| b.trim() == "\"al\"");
+    assert_eq!(lq.trim(), "\"al\"", "左の検索語: {lq}");
+
+    // 右へフォーカスを移す。右の検索状態は独立（非アクティブ・空）。
+    server.req("POST", "/command/focusRight", "").unwrap();
+    let ra = poll(&server, "/state/panes/right/search/active", |b| b.trim() == "false");
+    assert_eq!(ra.trim(), "false", "右ペインの検索は非アクティブ: {ra}");
+    let rq = server.req("GET", "/state/panes/right/search/query", "").unwrap().1;
+    assert_eq!(rq.trim(), "\"\"", "右ペインの検索語は空: {rq}");
+
+    // 左は保持されたまま。
+    let lq2 = server.req("GET", "/state/panes/left/search/query", "").unwrap().1;
+    assert_eq!(lq2.trim(), "\"al\"", "左の検索語は保持: {lq2}");
+    let la = server.req("GET", "/state/panes/left/search/active", "").unwrap().1;
+    assert_eq!(la.trim(), "true", "左の検索は保持: {la}");
+}
+
+/// Fキーで開く→Escで閉じる→再度Fキーで開くと検索語が残っている。
+#[test]
+fn find_incremental_search_reopen_keeps_query() {
+    let server = Server::start(&["alpha.txt", "beta.txt"], "");
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
+    server.req("POST", "/search", "be").unwrap();
+    poll(&server, "/state/panes/left/search/query", |b| b.trim() == "\"be\"");
+
+    // Esc で閉じる。
+    server.req("POST", "/search/key/esc", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "false");
+
+    // 再度開くと検索語が残っている。
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
+    let a = poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
+    assert_eq!(a.trim(), "true", "再オープンでバーが開く: {a}");
+    let q = server.req("GET", "/state/panes/left/search/query", "").unwrap().1;
+    assert_eq!(q.trim(), "\"be\"", "再オープンで検索語が残る: {q}");
+}
+
+/// バーが既に開いている状態でFキー（`incrementalSearchDialog`）を再度押しても、追従を
+/// やり直さずカーソルは現在位置のまま（先頭一致へ飛ばない）。また、再オープンは開始位置の
+/// 記憶（origin）を上書きしないので、その後 Esc すると最初にバーを開いた時点の位置へ戻る。
+#[test]
+fn find_incremental_search_reopen_while_open_keeps_cursor() {
+    let server = Server::start(&["alpha.txt", "banana.txt", "cherry.txt"], "");
+    let origin = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
+    server.req("POST", "/search", "a").unwrap();
+    // "a" は alpha.txt（index 1）が先頭一致。
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+
+    // ↓ で banana.txt（index 2）へ進む。
+    server.req("POST", "/search/key/down", "").unwrap();
+    let c2 = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
+    assert_eq!(c2.trim(), "2", "↓ で banana.txt へ: {c2}");
+
+    // バーが開いたままの状態で再度オープンを叩いても、先頭一致（alpha.txt）へは飛ばない。
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
+    let c3 = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(c3.trim(), "2", "再オープンでカーソルが先頭一致へ飛ばない: {c3}");
+
+    // Esc すると、再オープンで上書きされていない最初の origin 位置へ戻る。
+    server.req("POST", "/search/key/esc", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "false");
+    let c4 = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(c4.trim(), origin.trim(), "再オープン後の Esc で最初の origin へ戻る: {c4}");
+}
+
+/// Case/Word/Regex トグルが打鍵追従・↑↓での一致移動に反映される（絞り込みの判定と同じ
+/// `search.opts` を使う）。
+#[test]
+fn find_incremental_search_respects_options() {
+    let server = Server::start(&["a1.txt", "a2.txt", "ab.txt"], "");
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
+    let origin = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+
+    // 正規表現 OFF（既定）では "a[0-9]" は文字どおりの部分一致で、どのファイル名にも
+    // 含まれないので一致せずカーソルは動かない。
+    server.req("POST", "/search", "a[0-9]").unwrap();
+    let c0 = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(c0.trim(), origin.trim(), "正規表現 OFF では一致せずカーソルは動かない: {c0}");
+
+    // 正規表現 ON にすると同じ検索語で a1.txt/a2.txt が一致し、先頭一致（a1.txt）へ追従する。
+    server.req("POST", "/search/option/regex/on", "").unwrap();
+    let c1 = poll(&server, "/state/panes/left/cursor", |b| b.trim() != origin.trim());
+    let name1 = server.req("GET", &format!("/state/panes/left/items/{}/name", c1.trim()), "").unwrap().1;
+    assert_eq!(name1.trim(), "\"a1.txt\"", "正規表現 ON で a1.txt へ追従: {name1}");
+
+    // ↓ で次の一致 a2.txt へ（ab.txt は "a[0-9]" に一致しないので飛ばされる）。
+    server.req("POST", "/search/key/down", "").unwrap();
+    let c2 = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    let name2 =
+        server.req("GET", &format!("/state/panes/left/items/{}/name", c2.trim()), "").unwrap().1;
+    assert_eq!(name2.trim(), "\"a2.txt\"", "↓ でも正規表現オプションに従って a2.txt へ: {name2}");
+}
+
+/// 履歴ドロップダウンを開くと、実際に描画される位置（メインウィンドウのクライアント領域内・
+/// バーのすぐ下）に収まっている。バー本体は高さがバー1行分しかないため、リストがその子の
+/// ままだと Win32 の子ウィンドウクリッピングで一切描画されない（回帰防止）。
+#[test]
+fn find_incremental_search_history_dropdown_is_visible() {
+    let server = Server::start(&["alpha.txt", "banana.txt"], "");
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
+    // Enter で確定して履歴へ記録する（ドロップダウンを開くには履歴が要る）。
+    server.req("POST", "/search", "al").unwrap();
+    server.req("POST", "/search/key/enter", "").unwrap();
+
+    server.req("POST", "/search/dropdown/open", "").unwrap();
+    let open = poll(&server, "/state/search_bar/dropdown_open", |b| b.trim() == "true");
+    assert_eq!(open.trim(), "true", "ドロップダウンが開く: {open}");
+    let visible = server.req("GET", "/state/search_bar/dropdown_visible", "").unwrap().1;
+    assert_eq!(visible.trim(), "true", "ドロップダウンがクリッピングされず見える位置にある: {visible}");
+}
+
+/// 絞り込み ON で非マッチ項目が一覧から消え、OFF で復元される（ディレクトリも対象）。
+#[test]
+fn find_incremental_search_filter_hides_and_restores() {
+    let server = Server::start(&[], "");
+    let sbx = server.base.join("sbx");
+    std::fs::create_dir_all(sbx.join("apple_dir")).unwrap();
+    std::fs::create_dir_all(sbx.join("banana_dir")).unwrap();
+    std::fs::write(sbx.join("apple.txt"), b"x").unwrap();
+    std::fs::write(sbx.join("berry.txt"), b"x").unwrap();
+    server.req("POST", "/command/reload", "").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"apple.txt\""));
+
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
+    server.req("POST", "/search", "app").unwrap();
+
+    // 絞り込み ON：apple を含む項目だけ残る（apple_dir・apple.txt）。
+    server.req("POST", "/search/option/filter/on", "").unwrap();
+    let items = poll(&server, "/state/panes/left/items", |b| !b.contains("banana_dir"));
+    assert!(items.contains("\"name\":\"apple.txt\""), "apple.txt は残る: {items}");
+    assert!(items.contains("\"name\":\"apple_dir\""), "apple_dir は残る（ディレクトリも対象）: {items}");
+    assert!(!items.contains("banana_dir"), "banana_dir は消える: {items}");
+    assert!(!items.contains("berry.txt"), "berry.txt は消える: {items}");
+    let hidden = server.req("GET", "/state/panes/left/search/hidden_count", "").unwrap().1;
+    assert_eq!(hidden.trim(), "2", "非マッチ 2 件が退避される: {hidden}");
+    let filtering = server.req("GET", "/state/panes/left/search/filtering", "").unwrap().1;
+    assert_eq!(filtering.trim(), "true", "絞り込み適用中: {filtering}");
+
+    // OFF で全項目が戻る。
+    server.req("POST", "/search/option/filter/off", "").unwrap();
+    let restored = poll(&server, "/state/panes/left/items", |b| b.contains("banana_dir"));
+    assert!(
+        restored.contains("banana_dir") && restored.contains("\"name\":\"berry.txt\""),
+        "OFF で全項目が戻る: {restored}"
+    );
+    let hidden2 = server.req("GET", "/state/panes/left/search/hidden_count", "").unwrap().1;
+    assert_eq!(hidden2.trim(), "0", "退避が解ける: {hidden2}");
+}
+
+/// 絞り込み ON で Enter 確定した後に Esc すると、全項目へ復元されて一覧の並び・件数が
+/// 変わっても、カーソルは確定した項目に留まる（index をそのままクランプすると、
+/// 復元後の一覧で別の項目に乗ってしまう）。
+#[test]
+fn find_incremental_search_filter_confirm_then_cancel_keeps_confirmed_item() {
+    let server = Server::start(&["apple.txt", "banana.txt", "berry.txt"], "");
+    // items は [.., apple(1), banana(2), berry(3)]。
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
+    server.req("POST", "/search", "berry").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "3");
+
+    // 絞り込み ON：berry.txt だけが残り [.., berry.txt]（cursor=1）。
+    let items = {
+        server.req("POST", "/search/option/filter/on", "").unwrap();
+        poll(&server, "/state/panes/left/items", |b| !b.contains("apple.txt"))
+    };
+    assert!(items.contains("\"name\":\"berry.txt\""), "berry.txt は残る: {items}");
+    let c = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(c.trim(), "1", "絞り込み後の一覧では berry.txt が index 1: {c}");
+
+    // Enter で確定（絞り込み・カーソルは維持したまま、origin は破棄される）。
+    server.req("POST", "/search/key/enter", "").unwrap();
+
+    // Esc で絞り込みを解除：全項目 [.., apple, banana, berry] へ復元されても、
+    // カーソルは確定した berry.txt（今度は index 3）に留まる。
+    server.req("POST", "/search/key/esc", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "false");
+    let items2 = poll(&server, "/state/panes/left/items", |b| b.contains("apple.txt"));
+    assert!(items2.contains("\"name\":\"apple.txt\""), "全項目が戻る: {items2}");
+    let c2 = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    let name2 =
+        server.req("GET", &format!("/state/panes/left/items/{}/name", c2.trim()), "").unwrap().1;
+    assert_eq!(name2.trim(), "\"berry.txt\"", "確定した berry.txt に留まる（別項目に飛ばない）: {name2}");
+    assert_eq!(c2.trim(), "3", "全復元後の一覧では berry.txt が index 3: {c2}");
+}
+
+/// `search_origin`（検索バーを開いた時点のカーソル位置）はペイン別でタブ別ではないので、
+/// タブ切替のたびにクリアする。クリアしないと、タブ A で検索を開始したまま（origin 未消費）
+/// タブ B へ切替えて B でも検索を開始したとき、同じスロットが上書きされ、タブ A へ戻って
+/// Esc したときに B の origin へ復帰してしまう。
+#[test]
+fn find_incremental_search_origin_not_leaked_across_tabs() {
+    let server = Server::start_writable(&["alpha.txt", "banana.txt", "cherry.txt"]);
+    // items は [.., alpha(1), banana(2), cherry(3)]。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+
+    // タブ0：origin=1（alpha.txt）で検索バーを開き、cherry.txt（3）へ追従したまま閉じずに残す。
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
+    server.req("POST", "/search", "cher").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "3");
+
+    // 新タブへ切替える（複製元と同じ場所だが検索状態は引き継がない新規状態）。
+    server.req("POST", "/command/newFiler", "").unwrap();
+    poll(&server, "/state/tabs/active", |b| b.trim() == "1");
+
+    // タブ1：cursor=2（banana.txt）から検索バーを開く（同じスロットに origin=2 が立つ）。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
+
+    // タブ0へ戻ると検索状態（query="cher"・cursor=3）が復元される。
+    server.req("POST", "/command/pagePrevious", "").unwrap();
+    poll(&server, "/state/tabs/active", |b| b.trim() == "0");
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "3");
+
+    // Esc で検索バーを閉じる：タブ1の origin（2）へ誤って戻らない。
+    server.req("POST", "/search/key/esc", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "false");
+    let cursor = server.req("GET", "/state/panes/left/cursor", "").unwrap().1;
+    assert_eq!(cursor.trim(), "3", "他タブの origin（2）へ漏れて戻らない: {cursor}");
 }
 
 /// 検索結果一覧のビューア：基準直下ではなくサブフォルダ（項目の出自）にある実ファイルを開く。
@@ -6281,8 +6522,8 @@ fn about_dialog_shows_version_and_licenses() {
     assert_eq!(after.trim(), "null", "閉じるボタンで閉じられる");
 }
 
-/// インクリメンタルサーチ入力欄で ↑↓ が前／次の一致へカーソルを動かし（端では折り返さない）、
-/// Enter で一致位置を残して確定する。原作の手触り（Up=前・Down=次）の回帰防止。
+/// 検索バーで ↓↑ が次／前の一致へカーソルを動かし（端では折り返さない）、Enter で一致位置を
+/// 残して確定する（バーは開いたまま）。原作の手触り（Up=前・Down=次）の回帰防止。
 #[test]
 fn incremental_search_arrows_step_between_matches() {
     let server =
@@ -6297,33 +6538,33 @@ fn incremental_search_arrows_step_between_matches() {
     server
         .req("POST", "/command/incrementalSearchDialog", "")
         .expect("open incremental search");
-    wait_modal(&server);
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
 
     // "match" 入力で先頭の一致（match_a＝index 1）へ追従する。
-    server.req("POST", "/modal/text", "match").expect("set query");
+    server.req("POST", "/search", "match").expect("set query");
     wait_cursor("1");
 
     // Down＝次の一致（b→c）、最後の一致では動かない。
-    server.req("POST", "/modal/key/down", "").expect("down");
+    server.req("POST", "/search/key/down", "").expect("down");
     wait_cursor("2");
-    server.req("POST", "/modal/key/down", "").expect("down");
+    server.req("POST", "/search/key/down", "").expect("down");
     wait_cursor("3");
-    server.req("POST", "/modal/key/down", "").expect("down");
+    server.req("POST", "/search/key/down", "").expect("down");
     wait_cursor("3");
 
     // Up＝前の一致（b→a）、先頭の一致では動かない。
-    server.req("POST", "/modal/key/up", "").expect("up");
+    server.req("POST", "/search/key/up", "").expect("up");
     wait_cursor("2");
-    server.req("POST", "/modal/key/up", "").expect("up");
+    server.req("POST", "/search/key/up", "").expect("up");
     wait_cursor("1");
-    server.req("POST", "/modal/key/up", "").expect("up");
+    server.req("POST", "/search/key/up", "").expect("up");
     wait_cursor("1");
 
-    // Enter＝確定：一致位置（match_a＝1）を残してモーダルを閉じる。
-    server.req("POST", "/modal/key/enter", "").expect("enter");
-    let after = poll(&server, "/state/modal", |b| b.trim() == "null");
-    assert_eq!(after.trim(), "null", "Enter で確定して閉じる");
+    // Enter＝確定：一致位置（match_a＝1）を残す（バーは開いたまま）。
+    server.req("POST", "/search/key/enter", "").expect("enter");
     wait_cursor("1");
+    let a = server.req("GET", "/state/panes/left/search/active", "").unwrap().1;
+    assert_eq!(a.trim(), "true", "Enter 確定後もバーは開いたまま: {a}");
 }
 
 /// pageNext/pagePrevious＝タブを次/前へ巡回移動する（末尾で先頭へ・先頭で末尾へ巻き戻る＝

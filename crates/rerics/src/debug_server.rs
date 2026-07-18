@@ -323,6 +323,19 @@ pub enum Request {
     ViewSearchDropdown { open: bool },
     /// `POST /view/search/mnemonic/<c|w|r>`：トグルのニーモニック（Alt+C/W/R 相当）を駆動する。
     ViewSearchMnemonic { key: char },
+    /// `POST /search`：ファイラのインライン検索バーへ文字列を入れて即時検索（値は body）。
+    /// バーが閉じていれば開く。
+    Search { value: String },
+    /// `POST /search/key/<key>`：検索バーのキー操作（down/up＝一致移動・enter＝確定・esc＝取消）。
+    SearchKey { key: String },
+    /// `POST /search/option/<name>/<on|off>`：トグル（case/word/regex/filter）を切り替える。
+    SearchOption { name: String, on: bool },
+    /// `POST /search/history/<index>`：検索履歴の index 番目（新しい順）を選んで検索する。
+    SearchHistory { index: usize },
+    /// `POST /search/dropdown/<open|close>`：履歴ドロップダウンを開く/閉じる。
+    SearchDropdown { open: bool },
+    /// `POST /search/mnemonic/<c|w|r|o>`：トグルのニーモニック（Alt+C/W/R/O 相当）を駆動する。
+    SearchMnemonic { key: char },
     /// `GET /snapshot[/<spec>]`：画面 PNG。`spec` は ""（全体）・名前付き要素・
     /// `x,y-WxH`（数値範囲）・`<name>/<x,y-WxH>`（要素相対のサブ範囲）。
     Snapshot { spec: String },
@@ -697,6 +710,31 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 let mut value = String::new();
                 let _ = std::io::Read::read_to_string(req.as_reader(), &mut value);
                 Some(Request::ViewSearch { value })
+            } else if let Some(n) = path.strip_prefix("/search/history/") {
+                n.trim_end_matches('/')
+                    .parse::<usize>()
+                    .ok()
+                    .map(|index| Request::SearchHistory { index })
+            } else if let Some(s) = path.strip_prefix("/search/dropdown/") {
+                Some(Request::SearchDropdown {
+                    open: s.trim_end_matches('/').eq_ignore_ascii_case("open"),
+                })
+            } else if let Some(s) = path.strip_prefix("/search/mnemonic/") {
+                s.trim_end_matches('/')
+                    .chars()
+                    .next()
+                    .map(|key| Request::SearchMnemonic { key })
+            } else if let Some(rest) = path.strip_prefix("/search/option/") {
+                rest.trim_end_matches('/').rsplit_once('/').map(|(name, val)| Request::SearchOption {
+                    name: name.to_string(),
+                    on: val.eq_ignore_ascii_case("on"),
+                })
+            } else if let Some(key) = path.strip_prefix("/search/key/") {
+                Some(Request::SearchKey { key: key.trim_end_matches('/').to_string() })
+            } else if path == "/search" {
+                let mut value = String::new();
+                let _ = std::io::Read::read_to_string(req.as_reader(), &mut value);
+                Some(Request::Search { value })
             } else if let Some(key) = path.strip_prefix("/filer/syskey/") {
                 Some(Request::FilerSysKey { key: key.trim_end_matches('/').to_string() })
             } else if let Some(action) = path.strip_prefix("/view/key/") {

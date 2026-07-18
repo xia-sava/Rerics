@@ -87,6 +87,24 @@ impl MainWindow {
                 debug_server::Request::ViewSearchMnemonic { key } => {
                     let _ = tx.send(self.debug_view_search_mnemonic(key));
                 }
+                debug_server::Request::Search { value } => {
+                    let _ = tx.send(self.debug_search(&value));
+                }
+                debug_server::Request::SearchKey { key } => {
+                    let _ = tx.send(self.debug_search_key(&key));
+                }
+                debug_server::Request::SearchOption { name, on } => {
+                    let _ = tx.send(self.debug_search_option(&name, on));
+                }
+                debug_server::Request::SearchHistory { index } => {
+                    let _ = tx.send(self.debug_search_history(index));
+                }
+                debug_server::Request::SearchDropdown { open } => {
+                    let _ = tx.send(self.debug_search_dropdown(open));
+                }
+                debug_server::Request::SearchMnemonic { key } => {
+                    let _ = tx.send(self.debug_search_mnemonic(key));
+                }
                 debug_server::Request::Snapshot { spec } => {
                     self.settle_pending_jobs();
                     let _ = tx.send(self.debug_snapshot(&spec));
@@ -1112,6 +1130,139 @@ impl MainWindow {
         }
     }
 
+    /// ファイラのインライン検索バーが操作対象か（重ね表示ビューア中は不可）。
+    #[cfg(feature = "debug-server")]
+    fn filer_search_ready(&self) -> Result<bool, debug_server::Response> {
+        if !matches!(self.active_view.get(), ActiveView::None) {
+            return Err(debug_server::Response::BadRequest("filer not active".into()));
+        }
+        Ok(!self.active_right.get())
+    }
+
+    /// `POST /search`：ファイラのインライン検索バーへ文字列を入れて即時検索する（値は body）。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn debug_search(&self, value: &str) -> debug_server::Response {
+        let is_left = match self.filer_search_ready() {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        };
+        let r = (|| -> w::AnyResult<()> {
+            if !self.view(is_left).state().borrow().search.active {
+                self.search_open(is_left)?;
+            }
+            // 入力欄へ入れると en_change コールバック経由で検索が走る（実キー経路と同じ）。
+            self.search_bar.debug_set_text(value)
+        })();
+        match r {
+            Ok(()) => debug_server::Response::Json(self.debug_state_value().to_string()),
+            Err(e) => debug_server::Response::Error(format!("search error: {e}")),
+        }
+    }
+
+    /// `POST /search/key/<key>`：検索バーのキー操作（down/up＝一致移動・enter＝確定・esc＝取消）。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn debug_search_key(&self, key: &str) -> debug_server::Response {
+        let is_left = match self.filer_search_ready() {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        };
+        let r = match key.to_ascii_lowercase().as_str() {
+            "down" | "next" => {
+                self.search_step(is_left, true);
+                Ok(())
+            }
+            "up" | "prev" => {
+                self.search_step(is_left, false);
+                Ok(())
+            }
+            "enter" | "return" => self.search_confirm(is_left),
+            "esc" | "escape" => self.search_close(is_left),
+            _ => return debug_server::Response::BadRequest(format!("unknown search key: {key}")),
+        };
+        match r {
+            Ok(()) => debug_server::Response::Json(self.debug_state_value().to_string()),
+            Err(e) => debug_server::Response::Error(format!("search key error: {e}")),
+        }
+    }
+
+    /// `POST /search/option/<name>/<on|off>`：トグル（case/word/regex/filter）を切り替える。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn debug_search_option(&self, name: &str, on: bool) -> debug_server::Response {
+        let is_left = match self.filer_search_ready() {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        };
+        let kind = match name.to_ascii_lowercase().as_str() {
+            "case" | "case_sensitive" => crate::search_bar::OptKind::Case,
+            "word" | "whole_word" => crate::search_bar::OptKind::Word,
+            "regex" => crate::search_bar::OptKind::Regex,
+            "filter" => crate::search_bar::OptKind::Filter,
+            _ => return debug_server::Response::BadRequest(format!("unknown search option: {name}")),
+        };
+        let inactive = !self.view(is_left).state().borrow().search.active;
+        if inactive && let Err(e) = self.search_open(is_left) {
+            return debug_server::Response::Error(format!("search option error: {e}"));
+        }
+        match self.search_set_option(is_left, kind, on) {
+            Ok(()) => debug_server::Response::Json(self.debug_state_value().to_string()),
+            Err(e) => debug_server::Response::Error(format!("search option error: {e}")),
+        }
+    }
+
+    /// `POST /search/history/<index>`：検索履歴の index 番目（新しい順）を選んで検索する。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn debug_search_history(&self, index: usize) -> debug_server::Response {
+        let is_left = match self.filer_search_ready() {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        };
+        let r = (|| -> w::AnyResult<bool> {
+            if !self.view(is_left).state().borrow().search.active {
+                self.search_open(is_left)?;
+            }
+            self.search_bar.debug_select_history(index)
+        })();
+        match r {
+            Ok(true) => debug_server::Response::Json(self.debug_state_value().to_string()),
+            Ok(false) => debug_server::Response::BadRequest(format!("no history at {index}")),
+            Err(e) => debug_server::Response::Error(format!("search history error: {e}")),
+        }
+    }
+
+    /// `POST /search/dropdown/<open|close>`：履歴ドロップダウンを開く/閉じる。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn debug_search_dropdown(&self, open: bool) -> debug_server::Response {
+        let is_left = match self.filer_search_ready() {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        };
+        let r = (|| -> w::AnyResult<()> {
+            if !self.view(is_left).state().borrow().search.active {
+                self.search_open(is_left)?;
+            }
+            self.search_bar.debug_dropdown(open)
+        })();
+        match r {
+            Ok(()) => debug_server::Response::Json(self.debug_state_value().to_string()),
+            Err(e) => debug_server::Response::Error(format!("search dropdown error: {e}")),
+        }
+    }
+
+    /// `POST /search/mnemonic/<c|w|r|o>`：トグルのニーモニック（Alt+C/W/R/O 相当）を駆動する。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn debug_search_mnemonic(&self, key: char) -> debug_server::Response {
+        let is_left = match self.filer_search_ready() {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        };
+        let inactive = !self.view(is_left).state().borrow().search.active;
+        if inactive && let Err(e) = self.search_open(is_left) {
+            return debug_server::Response::Error(format!("search mnemonic error: {e}"));
+        }
+        self.search_bar.debug_mnemonic(key);
+        debug_server::Response::Json(self.debug_state_value().to_string())
+    }
+
     /// `GET /snapshot[/<spec>]`：画面 PNG を返す。spec は全体／名前付き要素／数値範囲／要素相対範囲。
     /// 名前付き要素の矩形は復帰後レイアウトで確定するため、撮影準備（復帰＋再レイアウト）を先に行う。
     #[cfg(feature = "debug-server")]
@@ -1568,6 +1719,10 @@ impl MainWindow {
             "modal": modal,
             "media": media,
             "viewer": viewer,
+            "search_bar": {
+                "dropdown_open": self.search_bar.debug_is_dropdown_open(),
+                "dropdown_visible": self.search_bar.debug_dropdown_visible(),
+            },
             "tab_bar": { "active": self.active.get(), "labels": self.tab_bar.labels() },
             "tabs": { "active": self.active.get(), "count": tabs.len(), "items": tabs },
             "log": { "lines": log_lines, "progress": log_progress },

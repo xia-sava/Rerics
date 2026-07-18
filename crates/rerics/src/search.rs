@@ -2,9 +2,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use winsafe::{self as w, co, gui, prelude::*};
+use winsafe::{self as w, prelude::*};
 use rerics_core::LogLevel;
 use crate::MainWindow;
+use crate::search_bar::OptKind;
 use crate::task::{TaskControl, WorkerEvent};
 
 /// 進捗行を更新する走査件数の間隔。これだけ走査するごとに「走査N件…」を書き換える
@@ -390,188 +391,204 @@ impl MainWindow {
         id
     }
 
-    /// インクリメンタルサーチ。小さな入力モーダルを出し、打鍵ごとに先頭から一致を
-    /// 探してアクティブペインのカーソルを動かす（追従）。OK で確定、中止/Esc で元へ戻す。
-    pub(crate) fn incremental_search(&self, is_left: bool) -> w::AnyResult<()> {
-        let origin = self.view(is_left).state().borrow().cursor;
+    /// 共有 1 組の検索バー UI を、アクティブペインの状態と `MainWindow` の表層関数へ配線する。
+    pub(crate) fn wire_search_bar(&self) {
+        let this = self.clone();
+        self.search_bar.on_change(move |query| {
+            let _ = this.search_apply(!this.active_right.get(), query);
+        });
+        let this = self.clone();
+        self.search_bar.on_step(move |forward| {
+            this.search_step(!this.active_right.get(), forward);
+        });
+        let this = self.clone();
+        self.search_bar.on_confirm(move || {
+            let _ = this.search_confirm(!this.active_right.get());
+        });
+        let this = self.clone();
+        self.search_bar.on_cancel(move || {
+            let _ = this.search_close(!this.active_right.get());
+        });
+        let this = self.clone();
+        self.search_bar.on_option(move |kind, on| {
+            let _ = this.search_set_option(!this.active_right.get(), kind, on);
+        });
+    }
 
-        let (wnd, arm) = crate::dialog::modal_window("インクリメンタルサーチ", 360, 96);
-
-        let _label = gui::Label::new(
-            &wnd,
-            gui::LabelOpts {
-                text: "検索文字（打鍵で追従・↑↓で前後の一致・Enter で確定）:",
-                position: gui::dpi(12, 10),
-                size: gui::dpi(336, 16),
-                ..Default::default()
-            },
-        );
-
-        let edit = gui::Edit::new(
-            &wnd,
-            gui::EditOpts {
-                control_style: co::ES::AUTOHSCROLL,
-                position: gui::dpi(12, 30),
-                width: gui::dpi_x(296),
-                height: gui::dpi_y(24),
-                ..Default::default()
-            },
-        );
-
-        let prev = gui::Button::new(
-            &wnd,
-            gui::ButtonOpts {
-                text: "前(&P)",
-                ctrl_id: 4,
-                position: gui::dpi(12, 60),
-                width: gui::dpi_x(64),
-                height: gui::dpi_y(24),
-                ..Default::default()
-            },
-        );
-
-        let next = gui::Button::new(
-            &wnd,
-            gui::ButtonOpts {
-                text: "次(&N)",
-                ctrl_id: 3,
-                position: gui::dpi(80, 60),
-                width: gui::dpi_x(64),
-                height: gui::dpi_y(24),
-                ..Default::default()
-            },
-        );
-
-        let ok = gui::Button::new(
-            &wnd,
-            gui::ButtonOpts {
-                text: "OK",
-                ctrl_id: 1,
-                position: gui::dpi(200, 60),
-                width: gui::dpi_x(68),
-                height: gui::dpi_y(24),
-                ..Default::default()
-            },
-        );
-
-        let cancel = gui::Button::new(
-            &wnd,
-            gui::ButtonOpts {
-                text: "中止(&S)",
-                ctrl_id: 2,
-                position: gui::dpi(272, 60),
-                width: gui::dpi_x(68),
-                height: gui::dpi_y(24),
-                ..Default::default()
-            },
-        );
-
-        // 打鍵追従：テキスト変化のたびに先頭から検索してカーソルを移す。
-        {
-            let this = self.clone();
-            let edit2 = edit.clone();
-            edit.on().en_change(move || {
-                let q = edit2.text().unwrap_or_default();
-                this.incremental_apply(is_left, &q);
-                Ok(())
-            });
+    /// Fキー。バーが閉じていれば、開く前のカーソル位置を控えたうえで開き、検索語が残っていれば
+    /// そこから再開する（先頭から追従）。既にバーが開いている（再フォーカスのみ）ときは追従を
+    /// やり直さず、検索ボックスへフォーカス＋全選択するだけに留める。
+    pub(crate) fn search_open(&self, is_left: bool) -> w::AnyResult<()> {
+        let idx = if is_left { 0 } else { 1 };
+        let already_open = self.view(is_left).state().borrow().search.active;
+        if already_open {
+            self.search_bar.focus_edit(true);
+            return Ok(());
         }
-
-        // 次／前の一致へ（原作 Next/Previous）。現在の検索文字で現在行の次（前）から探す。
+        let cursor = self.view(is_left).state().borrow().cursor;
+        self.search_origin.borrow_mut()[idx] = Some(cursor);
         {
-            let this = self.clone();
-            let edit2 = edit.clone();
-            next.on().bn_clicked(move || {
-                let q = edit2.text().unwrap_or_default();
-                this.incremental_step(is_left, &q, true);
-                Ok(())
-            });
+            let state = self.view(is_left).state();
+            state.borrow_mut().search.active = true;
         }
-        {
-            let this = self.clone();
-            let edit2 = edit.clone();
-            prev.on().bn_clicked(move || {
-                let q = edit2.text().unwrap_or_default();
-                this.incremental_step(is_left, &q, false);
-                Ok(())
-            });
-        }
-
-        #[cfg(feature = "debug-server")]
-        arm.plain(
-            "incremental",
-            "インクリメンタルサーチ",
-            "",
-            true,
-            vec![
-                ("前(&P)".to_string(), 4u16),
-                ("次(&N)".to_string(), 3u16),
-                ("OK".to_string(), 1u16),
-                ("中止(&S)".to_string(), 2u16),
-            ],
-        );
-        {
-            let this = self.clone();
-            let edit2 = edit.clone();
-            arm.on_create(move |hwnd| {
-                edit2.hwnd().SetFocus();
-                let this = this.clone();
-                let edit3 = edit2.clone();
-                crate::dialog::keyhook::push(hwnd, move |msg, wparam| {
-                    use crate::dialog::keyhook::WM_KEYDOWN;
-                    let vk = wparam as u16;
-                    // Up=前の一致・Down=次の一致（原作 Previous/Next）。
-                    if msg == WM_KEYDOWN && (vk == 0x26 || vk == 0x28) {
-                        let q = edit3.text().unwrap_or_default();
-                        this.incremental_step(is_left, &q, vk == 0x28);
-                        return true;
-                    }
-                    false
-                });
-                Ok(())
-            });
-        }
-
-        {
-            let wnd2 = wnd.clone();
-            ok.on().bn_clicked(move || {
-                wnd2.close();
-                Ok(())
-            });
-        }
-        {
-            let this = self.clone();
-            let wnd2 = wnd.clone();
-            cancel.on().bn_clicked(move || {
-                // 中止＝開始時のカーソルへ戻す。
-                this.move_cursor_to(is_left, origin);
-                wnd2.close();
-                Ok(())
-            });
-        }
-
-        crate::dialog::show_modal_guarded(&wnd, &self.wnd);
-        crate::dialog::keyhook::pop();
-        let _ = (edit, prev, next, ok, cancel);
+        let query = self.view(is_left).state().borrow().search.query.clone();
+        self.search_apply(is_left, &query)?;
+        self.sync_search_bar()?;
+        self.search_bar.focus_edit(true);
         Ok(())
     }
 
-    /// インクリメンタルサーチの1打鍵分：先頭から `query` の一致を探してカーソル移動。
-    pub(crate) fn incremental_apply(&self, is_left: bool, query: &str) {
-        self.incremental_move(is_left, 0, query, true);
+    /// Esc。バーの表示を閉じ、絞り込み・ハイライトを完全に解除し（一覧を全復元）、カーソルを
+    /// バーを開いた時点の位置へ戻す。開始位置の記憶（`search_origin`）が無ければ、確定
+    /// （Enter）済みで絞り込みだけを解いたケースなので、絞り込み後の一覧でのカーソル項目を
+    /// 名前＋出自で控え、全復元後の一覧で同じ項目へ再対応付けする（絞り込み解除で一覧の
+    /// 並び・件数が変わり、index が同じ項目を指すとは限らないため）。検索語・オプション・
+    /// 絞り込み設定は保持する。フォーカスはキーシンクへ戻す。
+    pub(crate) fn search_close(&self, is_left: bool) -> w::AnyResult<()> {
+        let idx = if is_left { 0 } else { 1 };
+        let page_rows = self.view(is_left).page_rows();
+        let origin = self.search_origin.borrow_mut()[idx].take();
+        {
+            let state = self.view(is_left).state();
+            let mut s = state.borrow_mut();
+            s.search.active = false;
+            if origin.is_none() {
+                let cur = s.items.get(s.cursor);
+                let name = cur.map(|it| it.name.clone());
+                let source = cur.and_then(|it| it.source.clone());
+                let prev_index = s.cursor;
+                s.apply_search();
+                s.restore_cursor_after_rebuild(name.as_deref(), source.as_ref(), prev_index, None, page_rows);
+            } else {
+                s.apply_search();
+                let cursor = s.cursor as isize;
+                s.set_cursor(cursor, page_rows);
+            }
+        }
+        if let Some(origin) = origin {
+            let state = self.view(is_left).state();
+            let mut s = state.borrow_mut();
+            s.set_cursor(origin as isize, page_rows);
+            s.select_start = s.cursor;
+        }
+        let _ = self.view(is_left).refresh();
+        self.sync_search_bar()?;
+        self.key_sink.hwnd().SetFocus();
+        Ok(())
     }
 
-    /// `from` から `forward` 方向へ `query`（部分一致・大小無視）の一致を探し、見つかれば
-    /// カーソルとアンカー(`select_start`)をそこへ移して中央寄せする。原作 IncrementalSearch の
-    /// 一致時挙動（`SelectedIndex`＋`SelectStart` 設定＋`CenterCursor`）に合わせる。折り返さない。
-    pub(crate) fn incremental_move(&self, is_left: bool, from: usize, query: &str, forward: bool) -> bool {
+    /// Enter。検索語を履歴 `"filesearch"` へ記録する（空なら記録しない）。バーは開いたまま
+    /// （絞り込み・ハイライトも維持）、フォーカスを一覧（キーシンク）へ戻す。確定したのでもう
+    /// Esc で戻す対象ではなくなり、開始位置の記憶は捨てる。
+    pub(crate) fn search_confirm(&self, is_left: bool) -> w::AnyResult<()> {
+        let idx = if is_left { 0 } else { 1 };
+        let query = self.view(is_left).state().borrow().search.query.clone();
+        self.search_bar.record_history(&query);
+        self.search_origin.borrow_mut()[idx] = None;
+        self.key_sink.hwnd().SetFocus();
+        Ok(())
+    }
+
+    /// 打鍵（en_change）。`query` を状態へ反映し、絞り込みを再適用したうえで先頭から追従する。
+    fn search_apply(&self, is_left: bool, query: &str) -> w::AnyResult<()> {
+        let page_rows = self.view(is_left).page_rows();
+        {
+            let state = self.view(is_left).state();
+            let mut s = state.borrow_mut();
+            s.search.query = query.to_owned();
+            s.apply_search();
+            // apply_search は scroll_top をクランプしないので、set_cursor で安全域へ戻す。
+            let cursor = s.cursor as isize;
+            s.set_cursor(cursor, page_rows);
+        }
+        self.incremental_apply(is_left);
+        let _ = self.view(is_left).refresh();
+        Ok(())
+    }
+
+    /// トグル変更（Case/Word/Regex/Filter）。対応するオプション/絞り込みを更新し、再適用して
+    /// から現在の検索語で追従し直す。`on` は `SearchOptions` の生フィールド値。
+    pub(crate) fn search_set_option(&self, is_left: bool, kind: OptKind, on: bool) -> w::AnyResult<()> {
+        {
+            let state = self.view(is_left).state();
+            let mut s = state.borrow_mut();
+            match kind {
+                OptKind::Case => s.search.opts.case_sensitive = on,
+                OptKind::Word => {
+                    s.search.opts.whole_word = on;
+                    if on {
+                        s.search.opts.regex = false;
+                    }
+                }
+                OptKind::Regex => {
+                    s.search.opts.regex = on;
+                    if on {
+                        s.search.opts.whole_word = false;
+                    }
+                }
+                OptKind::Filter => s.search.filter = on,
+            }
+        }
+        let query = self.view(is_left).state().borrow().search.query.clone();
+        self.search_apply(is_left, &query)?;
+        self.sync_search_bar()?;
+        Ok(())
+    }
+
+    /// ↑↓・前後ボタン。現在カーソル行の次（前）から Matcher で探す。
+    pub(crate) fn search_step(&self, is_left: bool, forward: bool) {
+        self.incremental_step(is_left, forward);
+    }
+
+    /// 共有 1 組のバー UI をアクティブペインの状態へ同期する唯一の口。アクティブペインが
+    /// `ActiveView::None` かつ `search.active` なら表示＋状態流し込み、そうでなければ隠す。
+    /// 表示/非表示が変化したらレイアウトし直す。フォーカスは一切動かさない。
+    pub(crate) fn sync_search_bar(&self) -> w::AnyResult<()> {
+        let is_left = !self.active_right.get();
+        let visible = self.search_bar_visible();
+        let was_visible = self.search_bar.hwnd().IsWindowVisible();
+        if visible {
+            let s = self.view(is_left).state().borrow().search.clone();
+            self.search_bar.show();
+            self.search_bar.set_state(&s);
+        } else {
+            self.search_bar.hide();
+        }
+        if visible != was_visible {
+            self.layout()?;
+        }
+        Ok(())
+    }
+
+    /// 検索バーを表示すべき状態か（ファイラ操作中で、アクティブペインの検索がアクティブ）。
+    pub(crate) fn search_bar_visible(&self) -> bool {
+        matches!(self.active_view.get(), crate::ActiveView::None)
+            && self.view(!self.active_right.get()).state().borrow().search.active
+    }
+
+    /// インクリメンタルサーチの1打鍵分：先頭から現在の検索オプション（Case/Word/Regex）に
+    /// 従った一致を探してカーソル移動。
+    pub(crate) fn incremental_apply(&self, is_left: bool) {
+        let matcher = self.view(is_left).state().borrow().search.matcher();
+        self.incremental_move(is_left, 0, &matcher, true);
+    }
+
+    /// `from` から `forward` 方向へ `matcher` の一致を探し、見つかればカーソルとアンカー
+    /// (`select_start`)をそこへ移して中央寄せする。原作 IncrementalSearch の一致時挙動
+    /// （`SelectedIndex`＋`SelectStart` 設定＋`CenterCursor`）に合わせる。折り返さない。
+    pub(crate) fn incremental_move(
+        &self,
+        is_left: bool,
+        from: usize,
+        matcher: &rerics_core::Matcher,
+        forward: bool,
+    ) -> bool {
         let view = self.view(is_left);
         let pr = view.page_rows();
         let found = {
             let state = view.state();
             let s = state.borrow();
-            let matcher = rerics_core::build_matcher(query, &rerics_core::SearchOptions::default());
-            rerics_core::find_match(&s.items, from, &matcher, forward, false)
+            rerics_core::find_match(&s.items, from, matcher, forward, false)
         };
         if let Some(i) = found {
             {
@@ -586,32 +603,20 @@ impl MainWindow {
         found.is_some()
     }
 
-    /// 次／前の一致へ移動する（↑↓・「次(&N)」/「前(&P)」ボタン）。現在行の次（前）から探索し、
-    /// 折り返さない。
-    fn incremental_step(&self, is_left: bool, query: &str, forward: bool) {
-        let (cursor, count) = {
+    /// 次／前の一致へ移動する（↑↓・「次(&N)」/「前(&P)」ボタン）。現在行の次（前）から、現在の
+    /// 検索オプションに従って探索し、折り返さない。
+    fn incremental_step(&self, is_left: bool, forward: bool) {
+        let (cursor, count, matcher) = {
             let s = self.view(is_left).state();
             let s = s.borrow();
-            (s.cursor, s.count())
+            (s.cursor, s.count(), s.search.matcher())
         };
         if forward {
             if cursor + 1 < count {
-                self.incremental_move(is_left, cursor + 1, query, true);
+                self.incremental_move(is_left, cursor + 1, &matcher, true);
             }
         } else if cursor > 0 {
-            self.incremental_move(is_left, cursor - 1, query, false);
+            self.incremental_move(is_left, cursor - 1, &matcher, false);
         }
-    }
-
-    /// 指定ペインのカーソルを `idx` に移して再描画する。
-    pub(crate) fn move_cursor_to(&self, is_left: bool, idx: usize) {
-        let view = self.view(is_left);
-        let pr = view.page_rows();
-        {
-            let state = view.state();
-            let mut s = state.borrow_mut();
-            s.set_cursor(idx as isize, pr);
-        }
-        let _ = view.refresh();
     }
 }

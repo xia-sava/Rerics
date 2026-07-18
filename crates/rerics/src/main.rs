@@ -22,6 +22,7 @@ mod menu;
 mod key_editor;
 mod pane_view;
 mod path_bar;
+mod search_bar;
 mod settings_dialog;
 mod shell;
 mod splitter;
@@ -62,6 +63,7 @@ use log_view::LogView;
 use media_view::MediaView;
 use pane_view::PaneView;
 use path_bar::PathBarView;
+use search_bar::SearchBar;
 use status_bar::StatusBarView;
 use tab_bar::TabBar;
 use task::{TaskEntry, WorkerEvent};
@@ -139,8 +141,6 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         JumpDialog | PathRegisterDialog => DebugCmdClass::MaybeModal,
         // キー割り当て一覧はリスト選択モーダル（読取専用・選択結果は使わない）。
         KeyBindsDialog => DebugCmdClass::MaybeModal,
-        // インクリメンタルサーチは入力モーダル（打鍵追従でカーソル移動・読取のみ）。
-        IncrementalSearchDialog => DebugCmdClass::MaybeModal,
         // 任意コマンド実行は補完つき入力モーダルを開く（打った内容を再ディスパッチする）。
         CommandDirect => DebugCmdClass::MaybeModal,
         // ビューアの検索はインライン検索バー（モーダルを開かない＝即時に応答が返る）。
@@ -188,6 +188,8 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         | ShellMove | ShellDelete | ClearLog | CopyLog | ThumbnailMode | Nop => {
             DebugCmdClass::NonModal
         }
+        // インクリメンタルサーチはインライン検索バーを開く（モーダルを開かない＝即時に応答が返る）。
+        IncrementalSearchDialog => DebugCmdClass::NonModal,
         ViewerClose | ViewerToggleMode | ViewerChangeEncoding | ViewerCopy | ViewerSelectAll
         | ViewerScrollUp | ViewerScrollDown | ViewerScrollTop | ViewerScrollBottom
         | ViewerPageUp | ViewerPageDown | ViewerSearchDialog | ViewerFindNext
@@ -359,6 +361,8 @@ struct MainWindow {
     right: PaneView,
     splitter: splitter::SplitterView,
     tab_bar: TabBar,
+    /// タブ帯とペインの間に置く共有インライン検索バー（左右ペインの検索状態で使い回す）。
+    search_bar: SearchBar,
     log: LogView,
     viewer: ViewerView,
     media: MediaView,
@@ -413,6 +417,11 @@ struct MainWindow {
     /// 結果一覧を再検索した後、完了時にカーソルを戻す指定（`[左, 右]`）。操作後リフレッシュ・
     /// リネーム後の追従用。再検索開始時に立て、完了（`FindDone`）で取り出して消費する。
     find_refocus: Rc<RefCell<[Option<Refocus>; 2]>>,
+    /// インライン検索バーを開いた時点のカーソル位置（`[左, 右]`）。バーが新規に開くとき
+    /// （既に開いている間の再フォーカスでは上書きしない）に立て、Esc で復帰し終えたら、または
+    /// Enter で確定したら取り出して消費する（Esc でそこへカーソルを戻すため）。タブ別ではなく
+    /// ペイン別（タブ切替時にクリアする＝タブをまたいだ開始位置は意味を持たない）。
+    search_origin: Rc<RefCell<[Option<usize>; 2]>>,
     /// スクリプト実行を停止（強制終了）するための V8 isolate ハンドル。エンジン起動後に
     /// `ScriptEngineReady` で受け取って保持する。
     script_isolate: Rc<RefCell<Option<deno_core::v8::IsolateHandle>>>,
@@ -564,6 +573,8 @@ impl MainWindow {
         );
 
         let tab_bar = TabBar::new(&wnd, gui::dpi(0, 0), gui::dpi(800, config.layout.tab_height), &config);
+        // タブ帯とペインの間の共有検索バー（初期は非表示・layout で位置決め）。
+        let search_bar = SearchBar::new(&wnd, gui::dpi(0, 0), gui::dpi(800, config.font.size + 14), &config);
         // 高さは初回 layout() でフォント実測の行高×行数に置き換わる。生成時は概算 px。
         let log_h0 = config.layout.log_height * (config.font.size + 4);
         let log = LogView::new(&wnd, gui::dpi(m, m), gui::dpi(800, log_h0), &config);
@@ -648,6 +659,7 @@ impl MainWindow {
             right,
             splitter,
             tab_bar,
+            search_bar,
             log,
             viewer,
             media,
@@ -684,6 +696,7 @@ impl MainWindow {
             find_task: Rc::new(RefCell::new([None, None])),
             find_query: Rc::new(RefCell::new([None, None])),
             find_refocus: Rc::new(RefCell::new([None, None])),
+            search_origin: Rc::new(RefCell::new([None, None])),
             script_isolate: Rc::new(RefCell::new(None)),
             script_worker_isolates: Arc::new(std::sync::Mutex::new(Vec::new())),
             script_pool_stopped: Arc::new(AtomicBool::new(false)),
@@ -730,6 +743,7 @@ impl MainWindow {
         self.wire_pane(true);
         self.wire_pane(false);
         self.wire_key_sink();
+        self.wire_search_bar();
 
         // ビューアの右クリック＝コンテキストメニュー（表示・実行は MainWindow が担う）。
         {
@@ -990,6 +1004,8 @@ impl MainWindow {
             this.view(is_left).set_cursor_visible(true);
             this.view(!is_left).set_cursor_visible(false);
             let _ = this.update_title();
+            // 共有検索バーの表示・内容を切替先ペインの状態へ合わせる（フォーカスは動かさない）。
+            let _ = this.sync_search_bar();
             this.key_sink.hwnd().SetFocus();
         });
 
@@ -1258,7 +1274,7 @@ impl MainWindow {
                 return Ok(());
             }
             Command::IncrementalSearchDialog => {
-                self.incremental_search(is_left)?;
+                self.search_open(is_left)?;
                 return Ok(());
             }
             Command::CommandDirect => {
@@ -1890,6 +1906,17 @@ impl MainWindow {
             }
             let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
             let shift = w::GetAsyncKeyState(co::VK::SHIFT);
+            // 検索バー表示中の無修飾 Esc はバーを閉じる（既定の OpenTaskManager より優先）。
+            let is_left = !this.active_right.get();
+            if p.vkey_code == co::VK::ESCAPE
+                && !ctrl
+                && !shift
+                && !p.has_alt_key
+                && this.view(is_left).state().borrow().search.active
+            {
+                let _ = this.search_close(is_left);
+                return Ok(());
+            }
             let chord = KeyChord::new(p.vkey_code.raw(), ctrl, shift, p.has_alt_key);
             this.dispatch_filer_chord(chord);
             Ok(())

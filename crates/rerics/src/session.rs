@@ -176,6 +176,11 @@ impl MainWindow {
             let _ = self.maybe_start_archive_extract(is_left);
         }
         self.cleanup_unreferenced_temps();
+        // インライン検索バーを開いた時点のカーソル位置（タブごとではなくペイン別に持つ）は
+        // タブをまたぐと意味を持たないので、切替のたびに捨てる。
+        *self.search_origin.borrow_mut() = [None, None];
+        // 切替先タブのアクティブペインの検索状態を共有検索バーへ反映する。
+        let _ = self.sync_search_bar();
         self.key_sink.hwnd().SetFocus();
         Ok(())
     }

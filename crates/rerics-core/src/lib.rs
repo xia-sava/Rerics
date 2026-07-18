@@ -42,8 +42,8 @@ pub use config::{
 };
 pub use file_list::{
     SizeFormat, format_size_styled,
-    Align, Colors, Column, ColumnKind, FileItem, FileListState, LinkKind, NameCase, Rgb, SeqCase,
-    SortType,
+    Align, Colors, Column, ColumnKind, FileItem, FileListState, LinkKind, NameCase, PaneSearch, Rgb,
+    SeqCase, SortType,
     auto_adjust_columns, column_sample, default_columns, find_match, glob_match, read_items,
     sequence_rename,
 };

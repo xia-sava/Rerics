@@ -453,6 +453,8 @@ impl MainWindow {
             }
             ActiveView::None => {}
         }
+        // ビューアが前面に出たので共有検索バーを畳む（検索状態自体は保持される）。
+        let _ = self.sync_search_bar();
         self.key_sink.hwnd().SetFocus();
         Ok(())
     }
@@ -464,6 +466,8 @@ impl MainWindow {
         self.active_view.set(ActiveView::None);
         self.viewer.hwnd().ShowWindow(co::SW::HIDE);
         self.media.hwnd().ShowWindow(co::SW::HIDE);
+        // ファイラへ戻ったので、そのペインの検索がアクティブなら共有検索バーを復活させる。
+        let _ = self.sync_search_bar();
         self.key_sink.hwnd().SetFocus();
         // ビューアを隠した跡地を、一覧やパスバー等の子ウィンドウまで含めて即時に描き直す
         // （非表示にしただけでは子へ再描画が伝わらず表示が乱れることがある）。
