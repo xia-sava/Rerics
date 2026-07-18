@@ -906,8 +906,6 @@ impl MainWindow {
             this.layout()?;
             let snap = this.tabs.borrow()[this.active.get()].clone();
             this.load_snapshot(&snap)?;
-            this.update_title()?;
-            this.refresh_tab_bar()?;
             // 保存タブがあれば、窓を出した後にワーカーで復元する（パス探索・一覧読込は
             // オフライン UNC 等でブロックし得るため UI スレッドから外す）。
             this.start_restore_tabs();
@@ -1000,10 +998,9 @@ impl MainWindow {
         // キーシンクに集約するので、ここではフォーカスをキーシンクへ戻すだけにする。
         let this = self.clone();
         self.view(is_left).on_got_focus(move || {
-            this.active_right.set(!is_left);
+            let _ = this.set_active_pane(!is_left);
             this.view(is_left).set_cursor_visible(true);
             this.view(!is_left).set_cursor_visible(false);
-            let _ = this.update_title();
             // 共有検索バーの表示・内容を切替先ペインの状態へ合わせる（フォーカスは動かさない）。
             let _ = this.sync_search_bar();
             this.key_sink.hwnd().SetFocus();

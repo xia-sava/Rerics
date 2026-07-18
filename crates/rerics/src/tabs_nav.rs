@@ -27,8 +27,6 @@ impl MainWindow {
         self.active.set(index);
         let snap = self.tabs.borrow()[index].clone();
         self.load_snapshot(&snap)?;
-        self.update_title()?;
-        self.refresh_tab_bar()?;
         Ok(())
     }
 
@@ -87,8 +85,6 @@ impl MainWindow {
         self.active.set(index);
         let snap = self.tabs.borrow()[index].clone();
         self.load_snapshot(&snap)?;
-        self.update_title()?;
-        self.refresh_tab_bar()?;
         Ok(())
     }
 
@@ -105,8 +101,6 @@ impl MainWindow {
         self.active.set(active);
         let snap = self.tabs.borrow()[active].clone();
         self.load_snapshot(&snap)?;
-        self.update_title()?;
-        self.refresh_tab_bar()?;
         Ok(())
     }
 

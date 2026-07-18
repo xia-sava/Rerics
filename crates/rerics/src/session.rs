@@ -121,8 +121,6 @@ impl MainWindow {
         self.active.set(active);
         let snap = self.tabs.borrow()[active].clone();
         self.load_snapshot(&snap)?;
-        self.update_title()?;
-        self.refresh_tab_bar()?;
         Ok(())
     }
 
@@ -143,7 +141,7 @@ impl MainWindow {
         *self.right_pane.borrow_mut() = Pane::restore(&snap.right_path);
         *self.view(true).state().borrow_mut() = snap.left_state.clone();
         *self.view(false).state().borrow_mut() = snap.right_state.clone();
-        self.active_right.set(snap.active_right);
+        self.set_active_pane(snap.active_right)?;
         // 旧タブで走行中の非同期読込に追い越されないよう世代を進め、残りスピナーも消す
         // （新タブの一覧はスナップショットから即復元済み）。
         for is_left in [true, false] {
@@ -190,6 +188,15 @@ impl MainWindow {
         let snap = self.snapshot_live();
         let i = self.active.get();
         self.tabs.borrow_mut()[i] = snap;
+    }
+
+    /// アクティブ側ペインを切り替え、ウィンドウタイトルとタブ帯を追従させる。
+    /// `active_right` を書き換える経路はここへ一本化し、呼び出し側が追従更新を
+    /// 呼び忘れないようにする。
+    pub(crate) fn set_active_pane(&self, active_right: bool) -> w::AnyResult<()> {
+        self.active_right.set(active_right);
+        self.update_title()?;
+        self.refresh_tab_bar()
     }
 
     /// ウィンドウタイトルにアクティブタブ・アクティブペインの現在パスを反映する。
