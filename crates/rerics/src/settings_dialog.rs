@@ -2262,8 +2262,8 @@ impl ColumnsEditor {
     fn new(parent: &gui::WindowControl, shared: &Rc<Shared>) -> Self {
         // 既定の並び順（state が無い初回起動時に使う）。
         group_box(parent, "既定の並び順", 12, 8, 272, 182);
-        // 種別（2列）＋降順。自然順は名前/拡張子の専用種別として並ぶ。S キーの「ソート」
-        // ダイアログと項目・表記を揃える。右列は自然順表記の分だけ広めにとる。
+        // 種別（2列）＋降順。コードポイント順は名前/拡張子の専用種別として並ぶ。S キーの
+        // 「ソート」ダイアログと項目・表記を揃える。「（コード）」表記の分だけ広めにとる。
         let init_kind = shared.cfg.borrow().default_sort;
         let sort_kinds = gui::RadioGroup::new(
             parent,
@@ -2272,10 +2272,11 @@ impl ColumnsEditor {
                 .enumerate()
                 .map(|(i, (label, ty))| {
                     let col = i as i32 % 2;
+                    let width = if label.contains('（') { 130 } else { 110 };
                     gui::RadioButtonOpts {
                         text: label,
                         position: gui::dpi(24 + col * 114, 30 + (i as i32 / 2) * 24),
-                        size: gui::dpi(if col == 1 { 130 } else { 110 }, 20),
+                        size: gui::dpi(width, 20),
                         selected: *ty == init_kind,
                         ..Default::default()
                     }

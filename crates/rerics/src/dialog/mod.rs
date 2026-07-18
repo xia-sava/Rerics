@@ -849,16 +849,17 @@ pub struct CompressChoice {
 
 
 /// ソート設定ダイアログの種別ラジオ（表示ラベル → ソート種別・表示順）。
-/// 自然順（エクスプローラ互換）は名前/拡張子それぞれの独立した種別として並べる。
+/// 自然順（エクスプローラ互換）を既定の名前順/拡張子順とし、コードポイント順は
+/// 名前/拡張子それぞれ「（コード）」付きの独立した種別として並べる。
 pub(crate) const SORT_KINDS: &[(&str, SortType)] = &[
-    ("名前順(&F)", SortType::FileName),
-    ("名前順（自然）(&N)", SortType::FileNameExpLike),
-    ("拡張子(&E)", SortType::Extension),
-    ("拡張子（自然）(&X)", SortType::ExtensionExpLike),
+    ("名前順(&F)", SortType::FileNameExpLike),
+    ("拡張子(&E)", SortType::ExtensionExpLike),
     ("更新日付(&D)", SortType::LastWriteTime),
     ("サイズ(&S)", SortType::Length),
     ("属性(&A)", SortType::Attribute),
     ("作成日付(&C)", SortType::CreateTime),
+    ("名前順（コード）(&N)", SortType::FileName),
+    ("拡張子（コード）(&X)", SortType::Extension),
 ];
 
 

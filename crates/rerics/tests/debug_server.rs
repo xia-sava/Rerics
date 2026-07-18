@@ -2021,8 +2021,8 @@ fn sort_dialog_opens_and_closes() {
 }
 
 /// ソート設定モーダルで「種別ラジオ＋降順チェック」をニーモニックで操作し、OK 後の
-/// 種別/昇降が組み合わせどおりになることを担保する。エクスプローラ互換（自然順）は
-/// 名前/拡張子それぞれの専用ラジオ項目＝「拡張子（自然）」を選ぶと ExtensionExpLike になる。
+/// 種別/昇降が組み合わせどおりになることを担保する。コードポイント順は名前/拡張子
+/// それぞれの専用ラジオ項目＝「拡張子（コード）」を選ぶと Extension になる。
 #[test]
 fn sort_dialog_explike_and_reverse() {
     let server = Server::start(&["a.txt", "b.txt"], "");
@@ -2033,8 +2033,9 @@ fn sort_dialog_explike_and_reverse() {
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"sort\""), "should open sort modal: {modal}");
 
-    // 初期フォーカス＝選択中ラジオ（名前順）。↓×3で「拡張子（自然）」ラジオへ
-    // （名前順→名前順(自然)→拡張子→拡張子(自然)）。Tab で降順チェックへ移り Space でトグル。
+    // 初期フォーカス＝選択中ラジオ（名前順（コード）＝index6）。↓×3は WS_GROUP を巡回するので
+    // 名前順（コード）→拡張子（コード）→名前順→拡張子、で「拡張子」ラジオへ到達する。
+    // Tab で降順チェックへ移り Space でトグル。
     for _ in 0..3 {
         server.req("POST", "/modal/key/down", "").unwrap();
     }
@@ -2044,7 +2045,7 @@ fn sort_dialog_explike_and_reverse() {
     poll(&server, "/state/modal", |b| b.trim() == "null");
 
     let ty = server.req("GET", "/state/panes/left/sort/type", "").unwrap().1;
-    assert_eq!(ty.trim(), "\"ExtensionExpLike\"", "拡張子＋互換 → ExtensionExpLike: {ty}");
+    assert_eq!(ty.trim(), "\"ExtensionExpLike\"", "拡張子ラジオ → ExtensionExpLike: {ty}");
     let rev = server.req("GET", "/state/panes/left/sort/reverse", "").unwrap().1;
     assert_eq!(rev.trim(), "true", "降順チェックで reverse=true: {rev}");
 }
