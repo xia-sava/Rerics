@@ -252,7 +252,11 @@ impl MainWindow {
                 WorkerEvent::FindItem { id, is_left, item } => {
                     let idx = if is_left { 0 } else { 1 };
                     if self.find_task.borrow()[idx] == Some(id) {
-                        self.view(is_left).state().borrow_mut().push_find_result(item, None);
+                        let state = self.view(is_left).state();
+                        let mut s = state.borrow_mut();
+                        // 検索バーで絞り込み中なら、その設定を結果一覧への追加にも引き継ぐ。
+                        let matcher = s.search.should_filter().then(|| s.search.matcher());
+                        s.push_find_result(item, matcher.as_ref());
                         find_dirty[idx] = true;
                     }
                 }

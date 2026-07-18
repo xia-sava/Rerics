@@ -2775,6 +2775,112 @@ fn find_result_directory_information_sums_sources() {
     assert_eq!(modal.trim(), "null", "no result dialog: {modal}");
 }
 
+/// 検索バーで絞り込み中に `findFile`（別機能の結果一覧）を実行すると、その絞り込み設定が
+/// ライブ追加される結果一覧にも引き継がれ、検索語に一致しない項目は隠れる。
+#[test]
+fn find_incremental_search_filter_carries_into_find_file_results() {
+    let server = Server::start(&["note.dat"], "");
+    let sbx = server.base.join("sbx");
+    std::fs::create_dir_all(sbx.join("sub")).unwrap();
+    std::fs::write(sbx.join("keep1.txt"), b"x").unwrap();
+    std::fs::write(sbx.join("drop1.txt"), b"x").unwrap();
+    std::fs::write(sbx.join("sub").join("keep2.txt"), b"x").unwrap();
+    std::fs::write(sbx.join("sub").join("drop2.txt"), b"x").unwrap();
+
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
+    server.req("POST", "/search", "keep").unwrap();
+    server.req("POST", "/search/option/filter/on", "").unwrap();
+    poll(&server, "/state/panes/left/search/filtering", |b| b.trim() == "true");
+
+    server.req("POST", "/command/findFile", "[\"*.txt\"]").unwrap();
+    let hidden = poll(&server, "/state/panes/left/search/hidden_count", |b| b.trim() == "2");
+    assert_eq!(hidden.trim(), "2", "keep を含まない drop1/drop2 が退避される: {hidden}");
+
+    let items = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert!(items.contains("\"name\":\"keep1.txt\""), "keep1.txt は残る: {items}");
+    assert!(items.contains("\"name\":\"keep2.txt\""), "keep2.txt は残る: {items}");
+    assert!(!items.contains("drop1.txt"), "drop1.txt は隠れる: {items}");
+    assert!(!items.contains("drop2.txt"), "drop2.txt は隠れる: {items}");
+    let fr = server.req("GET", "/state/panes/left/find_result", "").unwrap().1;
+    assert_eq!(fr.trim(), "true", "結果モードのまま: {fr}");
+}
+
+/// 絞り込みONのままディレクトリを再読込しても絞り込みが維持され、旧内容の退避項目が
+/// 新しい一覧に紛れ込まない（削除済みファイルが復元されて出てきたりしない）。
+#[test]
+fn find_incremental_search_filter_survives_reload() {
+    let server = Server::start(&["apple.txt", "banana.txt"], "");
+    let sbx = server.base.join("sbx");
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"banana.txt\""));
+
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
+    server.req("POST", "/search", "apple").unwrap();
+    server.req("POST", "/search/option/filter/on", "").unwrap();
+    let items = poll(&server, "/state/panes/left/items", |b| !b.contains("banana.txt"));
+    assert!(items.contains("\"name\":\"apple.txt\""), "apple.txt は残る: {items}");
+    let hidden = server.req("GET", "/state/panes/left/search/hidden_count", "").unwrap().1;
+    assert_eq!(hidden.trim(), "1", "banana.txt が退避される: {hidden}");
+
+    // ディスク側を変える：banana.txt を削除し、非マッチの cherry.txt を追加する。
+    std::fs::remove_file(sbx.join("banana.txt")).unwrap();
+    std::fs::write(sbx.join("cherry.txt"), b"x").unwrap();
+    server.req("POST", "/command/reload", "").unwrap();
+
+    let items2 = poll(&server, "/state/panes/left/items", |b| {
+        b.contains("\"name\":\"apple.txt\"") && !b.contains("cherry.txt")
+    });
+    assert!(!items2.contains("banana.txt"), "削除済みの banana.txt は出ない: {items2}");
+    let hidden2 = server.req("GET", "/state/panes/left/search/hidden_count", "").unwrap().1;
+    assert_eq!(hidden2.trim(), "1", "非マッチの cherry.txt が退避される: {hidden2}");
+
+    // 絞り込みOFFで全項目が戻る：新しい一覧（apple・cherry）だけで、削除済みの banana.txt が
+    // 旧退避から紛れ込んで復元されたりしない。
+    server.req("POST", "/search/option/filter/off", "").unwrap();
+    let items3 = poll(&server, "/state/panes/left/items", |b| b.contains("cherry.txt"));
+    assert!(items3.contains("\"name\":\"apple.txt\""), "apple.txt: {items3}");
+    assert!(items3.contains("\"name\":\"cherry.txt\""), "cherry.txt が復元される: {items3}");
+    assert!(!items3.contains("banana.txt"), "削除済みの banana.txt は紛れ込まない: {items3}");
+    let hidden3 = server.req("GET", "/state/panes/left/search/hidden_count", "").unwrap().1;
+    assert_eq!(hidden3.trim(), "0", "退避が解ける: {hidden3}");
+}
+
+/// マークを保持したまま絞り込みON→OFFを往復しても、`markToggle` でつけたマークが残る
+/// （マーク対象が絞り込みで隠れる場合を含む）。
+#[test]
+fn find_incremental_search_filter_keeps_mark_across_toggle() {
+    let server = Server::start(&["apple.txt", "banana.txt", "cherry.txt"], "");
+    // items = [.., apple(1), banana(2), cherry(3)]。banana.txt へ降りて markToggle でマーク。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
+    server.req("POST", "/command/markToggle", "").unwrap();
+    let marked = poll(&server, "/state/panes/left/items", |b| count_substr(b, "\"marked\":true") == 1);
+    assert!(marked.contains("\"name\":\"banana.txt\""), "banana.txt をマーク: {marked}");
+
+    // 絞り込みON：query "apple" で banana.txt（マーク済み）が隠れる。
+    server.req("POST", "/command/incrementalSearchDialog", "").unwrap();
+    poll(&server, "/state/panes/left/search/active", |b| b.trim() == "true");
+    server.req("POST", "/search", "apple").unwrap();
+    server.req("POST", "/search/option/filter/on", "").unwrap();
+    let hidden = poll(&server, "/state/panes/left/items", |b| !b.contains("banana.txt"));
+    assert!(!hidden.contains("banana.txt"), "banana.txt は隠れる: {hidden}");
+
+    // 絞り込みOFF：banana.txt が戻り、マークも残る。
+    server.req("POST", "/search/option/filter/off", "").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("banana.txt"));
+    let still_marked = server
+        .req(
+            "POST",
+            "/script/eval-value",
+            r#"rerics.activePane().items.find((it) => it.name === "banana.txt").selected"#,
+        )
+        .unwrap()
+        .1;
+    assert_eq!(still_marked.trim(), "\"true\"", "絞り込み往復後もマークが残る: {still_marked}");
+}
+
 /// directoryInformation＝カーソル位置の使用量を計算し、結果をログに出す（ダイアログは出さない）。
 #[test]
 fn info_directory_information() {
