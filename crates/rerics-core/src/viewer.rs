@@ -531,6 +531,36 @@ impl Matcher {
             }
         }
     }
+
+    /// `line` に一致が1つでもあるか。[`find`](Self::find) が非空を返すのと厳密に同値
+    /// （正規表現は零幅一致を一致とみなさない）。`Vec` を作らず最初の非零幅一致で打ち切る。
+    pub fn is_match(&self, line: &str) -> bool {
+        match self {
+            Matcher::Empty => false,
+            Matcher::Literal { needle, case_sensitive, whole_word } => {
+                let nlen = needle.len();
+                if nlen == 0 {
+                    return false;
+                }
+                let hay: Vec<char> = if *case_sensitive {
+                    line.chars().collect()
+                } else {
+                    lower_chars(line)
+                };
+                let mut i = 0;
+                while i + nlen <= hay.len() {
+                    if hay[i..i + nlen] == needle[..]
+                        && (!whole_word || word_bounded(&hay, i, nlen))
+                    {
+                        return true;
+                    }
+                    i += 1;
+                }
+                false
+            }
+            Matcher::Regex(re) => re.find_iter(line).any(|m| m.end() > m.start()),
+        }
+    }
 }
 
 /// `line` 中に現れる `needle` の全一致を `(開始桁, 長さ)`（ともに文字単位）で返す。単発用の

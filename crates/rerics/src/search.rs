@@ -570,7 +570,8 @@ impl MainWindow {
         let found = {
             let state = view.state();
             let s = state.borrow();
-            rerics_core::find_match(&s.items, from, query, forward, false)
+            let matcher = rerics_core::build_matcher(query, &rerics_core::SearchOptions::default());
+            rerics_core::find_match(&s.items, from, &matcher, forward, false)
         };
         if let Some(i) = found {
             {

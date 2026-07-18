@@ -9,6 +9,8 @@ use std::time::SystemTime;
 use chrono::{DateTime, Local, TimeZone};
 use serde::{Deserialize, Serialize};
 
+use crate::viewer::{build_matcher, Matcher, SearchOptions};
+
 /// ファイル一覧の1エントリ。
 #[derive(Debug, Clone)]
 pub struct FileItem {
@@ -914,6 +916,46 @@ impl Colors {
     }
 }
 
+/// ペイン単位のインクリメンタルサーチ状態。
+#[derive(Debug, Clone, Default)]
+pub struct PaneSearch {
+    pub active: bool,
+    pub query: String,
+    pub opts: SearchOptions,
+    /// 非マッチ項目を一覧から除外する絞り込みモードか（設定値）。
+    pub filter: bool,
+    applied: bool,
+    /// 絞り込みで一覧から外した項目（全項目列での位置つき）。
+    hidden: Vec<(usize, FileItem)>,
+}
+
+impl PaneSearch {
+    /// 現在の検索語・オプションから作ったマッチャ。
+    pub fn matcher(&self) -> Matcher {
+        build_matcher(&self.query, &self.opts)
+    }
+
+    /// 一致桁を強調表示すべき状態か（検索中かつ検索語が空でない）。
+    pub fn highlighting(&self) -> bool {
+        self.active && !self.query.is_empty()
+    }
+
+    /// 一覧を絞り込むべき状態か（検索中・絞り込みモード・検索語が空でない）。
+    pub fn should_filter(&self) -> bool {
+        self.active && self.filter && !self.query.is_empty()
+    }
+
+    /// 絞り込みを適用済み（一覧から項目を外している）か。
+    pub fn filtering(&self) -> bool {
+        self.applied
+    }
+
+    /// 絞り込みで一覧から外している項目数。
+    pub fn hidden_count(&self) -> usize {
+        self.hidden.len()
+    }
+}
+
 /// ファイル一覧コントロールの状態モデル（描画と完全分離）。
 #[derive(Clone)]
 pub struct FileListState {
@@ -929,6 +971,8 @@ pub struct FileListState {
     /// 検索・比較の結果一覧を表示中か。`true` のとき項目は複数ディレクトリ出身の合成項目
     /// （各々 `FileItem.source`/`info` を持つ）で、情報列を出す。通常の再読込で `false` に戻る。
     pub find_result: bool,
+    /// インクリメンタルサーチの状態（絞り込み退避を含む）。
+    pub search: PaneSearch,
 }
 
 impl Default for FileListState {
@@ -943,6 +987,7 @@ impl Default for FileListState {
             reverse_sort_date: false,
             columns: default_columns(),
             find_result: false,
+            search: PaneSearch::default(),
         }
     }
 }
@@ -960,12 +1005,78 @@ impl FileListState {
     /// そのまま並べ、情報列を出し、カーソルを先頭へ戻す。項目の並びは呼び出し側（ワーカー）が
     /// 確定済みとして保持する（ここでは並べ替えない）。通常の再読込で `find_result` は解除される。
     pub fn set_find_result(&mut self, items: Vec<FileItem>) {
+        self.search.hidden.clear();
+        self.search.applied = false;
         self.items = items;
         self.columns = result_columns();
         self.find_result = true;
         self.cursor = 0;
         self.scroll_top = 0;
         self.select_start = 0;
+    }
+
+    /// items を新しい一覧へ丸ごと差し替える。検索の絞り込み退避（hidden）は
+    /// 旧一覧に属するものなので必ず捨てる。
+    pub fn replace_items(&mut self, items: Vec<FileItem>) {
+        self.items = items;
+        self.search.hidden.clear();
+        self.search.applied = false;
+    }
+
+    /// 検索状態に従って絞り込みを適用し直す共通口。まず全項目へ復元し、
+    /// 絞り込み条件が立っていれば一致項目だけに絞る。一覧の再構築・並べ替え・
+    /// 検索語/オプション/絞り込みモードの変更はすべてこれを通す。
+    pub fn apply_search(&mut self) {
+        self.search_restore();
+        if self.search.should_filter() {
+            let matcher = self.search.matcher();
+            self.search_partition(&matcher);
+        }
+        let max = self.items.len().saturating_sub(1);
+        self.cursor = self.cursor.min(max);
+        self.select_start = self.select_start.min(max);
+    }
+
+    /// hidden を元位置へ戻して items を全項目に復元する。
+    fn search_restore(&mut self) {
+        if self.search.hidden.is_empty() {
+            self.search.applied = false;
+            return;
+        }
+        let hidden = std::mem::take(&mut self.search.hidden);
+        let visible = std::mem::take(&mut self.items);
+        let total = visible.len() + hidden.len();
+        let mut restored = Vec::with_capacity(total);
+        let mut hidden = hidden.into_iter().peekable();
+        let mut visible = visible.into_iter();
+        for pos in 0..total {
+            if hidden.peek().is_some_and(|(p, _)| *p == pos) {
+                restored.push(hidden.next().unwrap().1);
+            } else if let Some(item) = visible.next() {
+                restored.push(item);
+            }
+        }
+        // 記録位置が総数を超えるなど取りこぼしが起きても末尾へ append して失わない。
+        restored.extend(hidden.map(|(_, item)| item));
+        restored.extend(visible);
+        self.items = restored;
+        self.search.applied = false;
+    }
+
+    /// matcher に非マッチの項目（".." は常に残す）を hidden へ退避し、items を一致項目だけにする。
+    /// 退避しても選択状態（selected）はそのまま保持する。
+    fn search_partition(&mut self, matcher: &Matcher) {
+        let items = std::mem::take(&mut self.items);
+        let mut visible = Vec::with_capacity(items.len());
+        for (pos, item) in items.into_iter().enumerate() {
+            if item.is_parent || matcher.is_match(&item.name) {
+                visible.push(item);
+            } else {
+                self.search.hidden.push((pos, item));
+            }
+        }
+        self.items = visible;
+        self.search.applied = true;
     }
 
     /// 検索・比較の結果一覧を空（先頭の ".." のみ）で開始する。以降は [`push_find_result`]
@@ -976,11 +1087,20 @@ impl FileListState {
         self.set_find_result(vec![FileItem::parent()]);
     }
 
-    /// ライブ追加中の結果一覧へ項目を1件足す（末尾へ追記・並べ替えはしない）。
+    /// ライブ追加中の結果一覧へ項目を1件足す。matcher が渡され非マッチなら、
+    /// 全項目列での位置（現在の可視件数＋退避済み件数の合計）を記録して hidden へ退避する。
     /// 結果モードでないときは何もしない。
-    pub fn push_find_result(&mut self, item: FileItem) {
-        if self.find_result {
-            self.items.push(item);
+    pub fn push_find_result(&mut self, item: FileItem, matcher: Option<&Matcher>) {
+        if !self.find_result {
+            return;
+        }
+        match matcher {
+            Some(m) if !item.is_parent && !m.is_match(&item.name) => {
+                let pos = self.items.len() + self.search.hidden.len();
+                self.search.hidden.push((pos, item));
+                self.search.applied = true;
+            }
+            _ => self.items.push(item),
         }
     }
 
@@ -1242,11 +1362,13 @@ impl FileListState {
 
     /// items をソートする。`reverse_sort_date` が有効なら日付ソートのみ昇降を追加反転する。
     pub fn sort(&mut self, sort: SortType, reverse: bool) {
+        self.search_restore();
         self.sort_type = sort;
         self.sort_reverse = reverse;
         let effective = reverse ^ (self.reverse_sort_date && sort == SortType::LastWriteTime);
         self.items
             .sort_by(|a, b| compare_items(a, b, sort, effective));
+        self.apply_search();
     }
 
     /// 既定ソート設定の変更に追従する。現在の並びが旧既定 `old` と一致している（＝既定の
@@ -1663,23 +1785,22 @@ fn glob_one(name: &[char], pat: &[char]) -> bool {
     pi == pat.len()
 }
 
-/// `query`（大小無視・部分一致）に一致する項目の添字を探す。`from` から `forward`
-/// 方向に走査し、`wrap` なら端で折り返す。".."（親）は対象外。query 空・該当なし・
-/// 空リストは `None`。インクリメンタルサーチの心臓部（打鍵ごとに呼ぶ）。
+/// `matcher` に一致する項目（対象は `item.name`）の添字を探す。`from` から `forward`
+/// 方向に走査し、`wrap` なら端で折り返す。".."（親）は対象外。空マッチャ（検索語なし）・
+/// 該当なし・空リストは `None`。インクリメンタルサーチの心臓部（打鍵ごとに呼ぶ）。
 pub fn find_match(
     items: &[FileItem],
     from: usize,
-    query: &str,
+    matcher: &Matcher,
     forward: bool,
     wrap: bool,
 ) -> Option<usize> {
-    if query.is_empty() || items.is_empty() {
+    if items.is_empty() {
         return None;
     }
-    let q = query.to_lowercase();
     let n = items.len();
     let from = from.min(n - 1);
-    let matches = |i: usize| !items[i].is_parent && items[i].name.to_lowercase().contains(&q);
+    let matches = |i: usize| !items[i].is_parent && matcher.is_match(&items[i].name);
     // 走査する件数：折り返し時は全件、片方向のみなら端まで。
     let count = if wrap {
         n
@@ -1864,6 +1985,11 @@ mod tests {
         FileItem::bare(name.to_owned(), true)
     }
 
+    /// 既定オプション（大小無視・部分一致）のマッチャ。
+    fn matcher(query: &str) -> Matcher {
+        build_matcher(query, &SearchOptions::default())
+    }
+
     #[test]
     fn exp_like_compare_is_transitive_across_digit_widths() {
         // 桁数をまたいでも数値順で一貫する（報告された推移律違反トリプル）。
@@ -1978,8 +2104,8 @@ mod tests {
         assert!(s.items[0].is_parent);
         assert!(s.columns.iter().any(|c| c.kind == ColumnKind::Information));
         // 1件ずつ追記すると末尾に積まれる。
-        s.push_find_result(file("a.txt"));
-        s.push_find_result(file("b.txt"));
+        s.push_find_result(file("a.txt"), None);
+        s.push_find_result(file("b.txt"), None);
         assert_eq!(s.count(), 3);
         assert_eq!(s.items[1].name, "a.txt");
         assert_eq!(s.items[2].name, "b.txt");
@@ -1989,7 +2115,7 @@ mod tests {
     fn push_find_result_ignored_outside_result_mode() {
         let mut s = FileListState::new();
         let before = s.count();
-        s.push_find_result(file("x.txt"));
+        s.push_find_result(file("x.txt"), None);
         assert!(!s.find_result);
         assert_eq!(s.count(), before, "結果モードでなければ追記しない");
     }
@@ -2011,19 +2137,160 @@ mod tests {
             file("apricot.txt"),
         ];
         // 大小無視・部分一致・先頭から。
-        assert_eq!(find_match(&items, 0, "ap", true, false), Some(1)); // Apple
+        assert_eq!(find_match(&items, 0, &matcher("ap"), true, false), Some(1)); // Apple
         // index2 から前方＝apricot。
-        assert_eq!(find_match(&items, 2, "ap", true, false), Some(4));
+        assert_eq!(find_match(&items, 2, &matcher("ap"), true, false), Some(4));
         // 折り返し無しで後ろに無ければ自身のみ評価。
-        assert_eq!(find_match(&items, 4, "ap", true, false), Some(4));
+        assert_eq!(find_match(&items, 4, &matcher("ap"), true, false), Some(4));
         // 折り返しありで末尾から banana を拾う。
-        assert_eq!(find_match(&items, 4, "ban", true, true), Some(2));
+        assert_eq!(find_match(&items, 4, &matcher("ban"), true, true), Some(2));
         // 後方検索。
-        assert_eq!(find_match(&items, 3, "ap", false, false), Some(1));
+        assert_eq!(find_match(&items, 3, &matcher("ap"), false, false), Some(1));
         // 該当なし・空クエリ・".." は対象外。
-        assert_eq!(find_match(&items, 0, "zzz", true, true), None);
-        assert_eq!(find_match(&items, 0, "", true, true), None);
-        assert_eq!(find_match(&items, 0, "..", true, false), None);
+        assert_eq!(find_match(&items, 0, &matcher("zzz"), true, true), None);
+        assert_eq!(find_match(&items, 0, &matcher(""), true, true), None);
+        assert_eq!(find_match(&items, 0, &matcher(".."), true, false), None);
+    }
+
+    fn names(s: &FileListState) -> Vec<String> {
+        s.items.iter().map(|i| i.name.clone()).collect()
+    }
+
+    #[test]
+    fn search_partition_and_restore_round_trip() {
+        let mut s = FileListState::new();
+        s.items = vec![
+            FileItem::parent(),
+            file("apple.txt"),
+            file("banana.txt"),
+            file("apricot.txt"),
+        ];
+        s.search.active = true;
+        s.search.filter = true;
+        s.search.query = "ap".to_owned();
+        s.apply_search();
+        // 非マッチ banana は退避され、".." と一致項目だけが残る。
+        assert_eq!(names(&s), ["..", "apple.txt", "apricot.txt"]);
+        assert_eq!(s.search.hidden_count(), 1);
+        assert!(s.search.filtering());
+        // 検索を止めて再適用すると元の並び・件数へ完全復元する。
+        s.search.active = false;
+        s.apply_search();
+        assert_eq!(names(&s), ["..", "apple.txt", "banana.txt", "apricot.txt"]);
+        assert_eq!(s.search.hidden_count(), 0);
+        assert!(!s.search.filtering());
+    }
+
+    #[test]
+    fn sort_while_filtering_reorders_visible_and_restores_all() {
+        let mut s = FileListState::new();
+        s.items = vec![
+            FileItem::parent(),
+            file("apricot.txt"),
+            file("banana.txt"),
+            file("apple.txt"),
+        ];
+        s.search.active = true;
+        s.search.filter = true;
+        s.search.query = "ap".to_owned();
+        s.apply_search();
+        s.sort(SortType::FileName, false);
+        // 絞り込み中でも可視項目が名前順に並ぶ。
+        assert_eq!(names(&s), ["..", "apple.txt", "apricot.txt"]);
+        assert_eq!(s.search.hidden_count(), 1);
+        // 解除すれば全項目が名前順で復元される。
+        s.search.active = false;
+        s.apply_search();
+        assert_eq!(names(&s), ["..", "apple.txt", "apricot.txt", "banana.txt"]);
+    }
+
+    #[test]
+    fn replace_items_drops_hidden_then_refilters_new_listing() {
+        let mut s = FileListState::new();
+        s.items = vec![FileItem::parent(), file("apple.txt"), file("banana.txt")];
+        s.search.active = true;
+        s.search.filter = true;
+        s.search.query = "ap".to_owned();
+        s.apply_search();
+        assert_eq!(s.search.hidden_count(), 1);
+        assert!(s.search.filtering());
+        // 別ディレクトリの再読込。旧ペインの退避項目は必ず捨てる。
+        s.replace_items(vec![FileItem::parent(), dir("apps"), file("readme.md")]);
+        assert_eq!(s.search.hidden_count(), 0);
+        assert!(!s.search.filtering());
+        // 絞り込み条件が立ったままの並べ替えは新しい一覧に対して再絞り込みする。
+        s.sort(SortType::FileName, false);
+        assert_eq!(names(&s), ["..", "apps"]);
+        assert_eq!(s.search.hidden_count(), 1);
+    }
+
+    #[test]
+    fn push_find_result_routes_by_matcher() {
+        let mut s = FileListState::new();
+        s.begin_find_result();
+        let m = matcher("ap");
+        s.push_find_result(file("apple.txt"), Some(&m));
+        s.push_find_result(file("banana.txt"), Some(&m));
+        s.push_find_result(file("apricot.txt"), Some(&m));
+        // 一致は可視 items、非マッチは hidden へ。
+        assert_eq!(names(&s), ["..", "apple.txt", "apricot.txt"]);
+        assert_eq!(s.search.hidden_count(), 1);
+        // 復元すると退避を記録位置へ戻して全件並ぶ。
+        s.apply_search();
+        assert_eq!(names(&s), ["..", "apple.txt", "banana.txt", "apricot.txt"]);
+        assert_eq!(s.search.hidden_count(), 0);
+    }
+
+    #[test]
+    fn selection_survives_hide_and_restore() {
+        let mut s = FileListState::new();
+        let mut marked = file("banana.txt");
+        marked.selected = true;
+        s.items = vec![FileItem::parent(), file("apple.txt"), marked];
+        s.search.active = true;
+        s.search.filter = true;
+        s.search.query = "ap".to_owned();
+        s.apply_search();
+        // 退避してもマークは保つ。
+        assert_eq!(s.search.hidden.len(), 1);
+        assert!(s.search.hidden[0].1.selected);
+        // 復元後もマークが残る。
+        s.search.active = false;
+        s.apply_search();
+        let restored = s.items.iter().find(|i| i.name == "banana.txt").unwrap();
+        assert!(restored.selected);
+    }
+
+    #[test]
+    fn is_match_agrees_with_find() {
+        let lit = matcher("an");
+        for line in ["banana", "xyz", "AN", "ban"] {
+            assert_eq!(lit.is_match(line), !lit.find(line).is_empty(), "literal line={line}");
+        }
+        // 零幅一致し得る正規表現でも find が非空を返すのと同値。
+        let re = build_matcher("a*", &SearchOptions { regex: true, ..Default::default() });
+        for line in ["", "bbb", "aaa", "xax"] {
+            assert_eq!(re.is_match(line), !re.find(line).is_empty(), "regex line={line}");
+        }
+    }
+
+    #[test]
+    fn find_match_honors_options() {
+        let items = vec![
+            FileItem::parent(),
+            file("Apple.txt"),
+            file("crabapple.txt"),
+            file("a1b2.txt"),
+        ];
+        // 大小区別: "Apple" は外れ crabapple が拾われる。
+        let cs = build_matcher("apple", &SearchOptions { case_sensitive: true, ..Default::default() });
+        assert_eq!(find_match(&items, 0, &cs, true, false), Some(2));
+        // 単語境界: 前後が語境界の Apple のみ一致（crabapple は前が語文字）。
+        let ww = build_matcher("apple", &SearchOptions { whole_word: true, ..Default::default() });
+        assert_eq!(find_match(&items, 0, &ww, true, false), Some(1));
+        // 正規表現: 英字＋数字の並びを持つ a1b2 が一致。
+        let re = build_matcher(r"a\d", &SearchOptions { regex: true, ..Default::default() });
+        assert_eq!(find_match(&items, 0, &re, true, false), Some(3));
     }
 
     #[test]

@@ -2243,7 +2243,7 @@ impl MainWindow {
                 self.find_query.borrow_mut()[if is_left { 0 } else { 1 }] = None;
                 left_find_result = true;
             }
-            s.items = items;
+            s.replace_items(items);
             let sort = s.sort_type;
             let reverse = s.sort_reverse;
             s.sort(sort, reverse);

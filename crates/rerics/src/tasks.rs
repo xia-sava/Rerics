@@ -252,7 +252,7 @@ impl MainWindow {
                 WorkerEvent::FindItem { id, is_left, item } => {
                     let idx = if is_left { 0 } else { 1 };
                     if self.find_task.borrow()[idx] == Some(id) {
-                        self.view(is_left).state().borrow_mut().push_find_result(item);
+                        self.view(is_left).state().borrow_mut().push_find_result(item, None);
                         find_dirty[idx] = true;
                     }
                 }
