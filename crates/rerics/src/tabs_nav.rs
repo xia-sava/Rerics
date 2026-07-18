@@ -90,17 +90,31 @@ impl MainWindow {
 
     /// 現在のタブを閉じる（最後の1枚は閉じない）。
     pub(crate) fn close_tab(&self) -> w::AnyResult<()> {
+        self.close_tab_at(self.active.get())
+    }
+
+    /// 指定 index のタブを閉じる（最後の1枚は閉じない）。タブ帯の × ボタン・右クリック
+    /// メニューから、アクティブでないタブも直接閉じられるようにする入口。閉じたのが
+    /// アクティブタブなら隣（無ければ新しい末尾）へ切替え、そうでなければアクティブ側の
+    /// 中身はそのまま index だけ詰める。
+    pub(crate) fn close_tab_at(&self, index: usize) -> w::AnyResult<()> {
         let total = self.tabs.borrow().len();
-        if total <= 1 {
+        if total <= 1 || index >= total {
             return Ok(());
         }
         let cur = self.active.get();
-        self.tabs.borrow_mut().remove(cur);
-        let len = self.tabs.borrow().len();
-        let active = cur.min(len - 1);
-        self.active.set(active);
-        let snap = self.tabs.borrow()[active].clone();
-        self.load_snapshot(&snap)?;
+        self.tabs.borrow_mut().remove(index);
+        if index == cur {
+            let len = self.tabs.borrow().len();
+            let active = cur.min(len - 1);
+            self.active.set(active);
+            let snap = self.tabs.borrow()[active].clone();
+            self.load_snapshot(&snap)?;
+        } else {
+            let active = if index < cur { cur - 1 } else { cur };
+            self.active.set(active);
+            self.refresh_tab_bar()?;
+        }
         Ok(())
     }
 

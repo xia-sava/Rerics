@@ -860,6 +860,16 @@ impl MainWindow {
             let _ = this.switch_tab(index);
         });
 
+        // × ボタン・右クリックの「閉じる」はマウス操作専用（キー割り当ては既存の Exit のまま）。
+        let this = self.clone();
+        self.tab_bar.on_close(move |index| {
+            let _ = this.close_tab_at(index);
+        });
+        let this = self.clone();
+        self.tab_bar.on_menu(move |pt, index| {
+            let _ = this.show_tab_menu(pt, index);
+        });
+
         let this = self.clone();
         self.wnd.on().wm_create(move |_| {
             this.wnd.hwnd().SetMenu(&this.menu_bar)?;
@@ -1874,6 +1884,19 @@ impl MainWindow {
         };
         if id == COPY_LINE {
             self.log.copy_line(row)?;
+        }
+        Ok(())
+    }
+
+    /// タブの右クリックメニュー（閉じる）。画面座標 `pt`・対象タブの index。
+    fn show_tab_menu(&self, pt: w::POINT, index: usize) -> w::AnyResult<()> {
+        const CLOSE: u16 = 1;
+        let items: &[(u16, &str)] = &[(CLOSE, "閉じる(&C)")];
+        let Some(id) = self.popup_menu(items, pt, self.tab_bar.hwnd())? else {
+            return Ok(());
+        };
+        if id == CLOSE {
+            self.close_tab_at(index)?;
         }
         Ok(())
     }
