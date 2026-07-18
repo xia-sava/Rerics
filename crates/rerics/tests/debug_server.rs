@@ -1481,6 +1481,39 @@ fn view_command_entering_directory_remembers_cursor() {
     assert_eq!(restored.trim(), "2", "returning after view() entry should restore the cursor: {restored}");
 }
 
+/// ディレクトリへ侵入した直後は、`cursor.history`（カーソル位置を記憶する）が ON でも、
+/// そのパスで前回覚えたカーソル位置ではなく常に先頭（`..`）へ置く（もう一度侵入操作で
+/// 親へ戻れる）。記憶した位置自体は、パス入力・戻る等の別経路で再訪したときには効く
+/// （`view_command_entering_directory_remembers_cursor` は「侵入元の位置を覚える」側の回帰）。
+#[test]
+fn entering_directory_lands_on_parent_even_with_cursor_history_on() {
+    let server = Server::start(&["a.txt"], "[cursor]\nhistory = true\n");
+    let sbx = server.base.join("sbx");
+    std::fs::create_dir_all(sbx.join("sub")).unwrap();
+    std::fs::write(sbx.join("sub").join("x.txt"), b"").unwrap();
+    std::fs::write(sbx.join("sub").join("y.txt"), b"").unwrap();
+    server.req("POST", "/command/reload", "").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"sub\""));
+    let sbx_loc = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+
+    // sub へ侵入し（items: [.., x.txt, y.txt]）、y.txt（index 2）へカーソルを合わせて一旦出る
+    // ＝ sub の「前回のカーソル位置」として y.txt を記憶させる。
+    server.req("POST", "/command/setCursorPosition", r#"["sub"]"#).unwrap();
+    server.req("POST", "/command/enterDir", "").unwrap();
+    poll(&server, "/state/panes/left/location", |b| b.contains("sub"));
+    server.req("POST", "/command/setCursorPosition", r#"["y.txt"]"#).unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "2");
+    server.req("POST", "/command/toParent", "").unwrap();
+    poll(&server, "/state/panes/left/location", |b| b.trim() == sbx_loc);
+
+    // 再侵入：cursor.history=ON で y.txt を記憶しているはずだが、カーソルは先頭（..）に固定される。
+    server.req("POST", "/command/setCursorPosition", r#"["sub"]"#).unwrap();
+    server.req("POST", "/command/enterDir", "").unwrap();
+    poll(&server, "/state/panes/left/location", |b| b.contains("sub"));
+    let cursor = poll(&server, "/state/panes/left/cursor", |b| b.trim() == "0");
+    assert_eq!(cursor.trim(), "0", "entering a directory should always land on the parent row: {cursor}");
+}
+
 /// #66: 戻る/進む（履歴の再生）は訪問ログに新たな記録を増やさない（往復で増殖しない）。
 #[test]
 fn path_history_back_forward_does_not_grow_log() {

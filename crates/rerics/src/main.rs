@@ -2004,7 +2004,7 @@ impl MainWindow {
 
     /// ディレクトリ移動後の再読込。移動先パスで以前覚えたカーソル位置を復元し、
     /// 移動先をパス移動履歴（訪問ログ・グローバル・永続）へ記録する。ユーザが行き先を
-    /// 指定した移動（侵入・パス入力・ジャンプ・ドライブ変更・親/ルート移動）で使う。
+    /// 指定した移動（パス入力・ジャンプ・ドライブ変更・親/ルート移動）で使う。
     fn reload_side_navigated(&self, is_left: bool) -> w::AnyResult<()> {
         self.reload_side_impl(is_left, ReloadCursor::Recall, true)
     }
@@ -2014,6 +2014,13 @@ impl MainWindow {
     /// （`cursor.history` 連動）。
     fn reload_side_navigated_nolog(&self, is_left: bool) -> w::AnyResult<()> {
         self.reload_side_impl(is_left, ReloadCursor::Recall, false)
+    }
+
+    /// ディレクトリ・書庫への侵入直後の再読込。移動先をパス移動履歴へ記録する点は
+    /// [`reload_side_navigated`](Self::reload_side_navigated) と同じだが、カーソルは
+    /// `cursor.history` 設定に関係なく常に先頭（`..`）へ置く（もう一度侵入操作で親へ戻れる）。
+    fn reload_side_entered(&self, is_left: bool) -> w::AnyResult<()> {
+        self.reload_side_impl(is_left, ReloadCursor::Reset, true)
     }
 
     /// 戻る/進む用の再読込。パス移動履歴へは記録せず、`cursor.history` 設定に関係なく

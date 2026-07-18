@@ -124,14 +124,15 @@ impl MainWindow {
     }
 
     /// ディレクトリへ潜る唯一の入口。侵入直前のカーソル記憶（再訪時の復元用）と、
-    /// 成功時の再読込（訪問ログ記録つき）・失敗時のログ報告までを内包する。
+    /// 成功時の再読込（訪問ログ記録つき）・失敗時のログ報告までを内包する。カーソルは
+    /// 常に先頭（`..`）へ置く（もう一度侵入操作で親へ戻れる）。
     /// 侵入する経路を増やすときは、前処理を個別に書かずこれを呼ぶ。
     pub(crate) fn enter_dir(&self, is_left: bool, name: &str) -> w::AnyResult<()> {
         self.remember_cursor_for_nav(is_left);
         // RefMut は enter_reported の行で解放してから結果を判定する（reload が再借用するため）。
         let outcome = self.pane(is_left).borrow_mut().enter_reported(name, true);
         match outcome {
-            Ok(()) => self.reload_side_navigated(is_left)?,
+            Ok(()) => self.reload_side_entered(is_left)?,
             // 入れない dir（ACL 拒否の互換 junction・消えた dir 等）は黙殺せずログで報せる。
             Err(e) => self.log.error(&enter_dir_error_message(name, &e)),
         }
@@ -139,11 +140,11 @@ impl MainWindow {
     }
 
     /// 書庫ファイルへ潜る唯一の入口。潜れたら再読込して true、書庫でなければ何もせず false。
-    /// カーソル記憶は [`enter_dir`](Self::enter_dir) と同様に内包する。
+    /// カーソル記憶・先頭固定は [`enter_dir`](Self::enter_dir) と同様に内包する。
     pub(crate) fn enter_archive(&self, is_left: bool, name: &str) -> w::AnyResult<bool> {
         self.remember_cursor_for_nav(is_left);
         if self.pane(is_left).borrow_mut().enter(name, false) {
-            self.reload_side_navigated(is_left)?;
+            self.reload_side_entered(is_left)?;
             return Ok(true);
         }
         Ok(false)
