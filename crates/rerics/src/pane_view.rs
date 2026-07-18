@@ -52,14 +52,10 @@ impl PaneView {
             },
         );
         crate::winutil::passive_focus(&container);
-        let bar = PathBarView::new(
-            &container,
-            gui::dpi(0, 0),
-            gui::dpi(100, cfg.layout.bar_height),
-            cfg,
-        );
+        let bar = PathBarView::new(&container, gui::dpi(0, 0), gui::dpi(100, cfg.layout.bar_height));
         let list = FileListView::new(&container, gui::dpi(0, 0), gui::dpi(100, 100), cfg);
-        let status = StatusBarView::new(&container, gui::dpi(0, 0), gui::dpi(100, cfg.layout.status_bar_height), cfg);
+        let status =
+            StatusBarView::new(&container, gui::dpi(0, 0), gui::dpi(100, cfg.layout.status_bar_height));
         Self {
             container,
             bar,
@@ -89,13 +85,12 @@ impl PaneView {
     }
 
     /// 設定をペイン配下（パスバー・リスト・ステータス）へ反映し、寸法を更新する。
+    /// パスバー・ステータスバーは chrome 共通のシステムUIフォント固定のため対象外。
     pub fn apply_config(&self, cfg: &Config) {
         self.bar_height.set(gui::dpi_y(cfg.layout.bar_height));
         self.bar_gap.set(gui::dpi_y(cfg.layout.bar_gap));
         self.status_bar_height.set(gui::dpi_y(cfg.layout.status_bar_height));
-        self.bar.apply_config(cfg);
         self.list.apply_config(cfg);
-        self.status.apply_config(cfg);
     }
 
     /// コンテナ内でパスバー（上）・ファイルリスト（中）・ステータスバー（下）を再配置する。

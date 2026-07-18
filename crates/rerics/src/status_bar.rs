@@ -3,10 +3,9 @@
 //! `LogView` と同様の GDI ダブルバッファ描画。表示する文字列は外から設定し、本体は
 //! 描画に徹する。キーフォーカスは持たない（表示専用）。
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
-use rerics_core::Config;
 use winsafe::{self as w, co, gui, prelude::*};
 
 use crate::chrome;
@@ -15,9 +14,6 @@ use crate::font_fallback::FontSet;
 struct Inner {
     left: RefCell<String>,
     right: RefCell<String>,
-    font_family: RefCell<String>,
-    font_fallback: RefCell<Vec<String>>,
-    font_size: Cell<i32>,
 }
 
 /// ペイン下部のステータスバーコントロール。
@@ -29,12 +25,7 @@ pub struct StatusBarView {
 
 impl StatusBarView {
     /// 親に子コントロールとして生成する。
-    pub fn new(
-        parent: &(impl GuiParent + 'static),
-        position: (i32, i32),
-        size: (i32, i32),
-        cfg: &Config,
-    ) -> Self {
+    pub fn new(parent: &(impl GuiParent + 'static), position: (i32, i32), size: (i32, i32)) -> Self {
         let wnd = gui::WindowControl::new(
             parent,
             gui::WindowControlOpts {
@@ -45,13 +36,7 @@ impl StatusBarView {
                 ..Default::default()
             },
         );
-        let inner = Rc::new(Inner {
-            left: RefCell::new(String::new()),
-            right: RefCell::new(String::new()),
-            font_family: RefCell::new(cfg.font.family.clone()),
-            font_fallback: RefCell::new(cfg.font.fallback.clone()),
-            font_size: Cell::new(cfg.font.size),
-        });
+        let inner = Rc::new(Inner { left: RefCell::new(String::new()), right: RefCell::new(String::new()) });
         let me = Self { wnd, inner };
         me.setup_events();
         me
@@ -95,43 +80,9 @@ impl StatusBarView {
         Ok(())
     }
 
-    /// 設定のフォントを反映して再描画する（chrome の色はシステム固定なので対象外）。
-    pub fn apply_config(&self, cfg: &Config) {
-        *self.inner.font_family.borrow_mut() = cfg.font.family.clone();
-        *self.inner.font_fallback.borrow_mut() = cfg.font.fallback.clone();
-        self.inner.font_size.set(cfg.font.size);
-        let _ = self.refresh();
-    }
-
-    fn create_font_family(
-        &self,
-        family: &str,
-        size: i32,
-    ) -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
-        w::HFONT::CreateFont(
-            w::SIZE { cx: 0, cy: -gui::dpi_y(size) },
-            0,
-            0,
-            co::FW::NORMAL,
-            false,
-            false,
-            false,
-            co::CHARSET::DEFAULT,
-            co::OUT_PRECIS::DEFAULT,
-            co::CLIP::DEFAULT_PRECIS,
-            co::QUALITY::CLEARTYPE,
-            co::PITCH::FIXED,
-            family,
-        )
-    }
-
-    /// 設定のファミリ＋フォールバックのフォント一式を生成する（バーは本文より 2 小さく描く）。
+    /// システムUIフォント（chrome 共通）1本だけの `FontSet` を生成する。
     fn create_fonts(&self) -> w::SysResult<FontSet> {
-        let main = self.inner.font_size.get();
-        let render = main - 2;
-        FontSet::new(&self.inner.font_family.borrow(), &self.inner.font_fallback.borrow(), |f, s| {
-            self.create_font_family(f, crate::font_fallback::effective_size(s, render, main))
-        })
+        FontSet::new("", &[], |_, _| chrome::ui_font())
     }
 
     fn setup_events(&self) {

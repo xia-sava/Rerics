@@ -572,7 +572,7 @@ impl MainWindow {
             gui::dpi(config.layout.splitter_width, 400),
         );
 
-        let tab_bar = TabBar::new(&wnd, gui::dpi(0, 0), gui::dpi(800, config.layout.tab_height), &config);
+        let tab_bar = TabBar::new(&wnd, gui::dpi(0, 0), gui::dpi(800, config.layout.tab_height));
         // タブ帯とペインの間の共有検索バー（初期は非表示・layout で位置決め）。
         let search_bar = SearchBar::new(&wnd, gui::dpi(0, 0), gui::dpi(800, config.font.size + 14), &config);
         // 高さは初回 layout() でフォント実測の行高×行数に置き換わる。生成時は概算 px。

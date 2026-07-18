@@ -59,7 +59,6 @@ impl MainWindow {
             let cfg = self.config.borrow();
             self.left.apply_config(&cfg);
             self.right.apply_config(&cfg);
-            self.tab_bar.apply_config(&cfg);
             self.log.apply_config(&cfg);
             // 既定ソート・日付ソート反転の変更は非アクティブタブのスナップショットにも
             // 追従させる（表示中ペインは FileListView::apply_config が行う）。

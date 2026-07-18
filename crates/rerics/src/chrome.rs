@@ -36,6 +36,23 @@ pub fn gray_text() -> w::COLORREF {
     w::GetSysColor(co::COLOR::GRAYTEXT)
 }
 
+/// システムのメニューフォント（`NONCLIENTMETRICS.lfMenuFont`）から HFONT を作る。
+/// chrome 系バー（タブ／ロケーション／ステータス）はこれで統一し、ファイル一覧の
+/// 設定フォント（`cfg.font`）とは独立させる。メニュー自体も OS 標準のこのフォントで
+/// 描かれるため、chrome とメニューの見た目が揃う。
+pub fn ui_font() -> w::SysResult<w::guard::DeleteObjectGuard<w::HFONT>> {
+    let mut ncm = w::NONCLIENTMETRICS::default();
+    unsafe {
+        w::SystemParametersInfo(
+            co::SPI::GETNONCLIENTMETRICS,
+            std::mem::size_of::<w::NONCLIENTMETRICS>() as u32,
+            &mut ncm,
+            co::SPIF::NoValue,
+        )?;
+    }
+    w::HFONT::CreateFontIndirect(&ncm.lfMenuFont)
+}
+
 /// 水平線を1本引く。
 pub fn hline(dc: &w::HDC, x0: i32, x1: i32, y: i32, color: w::COLORREF) -> w::AnyResult<()> {
     let pen = w::HPEN::CreatePen(co::PS::SOLID, 1, color)?;
