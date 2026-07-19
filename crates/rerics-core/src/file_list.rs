@@ -343,55 +343,79 @@ impl SortType {
 
 }
 
-/// ファイル名同士を比較する。Windows ではユーザの既定ロケールの言語的照合
-/// （エクスプローラと同様に記号が英数字より前に並ぶ）を用い、それ以外の
-/// プラットフォームではコードポイント順にフォールバックする。
+/// ファイル名同士を比較する。ソートキー（`locale_sort_key`）同士のバイト列比較に
+/// 落とし込むことで、2文字列を都度突き合わせて結果が変わりうる比較関数と違い、
+/// 全順序（推移律）を構造的に保証する。
 /// 引数は大文字小文字を畳んだうえで渡される前提で、フラグは無指定にする。
-#[cfg(windows)]
 fn locale_compare(a: &str, b: &str) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
+    locale_sort_key(a).cmp(&locale_sort_key(b))
+}
+
+/// ロケール照合順に並ぶソートキー（バイト列）。Windows ではユーザの既定ロケールの
+/// 言語的照合（エクスプローラと同様に記号が英数字より前に並ぶ）、それ以外の
+/// プラットフォームではコードポイント順を用いる。バイト列同士の辞書式比較は
+/// 常に全順序になるため、`locale_compare`/`exp_like_compare` の比較関数としての
+/// 安全性（並べ替えが途中で異常終了しないこと）がこの関数の正しさに帰着する。
+#[cfg(windows)]
+fn locale_sort_key(s: &str) -> Vec<u8> {
     #[link(name = "kernel32")]
     unsafe extern "system" {
-        fn CompareStringEx(
+        fn LCMapStringEx(
             locale: *const u16,
             flags: u32,
-            str1: *const u16,
-            len1: i32,
-            str2: *const u16,
-            len2: i32,
+            src: *const u16,
+            src_len: i32,
+            dest: *mut u8,
+            dest_len: i32,
             version: *const core::ffi::c_void,
             reserved: *const core::ffi::c_void,
-            param: isize,
+            sort_handle: isize,
         ) -> i32;
     }
-    let w1: Vec<u16> = a.encode_utf16().collect();
-    let w2: Vec<u16> = b.encode_utf16().collect();
-    // locale=NULL はユーザ既定ロケール。戻り値 1/2/3 が Less/Equal/Greater、
-    // 0 は失敗なのでコードポイント順へフォールバックする。
-    let r = unsafe {
-        CompareStringEx(
+    const LCMAP_SORTKEY: u32 = 0x0000_0400;
+    let w: Vec<u16> = s.encode_utf16().collect();
+    // locale=NULL はユーザ既定ロケール。必要バイト数を問い合わせてから確保する。
+    // 失敗（0以下）はコードポイント順へフォールバックする。
+    let needed = unsafe {
+        LCMapStringEx(
             core::ptr::null(),
+            LCMAP_SORTKEY,
+            w.as_ptr(),
+            w.len() as i32,
+            core::ptr::null_mut(),
             0,
-            w1.as_ptr(),
-            w1.len() as i32,
-            w2.as_ptr(),
-            w2.len() as i32,
             core::ptr::null(),
             core::ptr::null(),
             0,
         )
     };
-    match r {
-        1 => Ordering::Less,
-        3 => Ordering::Greater,
-        2 => Ordering::Equal,
-        _ => a.cmp(b),
+    if needed <= 0 {
+        return s.as_bytes().to_vec();
     }
+    let mut buf = vec![0u8; needed as usize];
+    let written = unsafe {
+        LCMapStringEx(
+            core::ptr::null(),
+            LCMAP_SORTKEY,
+            w.as_ptr(),
+            w.len() as i32,
+            buf.as_mut_ptr(),
+            needed,
+            core::ptr::null(),
+            core::ptr::null(),
+            0,
+        )
+    };
+    if written <= 0 {
+        return s.as_bytes().to_vec();
+    }
+    buf.truncate(written as usize);
+    buf
 }
 
 #[cfg(not(windows))]
-fn locale_compare(a: &str, b: &str) -> std::cmp::Ordering {
-    a.cmp(b)
+fn locale_sort_key(s: &str) -> Vec<u8> {
+    s.as_bytes().to_vec()
 }
 
 /// 2エントリをソート種別で比較する（reverse なし）。親優先・dir 優先は呼び出し側で先に判定済み。
@@ -470,47 +494,106 @@ fn compare_items(a: &FileItem, b: &FileItem, sort: SortType, reverse: bool) -> s
     if reverse { o.reverse() } else { o }
 }
 
+/// `sort_by_cached_key` 用に `reverse` を内包した比較キー。同一の並べ替え呼び出し内の
+/// 全要素で `reverse` は同じ値なので、常に整合した順序になる。
+struct Rev<T>(bool, T);
+
+impl<T: Ord> PartialEq for Rev<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.1 == other.1
+    }
+}
+impl<T: Ord> Eq for Rev<T> {}
+impl<T: Ord> PartialOrd for Rev<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl<T: Ord> Ord for Rev<T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let o = self.1.cmp(&other.1);
+        if self.0 { o.reverse() } else { o }
+    }
+}
+
+/// 名前系ソート（ロケール照合／自然順のコストが大きい）専用の事前計算キー。
+/// `sort_by_cached_key` で要素ごとに1回だけ計算し、比較のたびの再計算
+/// （O(n log n) 回）を避ける。親優先・ディレクトリ優先は `reverse` の影響を受けない。
+fn name_sort_key(it: &FileItem, reverse: bool) -> (bool, bool, Rev<Vec<u8>>) {
+    (!it.is_parent, !it.is_dir, Rev(reverse, locale_sort_key(&it.name.to_uppercase())))
+}
+
+fn name_exp_sort_key(it: &FileItem, reverse: bool) -> (bool, bool, Rev<Vec<ExpSegment>>) {
+    (!it.is_parent, !it.is_dir, Rev(reverse, exp_like_key(&it.name.to_uppercase())))
+}
+
+/// (拡張子キー, 名前キー)＝拡張子が同値のときの名前タイブレークをタプル比較で表す。
+type ExtSortPayload = Rev<(Vec<u8>, Vec<u8>)>;
+type ExtExpSortPayload = Rev<(Vec<ExpSegment>, Vec<ExpSegment>)>;
+
+fn ext_sort_key(it: &FileItem, reverse: bool) -> (bool, bool, ExtSortPayload) {
+    (
+        !it.is_parent,
+        !it.is_dir,
+        Rev(
+            reverse,
+            (
+                locale_sort_key(&it.extension.to_uppercase()),
+                locale_sort_key(&it.name.to_uppercase()),
+            ),
+        ),
+    )
+}
+
+fn ext_exp_sort_key(it: &FileItem, reverse: bool) -> (bool, bool, ExtExpSortPayload) {
+    (
+        !it.is_parent,
+        !it.is_dir,
+        Rev(
+            reverse,
+            (
+                exp_like_key(&it.extension.to_uppercase()),
+                exp_like_key(&it.name.to_uppercase()),
+            ),
+        ),
+    )
+}
+
+/// 自然順比較の1セグメント。文字列全体を「非数字ラン→数字ラン→非数字ラン→…」の
+/// 交互列（`exp_like_key`）へ一意に分解したうえで `Vec<ExpSegment>` の辞書式比較
+/// （derive(Ord)）に委ねる。比較相手によって挙動を変える分岐を持たないため、
+/// 全順序（推移律）が構造的に保証される（比較相手ごとに結果が変わりうる分岐比較は、
+/// 桁数や文字種の組み合わせ次第で推移律が崩れて並べ替えが異常終了しうる）。
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum ExpSegment {
+    /// (先頭ゼロを除いた桁数, 先頭ゼロを除いた数字バイト列)。桁数優先で比較するため
+    /// 9桁を超える巨大な数字列でも i64 等のオーバーフローなく数値順を保つ。
+    Digits(usize, Vec<u8>),
+    /// ロケール照合のソートキー（`locale_sort_key`）。
+    Text(Vec<u8>),
+}
+
 /// 自然順比較（文字列中の数字列を数値として比較する）。
-///
-/// 完全一致は Equal。先頭文字が同じ or 両方数字なら「非数字プレフィクス＋数字列」を
-/// 繰り返しマッチし、プレフィクス(trim) が等しい間は数字部を整数比較する（9桁以上は通常比較へ）。
 fn exp_like_compare(input1: &str, input2: &str) -> std::cmp::Ordering {
     if input1 == input2 {
         return std::cmp::Ordering::Equal;
     }
-    let c1 = input1.chars().next().unwrap_or('\0');
-    let c2 = input2.chars().next().unwrap_or('\0');
-    if c1 == c2 || (digit_value(c1).is_some() && digit_value(c2).is_some()) {
-        let mut m1 = ExpMatcher::new(input1);
-        let mut m2 = ExpMatcher::new(input2);
-        if let (Some(mut a), Some(mut b)) = (m1.next(), m2.next()) {
-            loop {
-                if a.prefix.trim() != b.prefix.trim() {
-                    break;
-                }
-                // 数字列を任意桁で数値比較する（先頭ゼロ無視→桁数→辞書順）。i64 に収まらない
-                // 長大な数字列でも一貫した順序づけになり、比較の推移律を保つ（桁数で早期に
-                // 通常比較へ抜けると数値順と文字順が混ざって推移律が崩れ sort が panic する）。
-                let da = a.digits.trim_start_matches('0');
-                let db = b.digits.trim_start_matches('0');
-                let num = da.len().cmp(&db.len()).then_with(|| da.cmp(db));
-                if num != std::cmp::Ordering::Equal {
-                    return num;
-                }
-                let rest1 = &input1[a.end..];
-                let rest2 = &input2[b.end..];
-                match (m1.next(), m2.next()) {
-                    (Some(na2), Some(nb2)) => {
-                        a = na2;
-                        b = nb2;
-                        continue;
-                    }
-                    _ => return locale_compare(rest1, rest2),
-                }
-            }
-        }
+    exp_like_key(input1).cmp(&exp_like_key(input2))
+}
+
+/// 文字列を「非数字ラン＋数字ラン」の繰り返し＋末尾の非数字ランへ分解する。
+fn exp_like_key(input: &str) -> Vec<ExpSegment> {
+    let mut segs = Vec::new();
+    let mut m = ExpMatcher::new(input);
+    let mut tail = 0usize;
+    while let Some(mat) = m.next() {
+        segs.push(ExpSegment::Text(locale_sort_key(&mat.prefix)));
+        let digits = mat.digits.trim_start_matches('0');
+        segs.push(ExpSegment::Digits(digits.len(), digits.as_bytes().to_vec()));
+        tail = mat.end;
     }
-    locale_compare(input1, input2)
+    segs.push(ExpSegment::Text(locale_sort_key(&input[tail..])));
+    segs
 }
 
 /// 1回分の「非数字プレフィクス＋数字列」マッチ結果。
@@ -1366,8 +1449,26 @@ impl FileListState {
         self.sort_type = sort;
         self.sort_reverse = reverse;
         let effective = reverse ^ (self.reverse_sort_date && sort == SortType::LastWriteTime);
-        self.items
-            .sort_by(|a, b| compare_items(a, b, sort, effective));
+        let items = &mut self.items;
+        // 名前系（ロケール照合／自然順）は要素ごとに1回だけキーを計算する
+        // sort_by_cached_key に寄せ、比較のたびの再計算（O(n log n) 回）を避ける。
+        let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match sort {
+            SortType::FileName => items.sort_by_cached_key(|it| name_sort_key(it, effective)),
+            SortType::FileNameExpLike => {
+                items.sort_by_cached_key(|it| name_exp_sort_key(it, effective))
+            }
+            SortType::Extension => items.sort_by_cached_key(|it| ext_sort_key(it, effective)),
+            SortType::ExtensionExpLike => {
+                items.sort_by_cached_key(|it| ext_exp_sort_key(it, effective))
+            }
+            _ => items.sort_by(|a, b| compare_items(a, b, sort, effective)),
+        }))
+        .is_ok();
+        if !ok {
+            // 比較関数が全順序を満たさない入力を検出して異常終了した場合の保険。
+            // コードポイント順（常に全順序）で必ず並べ切り、一覧描画を継続可能にする。
+            self.items.sort_by(|a, b| a.name.cmp(&b.name));
+        }
         self.apply_search();
     }
 
@@ -2683,6 +2784,25 @@ mod tests {
         s.sort(SortType::FileNameExpLike, false);
         let names: Vec<&str> = s.items.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names, vec!["画像１", "画像２", "画像１０"]);
+    }
+
+    #[test]
+    fn exp_like_sort_handles_symbol_heavy_names_without_panic() {
+        // 入れ子の括弧・全角/半角混在の記号・句読点が多く混じる名前でも並べ替えが
+        // 異常終了しないことの回帰確認（"user-provided comparison function does not
+        // correctly implement a total order" ＝ 分岐比較が非推移になって起きるパニック）。
+        let brackets = ["[A]", "[[A]]", "[A=B]", "(A)", "[ [A] (B)]", "「A」", "『A』"];
+        let puncts = ["～", "・", "…", "？", "！", "、", "。", "＆", "%"];
+        let mut names = Vec::new();
+        for b in brackets {
+            for (j, p) in puncts.iter().enumerate() {
+                names.push(format!("{b}X{p}Y{j}.ext"));
+                names.push(format!("{b}X{p}Y１{j}.ext"));
+            }
+        }
+        let mut items: Vec<FileItem> = names.iter().map(|n| file(n)).collect();
+        items.sort_by(|a, b| compare_items(a, b, SortType::FileNameExpLike, false));
+        items.sort_by(|a, b| compare_items(a, b, SortType::FileNameExpLike, true));
     }
 
     #[test]
