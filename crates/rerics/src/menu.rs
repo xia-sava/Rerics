@@ -1,7 +1,8 @@
-//! メインメニューバー。原作のメニューツリーを再現し、対応コマンドのある項目だけ有効化する。
+//! メインメニューバー。ファイル/編集/表示/ツール/ヘルプの標準的な分類で構成し、対応コマンドの
+//! ある項目だけ有効化する。
 //!
-//! 未対応の項目はグレーアウトで掲示だけする（整理は後続）。各有効項目には一意の ID を振り、
-//! `build` が返す `ID → Command` の対応を使って `wm_command_acc_menu` から実行へつなぐ。
+//! 未対応の項目はグレーアウトで掲示だけする。各有効項目には一意の ID を振り、`build` が返す
+//! `ID → Command` の対応を使って `wm_command_acc_menu` から実行へつなぐ。
 
 use std::collections::HashMap;
 
@@ -61,45 +62,43 @@ const SHELL_ITEMS: &[Item] = &[
 
 const MENUS: &[MenuDef] = &[
     MenuDef {
-        label: "Records(&X)",
+        label: "ファイル(&F)",
         items: &[
-            on("設定(&S)", Command::OpenSettings),
-            off("プラグインの設定"),
+            on("新規ファイルの作成", Command::CreateFileDialog),
+            on("ディレクトリの作成", Command::MakeDirectoryDialog),
             SEP,
-            on("タブを閉じる(&C)", Command::Exit),
+            on("コピー(&C)", Command::Copy),
+            on("移動(&M)", Command::Move),
+            on("削除(&D)", Command::Delete),
+            on("ごみ箱へ送る", Command::SendToRecycled),
+            sub("シェルで操作(&H)", SHELL_ITEMS),
+            on("コンテキストメニュー", Command::ContextMenu),
+            SEP,
+            on("ディレクトリの容量計算", Command::DirectoryInformation),
+            SEP,
+            on("タブを閉じる(&W)", Command::Exit),
             on("再起動(&R)", Command::Restart),
             on("終了(&X)", Command::End),
-            off("Debug"),
         ],
     },
     MenuDef {
         label: "編集(&E)",
         items: &[
-            on("コピー(&C)", Command::Copy),
-            on("移動(&M)", Command::Move),
-            on("削除(&D)", Command::Delete),
-            on("ごみ箱へ送る", Command::SendToRecycled),
-            on("ディレクトリの作成", Command::MakeDirectoryDialog),
-            SEP,
-            sub("シェルで操作(&H)", SHELL_ITEMS),
-            on("コンテキストメニュー", Command::ContextMenu),
-            SEP,
-            off("検索(&F)"),
-            off("ディレクトリ比較"),
-            on("ディレクトリの容量計算", Command::DirectoryInformation),
-            SEP,
             on("すべて選択(&A)", Command::SelectAll),
+            off("検索(&F)"),
         ],
     },
     MenuDef {
         label: "表示(&V)",
         items: &[
             on("ドライブリスト(&D)", Command::ChangeDriveDialog),
-            sub("ソート(&S)", SORT_ITEMS),
             on("パスマスク(&P)", Command::PathMaskDialog),
+            sub("ソート(&S)", SORT_ITEMS),
+            SEP,
             on("登録ディレクトリ(&R)", Command::JumpDialog),
+            on("登録ディレクトリに追加(&A)", Command::PathRegisterDialog),
             on("ディレクトリ履歴(&H)", Command::PathHistoryDialog),
-            on("キーバインドリスト", Command::KeyBindsDialog),
+            SEP,
             off("ログ表示切替"),
             off("サムネイル表示切替"),
             SEP,
@@ -112,37 +111,38 @@ const MENUS: &[MenuDef] = &[
             off("マイコンピュータで開く"),
             off("親ディレクトリを新しいタブで開く(&N)"),
             SEP,
+            on("テキストエディタ", Command::Edit),
             off("シェル項目"),
             SEP,
             on("圧縮(&P)", Command::CompressDialog),
             on("解凍(&U)", Command::Extract),
             SEP,
+            off("ディレクトリ比較"),
+            SEP,
             off("コマンドプロンプト"),
             off("実行コマンドの入力"),
             off("ファイル名付き実行コマンドの入力"),
-            on("新規ファイルの作成", Command::CreateFileDialog),
-            on("テキストエディタ", Command::Edit),
-        ],
-    },
-    MenuDef {
-        label: "登録(&R)",
-        items: &[
+            SEP,
+            on("設定(&S)", Command::OpenSettings),
+            off("プラグインの設定"),
+            on("キーバインドリスト", Command::KeyBindsDialog),
+            SEP,
             off("ファイルの関連付けに追加(&F)"),
-            on("登録ディレクトリに追加(&D)", Command::PathRegisterDialog),
-        ],
-    },
-    MenuDef {
-        label: "その他(&O)",
-        items: &[
+            SEP,
             on("自動更新", Command::CheckUpdate),
+            SEP,
             on("ログをコピー", Command::CopyLog),
             on("ログクリア", Command::ClearLog),
             off("一時ファイルをクリア"),
+            SEP,
             off("列幅の保存"),
             off("列幅の復元"),
+            SEP,
             off("ネットワークドライブの割り当て"),
             off("ネットワークドライブの切断"),
             off("仮想ドライブの切断"),
+            SEP,
+            off("Debug"),
         ],
     },
     MenuDef {
