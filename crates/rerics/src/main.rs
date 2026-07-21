@@ -466,6 +466,8 @@ struct TabSnapshot {
     left_state: FileListState,
     right_state: FileListState,
     active_right: bool,
+    /// 左ペインの幅比（0.0〜1.0）。タブ切替時にスプリッタ位置を復元するために覚える。
+    split_ratio: f64,
 }
 
 /// ペイン再読込時にカーソルをどこへ置くか。
@@ -625,6 +627,7 @@ impl MainWindow {
                 left_path,
                 right_path,
                 active_right: false,
+                split_ratio: initial_split,
             }
         };
         let tabs = vec![placeholder];

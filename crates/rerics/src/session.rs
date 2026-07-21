@@ -32,6 +32,7 @@ fn build_restored_tabs(
                 left_path,
                 right_path,
                 active_right: t.active_right,
+                split_ratio: t.split_ratio,
             }
         })
         .collect();
@@ -57,6 +58,7 @@ impl MainWindow {
                 sort_left_reverse: t.left_state.sort_reverse,
                 sort_right: t.right_state.sort_type,
                 sort_right_reverse: t.right_state.sort_reverse,
+                split_ratio: t.split_ratio,
             })
             .collect();
         let state = rerics_core::State {
@@ -132,6 +134,7 @@ impl MainWindow {
             left_state: self.view(true).state().borrow().clone(),
             right_state: self.view(false).state().borrow().clone(),
             active_right: self.active_right.get(),
+            split_ratio: self.split_ratio.get(),
         }
     }
 
@@ -142,6 +145,9 @@ impl MainWindow {
         *self.view(true).state().borrow_mut() = snap.left_state.clone();
         *self.view(false).state().borrow_mut() = snap.right_state.clone();
         self.set_active_pane(snap.active_right)?;
+        // タブごとのスプリッタ位置を復元し、ペイン幅へ反映する。
+        self.split_ratio.set(snap.split_ratio);
+        self.layout()?;
         // 旧タブで走行中の非同期読込に追い越されないよう世代を進め、残りスピナーも消す
         // （新タブの一覧はスナップショットから即復元済み）。
         for is_left in [true, false] {

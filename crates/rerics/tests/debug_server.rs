@@ -6803,3 +6803,41 @@ fn new_filer_inserts_tab_after_active() {
         "アクティブ直後へ挿入＝active は 1（末尾追加なら 2 になる）"
     );
 }
+
+/// スプリッタ位置（split_ratio）はタブごとに覚え、切替のたびに復元する。新タブは
+/// 開いた時点のアクティブタブの比率を引き継ぐ（複製元と同じ見た目で始まる）。
+#[test]
+fn split_ratio_is_remembered_per_tab() {
+    let server = Server::start_writable(&["a.txt"]);
+    let ratio = || -> f64 {
+        server.req("GET", "/state/window/split_ratio", "").unwrap().1.trim().parse().unwrap()
+    };
+    let default = ratio();
+
+    // tab0 を左最大化（比率が既定から大きくずれる）。
+    server.req("POST", "/command/maximizeLeftForce", "").unwrap();
+    let maximized = ratio();
+    assert_ne!(maximized, default, "maximizeLeftForce で比率が変わる: {maximized}");
+
+    // newFiler：新タブ(tab1)は複製元(tab0)の比率をそのまま引き継ぐ。
+    server.req("POST", "/command/newFiler", "").unwrap();
+    assert_eq!(server.req("GET", "/state/tabs/active", "").unwrap().1.trim(), "1");
+    assert_eq!(ratio(), maximized, "新タブは開いた時点の比率を引き継ぐ");
+
+    // tab1 だけ中央へ戻す。
+    server.req("POST", "/command/borderReset", "").unwrap();
+    let reset = ratio();
+    assert_eq!(reset, default, "borderReset で既定比率へ戻る: {reset}");
+
+    // tab0 へ戻ると、tab1 の変更に影響されず自分の比率（最大化のまま）を保っている。
+    server.req("POST", "/command/pagePrevious", "").unwrap();
+    let got = poll(&server, "/state/tabs/active", |b| b.trim() == "0");
+    assert_eq!(got.trim(), "0");
+    assert_eq!(ratio(), maximized, "tab0 は最大化した比率を保つ");
+
+    // tab1 へ戻ると、そちらは borderReset 後の比率を保っている。
+    server.req("POST", "/command/pageNext", "").unwrap();
+    let got = poll(&server, "/state/tabs/active", |b| b.trim() == "1");
+    assert_eq!(got.trim(), "1");
+    assert_eq!(ratio(), reset, "tab1 は borderReset 後の比率を保つ");
+}

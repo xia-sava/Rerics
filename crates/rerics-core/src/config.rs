@@ -656,8 +656,8 @@ pub struct WindowState {
     pub maximized: bool,
 }
 
-/// 1タブ分の状態（左右ペインのパスとアクティブ側・各ペインのソート種別/昇降）。
-#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+/// 1タブ分の状態（左右ペインのパスとアクティブ側・各ペインのソート種別/昇降・分割比）。
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TabState {
     pub left: String,
     pub right: String,
@@ -671,6 +671,24 @@ pub struct TabState {
     pub sort_right: SortType,
     #[serde(default)]
     pub sort_right_reverse: bool,
+    /// 左ペインの幅比（0.0〜1.0）。タブごとのスプリッタ位置の永続化。
+    #[serde(default = "default_split_ratio")]
+    pub split_ratio: f64,
+}
+
+impl Default for TabState {
+    fn default() -> Self {
+        Self {
+            left: String::new(),
+            right: String::new(),
+            active_right: false,
+            sort_left: SortType::default(),
+            sort_left_reverse: false,
+            sort_right: SortType::default(),
+            sort_right_reverse: false,
+            split_ratio: default_split_ratio(),
+        }
+    }
 }
 
 /// 自動保存される全体状態。
@@ -1115,6 +1133,7 @@ mod tests {
                 sort_left_reverse: true,
                 sort_right: SortType::LastWriteTime,
                 sort_right_reverse: false,
+                ..Default::default()
             }],
             active_tab: 0,
             ..State::default()
@@ -1137,6 +1156,31 @@ mod tests {
         assert!(!t.sort_left_reverse);
         assert_eq!(t.sort_right, SortType::FileName);
         assert!(!t.sort_right_reverse);
+    }
+
+    #[test]
+    fn tabstate_split_ratio_roundtrip() {
+        let st = State {
+            window: None,
+            tabs: vec![
+                TabState { left: "C:\\a".into(), right: "C:\\b".into(), split_ratio: 0.3, ..Default::default() },
+                TabState { left: "C:\\c".into(), right: "C:\\d".into(), split_ratio: 0.7, ..Default::default() },
+            ],
+            active_tab: 0,
+            ..State::default()
+        };
+        let s = toml::to_string(&st).unwrap();
+        let back: State = toml::from_str(&s).unwrap();
+        assert_eq!(back.tabs[0].split_ratio, 0.3);
+        assert_eq!(back.tabs[1].split_ratio, 0.7);
+    }
+
+    #[test]
+    fn tabstate_without_split_ratio_defaults_to_center() {
+        // 旧 state.toml（タブごとの split_ratio 無し）を読んでも 0.5 に落ちる。
+        let toml = "left = \"C:\\\\a\"\nright = \"C:\\\\b\"\nactive_right = false\n";
+        let t: TabState = toml::from_str(toml).unwrap();
+        assert_eq!(t.split_ratio, 0.5);
     }
 
     #[test]

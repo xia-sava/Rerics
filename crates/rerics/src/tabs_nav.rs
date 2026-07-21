@@ -78,6 +78,7 @@ impl MainWindow {
                 left_path,
                 right_path,
                 active_right: self.active_right.get(),
+                split_ratio: self.split_ratio.get(),
             }
         };
         let index = self.active.get() + 1;
