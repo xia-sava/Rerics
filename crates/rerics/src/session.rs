@@ -211,7 +211,7 @@ impl MainWindow {
             ".",
             env!("CARGO_PKG_VERSION_MINOR")
         );
-        let title = if path.is_empty() { app.to_owned() } else { format!("{app} - {path}") };
+        let title = if path.is_empty() { app.to_owned() } else { format!("{path} - {app}") };
         self.wnd.hwnd().SetWindowText(&title)?;
         Ok(())
     }
