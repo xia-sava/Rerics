@@ -417,11 +417,6 @@ struct MainWindow {
     /// 結果一覧を再検索した後、完了時にカーソルを戻す指定（`[左, 右]`）。操作後リフレッシュ・
     /// リネーム後の追従用。再検索開始時に立て、完了（`FindDone`）で取り出して消費する。
     find_refocus: Rc<RefCell<[Option<Refocus>; 2]>>,
-    /// インライン検索バーを開いた時点のカーソル位置（`[左, 右]`）。バーが新規に開くとき
-    /// （既に開いている間の再フォーカスでは上書きしない）に立て、Esc で復帰し終えたら、または
-    /// Enter で確定したら取り出して消費する（Esc でそこへカーソルを戻すため）。タブ別ではなく
-    /// ペイン別（タブ切替時にクリアする＝タブをまたいだ開始位置は意味を持たない）。
-    search_origin: Rc<RefCell<[Option<usize>; 2]>>,
     /// スクリプト実行を停止（強制終了）するための V8 isolate ハンドル。エンジン起動後に
     /// `ScriptEngineReady` で受け取って保持する。
     script_isolate: Rc<RefCell<Option<deno_core::v8::IsolateHandle>>>,
@@ -696,7 +691,6 @@ impl MainWindow {
             find_task: Rc::new(RefCell::new([None, None])),
             find_query: Rc::new(RefCell::new([None, None])),
             find_refocus: Rc::new(RefCell::new([None, None])),
-            search_origin: Rc::new(RefCell::new([None, None])),
             script_isolate: Rc::new(RefCell::new(None)),
             script_worker_isolates: Arc::new(std::sync::Mutex::new(Vec::new())),
             script_pool_stopped: Arc::new(AtomicBool::new(false)),

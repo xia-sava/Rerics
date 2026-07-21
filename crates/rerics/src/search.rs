@@ -415,18 +415,15 @@ impl MainWindow {
         });
     }
 
-    /// Fキー。バーが閉じていれば、開く前のカーソル位置を控えたうえで開き、検索語が残っていれば
-    /// そこから再開する（先頭から追従）。既にバーが開いている（再フォーカスのみ）ときは追従を
-    /// やり直さず、検索ボックスへフォーカス＋全選択するだけに留める。
+    /// Fキー。バーが閉じていれば開き、検索語が残っていればそこから再開する（先頭から追従）。
+    /// 既にバーが開いている（再フォーカスのみ）ときは追従をやり直さず、検索ボックスへ
+    /// フォーカス＋全選択するだけに留める。
     pub(crate) fn search_open(&self, is_left: bool) -> w::AnyResult<()> {
-        let idx = if is_left { 0 } else { 1 };
         let already_open = self.view(is_left).state().borrow().search.active;
         if already_open {
             self.search_bar.focus_edit(true);
             return Ok(());
         }
-        let cursor = self.view(is_left).state().borrow().cursor;
-        self.search_origin.borrow_mut()[idx] = Some(cursor);
         {
             let state = self.view(is_left).state();
             state.borrow_mut().search.active = true;
@@ -438,38 +435,23 @@ impl MainWindow {
         Ok(())
     }
 
-    /// Esc。バーの表示を閉じ、絞り込み・ハイライトを完全に解除し（一覧を全復元）、カーソルを
-    /// バーを開いた時点の位置へ戻す。開始位置の記憶（`search_origin`）が無ければ、確定
-    /// （Enter）済みで絞り込みだけを解いたケースなので、絞り込み後の一覧でのカーソル項目を
-    /// 名前＋出自で控え、全復元後の一覧で同じ項目へ再対応付けする（絞り込み解除で一覧の
-    /// 並び・件数が変わり、index が同じ項目を指すとは限らないため）。検索語・オプション・
-    /// 絞り込み設定は保持する。フォーカスはキーシンクへ戻す。
+    /// Esc。バーの表示を閉じ、絞り込み・ハイライトを解除する（一覧を全復元）。カーソルは
+    /// バーを開いた後に検索で辿り着いた位置に留める。絞り込み解除で一覧の並び・件数が変わり
+    /// index が同じ項目を指すとは限らないため、現在のカーソル項目を名前＋出自で控え、
+    /// 復元後の一覧で同じ項目へ再対応付けする。検索語・オプション・絞り込み設定は保持する。
+    /// フォーカスはキーシンクへ戻す。
     pub(crate) fn search_close(&self, is_left: bool) -> w::AnyResult<()> {
-        let idx = if is_left { 0 } else { 1 };
         let page_rows = self.view(is_left).page_rows();
-        let origin = self.search_origin.borrow_mut()[idx].take();
         {
             let state = self.view(is_left).state();
             let mut s = state.borrow_mut();
             s.search.active = false;
-            if origin.is_none() {
-                let cur = s.items.get(s.cursor);
-                let name = cur.map(|it| it.name.clone());
-                let source = cur.and_then(|it| it.source.clone());
-                let prev_index = s.cursor;
-                s.apply_search();
-                s.restore_cursor_after_rebuild(name.as_deref(), source.as_ref(), prev_index, None, page_rows);
-            } else {
-                s.apply_search();
-                let cursor = s.cursor as isize;
-                s.set_cursor(cursor, page_rows);
-            }
-        }
-        if let Some(origin) = origin {
-            let state = self.view(is_left).state();
-            let mut s = state.borrow_mut();
-            s.set_cursor(origin as isize, page_rows);
-            s.select_start = s.cursor;
+            let cur = s.items.get(s.cursor);
+            let name = cur.map(|it| it.name.clone());
+            let source = cur.and_then(|it| it.source.clone());
+            let prev_index = s.cursor;
+            s.apply_search();
+            s.restore_cursor_after_rebuild(name.as_deref(), source.as_ref(), prev_index, None, page_rows);
         }
         let _ = self.view(is_left).refresh();
         self.sync_search_bar()?;
@@ -478,13 +460,10 @@ impl MainWindow {
     }
 
     /// Enter。検索語を履歴 `"filesearch"` へ記録する（空なら記録しない）。バーは開いたまま
-    /// （絞り込み・ハイライトも維持）、フォーカスを一覧（キーシンク）へ戻す。確定したのでもう
-    /// Esc で戻す対象ではなくなり、開始位置の記憶は捨てる。
+    /// （絞り込み・ハイライトも維持）、フォーカスを一覧（キーシンク）へ戻す。
     pub(crate) fn search_confirm(&self, is_left: bool) -> w::AnyResult<()> {
-        let idx = if is_left { 0 } else { 1 };
         let query = self.view(is_left).state().borrow().search.query.clone();
         self.search_bar.record_history(&query);
-        self.search_origin.borrow_mut()[idx] = None;
         self.key_sink.hwnd().SetFocus();
         Ok(())
     }
