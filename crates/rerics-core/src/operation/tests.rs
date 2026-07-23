@@ -366,6 +366,116 @@
     }
 
     #[test]
+    fn copy_same_dir_rename_creates_copy() {
+        // 左右同一ディレクトリでも、名前を変えてのコピーは成功する（元は残る）。
+        let dir = TempDir::new();
+        dir.write_file("a.txt", "hello");
+        let host = FakeHost::with_conflict(ConflictResolution::Rename("b.txt".to_owned()));
+        let sum = run_copy(&host, &dir.path, &dir.path, &["a.txt".to_owned()], false);
+        assert_eq!(sum, OpSummary { ok: 1, skip: 0, err: 0, cancelled: false });
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "hello");
+        assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "hello");
+    }
+
+    #[test]
+    fn copy_same_dir_rename_back_to_self_skips() {
+        // 別名が元の名前と同じなら実行せずスキップする。
+        let dir = TempDir::new();
+        dir.write_file("a.txt", "hello");
+        let host = FakeHost::with_conflict(ConflictResolution::Rename("a.txt".to_owned()));
+        let sum = run_copy(&host, &dir.path, &dir.path, &["a.txt".to_owned()], false);
+        assert_eq!(sum.skip, 1);
+        assert_eq!(sum.ok, 0);
+        assert_eq!(sum.err, 0);
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "hello");
+    }
+
+    #[test]
+    fn copy_same_dir_overwrite_does_not_execute() {
+        // 上書きを選んでもコピー先が元ファイル自身なら実行せずエラー（元を壊さない）。
+        let dir = TempDir::new();
+        dir.write_file("a.txt", "hello");
+        let host = FakeHost::with_conflict(ConflictResolution::Overwrite);
+        let sum = run_copy(&host, &dir.path, &dir.path, &["a.txt".to_owned()], false);
+        assert_eq!(sum.err, 1);
+        assert_eq!(sum.ok, 0);
+        assert!(host.lines().iter().any(|l| l.starts_with("コピー先が同じです")));
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "hello");
+    }
+
+    #[test]
+    fn copy_same_dir_force_preserves_source_attributes() {
+        // 強制上書きを選んでもコピー先が元ファイル自身なら、属性解除も上書きもしない。
+        let dir = TempDir::new();
+        dir.write_file("a.txt", "hello");
+        let ro = dir.join("a.txt");
+        let mut perms = std::fs::metadata(&ro).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&ro, perms).unwrap();
+        let host = FakeHost::with_conflict(ConflictResolution::OverwriteForce);
+        let sum = run_copy(&host, &dir.path, &dir.path, &["a.txt".to_owned()], false);
+        assert_eq!(sum.err, 1);
+        assert_eq!(sum.ok, 0);
+        assert_eq!(std::fs::read_to_string(&ro).unwrap(), "hello");
+        assert!(
+            std::fs::metadata(&ro).unwrap().permissions().readonly(),
+            "元ファイルの読み取り専用属性は解除されない"
+        );
+        // 後始末（Windows の読み取り専用ビットを落とす意図）。
+        let mut perms = std::fs::metadata(&ro).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&ro, perms).unwrap();
+    }
+
+    #[test]
+    fn copy_same_dir_skip_does_nothing() {
+        let dir = TempDir::new();
+        dir.write_file("a.txt", "hello");
+        let host = FakeHost::with_conflict(ConflictResolution::Skip);
+        let sum = run_copy(&host, &dir.path, &dir.path, &["a.txt".to_owned()], false);
+        assert_eq!(sum.skip, 1);
+        assert_eq!(sum.ok, 0);
+        assert_eq!(sum.err, 0);
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "hello");
+    }
+
+    #[test]
+    fn copy_same_dir_cancel_aborts() {
+        let dir = TempDir::new();
+        dir.write_file("a.txt", "hello");
+        let host = FakeHost::with_conflict(ConflictResolution::Cancel);
+        let sum = run_copy(&host, &dir.path, &dir.path, &["a.txt".to_owned()], false);
+        assert!(sum.cancelled);
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "hello");
+    }
+
+    #[test]
+    fn move_same_dir_rename_renames_in_place() {
+        // 同一ディレクトリでの移動＋改名は、その場でのリネーム（元名は消え新名になる）。
+        let dir = TempDir::new();
+        dir.write_file("a.txt", "hello");
+        let host = FakeHost::with_conflict(ConflictResolution::Rename("b.txt".to_owned()));
+        let sum = run_copy(&host, &dir.path, &dir.path, &["a.txt".to_owned()], true);
+        assert_eq!(sum.ok, 1);
+        assert!(!dir.join("a.txt").exists());
+        assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "hello");
+    }
+
+    #[test]
+    fn move_same_dir_overwrite_does_not_execute() {
+        // 同一ディレクトリでの移動で上書きを選んでも、移動先が元自身なら実行せずエラー。
+        let dir = TempDir::new();
+        dir.write_file("a.txt", "hello");
+        let host = FakeHost::with_conflict(ConflictResolution::Overwrite);
+        let sum = run_copy(&host, &dir.path, &dir.path, &["a.txt".to_owned()], true);
+        assert_eq!(sum.err, 1);
+        assert_eq!(sum.ok, 0);
+        assert!(host.lines().iter().any(|l| l.starts_with("移動先が同じです")));
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "hello");
+    }
+
+    #[test]
     fn delete_file_succeeds() {
         let dir = TempDir::new();
         dir.write_file("a.txt", "x");

@@ -22,18 +22,9 @@ pub fn run_copy(
             }
             let src = src_dir.join(name);
             let dst = dst_dir.join(name);
-            // 同一パス（Windows はケース違いも同一とみなす）はエラー。
-            if same_path(&src, &dst) {
-                let line = if move_it {
-                    messages::same_move_path(name)
-                } else {
-                    messages::same_copy_path(name)
-                };
-                host.log(LogLevel::Error, &line);
-                sum.err += 1;
-                continue;
-            }
-            // ディレクトリを自分自身の配下へコピー/移動すると無限再帰になるので拒否する。
+            // ディレクトリを自分自身の配下へコピー/移動すると無限再帰になるので拒否する
+            // （同一ディレクトリへの自己コピーもここで弾く）。ファイルの同一パスは衝突解決へ
+            // 委ねる（別名でのコピーを許すため）。
             if src.is_dir() && dst_within_src(&src, &dst) {
                 host.log(LogLevel::Error, &messages::copy_into_self(verb, name));
                 sum.err += 1;
@@ -124,8 +115,11 @@ fn copy_item(
         Flow::Continue
     } else {
         // 衝突解決。別名(Rename)を選んでもその別名が既存と衝突していれば、黙って上書き
-        // せず改めてホストへ確認して繰り返す（既存ファイルの誤消去を防ぐ）。
+        // せず改めてホストへ確認して繰り返す（既存ファイルの誤消去を防ぐ）。左右同一
+        // ディレクトリのコピー/移動もコピー先が「元ファイル自身」として存在するので、
+        // ここで衝突解決に入り、別名でのコピーが選べる。
         let mut target = dst.to_path_buf();
+        let mut force = false;
         let do_copy = loop {
             if !target.exists() {
                 break true;
@@ -135,7 +129,7 @@ fn copy_item(
                 ConflictResolution::Newest => break is_src_newer(src, &target),
                 ConflictResolution::Overwrite => break true,
                 ConflictResolution::OverwriteForce => {
-                    clear_attributes(&target);
+                    force = true;
                     break true;
                 }
                 ConflictResolution::Rename(new) => {
@@ -152,6 +146,22 @@ fn copy_item(
             host.log(LogLevel::Warning, &messages::skip(&name));
             sum.skip += 1;
             return Flow::Continue;
+        }
+        // コピー先が元ファイル自身のときは実行しない（自己上書きは元を壊す）。上書き系を
+        // 選んだ場合や、別名が元の名前へ戻った場合にここへ来る。属性解除より前に弾くので
+        // 元ファイルの属性も変えない。
+        if same_path(src, &target) {
+            let line = if move_it {
+                messages::same_move_path(&name)
+            } else {
+                messages::same_copy_path(&name)
+            };
+            host.log(LogLevel::Error, &line);
+            sum.err += 1;
+            return Flow::Continue;
+        }
+        if force {
+            clear_attributes(&target);
         }
         let line = if move_it {
             messages::move_(&name)
