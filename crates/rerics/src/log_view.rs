@@ -188,6 +188,17 @@ impl LogView {
         let _ = self.refresh();
     }
 
+    /// 現在の `LogState` を複製して返す（タブ切替時の退避用）。
+    pub fn state_snapshot(&self) -> LogState {
+        self.inner.state.borrow().clone()
+    }
+
+    /// `LogState` を差し替えて再描画する（タブ切替時の復元用）。
+    pub fn restore_state(&self, state: LogState) {
+        *self.inner.state.borrow_mut() = state;
+        let _ = self.refresh();
+    }
+
     /// ログ全文をクリップボードへコピーする（CF_UNICODETEXT・行は CRLF 区切り）。
     pub fn copy_all(&self) -> w::AnyResult<()> {
         let text = {
@@ -282,7 +293,7 @@ impl LogView {
     }
 
     /// 1画面に収まる行数。
-    fn page_rows(&self) -> usize {
+    pub(crate) fn page_rows(&self) -> usize {
         let lh = self.inner.line_height.get().max(1);
         let h = self
             .hwnd()

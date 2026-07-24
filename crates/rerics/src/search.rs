@@ -227,12 +227,14 @@ impl MainWindow {
         let shutdown = self.shutdown.clone();
         let wake = self.wnd.hwnd().ptr() as isize;
         let pid = self.progress_seq.fetch_add(1, Ordering::Relaxed);
+        let origin_tab = self.active_tab_id();
         std::thread::spawn(move || {
             let _ = tx.send(WorkerEvent::FindBegin { id, is_left });
             let _ = tx.send(WorkerEvent::LogLine {
                 id: pid,
                 level: LogLevel::Info,
                 text: "ファイル検索中… 走査 0件 該当 0件".to_owned(),
+                origin_tab,
             });
             crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
             let scanned = std::cell::Cell::new(0usize);
@@ -254,6 +256,7 @@ impl MainWindow {
                             id: pid,
                             level: None,
                             text: format!("ファイル検索中… 走査 {n}件 該当 {}件", found.get()),
+                            origin_tab,
                         });
                         crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
                     }
@@ -270,7 +273,7 @@ impl MainWindow {
             let head = if cancelled { "検索中止" } else { "検索結果" };
             let summary = format!("{head} {count}件（走査 {}件）", scanned.get());
             let level = if cancelled { Some(LogLevel::Warning) } else { None };
-            let _ = tx.send(WorkerEvent::LogEnd { id: pid, level, text: summary });
+            let _ = tx.send(WorkerEvent::LogEnd { id: pid, level, text: summary, origin_tab });
             let _ = tx.send(WorkerEvent::FindDone { id, is_left });
             crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
         });
@@ -303,12 +306,14 @@ impl MainWindow {
         let shutdown = self.shutdown.clone();
         let wake = self.wnd.hwnd().ptr() as isize;
         let pid = self.progress_seq.fetch_add(1, Ordering::Relaxed);
+        let origin_tab = self.active_tab_id();
         std::thread::spawn(move || {
             let _ = tx.send(WorkerEvent::FindBegin { id, is_left });
             let _ = tx.send(WorkerEvent::LogLine {
                 id: pid,
                 level: LogLevel::Info,
                 text: "ディレクトリ比較中… 走査 0件 差分 0件".to_owned(),
+                origin_tab,
             });
             crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
             let scanned = std::cell::Cell::new(0usize);
@@ -330,6 +335,7 @@ impl MainWindow {
                             id: pid,
                             level: None,
                             text: format!("ディレクトリ比較中… 走査 {n}件 差分 {}件", found.get()),
+                            origin_tab,
                         });
                         crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
                     }
@@ -349,7 +355,7 @@ impl MainWindow {
                 counts.equals, counts.not_equals, counts.adds, counts.deletes, scanned.get()
             );
             let level = if cancelled { Some(LogLevel::Warning) } else { None };
-            let _ = tx.send(WorkerEvent::LogEnd { id: pid, level, text: summary });
+            let _ = tx.send(WorkerEvent::LogEnd { id: pid, level, text: summary, origin_tab });
             let _ = tx.send(WorkerEvent::FindDone { id, is_left });
             crate::winutil::post_app_message(wake, crate::winutil::msg::TASK_WAKE);
         });
@@ -368,11 +374,13 @@ impl MainWindow {
         let tx = self.task_tx.clone();
         let shutdown = self.shutdown.clone();
         let pid = self.progress_seq.fetch_add(1, Ordering::Relaxed);
+        let origin_tab = self.active_tab_id();
         std::thread::spawn(move || {
             let _ = tx.send(WorkerEvent::LogLine {
                 id: pid,
                 level: LogLevel::Normal,
                 text: "テスト用タスク実行中".to_owned(),
+                origin_tab,
             });
             // 中止（中断→中止／アプリ終了を含む）まで待つ。中断中は search_cancelled が
             // ブロックして待つ。
@@ -383,6 +391,7 @@ impl MainWindow {
                 id: pid,
                 level: None,
                 text: "テスト用タスク終了".to_owned(),
+                origin_tab,
             });
             // 完了通知。id 一致でタスク登録を解除するだけ（find_task は立てていないので
             // 結果ペインには触れない）。

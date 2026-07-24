@@ -3,7 +3,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 use winsafe::{self as w, prelude::*};
-use rerics_core::{LogLevel, messages};
+use rerics_core::{LogLevel, LogState, messages};
+use crate::log_view::LogView;
 use crate::task::{self, ArchiveOutcome, OpKind, TaskControl, TaskEntry, TaskKind, WorkerEvent};
 use crate::{MainWindow, dialog, task_manager};
 
@@ -52,6 +53,7 @@ impl MainWindow {
         kind: TaskKind,
     ) -> w::AnyResult<()> {
         let was_empty = self.tasks.borrow().is_empty();
+        let origin_tab = self.active_tab_id();
         self.tasks.borrow_mut().push(TaskEntry {
             id,
             text: text.to_owned(),
@@ -59,6 +61,7 @@ impl MainWindow {
             control,
             start: Instant::now(),
             kind,
+            origin_tab,
         });
         if was_empty {
             self.wnd
@@ -118,6 +121,33 @@ impl MainWindow {
         self.tasks.borrow_mut().retain(|e| e.id != id);
     }
 
+    /// 登録簿から `id` のタスクの発行元タブを引く（`finish_task` で外す前に呼ぶ）。
+    fn task_origin_tab(&self, id: u64) -> Option<u64> {
+        self.tasks.borrow().iter().find(|e| e.id == id).map(|e| e.origin_tab)
+    }
+
+    /// 発行元タブ `origin_tab` のログへ1行流す。origin が現在ライブなら実ログビュー
+    /// （再描画つき）の `live` を、非ライブなら該当タブのスナップショットの `LogState` に
+    /// `snap` を適用する。該当タブが無ければ（実行中に閉じられた）何もしない。末尾追従
+    /// スクロールが要る呼び出し側（新規行の追記）は `snap` の中で行う（更新系は行の書換えの
+    /// みでスクロール位置を変えない、というライブ側 `LogView::update` の仕様に揃える）。
+    /// 進行表示（ぐるぐる）はタブ間共有なので呼び出し側がライブビューに対して別途操作する。
+    fn route_log(
+        &self,
+        origin_tab: u64,
+        live: impl FnOnce(&LogView),
+        snap: impl FnOnce(&mut LogState),
+    ) {
+        if origin_tab == self.active_tab_id() {
+            live(&self.log);
+            return;
+        }
+        let mut tabs = self.tabs.borrow_mut();
+        if let Some(tab) = tabs.iter_mut().find(|t| t.tab_id == origin_tab) {
+            snap(&mut tab.log);
+        }
+    }
+
     /// ワーカーからのイベントを取り込み、ログ反映・完了処理を行う。
     ///
     /// 取り込み中に開くモーダル（同名衝突・削除確認）の内部ループから `WM_TIMER` で
@@ -145,21 +175,47 @@ impl MainWindow {
         let mut find_dirty = [false, false];
         while let Ok(ev) = self.task_rx.try_recv() {
             match ev {
-                WorkerEvent::Log { level, text } => match level {
-                    LogLevel::Normal => self.log.normal(&text),
-                    LogLevel::Info => self.log.info(&text),
-                    LogLevel::Warning => self.log.warn(&text),
-                    LogLevel::Error => self.log.error(&text),
-                },
-                WorkerEvent::LogLine { id, level, text } => {
-                    self.log.push_with_id(id, level, &text);
+                WorkerEvent::Log { level, text, origin_tab } => {
+                    let page_rows = self.log.page_rows();
+                    self.route_log(
+                        origin_tab,
+                        |lv| match level {
+                            LogLevel::Normal => lv.normal(&text),
+                            LogLevel::Info => lv.info(&text),
+                            LogLevel::Warning => lv.warn(&text),
+                            LogLevel::Error => lv.error(&text),
+                        },
+                        |st| {
+                            st.push(level, &text);
+                            st.scroll_to_bottom(page_rows);
+                        },
+                    );
+                }
+                WorkerEvent::LogLine { id, level, text, origin_tab } => {
+                    let page_rows = self.log.page_rows();
+                    self.route_log(
+                        origin_tab,
+                        |lv| lv.push_with_id(id, level, &text),
+                        |st| {
+                            st.push_with_id(id, level, &text);
+                            st.scroll_to_bottom(page_rows);
+                        },
+                    );
                     self.log.start_progress(id);
                 }
-                WorkerEvent::LogUpdate { id, level, text } => {
-                    self.log.update(id, level, &text);
+                WorkerEvent::LogUpdate { id, level, text, origin_tab } => {
+                    self.route_log(
+                        origin_tab,
+                        |lv| lv.update(id, level, &text),
+                        |st| st.update(id, level, &text),
+                    );
                 }
-                WorkerEvent::LogEnd { id, level, text } => {
-                    self.log.update(id, level, &text);
+                WorkerEvent::LogEnd { id, level, text, origin_tab } => {
+                    self.route_log(
+                        origin_tab,
+                        |lv| lv.update(id, level, &text),
+                        |st| st.update(id, level, &text),
+                    );
                     self.log.stop_progress(id);
                 }
                 WorkerEvent::AskConflict { name, reply } => {
@@ -187,6 +243,7 @@ impl MainWindow {
                     self.notify_script_op_progress(task_id, &text);
                 }
                 WorkerEvent::ArchiveDone { id, archive, temp_root, outcome } => {
+                    let origin_tab = self.task_origin_tab(id);
                     self.finish_task(id);
                     self.archive_extracting.borrow_mut().remove(&archive);
                     // この書庫を指して読込中のペイン（両側あり得る）をまとめて反映する。
@@ -207,14 +264,36 @@ impl MainWindow {
                             }
                         }
                         ArchiveOutcome::Cancelled => {
-                            self.log.warn("書庫の読込を中止しました");
+                            if let Some(origin_tab) = origin_tab {
+                                let page_rows = self.log.page_rows();
+                                let msg = "書庫の読込を中止しました";
+                                self.route_log(
+                                    origin_tab,
+                                    |lv| lv.warn(msg),
+                                    |st| {
+                                        st.push(LogLevel::Warning, msg);
+                                        st.scroll_to_bottom(page_rows);
+                                    },
+                                );
+                            }
                             for s in sides {
                                 self.view(s).clear_loading();
                                 self.exit_archive_to_parent(s)?;
                             }
                         }
                         ArchiveOutcome::Failed(e) => {
-                            self.log.error(&format!("書庫を展開できません: {}", e));
+                            if let Some(origin_tab) = origin_tab {
+                                let page_rows = self.log.page_rows();
+                                let msg = format!("書庫を展開できません: {}", e);
+                                self.route_log(
+                                    origin_tab,
+                                    |lv| lv.error(&msg),
+                                    |st| {
+                                        st.push(LogLevel::Error, &msg);
+                                        st.scroll_to_bottom(page_rows);
+                                    },
+                                );
+                            }
                             for s in sides {
                                 self.view(s).clear_loading();
                                 self.exit_archive_to_parent(s)?;
@@ -230,9 +309,20 @@ impl MainWindow {
                     self.refresh_side(!src_is_left, None)?;
                 }
                 WorkerEvent::DirInfoDone { id, is_left, label, bytes, files, dirs, entries } => {
+                    let origin_tab = self.task_origin_tab(id);
                     self.finish_task(id);
                     let msg = messages::directory_information(&label, bytes, files, dirs);
-                    self.log.normal(&msg);
+                    if let Some(origin_tab) = origin_tab {
+                        let page_rows = self.log.page_rows();
+                        self.route_log(
+                            origin_tab,
+                            |lv| lv.normal(&msg),
+                            |st| {
+                                st.push(LogLevel::Normal, &msg);
+                                st.scroll_to_bottom(page_rows);
+                            },
+                        );
+                    }
                     self.apply_dir_sizes(is_left, &entries)?;
                 }
                 WorkerEvent::FindBegin { id, is_left } => {

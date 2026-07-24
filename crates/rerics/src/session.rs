@@ -1,5 +1,5 @@
 use winsafe::{self as w, prelude::*};
-use rerics_core::{Config, FileListState, Pane, SortType};
+use rerics_core::{Config, FileListState, LogState, Pane, SortType};
 use crate::window_state;
 use crate::{MainWindow, TabSnapshot};
 
@@ -9,14 +9,17 @@ fn build_restored_tabs(
     state: &rerics_core::State,
     cfg: &Config,
     home: &str,
+    tab_ids: &[u64],
 ) -> (Vec<TabSnapshot>, usize) {
     let tabs: Vec<TabSnapshot> = state
         .tabs
         .iter()
-        .map(|t| {
+        .zip(tab_ids)
+        .map(|(t, &tab_id)| {
             let left_path = crate::normalize_path(&t.left, ".");
             let right_path = crate::normalize_path(&t.right, home);
             TabSnapshot {
+                tab_id,
                 left_state: MainWindow::build_state_for(
                     &left_path,
                     cfg,
@@ -33,6 +36,7 @@ fn build_restored_tabs(
                 right_path,
                 active_right: t.active_right,
                 split_ratio: t.split_ratio,
+                log: LogState::default(),
             }
         })
         .collect();
@@ -103,8 +107,17 @@ impl MainWindow {
         };
         let cfg = self.config.borrow().clone();
         let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "..".to_owned());
+        // tab_id は UI スレッドの採番元から先に払い出す（ワーカーからは `next_id` を呼べない）。
+        // 復元後にアクティブになるタブへは、起動時プレースホルダと同じ tab_id 0 を割り当てる。
+        // 復元完了までの間（オフライン UNC 等でブロックし得る）にプレースホルダへ積まれた
+        // バックグラウンド操作のログが、完了時に迷子にならず引き継ぎ先へ届くようにするため。
+        let active_idx =
+            if state.tabs.is_empty() { 0 } else { state.active_tab.min(state.tabs.len() - 1) };
+        let tab_ids: Vec<u64> = (0..state.tabs.len())
+            .map(|i| if i == active_idx { 0 } else { self.next_id() })
+            .collect();
         self.spawn_job(
-            move || build_restored_tabs(&state, &cfg, &home),
+            move || build_restored_tabs(&state, &cfg, &home, &tab_ids),
             move |mw, (tabs, active)| mw.apply_restored_tabs(tabs, active),
         );
     }
@@ -112,13 +125,16 @@ impl MainWindow {
     /// 復元したタブ群をライブへ反映する。アクティブタブを描き直し、タブ帯とタイトルを更新する。
     pub(crate) fn apply_restored_tabs(
         &self,
-        tabs: Vec<TabSnapshot>,
+        mut tabs: Vec<TabSnapshot>,
         active: usize,
     ) -> w::AnyResult<()> {
         if tabs.is_empty() {
             return Ok(());
         }
         let active = active.min(tabs.len() - 1);
+        // プレースホルダタブ表示中〜復元完了までの間にログ（設定読込エラー等）が積まれて
+        // いることがあるため、アクティブタブには引き継ぐ（他タブはまだライブでないため空のまま）。
+        tabs[active].log = self.log.state_snapshot();
         *self.tabs.borrow_mut() = tabs;
         self.active.set(active);
         let snap = self.tabs.borrow()[active].clone();
@@ -126,15 +142,22 @@ impl MainWindow {
         Ok(())
     }
 
-    /// 現在のライブ状態を退避用スナップショットに固める。
+    /// 現在アクティブなタブの安定 ID。
+    pub(crate) fn active_tab_id(&self) -> u64 {
+        self.tabs.borrow()[self.active.get()].tab_id
+    }
+
+    /// 現在のライブ状態を退避用スナップショットに固める。アクティブタブの ID は保つ。
     pub(crate) fn snapshot_live(&self) -> TabSnapshot {
         TabSnapshot {
+            tab_id: self.active_tab_id(),
             left_path: self.left_pane.borrow().loc_display(),
             right_path: self.right_pane.borrow().loc_display(),
             left_state: self.view(true).state().borrow().clone(),
             right_state: self.view(false).state().borrow().clone(),
             active_right: self.active_right.get(),
             split_ratio: self.split_ratio.get(),
+            log: self.log.state_snapshot(),
         }
     }
 
@@ -148,6 +171,8 @@ impl MainWindow {
         // タブごとのスプリッタ位置を復元し、ペイン幅へ反映する。
         self.split_ratio.set(snap.split_ratio);
         self.layout()?;
+        // タブごとのログパネルの中身を復元する。
+        self.log.restore_state(snap.log.clone());
         // 旧タブで走行中の非同期読込に追い越されないよう世代を進め、残りスピナーも消す
         // （新タブの一覧はスナップショットから即復元済み）。
         for is_left in [true, false] {

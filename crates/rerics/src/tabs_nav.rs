@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use winsafe::{self as w, co, gui, prelude::*};
-use rerics_core::{Location, Spinner, format_size};
+use rerics_core::{Location, LogState, Spinner, format_size};
 use crate::{ActiveView, MainWindow, TabSnapshot, dialog, join_inner_path};
 
 impl MainWindow {
@@ -70,15 +70,19 @@ impl MainWindow {
             let s = st.borrow();
             (s.sort_type, s.sort_reverse)
         };
+        let tab_id = self.next_id();
         let snap = {
             let cfg = self.config.borrow();
             TabSnapshot {
+                tab_id,
                 left_state: Self::build_state_for(&left_path, &cfg, sl, slr),
                 right_state: Self::build_state_for(&right_path, &cfg, sr, srr),
                 left_path,
                 right_path,
                 active_right: self.active_right.get(),
                 split_ratio: self.split_ratio.get(),
+                // 新規タブは複製元の履歴を引き継がず、空のログで始まる。
+                log: LogState::default(),
             }
         };
         let index = self.active.get() + 1;

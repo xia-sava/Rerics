@@ -326,6 +326,7 @@ impl MainWindow {
             self.shutdown.clone(),
             control.clone(),
             self.progress_seq.clone(),
+            self.active_tab_id(),
         );
         let id = self.next_id();
         let desc = format!("{} -> {}", short_desc(&names), dst.display());
@@ -370,6 +371,7 @@ impl MainWindow {
             self.shutdown.clone(),
             control.clone(),
             self.progress_seq.clone(),
+            self.active_tab_id(),
         );
         let id = self.next_id();
         let desc = format!("{} (個別)", short_desc(&names));
@@ -386,6 +388,7 @@ impl MainWindow {
                     let _ = host.tx.send(WorkerEvent::Log {
                         level: LogLevel::Warning,
                         text: messages::all_ready_exists(&out),
+                        origin_tab: host.origin_tab,
                     });
                     continue;
                 }
@@ -571,6 +574,7 @@ impl MainWindow {
             self.shutdown.clone(),
             control.clone(),
             self.progress_seq.clone(),
+            self.active_tab_id(),
         );
         let id = self.next_id();
         let desc = format!("{} -> {}", short_desc(&names), dst_dir.display());
@@ -596,6 +600,7 @@ impl MainWindow {
                         let _ = host.tx.send(WorkerEvent::Log {
                             level: LogLevel::Error,
                             text: format!("書庫の読取に失敗しました: {}", e),
+                            origin_tab: host.origin_tab,
                         });
                         (false, true)
                     }
@@ -604,6 +609,7 @@ impl MainWindow {
                     let _ = host.tx.send(WorkerEvent::Log {
                         level: LogLevel::Error,
                         text: format!("書庫を開けません: {}", e),
+                        origin_tab: host.origin_tab,
                     });
                     (false, true)
                 }
@@ -646,6 +652,7 @@ impl MainWindow {
             self.shutdown.clone(),
             control.clone(),
             self.progress_seq.clone(),
+            self.active_tab_id(),
         )
         .with_copy_options(copy_opts)
         .with_task_id(id);
@@ -717,6 +724,7 @@ impl MainWindow {
             self.shutdown.clone(),
             control.clone(),
             self.progress_seq.clone(),
+            self.active_tab_id(),
         )
         .with_copy_options(copy_opts)
         .with_task_id(id);
@@ -1398,6 +1406,7 @@ impl MainWindow {
             self.shutdown.clone(),
             control.clone(),
             self.progress_seq.clone(),
+            self.active_tab_id(),
         );
         let id = self.next_id();
         let total: usize = groups.iter().map(|(_, n)| n.len()).sum();
@@ -1939,6 +1948,7 @@ impl MainWindow {
             self.shutdown.clone(),
             control.clone(),
             self.progress_seq.clone(),
+            self.active_tab_id(),
         )
         .with_task_id(id);
         self.register_task(id, "削除", short_desc(&names), control)?;
@@ -1972,6 +1982,7 @@ impl MainWindow {
             self.shutdown.clone(),
             control.clone(),
             self.progress_seq.clone(),
+            self.active_tab_id(),
         )
         .with_task_id(id);
         let all_names: Vec<String> = groups.iter().flat_map(|(_, n)| n.iter().cloned()).collect();
@@ -2033,6 +2044,7 @@ impl MainWindow {
             self.shutdown.clone(),
             control.clone(),
             self.progress_seq.clone(),
+            self.active_tab_id(),
         );
         let id = self.next_id();
         let label = short_desc(&names);
@@ -2060,6 +2072,7 @@ impl MainWindow {
             self.shutdown.clone(),
             control.clone(),
             self.progress_seq.clone(),
+            self.active_tab_id(),
         );
         let id = self.next_id();
         let all_names: Vec<String> = groups.iter().flat_map(|(_, n)| n.iter().cloned()).collect();

@@ -112,6 +112,9 @@ pub struct TaskEntry {
     pub start: Instant,
     /// 制御の効き方の区別（通常／スクリプト）。
     pub kind: TaskKind,
+    /// この操作を開始したタブ。完了ログ（`DirInfoDone`/`ArchiveDone` など `ChannelHost` を
+    /// 経由しない経路）を、切替後もそのタブのログへ届けるために覚える。
+    pub origin_tab: u64,
 }
 
 /// 衝突ダイアログの回答（解決方法＋「すべてに適用」）。
@@ -132,16 +135,16 @@ pub enum ArchiveOutcome {
 
 /// ワーカースレッドから UI スレッドへ送るイベント。
 pub enum WorkerEvent {
-    /// ログ1行を追記する。
-    Log { level: LogLevel, text: String },
+    /// ログ1行を追記する。`origin_tab` は操作を開始したタブ（切替後もそのタブへ届ける）。
+    Log { level: LogLevel, text: String, origin_tab: u64 },
     /// インプレース更新できる `id` 付きの行を追記する（進捗行の開始）。行には進行表示
-    /// （ぐるぐる）が付き、`LogEnd` まで回り続ける。
-    LogLine { id: u64, level: LogLevel, text: String },
+    /// （ぐるぐる）が付き、`LogEnd` まで回り続ける。`origin_tab` は操作を開始したタブ。
+    LogLine { id: u64, level: LogLevel, text: String, origin_tab: u64 },
     /// `id` 付き行の本文を書き換える（進捗の更新）。`level` が `Some` のとき
-    /// レベル（表示色）も差し替える（`None` は据え置き）。
-    LogUpdate { id: u64, level: Option<LogLevel>, text: String },
-    /// `id` 付き行を最終本文で確定させ、進行表示を止める。
-    LogEnd { id: u64, level: Option<LogLevel>, text: String },
+    /// レベル（表示色）も差し替える（`None` は据え置き）。`origin_tab` は操作を開始したタブ。
+    LogUpdate { id: u64, level: Option<LogLevel>, text: String, origin_tab: u64 },
+    /// `id` 付き行を最終本文で確定させ、進行表示を止める。`origin_tab` は操作を開始したタブ。
+    LogEnd { id: u64, level: Option<LogLevel>, text: String, origin_tab: u64 },
     /// 同名衝突の解決を UI に問い合わせる（回答を `reply` で受け取る）。
     AskConflict { name: String, reply: Sender<ConflictReply> },
     /// 属性付きファイルの削除可否を UI に問い合わせる。
@@ -234,6 +237,8 @@ pub struct ChannelHost {
     /// 紐づくタスク id。`Some` のとき進捗を `WorkerEvent::Progress` でも流す（スクリプトの
     /// `onProgress` 用）。スクリプトが待ち得る操作（コピー/移動/削除）でのみ設定する。
     pub task_id: Option<u64>,
+    /// この操作を開始したタブ。ログはこのタブへ届ける（切替後もそのタブに残す）。
+    pub origin_tab: u64,
 }
 
 impl ChannelHost {
@@ -242,6 +247,7 @@ impl ChannelHost {
         shutdown: Arc<AtomicBool>,
         control: Arc<TaskControl>,
         progress_seq: Arc<AtomicU64>,
+        origin_tab: u64,
     ) -> Self {
         Self {
             tx,
@@ -252,6 +258,7 @@ impl ChannelHost {
             delete_warn_cache: RefCell::new(None),
             copy_opts: CopyOptions::default(),
             task_id: None,
+            origin_tab,
         }
     }
 
@@ -277,7 +284,11 @@ impl ChannelHost {
 
 impl OperationHost for ChannelHost {
     fn log(&self, level: LogLevel, text: &str) {
-        let _ = self.tx.send(WorkerEvent::Log { level, text: text.to_owned() });
+        let _ = self.tx.send(WorkerEvent::Log {
+            level,
+            text: text.to_owned(),
+            origin_tab: self.origin_tab,
+        });
     }
 
     fn copy_options(&self) -> CopyOptions {
@@ -296,7 +307,12 @@ impl OperationHost for ChannelHost {
 
     fn begin_progress(&self, level: LogLevel, text: &str) -> ProgressHandle {
         let id = self.progress_seq.fetch_add(1, Ordering::Relaxed);
-        let _ = self.tx.send(WorkerEvent::LogLine { id, level, text: text.to_owned() });
+        let _ = self.tx.send(WorkerEvent::LogLine {
+            id,
+            level,
+            text: text.to_owned(),
+            origin_tab: self.origin_tab,
+        });
         self.emit_script_progress(text);
         ProgressHandle(id)
     }
@@ -306,6 +322,7 @@ impl OperationHost for ChannelHost {
             id: handle.0,
             level: None,
             text: text.to_owned(),
+            origin_tab: self.origin_tab,
         });
         self.emit_script_progress(text);
     }
@@ -315,6 +332,7 @@ impl OperationHost for ChannelHost {
             id: handle.0,
             level: None,
             text: text.to_owned(),
+            origin_tab: self.origin_tab,
         });
         self.emit_script_progress(text);
     }

@@ -290,12 +290,14 @@ impl MainWindow {
         self.view(is_left).set_loading();
         let tx = self.task_tx.clone();
         let shutdown = self.shutdown.clone();
+        let origin_tab = self.active_tab_id();
         let marker = Self::archive_extract_marker(&archive);
         std::thread::spawn(move || {
             let _ = tx.send(WorkerEvent::LogLine {
                 id: pid,
                 level: LogLevel::Normal,
                 text: messages::archive_extract(&name),
+                origin_tab,
             });
             let result: Result<ArchiveOutcome, String> = (|| {
                 let backend = open_archive(&archive).map_err(|e| e.to_string())?;
@@ -314,6 +316,7 @@ impl MainWindow {
                                     id: pid,
                                     level: None,
                                     text: messages::archive_extract_progress(&name, pct),
+                                    origin_tab,
                                 });
                             }
                         }
@@ -343,6 +346,7 @@ impl MainWindow {
                 id: pid,
                 level: None,
                 text: messages::archive_extract(&name),
+                origin_tab,
             });
             let _ = tx.send(WorkerEvent::ArchiveDone {
                 id,
@@ -704,6 +708,7 @@ impl MainWindow {
             self.shutdown.clone(),
             control.clone(),
             self.progress_seq.clone(),
+            self.active_tab_id(),
         );
         let id = self.next_id();
         let label = if move_it { "書庫へ移動" } else { "書庫へ追加" };
@@ -731,6 +736,7 @@ impl MainWindow {
                         let _ = host.tx.send(WorkerEvent::Log {
                             level: LogLevel::Error,
                             text: messages::delete_failure(name, &e.to_string()),
+                            origin_tab: host.origin_tab,
                         });
                     }
                 }
@@ -755,6 +761,7 @@ impl MainWindow {
             self.shutdown.clone(),
             control.clone(),
             self.progress_seq.clone(),
+            self.active_tab_id(),
         );
         let id = self.next_id();
         let (label, desc): (&str, String) = match &op {

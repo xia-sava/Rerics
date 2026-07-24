@@ -69,7 +69,7 @@ use tab_bar::TabBar;
 use task::{TaskEntry, WorkerEvent};
 use viewer::ViewerView;
 use rerics_core::{
-    Call, Command, Config, FileListState, KeyChord, KeyMap, Location, MenuRegistry,
+    Call, Command, Config, FileListState, KeyChord, KeyMap, Location, LogState, MenuRegistry,
     Pane, ResolvedItem, SortType, WindowState,
 };
 use winsafe::{self as w, co, gui, prelude::*};
@@ -461,6 +461,9 @@ struct MainWindow {
 /// （left_pane/right_pane/ビューの state/active_right）にあり、ここは切替時に出し入れする。
 #[derive(Clone)]
 struct TabSnapshot {
+    /// タブの安定 ID。バックグラウンド操作が「開始したタブ」を切替後も参照できるよう、
+    /// タスク id と同じ採番元（`next_id`）から払い出す。
+    tab_id: u64,
     left_path: String,
     right_path: String,
     left_state: FileListState,
@@ -468,6 +471,8 @@ struct TabSnapshot {
     active_right: bool,
     /// 左ペインの幅比（0.0〜1.0）。タブ切替時にスプリッタ位置を復元するために覚える。
     split_ratio: f64,
+    /// タブ切替時にログパネルの中身を復元するために覚える。
+    log: LogState,
 }
 
 /// ペイン再読込時にカーソルをどこへ置くか。
@@ -612,6 +617,9 @@ impl MainWindow {
             let left_path = ".".to_owned();
             let right_path = home.clone();
             TabSnapshot {
+                // 起動時プレースホルダは 0。以降の払い出し（`next_task_id`）は 1 から始まる
+                // ので衝突しない。
+                tab_id: 0,
                 left_state: Self::build_state_for(
                     &left_path,
                     &config,
@@ -628,6 +636,7 @@ impl MainWindow {
                 right_path,
                 active_right: false,
                 split_ratio: initial_split,
+                log: LogState::default(),
             }
         };
         let tabs = vec![placeholder];
@@ -690,7 +699,8 @@ impl MainWindow {
             ui_job_rx: Rc::new(ui_job_rx),
             ui_jobs: Rc::new(RefCell::new(std::collections::HashMap::new())),
             tasks: Rc::new(RefCell::new(Vec::new())),
-            next_task_id: Rc::new(Cell::new(0)),
+            // 0 は起動時プレースホルダタブの tab_id が使う。以降の払い出しは 1 から。
+            next_task_id: Rc::new(Cell::new(1)),
             find_task: Rc::new(RefCell::new([None, None])),
             find_query: Rc::new(RefCell::new([None, None])),
             find_refocus: Rc::new(RefCell::new([None, None])),

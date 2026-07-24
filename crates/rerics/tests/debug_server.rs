@@ -6841,3 +6841,95 @@ fn split_ratio_is_remembered_per_tab() {
     assert_eq!(got.trim(), "1");
     assert_eq!(ratio(), reset, "tab1 は borderReset 後の比率を保つ");
 }
+
+/// 下部ログパネルの中身はタブごとに独立している。新タブは空のログで始まり、複製元の
+/// 履歴は引き継がない。元タブへ戻ると、そちらのログ行はそのまま残っている。
+#[test]
+fn log_panel_is_isolated_per_tab() {
+    let server = Server::start_writable(&["a.txt"]);
+
+    // tab0 にログを1行残す。
+    server.req("POST", "/exec", "rerics.log('tab0-marker');").unwrap();
+    let log0 = poll(&server, "/state/log", |b| b.contains("tab0-marker"));
+    assert!(log0.contains("tab0-marker"), "前提：tab0 にログ行がある: {log0}");
+
+    // newFiler：新タブ(tab1)は複製元のログ履歴を引き継がず、空で始まる。
+    server.req("POST", "/command/newFiler", "").unwrap();
+    assert_eq!(server.req("GET", "/state/tabs/active", "").unwrap().1.trim(), "1");
+    let log1 = server.req("GET", "/state/log", "").unwrap().1;
+    assert!(log1.contains("\"lines\":[]"), "新タブはログが空: {log1}");
+
+    // tab0 へ戻ると、先に残したログ行がそのまま見える。
+    server.req("POST", "/command/pagePrevious", "").unwrap();
+    let got = poll(&server, "/state/tabs/active", |b| b.trim() == "0");
+    assert_eq!(got.trim(), "0");
+    let log0_again = poll(&server, "/state/log", |b| b.contains("tab0-marker"));
+    assert!(log0_again.contains("tab0-marker"), "tab0 のログ行は保たれている: {log0_again}");
+}
+
+/// バックグラウンド操作を始めたタブへは、進行中にタブを離れても完了ログが届く。
+/// tab0 でタスクを起こす → 完了前に tab1 へ切替 → タスクマネージャから中止する → tab0 へ
+/// 戻ると「テスト用タスク終了」の確定文言が残っている（進行中の文言のまま固着しない）。
+/// tab1 にはそのログが混入しない。実ファイルコピーの完了を実時間で待つと、完了前にタブを
+/// 離れる検証ウィンドウが環境依存の運任せになる（速いマシンだと検証前に終わってしまう）ため、
+/// 中止されるまで終わらない `/debug/spawn-task`（`search_cancelled` と同じ制御機構）で
+/// 待ち窓を確定的に作る。
+#[test]
+fn background_task_completion_log_stays_on_origin_tab() {
+    let server = Server::start(&["a.txt"], "");
+
+    // tab0：中止されるまで終わらないタスクを起こす。進行行が出るのを待つ。
+    server.req("POST", "/debug/spawn-task", "").expect("spawn-task");
+    poll(&server, "/state/log", |b| b.contains("テスト用タスク実行中"));
+
+    // tab1 を用意して切替える（newFiler は tab1 へ切替わる）。
+    server.req("POST", "/command/newFiler", "").unwrap();
+    poll(&server, "/state/tabs/active", |b| b.trim() == "1");
+    let log1_before = server.req("GET", "/state/log", "").unwrap().1;
+    assert!(log1_before.contains("\"lines\":[]"), "新タブはログが空: {log1_before}");
+
+    // tab1 に居たまま、タスクマネージャからタスクを中止する（タスク登録は全タブ共有）。
+    server.req("POST", "/command/openTaskManager", "").unwrap();
+    let modal = wait_modal(&server);
+    assert!(modal.contains("\"kind\":\"tasks\""), "タスクマネージャが開く: {modal}");
+    poll(&server, "/state/modal", |b| {
+        serde_json::from_str::<serde_json::Value>(b)
+            .ok()
+            .and_then(|v| v["rows"].as_array().map(|r| !r.is_empty()))
+            .unwrap_or(false)
+    });
+    server.req("POST", "/modal/select/0", "").unwrap();
+    server.req("POST", "/modal/command/100", "").unwrap(); // 中止
+    let mut emptied = false;
+    for _ in 0..50 {
+        server.req("POST", "/modal/command/103", "").unwrap(); // 最新（取り込み）
+        let b = server.req("GET", "/state/modal", "").unwrap().1;
+        let v: serde_json::Value = serde_json::from_str(&b).unwrap();
+        if v["rows"].as_array().map(|r| r.is_empty()).unwrap_or(false) {
+            emptied = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(emptied, "中止でワーカーが終了し、タスク行が消える");
+    server.req("POST", "/modal/command/cancel", "").expect("cancel");
+    poll(&server, "/state/modal", |b| b.trim() == "null");
+
+    // tab0 へ戻ると、確定文言（テスト用タスク終了）が残っている（固着していない）。
+    server.req("POST", "/command/pagePrevious", "").unwrap();
+    poll(&server, "/state/tabs/active", |b| b.trim() == "0");
+    let log0 = poll(&server, "/state/log", |b| b.contains("テスト用タスク終了"));
+    assert!(
+        log0.contains("テスト用タスク終了"),
+        "タスクを起こした tab0 に完了文言が残る（進行中のまま固着しない）: {log0}"
+    );
+
+    // tab1 にはこのタスクのログが一切混入していない。
+    server.req("POST", "/command/pageNext", "").unwrap();
+    poll(&server, "/state/tabs/active", |b| b.trim() == "1");
+    let log1 = server.req("GET", "/state/log", "").unwrap().1;
+    assert!(
+        !log1.contains("テスト用タスク実行中") && !log1.contains("テスト用タスク終了"),
+        "タスクのログは切替先 tab1 へ混入しない: {log1}"
+    );
+}
