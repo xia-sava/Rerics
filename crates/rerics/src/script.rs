@@ -482,11 +482,11 @@ fn op_log_text(state: &mut OpState) -> String {
     state.borrow::<Host>().log_text()
 }
 
-/// アプリのバージョン文字列（`Cargo.toml` の version）。
+/// アプリのバージョン文字列（`1.0.123` 形式。patch は CI が埋め込むビルド番号）。
 #[op2]
 #[string]
 fn op_version() -> String {
-    env!("CARGO_PKG_VERSION").to_owned()
+    crate::version::full()
 }
 
 /// VB の `StrConv` 相当の文字変換。`kind`＝`"wide"`（半角→全角）/`"narrow"`（全角→半角）/

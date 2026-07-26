@@ -36,7 +36,10 @@ jobs:
           COMMIT_SHA: ${{ github.sha }}
         run: |
           $ErrorActionPreference = "Stop"
-          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          # バージョンは Cargo.toml の major.minor に run number を patch として付ける
+          # （アプリ内の表記 crates/rerics/src/version.rs と同じ組み立て）。
+          $m = (Select-String -Path Cargo.toml -Pattern '^version = "(\d+)\.(\d+)' | Select-Object -First 1).Matches[0]
+          $version = "$($m.Groups[1].Value).$($m.Groups[2].Value).$env:BUILD_NUMBER"
 
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target/release/rerics.exe dist/

@@ -47,6 +47,7 @@ mod sort;
 mod tabs_nav;
 mod tasks;
 mod update;
+mod version;
 mod viewer_ctl;
 mod watch;
 #[cfg(feature = "debug-server")]
@@ -232,7 +233,7 @@ fn about_text() -> String {
          {bar}\r\n\
          \r\n\
          {licenses}",
-        ver = env!("CARGO_PKG_VERSION"),
+        ver = version::full(),
         unrar = UNRAR_NOTICE,
         licenses = LICENSES,
     )
@@ -1848,9 +1849,9 @@ impl MainWindow {
     /// 新しいビルドが見つかったときの確認ダイアログ。承諾すればダウンロード・適用へ進む。
     fn confirm_update(&self, info: update::UpdateInfo) -> w::AnyResult<()> {
         let message = format!(
-            "新しいビルドが見つかりました（build {}, commit {}）。\n\
+            "新しいバージョン {} が見つかりました（commit {}）。\n\
              ダウンロードして更新しますか？更新後は自動的に再起動します。",
-            info.build,
+            info.version,
             &info.commit[..info.commit.len().min(9)],
         );
         if dialog::message_box(&self.wnd, "自動更新", &message, dialog::MessageStyle::YesNo)

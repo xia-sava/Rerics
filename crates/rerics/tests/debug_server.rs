@@ -6687,8 +6687,13 @@ fn about_dialog_shows_version_and_licenses() {
     let modal = wait_modal(&server);
     assert!(modal.contains("\"kind\":\"about\""), "about モーダルが出る: {}", &modal[..modal.len().min(200)]);
     assert!(modal.contains("Rerics について"), "ダイアログのタイトル");
+    // バージョンの patch はビルド番号（CI ビルド以外は 0）なので major.minor までを照合する。
     assert!(
-        modal.contains(&format!("Rerics {}", env!("CARGO_PKG_VERSION"))),
+        modal.contains(&format!(
+            "Rerics {}.{}.",
+            env!("CARGO_PKG_VERSION_MAJOR"),
+            env!("CARGO_PKG_VERSION_MINOR")
+        )),
         "アプリ名とバージョンが載る"
     );
     // UnRAR ライセンス第2項（配布条件として掲示が要る一文）。

@@ -1,8 +1,8 @@
 //! GitHub Releases から最新ビルドを確認し、ダウンロードして自身を差し替える自動更新。
 //!
 //! リリースは push のたびに CI（`.github/workflows/release.yml`）がタグ `latest` を上書きして
-//! 公開する（[`REPO`]・[`TAG`]）。バージョン比較は semver ではなく、CI が
-//! `RERICS_BUILD_NUMBER`（GitHub Actions の run number）として埋め込む単調増加のビルド番号で行う。
+//! 公開する（[`REPO`]・[`TAG`]）。バージョン比較は文字列表記ではなく、版番号の patch にあたる
+//! ビルド番号（[`crate::version`]）で行う。
 //! 実行ファイルは実行中でも「リネーム」はできる（メモリマップは既存ハンドル経由で生き続ける）ため、
 //! 差し替えは「退避（rename）→ 新ファイルを配置（copy）→ 新 exe を起動 → 自分は終了」の順で行う。
 //! 退避した旧ファイル（`*.old`）は次回起動時（[`CLEANUP_ARG`] 付き起動）に削除する。
@@ -20,6 +20,7 @@ pub const CLEANUP_ARG: &str = "--cleanup-old-update";
 #[derive(serde::Deserialize)]
 struct Manifest {
     build: u64,
+    version: String,
     commit: String,
     asset: String,
     sha256: String,
@@ -28,14 +29,9 @@ struct Manifest {
 /// 確認できた新しいビルドの情報。
 pub struct UpdateInfo {
     pub build: u64,
+    pub version: String,
     pub commit: String,
     manifest: Manifest,
-}
-
-/// 埋め込み済みの自ビルド番号。CI ビルド（`RERICS_BUILD_NUMBER` 環境変数つき）以外は 0
-/// （常に「更新あり」と判定される＝ローカル開発ビルド向けの妥当な既定）。
-fn current_build() -> u64 {
-    option_env!("RERICS_BUILD_NUMBER").and_then(|s| s.parse().ok()).unwrap_or(0)
 }
 
 fn release_asset_url(name: &str) -> String {
@@ -58,10 +54,15 @@ pub fn check_for_update() -> Result<Option<UpdateInfo>, String> {
         .map_err(|e| format!("更新情報の取得に失敗しました: {e}"))?
         .into_json()
         .map_err(|e| format!("更新情報の解析に失敗しました: {e}"))?;
-    if manifest.build <= current_build() {
+    if manifest.build <= crate::version::build_number() {
         return Ok(None);
     }
-    Ok(Some(UpdateInfo { build: manifest.build, commit: manifest.commit.clone(), manifest }))
+    Ok(Some(UpdateInfo {
+        build: manifest.build,
+        version: manifest.version.clone(),
+        commit: manifest.commit.clone(),
+        manifest,
+    }))
 }
 
 /// 新しいビルドをダウンロードし、sha256 を検証してから自分の実行ファイル・付随 DLL を差し替える。

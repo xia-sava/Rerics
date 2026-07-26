@@ -12,7 +12,7 @@ fn main() {
     println!("cargo:rerun-if-changed=about.hbs");
     println!("cargo:rerun-if-changed=../../Cargo.lock");
 
-    embed_icon();
+    embed_resources();
     copy_pdfium_dll();
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
@@ -55,21 +55,41 @@ fn main() {
     std::fs::write(&dest, text).expect("write licenses.txt");
 }
 
-/// アプリアイコンを実行ファイルへ埋め込む（Explorer/タスクバー用）。リソース ID 1 で入れ、
-/// ウィンドウ側は `WindowMainOpts.class_icon = Icon::Id(1)` で同じアイコンを参照する。
-/// リソースコンパイラが無い等で失敗してもビルドは止めず警告に留める。
+/// アプリアイコンとバージョン情報を実行ファイルへ埋め込む。アイコンは Explorer/タスクバー用に
+/// リソース ID 1 で入れ、ウィンドウ側は `WindowMainOpts.class_icon = Icon::Id(1)` で同じアイコンを
+/// 参照する。バージョンは patch をビルド番号にした `1.0.123` 形式で、アプリ内の表記
+/// （`src/version.rs`）と揃える。リソースコンパイラが無い等で失敗してもビルドは止めず警告に留める。
 #[cfg(windows)]
-fn embed_icon() {
+fn embed_resources() {
     println!("cargo:rerun-if-changed=assets/icon.ico");
+    println!("cargo:rerun-if-env-changed=RERICS_BUILD_NUMBER");
+
+    let major = env_number("CARGO_PKG_VERSION_MAJOR");
+    let minor = env_number("CARGO_PKG_VERSION_MINOR");
+    let build = env_number("RERICS_BUILD_NUMBER");
+    let version = format!("{major}.{minor}.{build}");
+
     let mut res = winresource::WindowsResource::new();
     res.set_icon_with_id("assets/icon.ico", "1");
+    res.set("FileVersion", &version);
+    res.set("ProductVersion", &version);
+    // 数値フィールドは 16bit 4 つの詰め合わせ（第4要素は使わない）。各要素の上限で飽和させる。
+    let packed = (major.min(0xffff) << 48) | (minor.min(0xffff) << 32) | (build.min(0xffff) << 16);
+    res.set_version_info(winresource::VersionInfo::FILEVERSION, packed);
+    res.set_version_info(winresource::VersionInfo::PRODUCTVERSION, packed);
     if let Err(e) = res.compile() {
-        println!("cargo:warning=アプリアイコンの埋め込みに失敗しました: {e}");
+        println!("cargo:warning=アイコン・バージョン情報の埋め込みに失敗しました: {e}");
     }
 }
 
 #[cfg(not(windows))]
-fn embed_icon() {}
+fn embed_resources() {}
+
+/// 数値の環境変数を読む。未設定・解釈不能は 0（ビルド番号は CI 以外では未設定）。
+#[cfg(windows)]
+fn env_number(name: &str) -> u64 {
+    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(0)
+}
 
 /// 同梱の PDFium DLL を実行ファイルと同じディレクトリへ配置する。実行時は exe 隣の
 /// `pdfium.dll` を `Pdfium::bind_to_library` で動的ロードする（`src/pdf.rs`）。
