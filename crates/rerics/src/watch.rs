@@ -4,7 +4,9 @@
 //! 変更を検知したら設定の静穏待ち時間（`wait_ms`）だけ無音が続くのを待ち、静まってから
 //! UI スレッドへ [`RELOAD_WATCH`](crate::winutil::msg::RELOAD_WATCH) を投げて再読込させる。
 //! `HANDLE` はスレッド跨ぎに送れないので、生ポインタ相当の `isize` で受け渡してスレッド内で
-//! 再構成する。停止は手動リセットイベントの合図＋スレッド join で行なう。
+//! 再構成する。停止は手動リセットイベントの合図＋スレッド join で行なう。停止合図以外で監視が
+//! 終わったときは原因の Win32 エラー値を添えて
+//! [`WATCH_DIED`](crate::winutil::msg::WATCH_DIED) を投げ、UI 側が記録して張り直せるようにする。
 
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
@@ -12,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_TIMEOUT};
+use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, WAIT_TIMEOUT};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, GetDriveTypeW, GetVolumePathNameW, ReadDirectoryChangesW, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_OVERLAPPED, FILE_LIST_DIRECTORY, FILE_NOTIFY_CHANGE, FILE_NOTIFY_CHANGE_ATTRIBUTES,
@@ -26,6 +28,10 @@ use crate::winutil::{self, msg};
 
 /// 固定ディスク（`GetDriveTypeW` の `DRIVE_FIXED`）。定義が別 feature 側にあるので値を写す。
 const DRIVE_FIXED: u32 = 3;
+
+/// `WaitForMultipleObjects` に渡す待機ハンドルの添字。変更通知＝0・停止合図＝1。
+const WAIT_CHANGED: u32 = 0;
+const WAIT_STOP: u32 = 1;
 
 /// 監視スレッド1本を束ねるハンドル。破棄時にスレッドを止めてイベントを閉じる。
 pub(crate) struct WatchHandle {
@@ -74,6 +80,19 @@ impl WatchHandle {
     pub(crate) fn wait_ms(&self) -> u64 {
         self.wait_ms
     }
+
+    /// 監視スレッドが動いているか。停止合図なしに終わっていれば偽になり、張り直しの判断に使う。
+    pub(crate) fn is_alive(&self) -> bool {
+        self.thread.as_ref().is_some_and(|t| !t.is_finished())
+    }
+
+    /// 監視スレッドだけを止めてハンドルは残す（監視が落ちた状態を作る検証用）。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn debug_stop_thread(&self) {
+        unsafe {
+            let _ = SetEvent(HANDLE(self.stop as *mut c_void));
+        }
+    }
 }
 
 impl Drop for WatchHandle {
@@ -113,7 +132,8 @@ fn drive_type(dir: &Path) -> u32 {
 }
 
 /// 監視スレッド本体。1本の未完了 `ReadDirectoryChangesW` を保ちつつ、変更→静穏待ち→再読込要求を
-/// 繰り返す。停止イベントが立ったらどの待機点からでも抜ける。
+/// 繰り返す。停止イベントが立ったらどの待機点からでも抜ける。停止合図以外で抜けるときは、原因の
+/// Win32 エラー値を添えて [`msg::WATCH_DIED`] を投げてから終わる。
 fn run(dir: PathBuf, stop_raw: isize, hwnd_ptr: isize, is_left: bool, wait_ms: u64) {
     let stop = HANDLE(stop_raw as *mut c_void);
     let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
@@ -131,15 +151,23 @@ fn run(dir: PathBuf, stop_raw: isize, hwnd_ptr: isize, is_left: bool, wait_ms: u
     };
     let dir_handle = match dir_handle {
         Ok(h) if !h.is_invalid() => h,
-        _ => return,
+        Ok(_) => {
+            notify_died(hwnd_ptr, is_left, last_error());
+            return;
+        }
+        Err(e) => {
+            notify_died(hwnd_ptr, is_left, win32_code(&e));
+            return;
+        }
     };
 
     let ov_event = match unsafe { CreateEventW(None, false, false, PCWSTR::null()) } {
         Ok(h) => h,
-        Err(_) => {
+        Err(e) => {
             unsafe {
                 let _ = CloseHandle(dir_handle);
             }
+            notify_died(hwnd_ptr, is_left, win32_code(&e));
             return;
         }
     };
@@ -155,27 +183,35 @@ fn run(dir: PathBuf, stop_raw: isize, hwnd_ptr: isize, is_left: bool, wait_ms: u
         | FILE_NOTIFY_CHANGE_LAST_WRITE;
 
     let handles = [ov_event, stop];
+    // 停止合図以外で抜けたときの原因（Win32 エラー値）。
+    let mut died: Option<u32> = None;
     'outer: loop {
-        if !issue_read(dir_handle, &mut buf, filter, &mut overlapped) {
+        if let Err(e) = issue_read(dir_handle, &mut buf, filter, &mut overlapped) {
             // ディレクトリが消えた等。最後に一度だけ再読込を促して終わる。
-            winutil::post_app_message_wparam(hwnd_ptr, msg::RELOAD_WATCH, is_left as usize);
+            winutil::post_app_message_params(hwnd_ptr, msg::RELOAD_WATCH, is_left as usize, 0);
+            died = Some(win32_code(&e));
             break;
         }
         // 最初の変更（または停止）を待つ。
         match unsafe { WaitForMultipleObjects(&handles, false, INFINITE) }.0 {
-            0 => consume(dir_handle, &overlapped),
+            WAIT_CHANGED => consume(dir_handle, &overlapped),
+            WAIT_STOP => {
+                cancel_and_drain(dir_handle, &mut overlapped);
+                break;
+            }
             _ => {
+                died = Some(last_error());
                 cancel_and_drain(dir_handle, &mut overlapped);
                 break;
             }
         }
         // 変更を検知。静穏（wait_ms 無音）になるまで待って束ねる。
         loop {
-            if !issue_read(dir_handle, &mut buf, filter, &mut overlapped) {
+            if issue_read(dir_handle, &mut buf, filter, &mut overlapped).is_err() {
                 break;
             }
             match unsafe { WaitForMultipleObjects(&handles, false, wait_ms as u32) }.0 {
-                0 => {
+                WAIT_CHANGED => {
                     // 追加の変更。タイマを積み直して待ち直す。
                     consume(dir_handle, &overlapped);
                 }
@@ -184,19 +220,48 @@ fn run(dir: PathBuf, stop_raw: isize, hwnd_ptr: isize, is_left: bool, wait_ms: u
                     cancel_and_drain(dir_handle, &mut overlapped);
                     break;
                 }
+                WAIT_STOP => {
+                    cancel_and_drain(dir_handle, &mut overlapped);
+                    break 'outer;
+                }
                 _ => {
-                    // 停止合図またはエラー。
+                    died = Some(last_error());
                     cancel_and_drain(dir_handle, &mut overlapped);
                     break 'outer;
                 }
             }
         }
-        winutil::post_app_message_wparam(hwnd_ptr, msg::RELOAD_WATCH, is_left as usize);
+        winutil::post_app_message_params(hwnd_ptr, msg::RELOAD_WATCH, is_left as usize, 0);
     }
 
     unsafe {
         let _ = CloseHandle(ov_event);
         let _ = CloseHandle(dir_handle);
+    }
+    if let Some(code) = died {
+        notify_died(hwnd_ptr, is_left, code);
+    }
+}
+
+/// 停止合図以外で監視が終わったことを UI へ知らせる。`code` は原因の Win32 エラー値。
+fn notify_died(hwnd_ptr: isize, is_left: bool, code: u32) {
+    winutil::post_app_message_params(hwnd_ptr, msg::WATCH_DIED, is_left as usize, code as isize);
+}
+
+/// 直近の Win32 エラー値。
+fn last_error() -> u32 {
+    unsafe { GetLastError().0 }
+}
+
+/// `windows` クレートのエラーを Win32 エラー値へ均す（`HRESULT_FROM_WIN32` の逆変換）。
+/// ログに出す番号を [`last_error`] と揃えるために通す。
+fn win32_code(err: &windows::core::Error) -> u32 {
+    const FACILITY_WIN32: u32 = 0x8007_0000;
+    let hr = err.code().0 as u32;
+    if hr & 0xFFFF_0000 == FACILITY_WIN32 {
+        hr & 0xFFFF
+    } else {
+        hr
     }
 }
 
@@ -206,7 +271,7 @@ fn issue_read(
     buf: &mut [u32],
     filter: FILE_NOTIFY_CHANGE,
     overlapped: &mut OVERLAPPED,
-) -> bool {
+) -> windows::core::Result<()> {
     let len = std::mem::size_of_val(buf) as u32;
     unsafe {
         ReadDirectoryChangesW(
@@ -220,7 +285,6 @@ fn issue_read(
             None,
         )
     }
-    .is_ok()
 }
 
 /// 完了済みの読取結果を回収してイベント状態を確定させる（内容は使わない）。

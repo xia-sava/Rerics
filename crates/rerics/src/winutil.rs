@@ -62,6 +62,9 @@ pub mod msg {
     pub const TASK_WAKE: co::WM = unsafe { co::WM::from_raw(0x8005) };
     /// ディレクトリ更新監視スレッドが UI スレッドへ再読込を要求する（`wparam` に対象サイド）。
     pub const RELOAD_WATCH: co::WM = unsafe { co::WM::from_raw(0x8006) };
+    /// ディレクトリ更新監視が停止合図以外で終わったことを知らせる（`wparam` に対象サイド、
+    /// `lparam` に原因の Win32 エラー値）。
+    pub const WATCH_DIED: co::WM = unsafe { co::WM::from_raw(0x8007) };
 }
 
 // 共通ツールチップ（標準コモンコントロール `tooltips_class32`）。winsafe は TTM_* メッセージを
@@ -96,10 +99,11 @@ pub(crate) fn post_app_message(hwnd: isize, msg: co::WM) {
     }
 }
 
-/// [`post_app_message`] の `wparam` つき版。監視スレッドが対象サイドを乗せて起こすのに使う。
-pub(crate) fn post_app_message_wparam(hwnd: isize, msg: co::WM, wparam: usize) {
+/// [`post_app_message`] の引数つき版。監視スレッドが対象サイドや原因のエラー値を乗せて
+/// 起こすのに使う。
+pub(crate) fn post_app_message_params(hwnd: isize, msg: co::WM, wparam: usize, lparam: isize) {
     unsafe {
-        PostMessageW(hwnd as *mut c_void, msg.raw(), wparam, 0);
+        PostMessageW(hwnd as *mut c_void, msg.raw(), wparam, lparam);
     }
 }
 

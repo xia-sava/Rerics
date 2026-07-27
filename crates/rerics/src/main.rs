@@ -453,6 +453,9 @@ struct MainWindow {
     archive_temp_dirs: Rc<RefCell<std::collections::HashMap<PathBuf, PathBuf>>>,
     /// サイドごとの更新監視スレッド。表示先が実ディレクトリのときだけ張り、変わると張り替える。
     watchers: Rc<RefCell<[Option<watch::WatchHandle>; 2]>>,
+    /// 監視が落ちて張り直した回数（サイド別）。同じ場所で落ち続けるときに打ち切る判定に使い、
+    /// 表示先へ張り替えるたびに 0 へ戻す。
+    watch_revives: Rc<RefCell<[u32; 2]>>,
     #[cfg(feature = "debug-server")]
     debug: debug_server::Bridge,
     script: script_host::ScriptBridge,
@@ -719,6 +722,7 @@ impl MainWindow {
             archive_extracting: Rc::new(RefCell::new(std::collections::HashSet::new())),
             archive_temp_dirs: Rc::new(RefCell::new(std::collections::HashMap::new())),
             watchers: Rc::new(RefCell::new([None, None])),
+            watch_revives: Rc::new(RefCell::new([0, 0])),
             #[cfg(feature = "debug-server")]
             debug: debug_server::Bridge::new(debug_port, debug_allow_write, debug_headless),
             script: script_host::ScriptBridge::new(),
@@ -855,6 +859,14 @@ impl MainWindow {
         self.wnd.on().wm(reload_watch, move |p| {
             let is_left = p.wparam != 0;
             let _ = this.reload_side_impl(is_left, ReloadCursor::Keep, false);
+            Ok(0)
+        });
+
+        // 監視スレッドが停止合図以外で終わったという知らせ（lparam に Win32 エラー値）。
+        let this = self.clone();
+        let watch_died = winutil::msg::WATCH_DIED;
+        self.wnd.on().wm(watch_died, move |p| {
+            this.on_watch_died(p.wparam != 0, p.lparam as u32);
             Ok(0)
         });
 
@@ -2242,17 +2254,57 @@ impl MainWindow {
         let idx = if is_left { 0 } else { 1 };
         let mut slot = self.watchers.borrow_mut();
         // 既に同じ場所を同じ待ち時間で監視中なら張り替えない（無用なスレッド再生成を避ける）。
+        // 監視スレッドが落ちていれば据え置かず張り直す（落ちたまま据え置くと、そのサイドは
+        // その場に留まる限り自動再読込が二度と効かなくなる）。
         if let (Some(h), Some(dir)) = (slot[idx].as_ref(), want_dir.as_ref())
+            && h.is_alive()
             && h.dir() == dir
             && h.wait_ms() == rw.wait_ms
         {
             return;
         }
         slot[idx] = None; // 旧監視を止める（Drop でスレッドへ停止合図＋join）。
+        self.watch_revives.borrow_mut()[idx] = 0;
         if let Some(dir) = want_dir {
             let hwnd_ptr = self.wnd.hwnd().ptr() as isize;
             slot[idx] = watch::WatchHandle::start(dir, hwnd_ptr, is_left, rw.wait_ms);
         }
+    }
+
+    /// 監視が停止合図以外で終わったときの後始末。アクティブタブのログへ残し、上限までは同じ場所へ
+    /// 張り直す。上限に達したら監視なしで続け、次の再読込・移動での張り直しに委ねる。
+    fn on_watch_died(&self, is_left: bool, code: u32) {
+        /// 同じ場所で連続して張り直す回数の上限。落ち続ける場所で張り直しを繰り返さないための歯止め。
+        const REVIVE_LIMIT: u32 = 3;
+
+        let idx = if is_left { 0 } else { 1 };
+        // 既に別の監視へ張り替わっていれば、取り残された通知なので捨てる。
+        let dir = match self.watchers.borrow()[idx].as_ref() {
+            Some(h) if !h.is_alive() => h.dir().to_path_buf(),
+            _ => return,
+        };
+        let side = if is_left { "左" } else { "右" };
+        let revives = {
+            let mut counts = self.watch_revives.borrow_mut();
+            counts[idx] += 1;
+            counts[idx]
+        };
+        if revives > REVIVE_LIMIT {
+            self.watchers.borrow_mut()[idx] = None;
+            self.log.warn(&format!(
+                "{side}ペインの更新監視を停止しました（{}・エラー 0x{code:08X}）",
+                dir.display()
+            ));
+            return;
+        }
+        let wait_ms = self.config.borrow().reload_watch.wait_ms;
+        let hwnd_ptr = self.wnd.hwnd().ptr() as isize;
+        self.watchers.borrow_mut()[idx] =
+            watch::WatchHandle::start(dir.clone(), hwnd_ptr, is_left, wait_ms);
+        self.log.warn(&format!(
+            "{side}ペインの更新監視を張り直しました（{}・エラー 0x{code:08X}）",
+            dir.display()
+        ));
     }
 
     /// 読み出す対象を Send な [`Location`] として確定する。一括展開済み書庫は **temp の実FS** を
