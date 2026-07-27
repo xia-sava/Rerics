@@ -447,6 +447,9 @@ pub enum Request {
     /// `POST /debug/spawn-task`：中止まで回り続けるダミーのタスクを起こす（テスト足場）。
     /// タスク制御（中止・中断・再開）をタスクマネージャ越しに確定的に検証するために使う。
     DebugSpawnTask,
+    /// `POST /debug/stop-watch/<left|right>`：そのサイドの更新監視スレッドだけを止め、落ちた監視が
+    /// 据え置かれた状態を作る（張り直しが効くかを確定的に検証するためのテスト足場）。
+    DebugStopWatch { is_left: bool },
 }
 
 /// UI スレッド → HTTP スレッドへの応答（Send 安全な完成データのみ）。
@@ -782,6 +785,12 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::ScriptEvalValue { code })
             } else if path == "/debug/spawn-task" {
                 Some(Request::DebugSpawnTask)
+            } else if let Some(side) = path.strip_prefix("/debug/stop-watch/") {
+                match side.trim_end_matches('/') {
+                    "left" => Some(Request::DebugStopWatch { is_left: true }),
+                    "right" => Some(Request::DebugStopWatch { is_left: false }),
+                    _ => None,
+                }
             } else if let Some(rest) = path.strip_prefix("/keys/") {
                 let rest = rest.trim_end_matches('/');
                 if let Some((cat, idx)) = rest.rsplit_once("/select/") {

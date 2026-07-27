@@ -198,6 +198,10 @@ impl MainWindow {
                     let id = self.start_debug_task();
                     let _ = tx.send(debug_server::Response::Json(id.to_string()));
                 }
+                debug_server::Request::DebugStopWatch { is_left } => {
+                    self.debug_stop_watch(is_left);
+                    let _ = tx.send(debug_server::Response::Json("null".to_string()));
+                }
                 debug_server::Request::KeysState { category } => {
                     let _ = tx.send(self.debug_keys_state(&category));
                 }
@@ -1723,11 +1727,38 @@ impl MainWindow {
                 "dropdown_open": self.search_bar.debug_is_dropdown_open(),
                 "dropdown_visible": self.search_bar.debug_dropdown_visible(),
             },
+            "watch": {
+                "left": self.debug_watch_json(true),
+                "right": self.debug_watch_json(false),
+            },
             "tab_bar": { "active": self.active.get(), "labels": self.tab_bar.labels() },
             "tabs": { "active": self.active.get(), "count": tabs.len(), "items": tabs },
             "log": { "lines": log_lines, "progress": log_progress },
             "script": { "workers": self.script_worker_isolates.lock().unwrap().len() },
         })
+    }
+
+    /// 片側の更新監視の状態を JSON 値で組む（張っていなければ null）。落ちた監視が張り直されるかを
+    /// headless から確かめられるように、対象ディレクトリとスレッドの生死を出す。
+    #[cfg(feature = "debug-server")]
+    fn debug_watch_json(&self, is_left: bool) -> serde_json::Value {
+        let idx = if is_left { 0 } else { 1 };
+        match self.watchers.borrow()[idx].as_ref() {
+            Some(h) => {
+                serde_json::json!({ "dir": h.dir().to_string_lossy(), "alive": h.is_alive() })
+            }
+            None => serde_json::Value::Null,
+        }
+    }
+
+    /// そのサイドの監視スレッドだけを止める（ハンドルは残す）。監視が落ちた状態を作って、
+    /// 張り直しが効くことを確かめるために使う。
+    #[cfg(feature = "debug-server")]
+    fn debug_stop_watch(&self, is_left: bool) {
+        let idx = if is_left { 0 } else { 1 };
+        if let Some(h) = self.watchers.borrow()[idx].as_ref() {
+            h.debug_stop_thread();
+        }
     }
 
     /// 解決済みの外見情報を JSON 値で組む（設定が描画に反映されているかのテスト用）。

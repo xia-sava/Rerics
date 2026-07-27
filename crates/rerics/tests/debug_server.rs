@@ -1897,6 +1897,35 @@ fn watch_disabled_needs_explicit_reload() {
     assert!(after.contains("\"name\":\"b.txt\""), "明示 reload 後は出る: {after}");
 }
 
+/// 監視スレッドが落ちても、次の再読込で張り直されて自動反映が戻る。落ちた監視を「同じ場所を
+/// 監視中」と見なして据え置くと、そのサイドはその場に留まる限り自動再読込が二度と効かなくなる。
+#[test]
+fn watch_revives_after_thread_dies() {
+    let server = Server::start(&["a.txt"], "[reload_watch]\nenabled = true\nwait_ms = 100\n");
+    let alive = |s: &Server| s.req("GET", "/state/watch/left", "").unwrap().1.contains("\"alive\":true");
+    assert!(alive(&server), "起動直後は監視が張られている");
+
+    // 監視スレッドだけを止めて、ハンドルが残ったまま監視が死んだ状態を作る。
+    server.req("POST", "/debug/stop-watch/left", "").expect("stop-watch");
+    poll(&server, "/state/watch/left", |b| b.contains("\"alive\":false"));
+
+    // 監視が死んでいる間は外部変更が自動反映されない。
+    std::fs::write(server.base.join("sbx").join("b.txt"), b"x").unwrap();
+    std::thread::sleep(Duration::from_millis(600));
+    let stale = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert!(!stale.contains("\"name\":\"b.txt\""), "監視が死んでいる間は自動反映されない: {stale}");
+
+    // 再読込を通ると張り直される。
+    server.req("POST", "/command/reload", "").expect("reload");
+    poll(&server, "/state/watch/left", |b| b.contains("\"alive\":true"));
+
+    // 張り直した監視で、以後の外部変更がまた自動反映される。
+    std::fs::write(server.base.join("sbx").join("c.txt"), b"x").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"c.txt\""));
+    let revived = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert!(revived.contains("\"name\":\"c.txt\""), "張り直した監視で自動反映が戻る: {revived}");
+}
+
 /// テキストビューア表示中はビューア用コマンドがビューア文脈で実行される。
 #[test]
 fn viewer_commands_dispatch_in_text_context() {
