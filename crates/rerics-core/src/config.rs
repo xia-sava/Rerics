@@ -290,11 +290,24 @@ pub struct ReloadWatchSettings {
     /// 変更を検知してから再読込するまでの静穏待ち時間（ミリ秒・原作 WaitTime・既定 1000）。
     /// この時間内に変更が続く間は読み直さず、静まってから一度だけ再読込する。
     pub wait_ms: u64,
+    /// 表示中ディレクトリの更新時刻を点検する間隔（ミリ秒・0 で無効・既定 60000）。監視が
+    /// 有効なときだけ回り、最後に読み込んだときから変わっていれば再読込して監視を張り直す。
+    /// 監視の通知が届かなかった場合の取りこぼしを拾う。
+    pub poll_ms: u64,
+    /// 更新監視の出来事（変更の検知・取りこぼしの検出）をログへ出す（既定オフ）。
+    /// 監視が働いているかを確かめるための診断用。
+    pub log_events: bool,
 }
 
 impl Default for ReloadWatchSettings {
     fn default() -> Self {
-        Self { enabled: true, watch_non_fixed: false, wait_ms: 1000 }
+        Self {
+            enabled: true,
+            watch_non_fixed: false,
+            wait_ms: 1000,
+            poll_ms: 60_000,
+            log_events: false,
+        }
     }
 }
 

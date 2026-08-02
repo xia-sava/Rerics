@@ -33,6 +33,15 @@ const DRIVE_FIXED: u32 = 3;
 const WAIT_CHANGED: u32 = 0;
 const WAIT_STOP: u32 = 1;
 
+/// 取りこぼし点検タイマの ID（メインウィンドウ）。
+pub(crate) const POLL_TIMER_ID: usize = 2;
+
+/// `dir` 自身の更新時刻。ファイルの増減・改名で変わるので、監視の取りこぼし点検に使う。
+/// 読めなければ `None`（点検側は「変化なし」として扱う）。
+pub(crate) fn dir_stamp(dir: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(dir).and_then(|m| m.modified()).ok()
+}
+
 /// 監視スレッド1本を束ねるハンドル。破棄時にスレッドを止めてイベントを閉じる。
 pub(crate) struct WatchHandle {
     /// 監視中の実ディレクトリ。再アーム時に「同じ場所なら張り替えない」判定に使う。

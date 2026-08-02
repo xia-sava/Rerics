@@ -1926,6 +1926,45 @@ fn watch_revives_after_thread_dies() {
     assert!(revived.contains("\"name\":\"c.txt\""), "張り直した監視で自動反映が戻る: {revived}");
 }
 
+/// 監視の通知が届かなくなっても、取りこぼし点検が変更を拾って読み直し、監視を張り直す。
+/// 監視スレッドを止めて「通知が来ない」状態を作り、明示 reload なしで反映されるところまで見る。
+#[test]
+fn watch_poll_recovers_missed_change() {
+    let server = Server::start(
+        &["a.txt"],
+        "[reload_watch]\nenabled = true\nwait_ms = 100\npoll_ms = 200\n",
+    );
+    server.req("POST", "/debug/stop-watch/left", "").expect("stop-watch");
+    poll(&server, "/state/watch/left", |b| b.contains("\"alive\":false"));
+
+    // 通知が来ない状態で外部から足したファイルが、点検経由で一覧へ出る。
+    std::fs::write(server.base.join("sbx").join("b.txt"), b"x").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"b.txt\""));
+    let items = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert!(items.contains("\"name\":\"b.txt\""), "点検が取りこぼしを拾う: {items}");
+
+    // 点検は監視も張り直すので、以後は監視自身が効く。
+    poll(&server, "/state/watch/left", |b| b.contains("\"alive\":true"));
+    let log = server.req("GET", "/state/log", "").unwrap().1;
+    assert!(log.contains("取りこぼした変更"), "取りこぼしを記録に残す: {log}");
+}
+
+/// 取りこぼし点検を切ると（`poll_ms = 0`）、通知が来ない状態の変更は拾われない。
+#[test]
+fn watch_poll_disabled_leaves_missed_change() {
+    let server = Server::start(
+        &["a.txt"],
+        "[reload_watch]\nenabled = true\nwait_ms = 100\npoll_ms = 0\n",
+    );
+    server.req("POST", "/debug/stop-watch/left", "").expect("stop-watch");
+    poll(&server, "/state/watch/left", |b| b.contains("\"alive\":false"));
+
+    std::fs::write(server.base.join("sbx").join("b.txt"), b"x").unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    let items = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert!(!items.contains("\"name\":\"b.txt\""), "点検オフでは拾われない: {items}");
+}
+
 /// テキストビューア表示中はビューア用コマンドがビューア文脈で実行される。
 #[test]
 fn viewer_commands_dispatch_in_text_context() {

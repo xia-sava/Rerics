@@ -190,8 +190,12 @@ impl MainWindow {
         for is_left in [true, false] {
             let real_dir =
                 self.pane(is_left).borrow().loc().as_real_path().map(|p| p.to_path_buf());
-            self.view(is_left).set_dir(real_dir);
+            self.view(is_left).set_dir(real_dir.clone());
             self.arm_watch(is_left);
+            // 一覧はスナップショットからの復元で読み直してはいないので、取りこぼし点検の基準は
+            // 復元時点の更新時刻に据える（復元より前の変更を取りこぼしとして数えない）。
+            self.watch_seen.borrow_mut()[if is_left { 0 } else { 1 }] =
+                real_dir.as_deref().and_then(crate::watch::dir_stamp);
         }
         self.view(true).autofit_columns()?;
         self.view(false).autofit_columns()?;

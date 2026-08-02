@@ -272,3 +272,5 @@ height = 640
 enabled = true
 watch_non_fixed = false
 wait_ms = 1000
+poll_ms = 60000
+log_events = false

@@ -70,8 +70,8 @@ use tab_bar::TabBar;
 use task::{TaskEntry, WorkerEvent};
 use viewer::ViewerView;
 use rerics_core::{
-    Call, Command, Config, FileListState, KeyChord, KeyMap, Location, LogState, MenuRegistry,
-    Pane, ResolvedItem, SortType, WindowState,
+    Call, Command, Config, FileListState, KeyChord, KeyMap, Location, LogLevel, LogState,
+    MenuRegistry, Pane, ResolvedItem, SortType, WindowState,
 };
 use winsafe::{self as w, co, gui, prelude::*};
 
@@ -456,6 +456,9 @@ struct MainWindow {
     /// 監視が落ちて張り直した回数（サイド別）。同じ場所で落ち続けるときに打ち切る判定に使い、
     /// 表示先へ張り替えるたびに 0 へ戻す。
     watch_revives: Rc<RefCell<[u32; 2]>>,
+    /// 最後に読み込んだ時点での表示先ディレクトリの更新時刻（サイド別）。取りこぼし点検は
+    /// これと現在の更新時刻を突き合わせ、食い違えば一覧が古いと判断する。
+    watch_seen: Rc<RefCell<[Option<std::time::SystemTime>; 2]>>,
     #[cfg(feature = "debug-server")]
     debug: debug_server::Bridge,
     script: script_host::ScriptBridge,
@@ -530,6 +533,9 @@ struct LoadPlan {
     mask: Option<String>,
     /// この読込の世代（取り込み時に現世代と一致しなければ破棄）。
     generation: u64,
+    /// 読込開始時点の表示先ディレクトリの更新時刻（実ディレクトリ以外は `None`）。取り込み時に
+    /// 控え、取りこぼし点検の基準にする。読む前に採るので、読込中に起きた変更は次の点検で拾う。
+    dir_stamp: Option<std::time::SystemTime>,
 }
 
 impl MainWindow {
@@ -723,6 +729,7 @@ impl MainWindow {
             archive_temp_dirs: Rc::new(RefCell::new(std::collections::HashMap::new())),
             watchers: Rc::new(RefCell::new([None, None])),
             watch_revives: Rc::new(RefCell::new([0, 0])),
+            watch_seen: Rc::new(RefCell::new([None, None])),
             #[cfg(feature = "debug-server")]
             debug: debug_server::Bridge::new(debug_port, debug_allow_write, debug_headless),
             script: script_host::ScriptBridge::new(),
@@ -858,6 +865,7 @@ impl MainWindow {
         let reload_watch = winutil::msg::RELOAD_WATCH;
         self.wnd.on().wm(reload_watch, move |p| {
             let is_left = p.wparam != 0;
+            this.log_watch_event(is_left);
             let _ = this.reload_side_impl(is_left, ReloadCursor::Keep, false);
             Ok(0)
         });
@@ -1006,6 +1014,10 @@ impl MainWindow {
 
         let this = self.clone();
         self.wnd.on().wm_timer(task::TASK_TIMER_ID, move || this.pump_tasks());
+
+        // 監視の取りこぼし点検（通知が届かなかった変更を拾い、監視を張り直す）。
+        let this = self.clone();
+        self.wnd.on().wm_timer(watch::POLL_TIMER_ID, move || this.poll_watch());
 
         let this = self.clone();
         self.wnd.on().wm_destroy(move || {
@@ -2205,6 +2217,12 @@ impl MainWindow {
         };
         let mask = self.mask(is_left).borrow().clone();
         let read_loc = self.resolve_read_location(is_left);
+        let dir_stamp = self
+            .pane(is_left)
+            .borrow()
+            .loc()
+            .as_real_path()
+            .and_then(watch::dir_stamp);
 
         // 移動先は確定済みなので、パスバー・基準dir・ドライブ情報・タイトル・タブは即時更新する。
         // （一覧の中身だけがワーカーの読込待ち。）
@@ -2221,8 +2239,17 @@ impl MainWindow {
         let generation = view.bump_load_gen();
         view.set_loading();
 
-        let plan =
-            LoadPlan { mode, keep_name, keep_source, keep_scroll, keep_idx, recalled, mask, generation };
+        let plan = LoadPlan {
+            mode,
+            keep_name,
+            keep_source,
+            keep_scroll,
+            keep_idx,
+            recalled,
+            mask,
+            generation,
+            dir_stamp,
+        };
         Ok(Some((read_loc, plan)))
     }
 
@@ -2240,6 +2267,12 @@ impl MainWindow {
     /// 監視対象なら監視を張り（既に同じ場所なら据え置き）、書庫・検索結果・仮想の中や設定オフ・
     /// 非対象ドライブなら監視を止める。`set_dir` と対で呼ぶ。
     fn arm_watch(&self, is_left: bool) {
+        self.arm_watch_slot(is_left);
+        self.sync_poll_timer();
+    }
+
+    /// 表示先に合わせて監視スロットを差し替える（[`Self::arm_watch`] の張り替え判定本体）。
+    fn arm_watch_slot(&self, is_left: bool) {
         let rw = self.config.borrow().reload_watch;
         let want_dir = if rw.enabled {
             self.pane(is_left)
@@ -2271,6 +2304,102 @@ impl MainWindow {
         }
     }
 
+    /// 通知が届いていない監視を作り直す。点検で取りこぼしを見つけたときに使う。
+    fn rearm_watch(&self, is_left: bool) {
+        self.watchers.borrow_mut()[if is_left { 0 } else { 1 }] = None;
+        self.arm_watch(is_left);
+    }
+
+    /// 取りこぼし点検タイマを、監視の有無と設定に合わせて起動・停止する。監視を張り替えるたびに
+    /// 呼ぶので、点検は「最後の読込から `poll_ms` 経過」で回る。
+    fn sync_poll_timer(&self) {
+        let poll_ms = self.config.borrow().reload_watch.poll_ms;
+        let watching = self.watchers.borrow().iter().any(Option::is_some);
+        if poll_ms == 0 || !watching {
+            let _ = self.wnd.hwnd().KillTimer(watch::POLL_TIMER_ID);
+            return;
+        }
+        // `SetTimer` が受ける上限（USER_TIMER_MAXIMUM）に収める。
+        let interval = poll_ms.min(0x7FFF_FFFF) as u32;
+        let _ = self.wnd.hwnd().SetTimer(watch::POLL_TIMER_ID, interval, None);
+    }
+
+    /// 監視の取りこぼしを点検する。表示先ディレクトリの更新時刻が最後の読込時と食い違っていれば、
+    /// 監視の通知が届いていないので、記録を残したうえで監視を張り直して読み直す。
+    fn poll_watch(&self) -> w::AnyResult<()> {
+        for is_left in [true, false] {
+            let idx = if is_left { 0 } else { 1 };
+            let dir = self.watchers.borrow()[idx].as_ref().map(|h| h.dir().to_path_buf());
+            let Some(dir) = dir else {
+                continue;
+            };
+            // 読込中は基準がまだ更新されていないので、点検しても取りこぼしと区別が付かない。
+            if self.view(is_left).is_loading() {
+                continue;
+            }
+            // 結果一覧は再検索で最新化する（ディレクトリ読込へ戻さない）ので点検の対象外。
+            if self.view(is_left).state().borrow().find_result {
+                continue;
+            }
+            let now = watch::dir_stamp(&dir);
+            // 基準が無い（タブ復元直後など）ときは、今の値を基準に据えるだけで読み直さない。
+            let Some(seen) = self.watch_seen.borrow()[idx] else {
+                self.watch_seen.borrow_mut()[idx] = now;
+                continue;
+            };
+            if now.is_none() || now == Some(seen) {
+                continue;
+            }
+            let side = if is_left { "左" } else { "右" };
+            self.log_all_tabs(
+                LogLevel::Warning,
+                &format!(
+                    "{side}ペインの更新監視が取りこぼした変更を読み直しました: {}",
+                    dir.display()
+                ),
+            );
+            self.rearm_watch(is_left);
+            self.reload_side_impl(is_left, ReloadCursor::Keep, false)?;
+        }
+        Ok(())
+    }
+
+    /// 診断用：更新監視が変更を検知したことを記録する（`log_events` が真のときだけ）。
+    fn log_watch_event(&self, is_left: bool) {
+        if !self.config.borrow().reload_watch.log_events {
+            return;
+        }
+        let side = if is_left { "左" } else { "右" };
+        let dir = self.watchers.borrow()[if is_left { 0 } else { 1 }]
+            .as_ref()
+            .map(|h| h.dir().display().to_string())
+            .unwrap_or_default();
+        self.log_all_tabs(
+            LogLevel::Info,
+            &format!("{side}ペインの更新監視が変更を検知しました: {dir}"),
+        );
+    }
+
+    /// 全タブのログへ1行流す。更新監視はサイド別でタブに属さないので、どのタブを見ていても
+    /// 気づけるように全タブへ残す。
+    fn log_all_tabs(&self, level: LogLevel, text: &str) {
+        match level {
+            LogLevel::Normal => self.log.normal(text),
+            LogLevel::Info => self.log.info(text),
+            LogLevel::Warning => self.log.warn(text),
+            LogLevel::Error => self.log.error(text),
+        }
+        let active = self.active.get();
+        let page_rows = self.log.page_rows();
+        for (i, tab) in self.tabs.borrow_mut().iter_mut().enumerate() {
+            if i == active {
+                continue;
+            }
+            tab.log.push(level, text);
+            tab.log.scroll_to_bottom(page_rows);
+        }
+    }
+
     /// 監視が停止合図以外で終わったときの後始末。アクティブタブのログへ残し、上限までは同じ場所へ
     /// 張り直す。上限に達したら監視なしで続け、次の再読込・移動での張り直しに委ねる。
     fn on_watch_died(&self, is_left: bool, code: u32) {
@@ -2291,20 +2420,26 @@ impl MainWindow {
         };
         if revives > REVIVE_LIMIT {
             self.watchers.borrow_mut()[idx] = None;
-            self.log.warn(&format!(
-                "{side}ペインの更新監視を停止しました（{}・エラー 0x{code:08X}）",
-                dir.display()
-            ));
+            self.log_all_tabs(
+                LogLevel::Warning,
+                &format!(
+                    "{side}ペインの更新監視を停止しました（{}・エラー 0x{code:08X}）",
+                    dir.display()
+                ),
+            );
             return;
         }
         let wait_ms = self.config.borrow().reload_watch.wait_ms;
         let hwnd_ptr = self.wnd.hwnd().ptr() as isize;
         self.watchers.borrow_mut()[idx] =
             watch::WatchHandle::start(dir.clone(), hwnd_ptr, is_left, wait_ms);
-        self.log.warn(&format!(
-            "{side}ペインの更新監視を張り直しました（{}・エラー 0x{code:08X}）",
-            dir.display()
-        ));
+        self.log_all_tabs(
+            LogLevel::Warning,
+            &format!(
+                "{side}ペインの更新監視を張り直しました（{}・エラー 0x{code:08X}）",
+                dir.display()
+            ),
+        );
     }
 
     /// 読み出す対象を Send な [`Location`] として確定する。一括展開済み書庫は **temp の実FS** を
@@ -2331,6 +2466,7 @@ impl MainWindow {
             return Ok(());
         }
         view.clear_loading();
+        self.watch_seen.borrow_mut()[if is_left { 0 } else { 1 }] = plan.dir_stamp;
         let items = match plan.mask.as_ref() {
             Some(m) => items
                 .into_iter()
