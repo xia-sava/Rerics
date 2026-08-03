@@ -480,6 +480,11 @@ struct TabSnapshot {
     split_ratio: f64,
     /// タブ切替時にログパネルの中身を復元するために覚える。
     log: LogState,
+    /// このタブを離れた時点での各ペインの表示先ディレクトリの更新時刻。復元時に現在値と
+    /// 突き合わせ、離れている間に変わっていれば読み直す。一覧をその場で読んで作ったタブは
+    /// `None`（読み直す必要がない）。
+    left_stamp: Option<std::time::SystemTime>,
+    right_stamp: Option<std::time::SystemTime>,
 }
 
 /// ペイン再読込時にカーソルをどこへ置くか。
@@ -647,6 +652,8 @@ impl MainWindow {
                 active_right: false,
                 split_ratio: initial_split,
                 log: LogState::default(),
+                left_stamp: None,
+                right_stamp: None,
             }
         };
         let tabs = vec![placeholder];
@@ -2310,12 +2317,30 @@ impl MainWindow {
         self.arm_watch(is_left);
     }
 
-    /// 取りこぼし点検タイマを、監視の有無と設定に合わせて起動・停止する。監視を張り替えるたびに
+    /// スナップショットから復元した一覧のうち、退避時から実際のディレクトリが変わっている側を
+    /// 読み直す。基準が無い（一覧をその場で読んで作った）タブは対象外。
+    fn refresh_stale_panes(&self) {
+        for is_left in [true, false] {
+            let Some(seen) = self.watch_seen.borrow()[if is_left { 0 } else { 1 }] else {
+                continue;
+            };
+            let dir = self.pane(is_left).borrow().loc().as_real_path().map(Path::to_path_buf);
+            let Some(dir) = dir else {
+                continue;
+            };
+            if watch::dir_stamp(&dir) == Some(seen) {
+                continue;
+            }
+            let _ = self.reload_side_impl(is_left, ReloadCursor::Keep, false);
+        }
+    }
+
+    /// 取りこぼし点検タイマを、監視の設定に合わせて起動・停止する。監視を張り替えるたびに
     /// 呼ぶので、点検は「最後の読込から `poll_ms` 経過」で回る。
     fn sync_poll_timer(&self) {
-        let poll_ms = self.config.borrow().reload_watch.poll_ms;
-        let watching = self.watchers.borrow().iter().any(Option::is_some);
-        if poll_ms == 0 || !watching {
+        let rw = self.config.borrow().reload_watch;
+        let poll_ms = rw.poll_ms;
+        if poll_ms == 0 || !rw.enabled {
             let _ = self.wnd.hwnd().KillTimer(watch::POLL_TIMER_ID);
             return;
         }
@@ -2327,12 +2352,18 @@ impl MainWindow {
     /// 監視の取りこぼしを点検する。表示先ディレクトリの更新時刻が最後の読込時と食い違っていれば、
     /// 監視の通知が届いていないので、記録を残したうえで監視を張り直して読み直す。
     fn poll_watch(&self) -> w::AnyResult<()> {
+        let rw = self.config.borrow().reload_watch;
         for is_left in [true, false] {
             let idx = if is_left { 0 } else { 1 };
-            let dir = self.watchers.borrow()[idx].as_ref().map(|h| h.dir().to_path_buf());
+            // 起点は監視ハンドルではなくペインの表示先。監視が張れていない側こそ点検が要る。
+            let dir = self.pane(is_left).borrow().loc().as_real_path().map(Path::to_path_buf);
             let Some(dir) = dir else {
                 continue;
             };
+            // 監視の対象外に選んだ場所（低速ドライブ等）は点検でも触らない。
+            if !watch::should_watch(&dir, rw.watch_non_fixed) {
+                continue;
+            }
             // 読込中は基準がまだ更新されていないので、点検しても取りこぼしと区別が付かない。
             if self.view(is_left).is_loading() {
                 continue;
@@ -2350,15 +2381,18 @@ impl MainWindow {
             if now.is_none() || now == Some(seen) {
                 continue;
             }
-            let side = if is_left { "左" } else { "右" };
-            self.log_all_tabs(
-                LogLevel::Warning,
-                &format!(
-                    "{side}ペインの更新監視が取りこぼした変更を読み直しました: {}",
-                    dir.display()
-                ),
-            );
-            self.rearm_watch(is_left);
+            // 監視が張られている場所での食い違いは通知の取りこぼし。記録して監視を作り直す。
+            if self.watchers.borrow()[idx].as_ref().is_some_and(|h| h.dir() == dir) {
+                let side = if is_left { "左" } else { "右" };
+                self.log_all_tabs(
+                    LogLevel::Warning,
+                    &format!(
+                        "{side}ペインの更新監視が取りこぼした変更を読み直しました: {}",
+                        dir.display()
+                    ),
+                );
+                self.rearm_watch(is_left);
+            }
             self.reload_side_impl(is_left, ReloadCursor::Keep, false)?;
         }
         Ok(())

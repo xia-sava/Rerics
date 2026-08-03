@@ -1965,6 +1965,28 @@ fn watch_poll_disabled_leaves_missed_change() {
     assert!(!items.contains("\"name\":\"b.txt\""), "点検オフでは拾われない: {items}");
 }
 
+/// タブから離れている間に起きた外部変更が、そのタブへ戻ったときに一覧へ反映される。
+/// タブ切替は一覧をスナップショットから復元するだけなので、離れている間の変更は監視の通知も
+/// 届かない（監視は復帰後の変更しか報告しない）。復帰時に取り込めないと永久に古いままになる。
+#[test]
+fn tab_switch_reflects_change_made_while_inactive() {
+    let server = Server::start(&["a.txt"], "[reload_watch]\nenabled = true\nwait_ms = 100\npoll_ms = 0\n");
+    // 別タブへ移り、元タブ（index 0）を非アクティブにする。
+    server.req("POST", "/command/newFiler", "").unwrap();
+    poll(&server, "/state/tabs/active", |b| b.trim() == "1");
+
+    // 元タブが非アクティブな間に、外部からディスクへ b.txt を足す。
+    std::fs::write(server.base.join("sbx").join("b.txt"), b"x").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+
+    // 元タブへ戻ると、離れている間の変更が反映されている。
+    server.req("POST", "/command/pagePrevious", "").unwrap();
+    poll(&server, "/state/tabs/active", |b| b.trim() == "0");
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"b.txt\""));
+    let items = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert!(items.contains("\"name\":\"b.txt\""), "復帰時に離席中の変更が入る: {items}");
+}
+
 /// テキストビューア表示中はビューア用コマンドがビューア文脈で実行される。
 #[test]
 fn viewer_commands_dispatch_in_text_context() {

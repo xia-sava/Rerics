@@ -37,6 +37,8 @@ fn build_restored_tabs(
                 active_right: t.active_right,
                 split_ratio: t.split_ratio,
                 log: LogState::default(),
+                left_stamp: None,
+                right_stamp: None,
             }
         })
         .collect();
@@ -158,6 +160,9 @@ impl MainWindow {
             active_right: self.active_right.get(),
             split_ratio: self.split_ratio.get(),
             log: self.log.state_snapshot(),
+            // 退避する一覧が対応しているディレクトリの更新時刻。復元時の読み直し判定に使う。
+            left_stamp: self.watch_seen.borrow()[0],
+            right_stamp: self.watch_seen.borrow()[1],
         }
     }
 
@@ -190,12 +195,16 @@ impl MainWindow {
         for is_left in [true, false] {
             let real_dir =
                 self.pane(is_left).borrow().loc().as_real_path().map(|p| p.to_path_buf());
-            self.view(is_left).set_dir(real_dir.clone());
+            self.view(is_left).set_dir(real_dir);
             self.arm_watch(is_left);
-            // 一覧はスナップショットからの復元で読み直してはいないので、取りこぼし点検の基準は
-            // 復元時点の更新時刻に据える（復元より前の変更を取りこぼしとして数えない）。
-            self.watch_seen.borrow_mut()[if is_left { 0 } else { 1 }] =
-                real_dir.as_deref().and_then(crate::watch::dir_stamp);
+        }
+        // 復元した一覧が対応しているのは、このタブを離れた時点のディレクトリ。点検の基準も
+        // そこへ戻す（現在値に据え直すと、離席中に変わっていたことを二度と検出できなくなる）。
+        // 控えが無いタブは一覧をその場で読んで作っているので、現在値を基準にする。
+        for (idx, stamp) in [snap.left_stamp, snap.right_stamp].into_iter().enumerate() {
+            let dir = self.pane(idx == 0).borrow().loc().as_real_path().map(|p| p.to_path_buf());
+            self.watch_seen.borrow_mut()[idx] =
+                stamp.or_else(|| dir.as_deref().and_then(crate::watch::dir_stamp));
         }
         self.view(true).autofit_columns()?;
         self.view(false).autofit_columns()?;
@@ -208,6 +217,9 @@ impl MainWindow {
         for is_left in [true, false] {
             let _ = self.maybe_start_archive_extract(is_left);
         }
+        // 離れている間にディレクトリが変わっていた側は読み直す。復元した一覧に離席中の変更は
+        // 入っておらず、監視も復帰後の変更しか報告しないので、ここで取り込まないと古いまま残る。
+        self.refresh_stale_panes();
         self.cleanup_unreferenced_temps();
         // 切替先タブのアクティブペインの検索状態を共有検索バーへ反映する。
         let _ = self.sync_search_bar();

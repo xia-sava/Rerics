@@ -83,6 +83,8 @@ impl MainWindow {
                 split_ratio: self.split_ratio.get(),
                 // 新規タブは複製元の履歴を引き継がず、空のログで始まる。
                 log: LogState::default(),
+                left_stamp: None,
+                right_stamp: None,
             }
         };
         let index = self.active.get() + 1;
