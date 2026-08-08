@@ -193,6 +193,8 @@ pub struct ModalArm {
     reg: Rc<RefCell<Option<Reg>>>,
     #[allow(clippy::type_complexity)]
     on_create: Rc<RefCell<Option<Box<dyn Fn(&w::HWND) -> w::AnyResult<()>>>>>,
+    #[allow(clippy::type_complexity)]
+    on_destroy: Rc<RefCell<Vec<Box<dyn Fn()>>>>,
 }
 
 impl ModalArm {
@@ -201,6 +203,7 @@ impl ModalArm {
             #[cfg(feature = "debug-server")]
             reg: Rc::new(RefCell::new(None)),
             on_create: Rc::new(RefCell::new(None)),
+            on_destroy: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
@@ -208,6 +211,15 @@ impl ModalArm {
     /// （子コントロール作成済み）。
     pub fn on_create(&self, f: impl Fn(&w::HWND) -> w::AnyResult<()> + 'static) {
         *self.on_create.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// 閉鎖時の固有処理（サイズの記録など）を仕込む。登録順に全部走る。
+    ///
+    /// `WM_DESTROY` を直接ハンドルしてはいけない：winsafe は通常メッセージを
+    /// 「最後に登録された 1 つだけ実行して打ち切る」ので、後から登録すると基盤の後始末
+    /// （debug-server のモーダル登録解除）を消してしまう。追加処理は必ずここへ足す。
+    pub fn on_destroy(&self, f: impl Fn() + 'static) {
+        self.on_destroy.borrow_mut().push(Box::new(f));
     }
 
     /// 通常モーダルの登録情報を仕込む（`buttons` は (ラベル, ctrl_id)・OK=1/Cancel=2）。
@@ -341,13 +353,12 @@ pub fn modal_window_resizable_keyed(
     // 閉じる時に現在のクライアントサイズ（論理px）を無言で記録する。winsafe は同じ
     // メッセージへ複数ハンドラを登録でき全部走るので、基盤の DESTROY（pop）と併存できる。
     let wsave = wnd.clone();
-    wnd.on().wm(co::WM::DESTROY, move |_| {
+    arm.on_destroy(move || {
         if let Ok(rc) = wsave.hwnd().GetClientRect() {
             let mut store = rerics_core::DialogSizes::load();
             store.set(key, (to_logical(rc.right, true), to_logical(rc.bottom, false)));
             let _ = store.save();
         }
-        Ok(0)
     });
     (wnd, arm)
 }
@@ -492,12 +503,20 @@ fn modal_window_styled(title: &str, w: i32, h: i32, extra: co::WS) -> (gui::Wind
             Ok(0)
         });
     }
-    // 閉鎖時：登録を取り除く。NCDESTROY は winsafe の内部後始末と被るので DESTROY で行う。
-    wnd.on().wm(co::WM::DESTROY, move |_| {
-        #[cfg(feature = "debug-server")]
-        crate::debug_server::modal_registry::pop();
-        Ok(0)
-    });
+    // 閉鎖時：固有処理を済ませてから登録を取り除く。NCDESTROY は winsafe の内部後始末と被るので
+    // DESTROY で行う。winsafe は通常メッセージを「最後に登録された 1 つだけ」実行して打ち切るため、
+    // WM_DESTROY のハンドラはここ 1 つに集約する（固有処理は `ModalArm::on_destroy` から呼ぶ）。
+    {
+        let od = arm.on_destroy.clone();
+        wnd.on().wm(co::WM::DESTROY, move |_| {
+            for f in od.borrow().iter() {
+                f();
+            }
+            #[cfg(feature = "debug-server")]
+            crate::debug_server::modal_registry::pop();
+            Ok(0)
+        });
+    }
 
     (wnd, arm)
 }
