@@ -129,7 +129,7 @@ impl Location {
     /// 基準、ドライブ相対（`C:foo`）はそのドライブのルート基準に解く。いずれもプロセスの
     /// カレントディレクトリには依存しない。
     pub fn parse_from(base: &Path, display: &str) -> Location {
-        parse_resolved(resolve_against(base, Path::new(display)))
+        parse_resolved(resolve_path(base, Path::new(display)))
     }
 
     /// 相対パス解決の基準になる実ディレクトリ。書庫内は書庫ファイルのあるディレクトリ
@@ -240,10 +240,10 @@ fn parse_resolved(p: PathBuf) -> Location {
     Location::Real(p)
 }
 
-/// `p` を `base` 基準の絶対パスに解く。ドライブ相対（`C:foo`）はプロセスのカレント
-/// ディレクトリを引くのでそのドライブのルート基準に倒す。ルート相対（`\foo`）と素の
+/// `p` を `base` 基準の絶対パスに解く（実在は問わない）。ドライブ相対（`C:foo`）はプロセスの
+/// カレントディレクトリを引くのでそのドライブのルート基準に倒す。ルート相対（`\foo`）と素の
 /// 相対は `join` に委ねる（前者は `base` のドライブが残る）。
-fn resolve_against(base: &Path, p: &Path) -> PathBuf {
+pub fn resolve_path(base: &Path, p: &Path) -> PathBuf {
     use std::path::Component;
     if p.is_absolute() {
         return absolutize(p);

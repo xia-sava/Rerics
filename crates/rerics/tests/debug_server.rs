@@ -6028,6 +6028,34 @@ fn script_keeps_targeting_the_origin_pane() {
     );
 }
 
+/// `r.fs` の相対パスは起点ペインの現在地から解く。スクリプトが途中でそのペインを動かしても、
+/// 基準は起点時点のままで、移動先には引きずられない。
+#[test]
+fn script_fs_resolves_relative_paths_from_the_origin_dir() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx = server.base.join("sbx");
+    std::fs::create_dir_all(sbx.join("sub")).unwrap();
+
+    server
+        .req(
+            "POST",
+            "/exec",
+            r#"{ r.navigate("sub"); r.fs.writeText("made.txt", "ok"); r.log("done"); }"#,
+        )
+        .expect("exec");
+    poll(&server, "/state/log", |b| b.contains("done"));
+
+    assert_eq!(
+        std::fs::read_to_string(sbx.join("made.txt")).ok().as_deref(),
+        Some("ok"),
+        "relative fs paths should resolve against the directory the script started in"
+    );
+    assert!(
+        !sbx.join("sub").join("made.txt").exists(),
+        "the base must not follow the pane the script moved"
+    );
+}
+
 /// 計算引数：機能欄のスクリプト式が組込を `r.` のネスト呼びで包み、引数を式の値で渡せる。
 /// `r.changeDirectory(r.currentDir() + "/sub")` を評価して実フォルダへ移動できる（エンジン経路）。
 #[test]

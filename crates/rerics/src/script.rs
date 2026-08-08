@@ -89,12 +89,14 @@ pub struct Modifiers {
 
 /// スクリプト実行の文脈。実行の起点で確定し、その実行のあいだ変わらない。
 ///
-/// スクリプトの最中にアクティブペインが切り替わっても、ペインを対象にするホスト操作の宛先は
-/// 起点のままにする。
+/// スクリプトの最中にアクティブペインが切り替わっても、スクリプト自身がペインを移動しても、
+/// ホスト操作の宛先と相対パスの基準は起点のままにする。
 #[derive(Clone, Debug, Default)]
 pub struct ScriptContext {
     /// 起点ペインが左か。ペインを対象にするホスト操作の宛先。
     pub is_left: bool,
+    /// 起点時点の現在地。相対パスの解決基準（書庫内は書庫ファイルのあるディレクトリ）。
+    pub base_dir: std::path::PathBuf,
 }
 
 /// スクリプトからのホスト操作を受ける窓口。実 GUI 実装は UI スレッドへマーシャルし、
@@ -650,6 +652,19 @@ fn op_config(state: &mut OpState, #[string] key: &str) -> Vec<serde_json::Value>
 /// この実行の起点ペイン（左なら true）。ペインを対象にするホスト操作の宛先。
 fn origin_pane(state: &OpState) -> bool {
     state.borrow::<ScriptContext>().is_left
+}
+
+/// スクリプトが渡したパスを実行文脈の基準（起点時点の現在地）で絶対化する。絶対パスと空文字は
+/// そのまま返すので、絶対パスしか渡さないスクリプトでは何も変わらない。
+#[op2]
+#[string]
+fn op_resolve_path(state: &mut OpState, #[string] path: &str) -> String {
+    let p = std::path::Path::new(path);
+    if path.is_empty() || p.is_absolute() {
+        return path.to_string();
+    }
+    let base = state.borrow::<ScriptContext>().base_dir.clone();
+    rerics_core::resolve_path(&base, p).to_string_lossy().into_owned()
 }
 
 /// 起点ペインの反対側を移動する（投げっぱなし）。`kind`＝`"parent"`/`"root"`/その他（パス指定）。
@@ -1281,6 +1296,7 @@ extension!(
         op_env_special,
         op_command_line_args,
         op_config,
+        op_resolve_path,
         op_change_opposite,
         op_set_path_mask,
         op_make_directory,
@@ -1334,6 +1350,8 @@ extension!(
 const BOOTSTRAP: &str = r#"
 (() => {
   const ops = Deno.core.ops;
+  // ファイルを指すパスは実行文脈の基準（スクリプト開始時の現在地）で絶対化してから渡す。
+  const abs = (p) => ops.op_resolve_path(String(p));
   const commands = new Map();
   const menus = new Map();
   const eventHandlers = new Map();
@@ -1621,7 +1639,7 @@ const BOOTSTRAP: &str = r#"
       const r = ops.op_select(String(t), (items || []).map(String));
       return r.length ? r[0] : null;
     },
-    listDir: (p) => ops.op_list_dir(String(p)),
+    listDir: (p) => ops.op_list_dir(abs(p)),
     activePane: () => makePane(ops.op_pane_snapshot(false)),
     oppositePane: () => makePane(ops.op_pane_snapshot(true)),
     command: (name, ...args) => ops.op_command(String(name), args.map(String)),
@@ -1631,7 +1649,7 @@ const BOOTSTRAP: &str = r#"
       ops.op_rename_files((pairs || []).map((p) => [String(p.from), String(p.to)])),
     delete: (a, b) =>
       Array.isArray(a) ? startOp(2, a, "", b) : startOp(2, null, "", a),
-    open: (p) => ops.op_open(String(p)),
+    open: (p) => ops.op_open(abs(p)),
     folderDialog: (t) => {
       const r = ops.op_folder_dialog(t == null ? "" : String(t));
       return r.length ? r[0] : null;
@@ -1657,7 +1675,7 @@ const BOOTSTRAP: &str = r#"
       ops.op_execute(String(path), params == null ? "" : String(params), ops.op_current_dir()),
     unpack: (src, dst, opts) => {
       const onProgress = opts && typeof opts.onProgress === "function" ? opts.onProgress : null;
-      const token = ops.op_unpack_start(String(src), String(dst));
+      const token = ops.op_unpack_start(abs(src), abs(dst));
       return drainJob(token, onProgress);
     },
     // 関数を別スレッド＋別アイソレートで本当に並列に実行する。fn は関数か関数ソース文字列で、
@@ -1670,19 +1688,20 @@ const BOOTSTRAP: &str = r#"
       return ops.op_parallel(src, argJson).then((s) => JSON.parse(s));
     },
     // 裏で動く低レベルファイル操作。画面にもログにも触れない（更新は呼び手が navigate 等で明示）。
-    // 絶対パス前提。I/O エラーは例外（exists は false 寄せ・stat は不在で null）。
+    // 相対パスはスクリプト開始時の現在地から解く。I/O エラーは例外（exists は false 寄せ・
+    // stat は不在で null）。
     fs: {
-      readText: (p) => ops.op_fs_read_text(String(p)),
-      writeText: (p, c) => ops.op_fs_write_text(String(p), c == null ? "" : String(c)),
-      copyFile: (s, d) => ops.op_fs_copy_file(String(s), String(d)),
-      rename: (s, d) => ops.op_fs_rename(String(s), String(d)),
-      mkdir: (p) => ops.op_fs_mkdir(String(p)),
-      symlink: (t, l) => ops.op_fs_symlink(String(t), String(l)),
-      junction: (t, l) => ops.op_fs_junction(String(t), String(l)),
-      exists: (p) => ops.op_fs_exists(String(p)),
-      remove: (p) => ops.op_fs_remove(String(p)),
+      readText: (p) => ops.op_fs_read_text(abs(p)),
+      writeText: (p, c) => ops.op_fs_write_text(abs(p), c == null ? "" : String(c)),
+      copyFile: (s, d) => ops.op_fs_copy_file(abs(s), abs(d)),
+      rename: (s, d) => ops.op_fs_rename(abs(s), abs(d)),
+      mkdir: (p) => ops.op_fs_mkdir(abs(p)),
+      symlink: (t, l) => ops.op_fs_symlink(abs(t), abs(l)),
+      junction: (t, l) => ops.op_fs_junction(abs(t), abs(l)),
+      exists: (p) => ops.op_fs_exists(abs(p)),
+      remove: (p) => ops.op_fs_remove(abs(p)),
       stat: (p) => {
-        const r = ops.op_fs_stat(String(p));
+        const r = ops.op_fs_stat(abs(p));
         return r.length ? r[0] : null;
       },
     },
@@ -1714,8 +1733,8 @@ const BOOTSTRAP: &str = r#"
     clipboard: {
       setText: (t) => ops.op_set_clipboard(t == null ? "" : String(t)),
       getText: () => ops.op_get_clipboard(),
-      setImage: (p) => ops.op_set_clipboard_image(p == null ? "" : String(p)),
-      getImage: (p) => ops.op_get_clipboard_image(p == null ? "" : String(p)),
+      setImage: (p) => ops.op_set_clipboard_image(p == null ? "" : abs(p)),
+      getImage: (p) => ops.op_get_clipboard_image(p == null ? "" : abs(p)),
     },
     registerCommand: (name, fn, opts) => {
       if (typeof fn !== "function") throw new TypeError("registerCommand: fn must be a function");
@@ -3609,6 +3628,37 @@ mod tests {
         assert!(errors.is_empty(), "errors: {errors:?}");
         eng.invoke_command("useShared", &[]).unwrap();
         assert_eq!(*host.logs.borrow(), vec!["lib:42".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fs_resolves_relative_paths_against_the_context_base() {
+        let dir = std::env::temp_dir().join(format!("rerics-fs-rel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.set_context(ScriptContext { is_left: true, base_dir: dir.clone() });
+        // 相対パスはプロセスのカレントではなく実行文脈の基準から解く。
+        eng.run_to_completion(
+            "test:fs-relative",
+            r#"
+              r.fs.mkdir("sub");
+              r.fs.writeText("sub/a.txt", "ok");
+              rerics.log("read=" + r.fs.readText("sub/a.txt"));
+              rerics.log("exists=" + r.fs.exists("sub/a.txt"));
+            "#
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            *host.logs.borrow(),
+            vec!["read=ok".to_string(), "exists=true".to_string()]
+        );
+        // 実体が基準ディレクトリの下にできている。
+        assert_eq!(std::fs::read_to_string(dir.join("sub").join("a.txt")).unwrap(), "ok");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

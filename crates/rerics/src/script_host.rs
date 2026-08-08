@@ -1258,7 +1258,9 @@ impl MainWindow {
 
     /// いまのアクティブペインからスクリプト実行文脈を作る（＝実行の起点を確定する）。
     fn script_context(&self) -> script::ScriptContext {
-        script::ScriptContext { is_left: !self.active_right.get() }
+        let is_left = !self.active_right.get();
+        let base_dir = self.pane(is_left).borrow().loc().base_dir();
+        script::ScriptContext { is_left, base_dir }
     }
 
     /// エンジンからの同期応答を、待つあいだも [`HostApi`] マーシャルキューを汲みながら受け取る。
