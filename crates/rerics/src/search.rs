@@ -48,7 +48,7 @@ impl MainWindow {
             return Ok(());
         };
         let arg = serde_json::to_string(input.trim()).unwrap_or_else(|_| "\"\"".to_string());
-        self.script_send(crate::script_host::EngineCmd::Eval(format!("r.pathMask({arg})")));
+        self.script_send(crate::script_host::EngineCmdKind::Eval(format!("r.pathMask({arg})")));
         Ok(())
     }
 
@@ -70,7 +70,7 @@ impl MainWindow {
             return Ok(());
         }
         let arg = serde_json::to_string(input).unwrap_or_else(|_| "\"\"".to_string());
-        self.script_send(crate::script_host::EngineCmd::Eval(format!("r.selectMask({arg})")));
+        self.script_send(crate::script_host::EngineCmdKind::Eval(format!("r.selectMask({arg})")));
         Ok(())
     }
 
@@ -96,7 +96,7 @@ impl MainWindow {
             return Ok(());
         };
         let token = OPTIONS[idx].1;
-        self.script_send(crate::script_host::EngineCmd::Eval(format!("r.compare({token:?})")));
+        self.script_send(crate::script_host::EngineCmdKind::Eval(format!("r.compare({token:?})")));
         Ok(())
     }
 

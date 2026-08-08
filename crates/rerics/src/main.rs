@@ -1108,7 +1108,7 @@ impl MainWindow {
                 if self.archive_extract_pending(is_left) {
                     return Ok(());
                 }
-                self.script_send(script_host::EngineCmd::Eval(source.clone()));
+                self.script_send(script_host::EngineCmdKind::Eval(source.clone()));
                 Ok(())
             }
         }

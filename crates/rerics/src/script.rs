@@ -87,6 +87,16 @@ pub struct Modifiers {
     pub alt: bool,
 }
 
+/// スクリプト実行の文脈。実行の起点で確定し、その実行のあいだ変わらない。
+///
+/// スクリプトの最中にアクティブペインが切り替わっても、ペインを対象にするホスト操作の宛先は
+/// 起点のままにする。
+#[derive(Clone, Debug, Default)]
+pub struct ScriptContext {
+    /// 起点ペインが左か。ペインを対象にするホスト操作の宛先。
+    pub is_left: bool,
+}
+
 /// スクリプトからのホスト操作を受ける窓口。実 GUI 実装は UI スレッドへマーシャルし、
 /// テストはモックで記録する。`&self` で受けるのは V8 アイソレートと同一スレッドから
 /// 同期的に呼ばれるため。
@@ -108,19 +118,19 @@ pub trait HostApi {
     fn log_text(&self) -> String;
     /// 設定値をドット区切りキーで読む（未知キーは `None`）。
     fn config_get(&self, key: &str) -> Option<serde_json::Value>;
-    /// 反対ペインを移動する。`kind`＝`"parent"`（親へ）/`"root"`（ルートへ）/その他（`path` へ）。
-    fn change_opposite(&self, kind: &str, path: &str);
-    /// アクティブペインの表示マスクを設定する（空 or `"*"` で解除）。設定後に一覧を更新する。
-    fn set_path_mask(&self, mask: &str);
-    /// ディレクトリを作る（相対名はアクティブペインの現在地基準）。作成した絶対パスを返す。失敗は `Err`。
-    fn create_directory(&self, name: &str) -> Result<String, String>;
-    /// 書庫を作る（ワーカー起動・投げっぱなし）。`files` は空白区切りの対象名（相対はアクティブ
-    /// ペインの現在地基準）、`archive` は出力先（相対も同様）。起動前の検証失敗は `Err`。
-    fn compress(&self, kind: &str, archive: &str, files: &[String]) -> Result<(), String>;
-    /// アクティブペインの現在ディレクトリ（絶対パス）を返す。
-    fn current_dir(&self) -> String;
-    /// アクティブペインを `path` へ移動する。
-    fn navigate(&self, path: &str);
+    /// `is_left` 側の反対ペインを移動する。`kind`＝`"parent"`（親へ）/`"root"`（ルートへ）/その他（`path` へ）。
+    fn change_opposite(&self, is_left: bool, kind: &str, path: &str);
+    /// `is_left` 側ペインの表示マスクを設定する（空 or `"*"` で解除）。設定後に一覧を更新する。
+    fn set_path_mask(&self, is_left: bool, mask: &str);
+    /// `is_left` 側ペインにディレクトリを作る（相対名はそのペインの現在地基準）。作成した絶対パスを返す。失敗は `Err`。
+    fn create_directory(&self, is_left: bool, name: &str) -> Result<String, String>;
+    /// 書庫を作る（ワーカー起動・投げっぱなし）。`files` は空白区切りの対象名（相対は `is_left`
+    /// 側ペインの現在地基準）、`archive` は出力先（相対も同様）。起動前の検証失敗は `Err`。
+    fn compress(&self, is_left: bool, kind: &str, archive: &str, files: &[String]) -> Result<(), String>;
+    /// `is_left` 側ペインの現在ディレクトリ（絶対パス）を返す。
+    fn current_dir(&self, is_left: bool) -> String;
+    /// `is_left` 側ペインを `path` へ移動する。
+    fn navigate(&self, is_left: bool, path: &str);
     /// 確認ダイアログ（Yes/No）を出し、Yes なら true。
     fn confirm(&self, message: &str) -> bool;
     /// 入力ダイアログを出し、OK なら入力文字列・キャンセルなら None。`select_all` が真なら
@@ -128,9 +138,9 @@ pub trait HostApi {
     fn prompt(&self, message: &str, default: &str, select_all: bool) -> Option<String>;
     /// 一覧から 1 つ選ばせ、選んだ行の index・キャンセルなら None。
     fn select(&self, title: &str, items: &[String]) -> Option<usize>;
-    /// ペイン（`opposite=false` でアクティブ・`true` で反対側）の現在状態を一括取得する。
+    /// ペイン（`opposite=false` で `is_left` 側・`true` でその反対側）の現在状態を一括取得する。
     /// 別スレッド往復を 1 回で済ませるため、項目一覧ごとスナップショットで返す。
-    fn pane_snapshot(&self, opposite: bool) -> PaneSnapshot;
+    fn pane_snapshot(&self, is_left: bool, opposite: bool) -> PaneSnapshot;
     /// `is_left` 側ペインの `index` 行の選択状態を `selected` にする（即時・1 行）。
     fn set_selected(&self, is_left: bool, index: usize, selected: bool);
     /// `is_left` 側ペインの複数行の選択状態をまとめて適用する（再描画は 1 回）。
@@ -143,11 +153,12 @@ pub trait HostApi {
     /// 結果の件数サマリを返す。
     fn rename_files(&self, pairs: &[(String, String)]) -> RenameSummary;
     /// 非同期ファイル操作を起動する。起動できたら**トークン**を返し、進行中は `events` へ進捗を
-    /// 流し、完了時に完了イベント（成功 or 失敗/中止）を 1 度送る。`items` が空なら対象＝アクティブ
-    /// ペインの選択（行き先＝反対ペイン）、非空なら対象＝そのパス群・行き先＝`dest`（delete では
+    /// 流し、完了時に完了イベント（成功 or 失敗/中止）を 1 度送る。`items` が空なら対象＝`is_left`
+    /// 側ペインの選択（行き先＝反対ペイン）、非空なら対象＝そのパス群・行き先＝`dest`（delete では
     /// `dest` は無視）。起動できなければ（対象なし等）`Err`（その場合 `events` は使われない）。
     fn begin_operation(
         &self,
+        is_left: bool,
         op: ScriptOp,
         items: Vec<String>,
         dest: String,
@@ -349,9 +360,11 @@ impl WorkerSupport {
 }
 
 /// プールのワーカーへ渡す 1 タスク。関数ソース・引数 JSON・結果（JSON 文字列か失敗）の返し口。
+/// `context` は起動元の実行文脈で、ワーカー側のアイソレートへそのまま引き継ぐ。
 struct PoolTask {
     fn_source: String,
     arg_json: String,
+    context: ScriptContext,
     reply: tokio::sync::oneshot::Sender<Result<String, String>>,
 }
 
@@ -419,6 +432,7 @@ fn worker_pool_thread(
             }
         };
         host.register_worker(worker_id, engine.isolate_handle());
+        engine.set_context(task.context.clone());
         let result = run_worker_task(&mut engine, &task.fn_source, &task.arg_json);
         host.unregister_worker(worker_id);
         let _ = task.reply.send(result);
@@ -633,16 +647,23 @@ fn op_config(state: &mut OpState, #[string] key: &str) -> Vec<serde_json::Value>
     state.borrow::<Host>().config_get(key).into_iter().collect()
 }
 
-/// 反対ペインを移動する（投げっぱなし）。`kind`＝`"parent"`/`"root"`/その他（パス指定）。
-#[op2(fast)]
-fn op_change_opposite(state: &mut OpState, #[string] kind: &str, #[string] path: &str) {
-    state.borrow::<Host>().change_opposite(kind, path);
+/// この実行の起点ペイン（左なら true）。ペインを対象にするホスト操作の宛先。
+fn origin_pane(state: &OpState) -> bool {
+    state.borrow::<ScriptContext>().is_left
 }
 
-/// アクティブペインの表示マスクを設定する（空 or `"*"` で解除・投げっぱなし）。
+/// 起点ペインの反対側を移動する（投げっぱなし）。`kind`＝`"parent"`/`"root"`/その他（パス指定）。
+#[op2(fast)]
+fn op_change_opposite(state: &mut OpState, #[string] kind: &str, #[string] path: &str) {
+    let is_left = origin_pane(state);
+    state.borrow::<Host>().change_opposite(is_left, kind, path);
+}
+
+/// 起点ペインの表示マスクを設定する（空 or `"*"` で解除・投げっぱなし）。
 #[op2(fast)]
 fn op_set_path_mask(state: &mut OpState, #[string] mask: &str) {
-    state.borrow::<Host>().set_path_mask(mask);
+    let is_left = origin_pane(state);
+    state.borrow::<Host>().set_path_mask(is_left, mask);
 }
 
 /// ディレクトリを作って作成パス（文字列）を返す。失敗は JS の例外になる。
@@ -652,9 +673,10 @@ fn op_make_directory(
     state: &mut OpState,
     #[string] name: &str,
 ) -> Result<serde_json::Value, deno_error::JsErrorBox> {
+    let is_left = origin_pane(state);
     state
         .borrow::<Host>()
-        .create_directory(name)
+        .create_directory(is_left, name)
         .map(serde_json::Value::String)
         .map_err(deno_error::JsErrorBox::generic)
 }
@@ -667,21 +689,24 @@ fn op_compress(
     #[string] archive: &str,
     #[serde] files: Vec<String>,
 ) -> Result<(), deno_error::JsErrorBox> {
+    let is_left = origin_pane(state);
     state
         .borrow::<Host>()
-        .compress(kind, archive, &files)
+        .compress(is_left, kind, archive, &files)
         .map_err(deno_error::JsErrorBox::generic)
 }
 
 #[op2]
 #[string]
 fn op_current_dir(state: &mut OpState) -> String {
-    state.borrow::<Host>().current_dir()
+    let is_left = origin_pane(state);
+    state.borrow::<Host>().current_dir(is_left)
 }
 
 #[op2(fast)]
 fn op_navigate(state: &mut OpState, #[string] path: &str) {
-    state.borrow::<Host>().navigate(path);
+    let is_left = origin_pane(state);
+    state.borrow::<Host>().navigate(is_left, path);
 }
 
 #[op2(fast)]
@@ -721,11 +746,12 @@ fn op_select(
         .unwrap_or_default()
 }
 
-/// ペイン状態のスナップショットを取得する同期 op（`opposite` で反対ペイン）。
+/// ペイン状態のスナップショットを取得する同期 op（`opposite` で起点ペインの反対側）。
 #[op2]
 #[serde]
 fn op_pane_snapshot(state: &mut OpState, opposite: bool) -> PaneSnapshot {
-    state.borrow::<Host>().pane_snapshot(opposite)
+    let is_left = origin_pane(state);
+    state.borrow::<Host>().pane_snapshot(is_left, opposite)
 }
 
 /// 1 行の選択状態を即時に書き戻す同期 op。
@@ -828,10 +854,11 @@ fn op_op_start(
         2 => ScriptOp::Delete,
         _ => return Err(deno_error::JsErrorBox::generic("unknown operation kind")),
     };
+    let is_left = origin_pane(state);
     let host = state.borrow::<Host>().clone();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<JobEvent>();
     let token = host
-        .begin_operation(op, items, dest.to_string(), tx)
+        .begin_operation(is_left, op, items, dest.to_string(), tx)
         .map_err(deno_error::JsErrorBox::generic)?;
     state.borrow::<JobReceivers>().borrow_mut().insert(token, rx);
     Ok(token as u32)
@@ -1080,19 +1107,19 @@ async fn op_parallel(
     #[string] fn_source: String,
     #[string] arg_json: String,
 ) -> Result<String, deno_error::JsErrorBox> {
-    let shared = {
+    let (shared, context) = {
         let st = state.borrow();
         let Some(support) = st.try_borrow::<WorkerSupport>() else {
             return Err(deno_error::JsErrorBox::generic(
                 "parallel はワーカー内（入れ子）からは使えません",
             ));
         };
-        support.ensure_pool()
+        (support.ensure_pool(), st.borrow::<ScriptContext>().clone())
     };
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     {
         let mut queue = shared.queue.lock().unwrap();
-        queue.push_back(PoolTask { fn_source, arg_json, reply: reply_tx });
+        queue.push_back(PoolTask { fn_source, arg_json, context, reply: reply_tx });
         shared.available.notify_one();
     }
     match reply_rx.await {
@@ -1896,11 +1923,17 @@ impl Engine {
             let mut state = state.borrow_mut();
             state.put::<Host>(host);
             state.put::<JobReceivers>(Rc::new(RefCell::new(HashMap::new())));
+            state.put::<ScriptContext>(ScriptContext::default());
         }
         runtime
             .execute_script("rerics:bootstrap", BOOTSTRAP)
             .expect("bootstrap script must not fail");
         Self { runtime, tokio_rt }
+    }
+
+    /// これから走らせるスクリプトの実行文脈を差し込む。実行のたびに入れ替える。
+    pub fn set_context(&mut self, context: ScriptContext) {
+        self.runtime.op_state().borrow_mut().put::<ScriptContext>(context);
     }
 
     /// V8 アイソレートをスレッド外から制御するためのハンドル。スクリプト実行の強制停止
@@ -2243,18 +2276,24 @@ mod tests {
         fn config_get(&self, key: &str) -> Option<serde_json::Value> {
             config_lookup(&self.config, key)
         }
-        fn change_opposite(&self, kind: &str, path: &str) {
+        fn change_opposite(&self, _is_left: bool, kind: &str, path: &str) {
             self.opposite_nav.borrow_mut().push((kind.to_string(), path.to_string()));
         }
-        fn set_path_mask(&self, mask: &str) {
+        fn set_path_mask(&self, _is_left: bool, mask: &str) {
             self.path_masks.borrow_mut().push(mask.to_string());
         }
-        fn create_directory(&self, name: &str) -> Result<String, String> {
+        fn create_directory(&self, _is_left: bool, name: &str) -> Result<String, String> {
             self.created_dirs.borrow_mut().push(name.to_string());
             // モックは現在地（dir）に名前を継いだ絶対パスを返す。
             Ok(format!("{}\\{name}", self.dir))
         }
-        fn compress(&self, kind: &str, archive: &str, files: &[String]) -> Result<(), String> {
+        fn compress(
+            &self,
+            _is_left: bool,
+            kind: &str,
+            archive: &str,
+            files: &[String],
+        ) -> Result<(), String> {
             self.compressed.borrow_mut().push((
                 kind.to_string(),
                 archive.to_string(),
@@ -2262,10 +2301,10 @@ mod tests {
             ));
             Ok(())
         }
-        fn current_dir(&self) -> String {
+        fn current_dir(&self, _is_left: bool) -> String {
             self.dir.clone()
         }
-        fn navigate(&self, p: &str) {
+        fn navigate(&self, _is_left: bool, p: &str) {
             self.navigated.borrow_mut().push(p.to_string());
         }
         fn confirm(&self, _message: &str) -> bool {
@@ -2278,7 +2317,7 @@ mod tests {
         fn select(&self, _title: &str, _items: &[String]) -> Option<usize> {
             self.select_reply
         }
-        fn pane_snapshot(&self, opposite: bool) -> PaneSnapshot {
+        fn pane_snapshot(&self, _is_left: bool, opposite: bool) -> PaneSnapshot {
             if opposite {
                 self.opposite_pane.clone()
             } else {
@@ -2304,6 +2343,7 @@ mod tests {
         }
         fn begin_operation(
             &self,
+            _is_left: bool,
             op: ScriptOp,
             _items: Vec<String>,
             _dest: String,

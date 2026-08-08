@@ -6003,6 +6003,31 @@ fn exec_invokes_registered_command() {
     );
 }
 
+/// スクリプトの対象ペインは実行の起点で固定する。実行中にアクティブペインが移っても、
+/// 以降のホスト操作は起点ペインに効く。
+#[test]
+fn script_keeps_targeting_the_origin_pane() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx_json = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+
+    // 起点は左ペイン。右へフォーカスを移してから移動しても、動くのは起点の左のまま。
+    server
+        .req("POST", "/exec", r#"{ r.command("focusRight"); r.navigate(".."); }"#)
+        .expect("exec");
+
+    let left = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx_json);
+    assert_ne!(left.trim(), sbx_json, "the origin pane should be the one that navigates");
+    let right = server.req("GET", "/state/panes/right/location", "").unwrap().1;
+    assert_eq!(right.trim(), sbx_json, "the pane focused mid-script must stay put");
+    // 実行中にアクティブが移ったこと自体は起きている（起きていないと検証にならない）。
+    let active = server.req("GET", "/state/active_pane", "").unwrap().1;
+    assert_eq!(
+        active.trim(),
+        "\"right\"",
+        "focusRight should have switched the active pane mid-script"
+    );
+}
+
 /// 計算引数：機能欄のスクリプト式が組込を `r.` のネスト呼びで包み、引数を式の値で渡せる。
 /// `r.changeDirectory(r.currentDir() + "/sub")` を評価して実フォルダへ移動できる（エンジン経路）。
 #[test]

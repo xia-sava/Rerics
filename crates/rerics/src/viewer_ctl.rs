@@ -496,7 +496,7 @@ impl MainWindow {
         let cmd = match call {
             Call::Builtin { command, .. } => *command,
             Call::Script { source } => {
-                self.script_send(crate::script_host::EngineCmd::Eval(source.clone()));
+                self.script_send(crate::script_host::EngineCmdKind::Eval(source.clone()));
                 return Ok(());
             }
         };
@@ -548,7 +548,7 @@ impl MainWindow {
         let cmd = match call {
             Call::Builtin { command, .. } => *command,
             Call::Script { source } => {
-                self.script_send(crate::script_host::EngineCmd::Eval(source.clone()));
+                self.script_send(crate::script_host::EngineCmdKind::Eval(source.clone()));
                 return Ok(());
             }
         };

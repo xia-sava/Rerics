@@ -104,7 +104,7 @@ impl MainWindow {
         }
         // 実処理は no-UI 版の正本 script_create_directory へ委譲する（作成・ログ・一覧更新は
         // そちらが行う）。失敗時はログに加えてダイアログでも報せる。
-        match self.script_create_directory(name) {
+        match self.script_create_directory(is_left, name) {
             Ok(dir) => {
                 // 設定が有効なら、作成した新ディレクトリへ入る（原作 CreateDirectoryAndMove 相当）。
                 if self.config.borrow().cursor.create_directory_and_move {
@@ -118,10 +118,9 @@ impl MainWindow {
         Ok(())
     }
 
-    /// スクリプト用：名前（相対はアクティブペインの現在地基準）でディレクトリを作り、作成した
+    /// スクリプト用：名前（相対は `is_left` 側ペインの現在地基準）でディレクトリを作り、作成した
     /// 絶対パスを返す。作成後は一覧を更新して新ディレクトリへカーソルを移す。失敗は `Err`。
-    pub(crate) fn script_create_directory(&self, name: &str) -> Result<String, String> {
-        let is_left = !self.active_right.get();
+    pub(crate) fn script_create_directory(&self, is_left: bool, name: &str) -> Result<String, String> {
         if self.pane(is_left).borrow().is_archive() {
             return Err("書庫内ではディレクトリを作成できません".to_string());
         }
@@ -273,11 +272,11 @@ impl MainWindow {
     /// 共有して呼ぶ。
     pub(crate) fn script_compress(
         &self,
+        is_left: bool,
         kind: &str,
         archive: &str,
         files: &[String],
     ) -> Result<(), String> {
-        let is_left = !self.active_right.get();
         if self.pane(is_left).borrow().is_archive() {
             return Err("書庫内では圧縮できません".to_string());
         }

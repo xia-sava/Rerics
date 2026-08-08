@@ -33,25 +33,27 @@ use crate::script::{
 use crate::ui_marshal::{self, WakeQueue};
 use crate::winutil::msg::SCRIPT_WAKE;
 
-/// エンジンスレッド → UI スレッドへの要求（[`HostApi`] の各操作）。
+/// エンジンスレッド → UI スレッドへの要求（[`HostApi`] の各操作）。ペインを対象にする要求は
+/// 宛先を `is_left`（スクリプト実行の起点ペイン）で明示する。
 pub enum HostCall {
     GetLog,
     ConfigGet(String),
-    ChangeOpposite { kind: String, path: String },
-    SetPathMask(String),
-    CreateDirectory(String),
-    Compress { kind: String, archive: String, files: Vec<String> },
-    CurrentDir,
-    Navigate(String),
+    ChangeOpposite { is_left: bool, kind: String, path: String },
+    SetPathMask { is_left: bool, mask: String },
+    CreateDirectory { is_left: bool, name: String },
+    Compress { is_left: bool, kind: String, archive: String, files: Vec<String> },
+    CurrentDir { is_left: bool },
+    Navigate { is_left: bool, path: String },
     Confirm(String),
     Prompt { message: String, default: String, select_all: bool },
     Select { title: String, items: Vec<String> },
-    PaneSnapshot { opposite: bool },
+    PaneSnapshot { is_left: bool, opposite: bool },
     SetSelected { is_left: bool, index: usize, selected: bool },
     ApplySelection { is_left: bool, changes: Vec<(usize, bool)> },
     Command { name: String, args: Vec<String> },
     RenameFiles { pairs: Vec<(String, String)> },
     BeginOperation {
+        is_left: bool,
         op: ScriptOp,
         items: Vec<String>,
         dest: String,
@@ -124,14 +126,21 @@ fn system_time_ms(t: Option<std::time::SystemTime>) -> u64 {
         .unwrap_or(0)
 }
 
-/// UI スレッド → エンジンスレッドへのコマンド。
+/// UI スレッド → エンジンスレッドへのコマンド。中身と、送出時点で確定した実行文脈の組。
+pub struct EngineCmd {
+    /// 起点で確定した実行文脈。実行中のアクティブペインの移り変わりから切り離す。
+    pub context: script::ScriptContext,
+    pub kind: EngineCmdKind,
+}
+
+/// エンジンスレッドへの要求の中身。
 /// `Invoke` はスクリプト発のコマンド実行から、`Eval` は機能欄のスクリプト式（[`Call::Script`]）から、
 /// `FireEvent` は本体イベントから送られる。`List*`/`EvalValue` は同期取得だが、UI は応答待ちの間
 /// [`MainWindow::recv_pumping`] でマーシャルキューを汲むため、先行スクリプトの `HostApi` 往復と
 /// デッドロックしない。`ListCommands`/`EvalValue` の送り手は debug-server エンドポイントだけなので、
 /// その構成以外では当該バリアントが未使用＝dead_code を許容する。
 #[cfg_attr(not(feature = "debug-server"), allow(dead_code))]
-pub enum EngineCmd {
+pub enum EngineCmdKind {
     /// 登録済みコマンドを名前で実行する（投げっぱなし）。`args` はコールバックへ転送する。
     Invoke { name: String, args: Vec<String> },
     /// TS/JS ソースを評価する（投げっぱなし）。
@@ -246,30 +255,30 @@ impl HostApi for GuiHost {
         }
     }
 
-    fn change_opposite(&self, kind: &str, path: &str) {
+    fn change_opposite(&self, is_left: bool, kind: &str, path: &str) {
         let _ = ui_marshal::call(
             &self.queue,
             self.hwnd_ptr,
             SCRIPT_WAKE.raw(),
-            HostCall::ChangeOpposite { kind: kind.to_string(), path: path.to_string() },
+            HostCall::ChangeOpposite { is_left, kind: kind.to_string(), path: path.to_string() },
         );
     }
 
-    fn set_path_mask(&self, mask: &str) {
+    fn set_path_mask(&self, is_left: bool, mask: &str) {
         let _ = ui_marshal::call(
             &self.queue,
             self.hwnd_ptr,
             SCRIPT_WAKE.raw(),
-            HostCall::SetPathMask(mask.to_string()),
+            HostCall::SetPathMask { is_left, mask: mask.to_string() },
         );
     }
 
-    fn create_directory(&self, name: &str) -> Result<String, String> {
+    fn create_directory(&self, is_left: bool, name: &str) -> Result<String, String> {
         match ui_marshal::call(
             &self.queue,
             self.hwnd_ptr,
             SCRIPT_WAKE.raw(),
-            HostCall::CreateDirectory(name.to_string()),
+            HostCall::CreateDirectory { is_left, name: name.to_string() },
         ) {
             Ok(HostResp::CommandResult(Ok(serde_json::Value::String(p)))) => Ok(p),
             Ok(HostResp::CommandResult(Err(e))) => Err(e),
@@ -277,12 +286,13 @@ impl HostApi for GuiHost {
         }
     }
 
-    fn compress(&self, kind: &str, archive: &str, files: &[String]) -> Result<(), String> {
+    fn compress(&self, is_left: bool, kind: &str, archive: &str, files: &[String]) -> Result<(), String> {
         match ui_marshal::call(
             &self.queue,
             self.hwnd_ptr,
             SCRIPT_WAKE.raw(),
             HostCall::Compress {
+                is_left,
                 kind: kind.to_string(),
                 archive: archive.to_string(),
                 files: files.to_vec(),
@@ -294,19 +304,24 @@ impl HostApi for GuiHost {
         }
     }
 
-    fn current_dir(&self) -> String {
-        match ui_marshal::call(&self.queue, self.hwnd_ptr, SCRIPT_WAKE.raw(), HostCall::CurrentDir) {
+    fn current_dir(&self, is_left: bool) -> String {
+        match ui_marshal::call(
+            &self.queue,
+            self.hwnd_ptr,
+            SCRIPT_WAKE.raw(),
+            HostCall::CurrentDir { is_left },
+        ) {
             Ok(HostResp::Dir(dir)) => dir,
             _ => String::new(),
         }
     }
 
-    fn navigate(&self, path: &str) {
+    fn navigate(&self, is_left: bool, path: &str) {
         let _ = ui_marshal::call(
             &self.queue,
             self.hwnd_ptr,
             SCRIPT_WAKE.raw(),
-            HostCall::Navigate(path.to_string()),
+            HostCall::Navigate { is_left, path: path.to_string() },
         );
     }
 
@@ -353,12 +368,12 @@ impl HostApi for GuiHost {
         }
     }
 
-    fn pane_snapshot(&self, opposite: bool) -> PaneSnapshot {
+    fn pane_snapshot(&self, is_left: bool, opposite: bool) -> PaneSnapshot {
         match ui_marshal::call(
             &self.queue,
             self.hwnd_ptr,
             SCRIPT_WAKE.raw(),
-            HostCall::PaneSnapshot { opposite },
+            HostCall::PaneSnapshot { is_left, opposite },
         ) {
             Ok(HostResp::Snapshot(snap)) => snap,
             _ => PaneSnapshot::default(),
@@ -419,6 +434,7 @@ impl HostApi for GuiHost {
 
     fn begin_operation(
         &self,
+        is_left: bool,
         op: ScriptOp,
         items: Vec<String>,
         dest: String,
@@ -430,6 +446,7 @@ impl HostApi for GuiHost {
             self.hwnd_ptr,
             SCRIPT_WAKE.raw(),
             HostCall::BeginOperation {
+                is_left,
                 op,
                 items,
                 dest,
@@ -665,17 +682,18 @@ pub fn spawn_engine(
             &scripts.join("rerics.scripts.d.ts"),
             &script_commands_dts(&engine.registered_command_metas()),
         );
-        while let Ok(cmd) = cmd_rx.recv() {
-            match cmd {
-                EngineCmd::Invoke { name, args } => {
-                    run_script_task(&mut engine, &task_tx, hwnd_ptr, format!("コマンド {name}"), |engine| {
+        while let Ok(EngineCmd { context, kind }) = cmd_rx.recv() {
+            match kind {
+                EngineCmdKind::Invoke { name, args } => {
+                    let task = format!("コマンド {name}");
+                    run_script_task(&mut engine, &task_tx, hwnd_ptr, context, task, |engine| {
                         if let Err(e) = engine.invoke_command(&name, &args) {
                             host.log(LogLevel::Error, &format!("コマンド実行エラー [{name}]: {e}"));
                         }
                     });
                 }
-                EngineCmd::Eval(code) => {
-                    run_script_task(&mut engine, &task_tx, hwnd_ptr, "eval".to_owned(), |engine| {
+                EngineCmdKind::Eval(code) => {
+                    run_script_task(&mut engine, &task_tx, hwnd_ptr, context, "eval".to_owned(), |engine| {
                         if let Err(e) = engine.run_ts(
                             "rerics:eval",
                             "file:///eval.ts",
@@ -686,8 +704,8 @@ pub fn spawn_engine(
                         }
                     });
                 }
-                EngineCmd::EvalValue { code, tx } => {
-                    run_script_task(&mut engine, &task_tx, hwnd_ptr, "eval".to_owned(), |engine| {
+                EngineCmdKind::EvalValue { code, tx } => {
+                    run_script_task(&mut engine, &task_tx, hwnd_ptr, context, "eval".to_owned(), |engine| {
                         let value = engine
                             .eval_to_string(
                                 "rerics:eval",
@@ -702,20 +720,21 @@ pub fn spawn_engine(
                         let _ = tx.send(value);
                     });
                 }
-                EngineCmd::ListCommands(tx) => {
+                EngineCmdKind::ListCommands(tx) => {
                     let _ = tx.send(engine.registered_command_metas());
                 }
-                EngineCmd::ListMembers(tx) => {
+                EngineCmdKind::ListMembers(tx) => {
                     let _ = tx.send(engine.registered_members());
                 }
-                EngineCmd::ListGlobals(tx) => {
+                EngineCmdKind::ListGlobals(tx) => {
                     let _ = tx.send(engine.global_names());
                 }
-                EngineCmd::ListMenus(tx) => {
+                EngineCmdKind::ListMenus(tx) => {
                     let _ = tx.send(engine.registered_menus());
                 }
-                EngineCmd::FireEvent { event, arg } => {
-                    run_script_task(&mut engine, &task_tx, hwnd_ptr, format!("イベント {event}"), |engine| {
+                EngineCmdKind::FireEvent { event, arg } => {
+                    let task = format!("イベント {event}");
+                    run_script_task(&mut engine, &task_tx, hwnd_ptr, context, task, |engine| {
                         if let Err(e) = engine.fire_event(&event, &arg) {
                             host.log(LogLevel::Error, &format!("イベント発火エラー [{event}]: {e}"));
                         }
@@ -727,12 +746,13 @@ pub fn spawn_engine(
 }
 
 /// ユーザースクリプトの実行を、停止可能なタスクとして UI へ知らせて回す。開始通知 →
-/// 直前の停止フラグ解除 → 実行 → 終了通知、の順。停止（中止）は UI 側が isolate を
-/// terminate することで実現する（暴走 JS も止められる）。
+/// 直前の停止フラグ解除 → 実行文脈の差し込み → 実行 → 終了通知、の順。停止（中止）は UI 側が
+/// isolate を terminate することで実現する（暴走 JS も止められる）。
 fn run_script_task(
     engine: &mut script::Engine,
     task_tx: &Sender<WorkerEvent>,
     hwnd_ptr: isize,
+    context: script::ScriptContext,
     description: String,
     body: impl FnOnce(&mut script::Engine),
 ) {
@@ -740,6 +760,7 @@ fn run_script_task(
     let _ = task_tx.send(WorkerEvent::ScriptBegin { text: "スクリプト".to_owned(), description });
     ui_marshal::post_wake(hwnd_ptr, SCRIPT_WAKE.raw());
     engine.clear_terminate();
+    engine.set_context(context);
     body(engine);
     let _ = task_tx.send(WorkerEvent::ScriptEnd);
     ui_marshal::post_wake(hwnd_ptr, SCRIPT_WAKE.raw());
@@ -763,9 +784,8 @@ impl MainWindow {
                     let found = value.as_ref().and_then(|v| script::config_lookup(v, &key));
                     let _ = tx.send(HostResp::Json(found));
                 }
-                HostCall::ChangeOpposite { kind, path } => {
-                    // 反対ペイン＝アクティブの逆側（is_left = active_right）。
-                    let opposite = self.active_right.get();
+                HostCall::ChangeOpposite { is_left, kind, path } => {
+                    let opposite = !is_left;
                     let _ = match kind.as_str() {
                         "parent" => self.to_parent(opposite),
                         "root" => self.to_root(opposite),
@@ -773,8 +793,7 @@ impl MainWindow {
                     };
                     let _ = tx.send(HostResp::Done);
                 }
-                HostCall::SetPathMask(mask) => {
-                    let is_left = !self.active_right.get();
+                HostCall::SetPathMask { is_left, mask } => {
                     let m = mask.trim();
                     *self.mask(is_left).borrow_mut() =
                         if m.is_empty() || m == "*" { None } else { Some(m.to_owned()) };
@@ -783,18 +802,17 @@ impl MainWindow {
                     let _ = self.reload_side_impl(is_left, crate::ReloadCursor::Keep, false);
                     let _ = tx.send(HostResp::Done);
                 }
-                HostCall::CreateDirectory(name) => {
-                    let r = self.script_create_directory(&name).map(serde_json::Value::String);
+                HostCall::CreateDirectory { is_left, name } => {
+                    let r = self.script_create_directory(is_left, &name).map(serde_json::Value::String);
                     let _ = tx.send(HostResp::CommandResult(r));
                 }
-                HostCall::Compress { kind, archive, files } => {
+                HostCall::Compress { is_left, kind, archive, files } => {
                     let r = self
-                        .script_compress(&kind, &archive, &files)
+                        .script_compress(is_left, &kind, &archive, &files)
                         .map(|()| serde_json::Value::Null);
                     let _ = tx.send(HostResp::CommandResult(r));
                 }
-                HostCall::CurrentDir => {
-                    let is_left = !self.active_right.get();
+                HostCall::CurrentDir { is_left } => {
                     let dir = self
                         .pane(is_left)
                         .borrow()
@@ -803,8 +821,7 @@ impl MainWindow {
                         .unwrap_or_default();
                     let _ = tx.send(HostResp::Dir(dir));
                 }
-                HostCall::Navigate(path) => {
-                    let is_left = !self.active_right.get();
+                HostCall::Navigate { is_left, path } => {
                     let _ = self.change_directory(is_left, Some(&path));
                     let _ = tx.send(HostResp::Done);
                 }
@@ -831,10 +848,9 @@ impl MainWindow {
                     let index = list_box(&self.wnd, &title, "script_select", &items, 0);
                     let _ = tx.send(HostResp::Index(index));
                 }
-                HostCall::PaneSnapshot { opposite } => {
-                    let active_left = !self.active_right.get();
-                    let is_left = if opposite { !active_left } else { active_left };
-                    let _ = tx.send(HostResp::Snapshot(self.build_pane_snapshot(is_left)));
+                HostCall::PaneSnapshot { is_left, opposite } => {
+                    let target = if opposite { !is_left } else { is_left };
+                    let _ = tx.send(HostResp::Snapshot(self.build_pane_snapshot(target)));
                 }
                 HostCall::SetSelected {
                     is_left,
@@ -857,12 +873,13 @@ impl MainWindow {
                     let _ = tx.send(HostResp::CommandResult(Ok(v)));
                 }
                 HostCall::BeginOperation {
+                    is_left,
                     op,
                     items,
                     dest,
                     events,
                 } => {
-                    let r = self.begin_script_operation(op, items, dest, events);
+                    let r = self.begin_script_operation(is_left, op, items, dest, events);
                     let _ = tx.send(HostResp::OpStarted(r));
                 }
                 HostCall::CancelOperation { token } => {
@@ -959,14 +976,14 @@ impl MainWindow {
     /// 発火する。起動できなければ（対象なし・書庫・起動失敗）即座に `done` へエラーを返す。
     fn begin_script_operation(
         &self,
+        is_left: bool,
         op: ScriptOp,
         items: Vec<String>,
         dest: String,
         events: OpDone,
     ) -> Result<u64, String> {
-        let is_left = !self.active_right.get();
         let needs_dst = !matches!(op, ScriptOp::Delete);
-        // 対象＝(src_dir, names) のグループ。選択ベースはアクティブペイン 1 グループ、明示ベースは
+        // 対象＝(src_dir, names) のグループ。選択ベースは起点ペイン 1 グループ、明示ベースは
         // 与えられたパスを親ディレクトリごとにまとめる。
         let (groups, dst_dir) = if items.is_empty() {
             if self.pane(is_left).borrow().is_archive() {
@@ -1124,7 +1141,7 @@ impl MainWindow {
         if self.script.suppress_events.get() {
             return;
         }
-        let _ = self.script.cmd_tx.send(EngineCmd::FireEvent {
+        self.script_send(EngineCmdKind::FireEvent {
             event: event.to_string(),
             arg: arg.to_string(),
         });
@@ -1235,8 +1252,13 @@ impl MainWindow {
     }
 
     /// エンジンスレッドへコマンドを投げる（投げっぱなし）。
-    pub(crate) fn script_send(&self, cmd: EngineCmd) {
-        let _ = self.script.cmd_tx.send(cmd);
+    pub(crate) fn script_send(&self, kind: EngineCmdKind) {
+        let _ = self.script.cmd_tx.send(EngineCmd { context: self.script_context(), kind });
+    }
+
+    /// いまのアクティブペインからスクリプト実行文脈を作る（＝実行の起点を確定する）。
+    fn script_context(&self) -> script::ScriptContext {
+        script::ScriptContext { is_left: !self.active_right.get() }
     }
 
     /// エンジンからの同期応答を、待つあいだも [`HostApi`] マーシャルキューを汲みながら受け取る。
@@ -1258,21 +1280,21 @@ impl MainWindow {
     /// 登録済みコマンドのメタ情報をエンジンから同期取得する。
     pub(crate) fn script_list_commands(&self) -> Vec<ScriptCommand> {
         let (tx, rx) = channel();
-        let _ = self.script.cmd_tx.send(EngineCmd::ListCommands(tx));
+        self.script_send(EngineCmdKind::ListCommands(tx));
         self.recv_pumping(&rx).unwrap_or_default()
     }
 
     /// スクリプトが `registerMenu` で登録した名前付きメニュー定義をエンジンから同期取得する。
     pub(crate) fn script_list_menus(&self) -> Vec<rerics_core::MenuDef> {
         let (tx, rx) = channel();
-        let _ = self.script.cmd_tx.send(EngineCmd::ListMenus(tx));
+        self.script_send(EngineCmdKind::ListMenus(tx));
         self.recv_pumping(&rx).unwrap_or_default()
     }
 
     /// `r.` で呼べるメンバー（補完候補）をエンジンから同期取得する。引数/コード欄の補完に使う。
     pub(crate) fn script_list_members(&self) -> Vec<MemberInfo> {
         let (tx, rx) = channel();
-        let _ = self.script.cmd_tx.send(EngineCmd::ListMembers(tx));
+        self.script_send(EngineCmdKind::ListMembers(tx));
         self.recv_pumping(&rx).unwrap_or_default()
     }
 
@@ -1280,7 +1302,7 @@ impl MainWindow {
     /// 未解決識別子チェックの許容リストに使う。
     pub(crate) fn script_list_globals(&self) -> Vec<String> {
         let (tx, rx) = channel();
-        let _ = self.script.cmd_tx.send(EngineCmd::ListGlobals(tx));
+        self.script_send(EngineCmdKind::ListGlobals(tx));
         self.recv_pumping(&rx).unwrap_or_default()
     }
 
@@ -1289,7 +1311,7 @@ impl MainWindow {
     #[cfg(feature = "debug-server")]
     pub(crate) fn script_eval_value(&self, code: String) -> String {
         let (tx, rx) = channel();
-        let _ = self.script.cmd_tx.send(EngineCmd::EvalValue { code, tx });
+        self.script_send(EngineCmdKind::EvalValue { code, tx });
         self.recv_pumping(&rx).unwrap_or_default()
     }
 }

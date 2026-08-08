@@ -182,11 +182,11 @@ impl MainWindow {
                     self.debug_menu_select(&name, idx, tx);
                 }
                 debug_server::Request::ScriptInvoke { name } => {
-                    self.script_send(crate::script_host::EngineCmd::Invoke { name, args: Vec::new() });
+                    self.script_send(crate::script_host::EngineCmdKind::Invoke { name, args: Vec::new() });
                     let _ = tx.send(debug_server::Response::Json("\"ok\"".to_string()));
                 }
                 debug_server::Request::ScriptEval { code } => {
-                    self.script_send(crate::script_host::EngineCmd::Eval(code));
+                    self.script_send(crate::script_host::EngineCmdKind::Eval(code));
                     let _ = tx.send(debug_server::Response::Json("\"ok\"".to_string()));
                 }
                 debug_server::Request::ScriptEvalValue { code } => {
