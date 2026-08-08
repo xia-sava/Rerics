@@ -112,6 +112,25 @@ pub fn show_properties(owner: &w::HWND, path: &Path) -> Result<(), String> {
     }
 }
 
+/// 外部プロセスの起動を止めるか。headless 起動で立て、関連付け・エディタ・ブラウザ・
+/// スクリプトのプロセス起動が実際の窓を出さないようにする。
+static LAUNCH_SUPPRESSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 外部プロセスの起動を止めるかを設定する。
+pub fn set_launch_suppressed(on: bool) {
+    LAUNCH_SUPPRESSED.store(on, std::sync::atomic::Ordering::Release);
+}
+
+/// 外部プロセスの起動が止められているか。呼び出し側は起動をやめてログだけ残す。
+pub fn launch_suppressed() -> bool {
+    LAUNCH_SUPPRESSED.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// 起動を止めたときにログへ残す一行。
+pub fn launch_suppressed_line(target: &str) -> String {
+    format!("外部プロセスの起動を止めました: {target}")
+}
+
 /// 設定されたエディタで `file` を開く（外部プロセス起動・非ブロッキング）。
 pub fn launch_editor(editor: &str, file: &Path) -> Result<(), String> {
     std::process::Command::new(editor)

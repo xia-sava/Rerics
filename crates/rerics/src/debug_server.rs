@@ -516,6 +516,12 @@ pub fn parse_headless() -> bool {
     std::env::args().skip(1).any(|a| a == "--headless")
 }
 
+/// `--debug-allow-launch` が指定されているか。headless では外部プロセスの起動を止めるが、
+/// 起動そのものを検証したいときだけこれで解禁する。
+pub fn parse_allow_launch() -> bool {
+    std::env::args().skip(1).any(|a| a == "--debug-allow-launch")
+}
+
 /// HTTP サーバスレッドを起動する。`hwnd_ptr` は main 窓の生ハンドル（`PostMessageW` 用）。
 pub fn start(port: u16, queue: SharedQueue, hwnd_ptr: isize) {
     std::thread::spawn(move || {

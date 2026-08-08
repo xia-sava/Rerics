@@ -887,7 +887,9 @@ impl MainWindow {
                     let _ = tx.send(HostResp::Done);
                 }
                 HostCall::ShellOpen(path) => {
-                    if let Err(e) = self.wnd.hwnd().ShellExecute(
+                    if crate::shell::launch_suppressed() {
+                        self.log.info(&crate::shell::launch_suppressed_line(&path));
+                    } else if let Err(e) = self.wnd.hwnd().ShellExecute(
                         "open",
                         &path,
                         None,

@@ -256,12 +256,17 @@ impl MainWindow {
             return Ok(());
         }
         // 関連付けで開く。開けたら設定に応じてカーソルを1つ下へ（原作 DownAfterViewer 相当）。
-        match self
-            .wnd
-            .hwnd()
-            .ShellExecute("open", &path.to_string_lossy(), None, None, co::SW::SHOWNORMAL)
-        {
-            Ok(_) => {
+        let opened = if crate::shell::launch_suppressed() {
+            self.log.info(&crate::shell::launch_suppressed_line(&path.to_string_lossy()));
+            Ok(())
+        } else {
+            self.wnd
+                .hwnd()
+                .ShellExecute("open", &path.to_string_lossy(), None, None, co::SW::SHOWNORMAL)
+                .map(|_| ())
+        };
+        match opened {
+            Ok(()) => {
                 if self.config.borrow().cursor.down_after_viewer {
                     let view = self.view(is_left);
                     let pr = view.page_rows();

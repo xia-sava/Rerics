@@ -654,6 +654,13 @@ fn origin_pane(state: &OpState) -> bool {
     state.borrow::<ScriptContext>().is_left
 }
 
+/// 起動を止めたことをログへ残す（何が起きなかったかを headless からも追えるように）。
+fn log_suppressed_launch(state: &OpState, target: &str) {
+    state
+        .borrow::<Host>()
+        .log(rerics_core::LogLevel::Info, &crate::shell::launch_suppressed_line(target));
+}
+
 /// スクリプトが渡したパスを実行文脈の基準（起点時点の現在地）で絶対化する。絶対パスと空文字は
 /// そのまま返すので、絶対パスしか渡さないスクリプトでは何も変わらない。
 #[op2]
@@ -988,10 +995,15 @@ fn op_get_clipboard_image(state: &mut OpState, #[string] dest: &str) -> bool {
 /// ディレクトリにする。起動失敗は例外。GUI に触れないのでエンジンスレッドから直接起動する。
 #[op2]
 fn op_spawn(
+    state: &mut OpState,
     #[string] cmd: String,
     #[serde] args: Vec<String>,
     #[string] cwd: &str,
 ) -> Result<(), deno_error::JsErrorBox> {
+    if crate::shell::launch_suppressed() {
+        log_suppressed_launch(state, &cmd);
+        return Ok(());
+    }
     let mut command = std::process::Command::new(&cmd);
     command.args(&args);
     if !cwd.is_empty() {
@@ -1008,10 +1020,15 @@ fn op_spawn(
 /// （`op_spawn` の配列引数とは別物）。`cwd` が非空ならそこを作業ディレクトリにする。
 #[op2(fast)]
 fn op_execute(
+    state: &mut OpState,
     #[string] path: &str,
     #[string] params: &str,
     #[string] cwd: &str,
 ) -> Result<(), deno_error::JsErrorBox> {
+    if crate::shell::launch_suppressed() {
+        log_suppressed_launch(state, path);
+        return Ok(());
+    }
     let mut command = std::process::Command::new(path);
     if !params.is_empty() {
         #[cfg(windows)]
@@ -1037,10 +1054,15 @@ fn op_execute(
 #[op2(async(lazy))]
 #[serde]
 async fn op_run(
+    state: Rc<RefCell<OpState>>,
     #[string] cmd: String,
     #[serde] args: Vec<String>,
     #[string] cwd: String,
 ) -> Result<ProcessResult, deno_error::JsErrorBox> {
+    if crate::shell::launch_suppressed() {
+        log_suppressed_launch(&state.borrow(), &cmd);
+        return Ok(ProcessResult { code: Some(0), stdout: String::new(), stderr: String::new() });
+    }
     tokio::task::spawn_blocking(move || {
         let mut command = std::process::Command::new(&cmd);
         command.args(&args);

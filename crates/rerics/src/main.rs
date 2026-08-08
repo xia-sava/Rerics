@@ -291,14 +291,22 @@ fn build_resolved_menu(
 fn main() {
     update::cleanup_old_files_if_requested();
     #[cfg(feature = "debug-server")]
-    let (debug_port, debug_allow_write, debug_headless) = (
+    let (debug_port, debug_allow_write, debug_headless, debug_allow_launch) = (
         debug_server::parse_port(),
         debug_server::parse_allow_write(),
         debug_server::parse_headless(),
+        debug_server::parse_allow_launch(),
     );
     #[cfg(not(feature = "debug-server"))]
-    let (debug_port, debug_allow_write, debug_headless): (Option<u16>, bool, bool) =
-        (None, false, false);
+    let (debug_port, debug_allow_write, debug_headless, debug_allow_launch): (
+        Option<u16>,
+        bool,
+        bool,
+        bool,
+    ) = (None, false, false, false);
+    // 窓を出さない起動では、関連付け・エディタ・ブラウザ・スクリプトのプロセス起動も出さない。
+    // 起動そのものを検証するときだけ `--debug-allow-launch` で解禁する。
+    shell::set_launch_suppressed(debug_headless && !debug_allow_launch);
     if let Err(e) = MainWindow::new(debug_port, debug_allow_write, debug_headless).run() {
         eprintln!("エラー: {}", e);
     }
@@ -1838,6 +1846,10 @@ impl MainWindow {
         let path = rerics_core::data_dir().join("help.html");
         if let Err(e) = std::fs::write(&path, html) {
             self.log.error(&format!("ヘルプを書き出せませんでした: {e}"));
+            return;
+        }
+        if shell::launch_suppressed() {
+            self.log.info(&shell::launch_suppressed_line(&path.to_string_lossy()));
             return;
         }
         if self

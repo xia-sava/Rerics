@@ -1462,6 +1462,10 @@ impl MainWindow {
             self.log.warn("エディタが設定されていません（config の editor）。");
             return Ok(());
         }
+        if shell::launch_suppressed() {
+            self.log.info(&shell::launch_suppressed_line(&path.to_string_lossy()));
+            return Ok(());
+        }
         match shell::launch_editor(&editor, &path) {
             Ok(()) => self.log.normal(&format!("編集: {name}")),
             Err(e) => self.log.error(&e),

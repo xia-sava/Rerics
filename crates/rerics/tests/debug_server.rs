@@ -59,7 +59,7 @@ impl Server {
             std::fs::write(data.join("config.toml"), config_toml).unwrap();
         }
 
-        let (child, port) = spawn_and_wait(&data, false);
+        let (child, port) = spawn_and_wait(&data, false, false);
         Server { child, port, base }
     }
 
@@ -99,7 +99,7 @@ impl Server {
         if !config_toml.is_empty() {
             std::fs::write(data.join("config.toml"), config_toml).unwrap();
         }
-        let (child, port) = spawn_and_wait(&data, true);
+        let (child, port) = spawn_and_wait(&data, true, false);
         Server { child, port, base }
     }
 
@@ -123,7 +123,7 @@ impl Server {
             ),
         )
         .unwrap();
-        let (child, port) = spawn_and_wait(&data, true);
+        let (child, port) = spawn_and_wait(&data, true, false);
         Server { child, port, base }
     }
 
@@ -150,7 +150,7 @@ impl Server {
             ),
         )
         .unwrap();
-        let (child, port) = spawn_and_wait(&data, true);
+        let (child, port) = spawn_and_wait(&data, true, false);
         Server { child, port, base }
     }
 
@@ -177,13 +177,23 @@ impl Server {
         if !config_toml.is_empty() {
             std::fs::write(data.join("config.toml"), config_toml).unwrap();
         }
-        let (child, port) = spawn_and_wait(&data, true);
+        let (child, port) = spawn_and_wait(&data, true, false);
         Server { child, port, base }
     }
 
     /// `start` と同じ隔離起動だが、`data/scripts/` にユーザスクリプト（名前→中身）を
     /// 置いてから起動する。起動時に名前順で読み込まれる。
     fn start_with_scripts(sandbox_files: &[&str], scripts: &[(&str, &str)]) -> Server {
+        Self::start_with_scripts_opts(sandbox_files, scripts, false)
+    }
+
+    /// 外部プロセスの起動を解禁して起動できる版（`allow_launch`）。headless は既定で起動を
+    /// 止めるので、起動そのものを検証するテストだけがこれを使う。
+    fn start_with_scripts_opts(
+        sandbox_files: &[&str],
+        scripts: &[(&str, &str)],
+        allow_launch: bool,
+    ) -> Server {
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
         let base = std::env::temp_dir().join(format!("rerics_it_{}_{}", std::process::id(), n));
         let data = base.join("data");
@@ -204,7 +214,7 @@ impl Server {
             ),
         )
         .unwrap();
-        let (child, port) = spawn_and_wait(&data, false);
+        let (child, port) = spawn_and_wait(&data, false, allow_launch);
         Server { child, port, base }
     }
 
@@ -235,7 +245,7 @@ impl Server {
             ),
         )
         .unwrap();
-        let (child, port) = spawn_and_wait(&data, false);
+        let (child, port) = spawn_and_wait(&data, false, false);
         Server { child, port, base }
     }
 
@@ -265,7 +275,7 @@ impl Server {
             ),
         )
         .unwrap();
-        let (child, port) = spawn_and_wait(&data, true);
+        let (child, port) = spawn_and_wait(&data, true, false);
         Server { child, port, base }
     }
 
@@ -286,11 +296,14 @@ impl Drop for Server {
 
 /// `--debug-server=0 --headless`（必要なら `--debug-allow-write`）で起動し、`/state` が
 /// 返るまで待って `(子, ポート)` を返す。
-fn spawn_and_wait(data: &Path, allow_write: bool) -> (Child, u16) {
+fn spawn_and_wait(data: &Path, allow_write: bool, allow_launch: bool) -> (Child, u16) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_rerics"));
     cmd.arg("--debug-server=0").arg("--headless");
     if allow_write {
         cmd.arg("--debug-allow-write");
+    }
+    if allow_launch {
+        cmd.arg("--debug-allow-launch");
     }
     let mut child = cmd
         .env("RERICS_DATA_DIR", data)
@@ -3134,6 +3147,23 @@ fn create_link_dialog_disables_junction_for_files() {
     server.req("POST", "/modal/command/cancel", "").unwrap();
 }
 
+/// headless ではファイルの関連付け起動を実際には行わず、ログに残すだけにする
+/// （テストが OS の関連付け先アプリの窓を開かないための関門）。
+#[test]
+fn activate_file_does_not_launch_in_headless() {
+    let server = Server::start(&["a.txt"], "");
+    // items=[.., a.txt]。a.txt へカーソルを合わせて開く。
+    server.req("POST", "/command/cursorDown", "").unwrap();
+    poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
+    server.req("POST", "/command/enterDir", "").unwrap();
+
+    let log = poll(&server, "/state/log", |b| b.contains("外部プロセスの起動を止めました"));
+    assert!(
+        log.contains("外部プロセスの起動を止めました") && log.contains("a.txt"),
+        "opening a file should be logged instead of launched: {log}"
+    );
+}
+
 /// clipCopy→（サブフォルダへ移動して）clipPaste で実コピーされる。
 /// ※検証で OS のクリップボードを上書きする（汚染許容・テスト実行時のみ）。
 #[test]
@@ -5797,9 +5827,10 @@ fn r_alias_points_to_rerics() {
 }
 
 /// プロセス op：`await rerics.run` が外部プロセスの終了を待ち、終了コードと stdout を返す。
+/// 実際に起動して結果を見るテストなので、起動を解禁して立てる。
 #[test]
 fn run_executes_process_and_returns_result() {
-    let server = Server::start_with_scripts(&["a.txt"], &[]);
+    let server = Server::start_with_scripts_opts(&["a.txt"], &[], true);
     server
         .req(
             "POST",
