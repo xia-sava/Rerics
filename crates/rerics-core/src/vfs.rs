@@ -116,34 +116,31 @@ impl Location {
     /// 実在するディレクトリならそのまま `Real`。そうでなければパスを末尾から縮め、
     /// 途中に「実在する書庫ファイル」が現れたらそこを境界に `Archive` へ分割する。
     /// どちらにも当たらなければ `Real`（存在検証/フォールバックは呼び側に委ねる）。
+    ///
+    /// 相対パスはプロセスのカレントディレクトリ基準になるので、絶対パスが確実な復元用途
+    /// （セッション・履歴）にだけ使う。入力由来のパスは [`Location::parse_from`] で解く。
     pub fn parse(display: &str) -> Location {
-        let p = Path::new(display);
-        if p.is_dir() {
-            return Location::Real(absolutize(p));
-        }
-        let mut inner_parts: Vec<String> = Vec::new();
-        let mut cur = p.to_path_buf();
-        loop {
-            if is_archive_path(&cur) {
-                inner_parts.reverse();
-                return Location::Archive {
-                    archive: absolutize(&cur),
-                    inner: inner_parts.join("/"),
-                };
+        parse_resolved(absolutize(Path::new(display)))
+    }
+
+    /// 表示文字列を `base` 基準で解釈する（[`Location::parse`] の相対パス対応版）。
+    ///
+    /// 素の相対パスは `base` からの相対、ルート相対（`\foo`）は `base` のドライブのルート
+    /// 基準、ドライブ相対（`C:foo`）はそのドライブのルート基準に解く。いずれもプロセスの
+    /// カレントディレクトリには依存しない。
+    pub fn parse_from(base: &Path, display: &str) -> Location {
+        parse_resolved(resolve_against(base, Path::new(display)))
+    }
+
+    /// 相対パス解決の基準になる実ディレクトリ。書庫内は書庫ファイルのあるディレクトリ
+    /// （書庫はディレクトリのように見せる機能なので、基準は書庫ファイルの実パス）。
+    pub fn base_dir(&self) -> PathBuf {
+        match self {
+            Location::Real(p) => p.clone(),
+            Location::Archive { archive, .. } => {
+                archive.parent().map(Path::to_path_buf).unwrap_or_else(|| archive.clone())
             }
-            let Some(name) = cur.file_name().map(|s| s.to_string_lossy().into_owned()) else {
-                break;
-            };
-            let Some(parent) = cur.parent().map(|x| x.to_path_buf()) else {
-                break;
-            };
-            if parent == cur {
-                break;
-            }
-            inner_parts.push(name);
-            cur = parent;
         }
-        Location::Real(absolutize(p))
     }
 
     /// 同じドライブのルート（`C:\`）への Location。書庫内は「書庫のあるドライブのルート」へ
@@ -210,6 +207,54 @@ impl Location {
             }
         }
     }
+}
+
+/// 絶対パス化済みのパスから Location を組み立てる。実在するディレクトリはそのまま `Real`、
+/// 途中に実在する書庫ファイルが現れたらそこを境界に `Archive` へ分割する。
+fn parse_resolved(p: PathBuf) -> Location {
+    if p.is_dir() {
+        return Location::Real(p);
+    }
+    let mut inner_parts: Vec<String> = Vec::new();
+    let mut cur = p.clone();
+    loop {
+        if is_archive_path(&cur) {
+            inner_parts.reverse();
+            return Location::Archive {
+                archive: cur,
+                inner: inner_parts.join("/"),
+            };
+        }
+        let Some(name) = cur.file_name().map(|s| s.to_string_lossy().into_owned()) else {
+            break;
+        };
+        let Some(parent) = cur.parent().map(|x| x.to_path_buf()) else {
+            break;
+        };
+        if parent == cur {
+            break;
+        }
+        inner_parts.push(name);
+        cur = parent;
+    }
+    Location::Real(p)
+}
+
+/// `p` を `base` 基準の絶対パスに解く。ドライブ相対（`C:foo`）はプロセスのカレント
+/// ディレクトリを引くのでそのドライブのルート基準に倒す。ルート相対（`\foo`）と素の
+/// 相対は `join` に委ねる（前者は `base` のドライブが残る）。
+fn resolve_against(base: &Path, p: &Path) -> PathBuf {
+    use std::path::Component;
+    if p.is_absolute() {
+        return absolutize(p);
+    }
+    if let Some(Component::Prefix(prefix)) = p.components().next() {
+        let mut root = prefix.as_os_str().to_os_string();
+        root.push(std::path::MAIN_SEPARATOR_STR);
+        let rest: PathBuf = p.components().skip(1).collect();
+        return absolutize(&PathBuf::from(root).join(rest));
+    }
+    absolutize(&base.join(p))
 }
 
 /// 相対パスを絶対パス化する（失敗時は元のまま）。`Pane::open` と同じ正規化を
@@ -300,5 +345,49 @@ mod tests {
         assert_eq!(r.as_real_path(), Some(Path::new("C:\\x\\y")));
         assert!(!r.is_archive());
         assert!(matches!(r.loc_join("z"), Location::Real(p) if p == *"C:\\x\\y\\z"));
+    }
+
+    #[test]
+    fn parse_from_resolves_relative_against_base() {
+        let base = Path::new("C:\\base\\dir");
+        let real = |loc: Location| loc.as_real_path().map(Path::to_path_buf);
+
+        // 素の相対はプロセスのカレントではなく base からたどる。
+        assert_eq!(
+            real(Location::parse_from(base, "sub\\leaf")),
+            Some(PathBuf::from("C:\\base\\dir\\sub\\leaf"))
+        );
+        // ".." も base 基準。
+        assert_eq!(real(Location::parse_from(base, "..")), Some(PathBuf::from("C:\\base")));
+        // 絶対パスは base を無視する。
+        assert_eq!(
+            real(Location::parse_from(base, "D:\\other")),
+            Some(PathBuf::from("D:\\other"))
+        );
+    }
+
+    #[test]
+    fn parse_from_anchors_partial_paths_to_a_drive_root() {
+        let base = Path::new("C:\\base\\dir");
+        let real = |loc: Location| loc.as_real_path().map(Path::to_path_buf);
+
+        // ルート相対は base のドライブのルートから。
+        assert_eq!(real(Location::parse_from(base, "\\foo")), Some(PathBuf::from("C:\\foo")));
+        // ドライブ相対はそのドライブのルートから（カレントディレクトリを引かせない）。
+        assert_eq!(real(Location::parse_from(base, "D:foo")), Some(PathBuf::from("D:\\foo")));
+    }
+
+    #[test]
+    fn base_dir_uses_archive_parent() {
+        assert_eq!(
+            Location::Real(PathBuf::from("C:\\x\\y")).base_dir(),
+            PathBuf::from("C:\\x\\y")
+        );
+        // 書庫内の基準は書庫ファイルのあるディレクトリ。
+        let arc = Location::Archive {
+            archive: PathBuf::from("C:\\x\\a.zip"),
+            inner: "deep".into(),
+        };
+        assert_eq!(arc.base_dir(), PathBuf::from("C:\\x"));
     }
 }

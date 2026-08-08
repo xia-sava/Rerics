@@ -352,11 +352,13 @@ impl MainWindow {
 
     /// 指定パスへ移動する（引数版 `changeDirectory("path")`）。空や移動失敗はログのみ。
     /// `target` は解決済みのパス（式 `=r.folderDialog()` 等は呼び出し側で評価される）。
+    /// 相対パスはそのペインの現在地から解く。
     pub(crate) fn change_directory(&self, is_left: bool, target: Option<&str>) -> w::AnyResult<()> {
         let Some(input) = target.map(str::trim).filter(|s| !s.is_empty()) else {
             return Ok(());
         };
-        self.navigate_to_reported(is_left, Location::parse(input))?;
+        let base = self.pane(is_left).borrow().loc().base_dir();
+        self.navigate_to_reported(is_left, Location::parse_from(&base, input))?;
         Ok(())
     }
 
@@ -371,7 +373,8 @@ impl MainWindow {
         if input.is_empty() {
             return Ok(());
         }
-        self.navigate_to_reported(is_left, Location::parse(input))?;
+        let base = self.pane(is_left).borrow().loc().base_dir();
+        self.navigate_to_reported(is_left, Location::parse_from(&base, input))?;
         Ok(())
     }
 

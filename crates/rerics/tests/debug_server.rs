@@ -1363,6 +1363,30 @@ fn nav_change_directory_dialog() {
     assert_eq!(back.trim(), sbx_json, "typing a path should navigate there");
 }
 
+/// 相対パスは、プロセスのカレントディレクトリではなくそのペインの現在地から解く。
+#[test]
+fn nav_change_directory_resolves_relative_to_pane() {
+    let server = Server::start(&["a.txt"], "");
+    let sbx_json = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
+    std::fs::create_dir_all(server.base.join("sbx").join("sub")).unwrap();
+
+    // 子ディレクトリ名だけを打つ＝現在地の下へ入る。
+    server.req("POST", "/command/changeDirectoryDialog", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/text", "sub").unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    let down = poll(&server, "/state/panes/left/location", |b| b.contains("sub"));
+    assert!(down.contains("sub"), "bare relative name should resolve under the pane: {down}");
+
+    // ".." も現在地基準で親へ戻る。
+    server.req("POST", "/command/changeDirectoryDialog", "").unwrap();
+    wait_modal(&server);
+    server.req("POST", "/modal/text", "..").unwrap();
+    server.req("POST", "/modal/key/enter", "").unwrap();
+    let up = poll(&server, "/state/panes/left/location", |b| b.trim() == sbx_json);
+    assert_eq!(up.trim(), sbx_json, "\"..\" should resolve against the pane location");
+}
+
 /// #70: 存在しないパスを入力すると、ログだけでなくエラーダイアログ（kind=message）が出る。
 #[test]
 fn nav_change_directory_missing_path_shows_error_dialog() {
