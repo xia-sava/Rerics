@@ -406,9 +406,10 @@ fn build_stored_zip(path: &Path, entries: &[(&str, &[u8])]) {
 }
 
 /// `path` を GET し続け、`pred(body)` が真になるまで待つ（最大 ~15 秒）。ワーカ完了や
-/// モーダル出現など非同期な状態変化を待つのに使う。最後に観測した body を返す。
+/// モーダル出現など非同期な状態変化を待つのに使い、条件を満たした body を返す。
 /// 条件成立で即返すので緑のテストの速度には影響せず、上限は過飽和・コールドスタート時の
-/// 誤タイムアウトを防ぐための余裕。
+/// 誤タイムアウトを防ぐための余裕。待ちきれなければ失敗させる（黙って先へ進むと、後続の操作が
+/// 想定と違う状態に当たって別の副作用を起こす）。
 fn poll<F: Fn(&str) -> bool>(server: &Server, path: &str, pred: F) -> String {
     let mut last = String::new();
     for _ in 0..150 {
@@ -420,7 +421,7 @@ fn poll<F: Fn(&str) -> bool>(server: &Server, path: &str, pred: F) -> String {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    last
+    panic!("poll timed out on {path}: {last}");
 }
 
 /// モーダルが開く（`/state/modal` が非 null になる）まで待ち、その body を返す。
@@ -3193,7 +3194,10 @@ fn shell_clipboard_copy_paste() {
     server.req("POST", "/command/cursorUp", "").unwrap();
     poll(&server, "/state/panes/left/cursor", |b| b.trim() == "1");
     server.req("POST", "/command/enterDir", "").unwrap();
-    poll(&server, "/state/panes/left/location", |b| b.contains("dest"));
+    // 貼付先へ入れたことを確かめてから貼る。ここが元のディレクトリのままだと、最後の検証が
+    // コピー元の file.txt を見て素通りしてしまう。
+    let loc = poll(&server, "/state/panes/left/location", |b| b.contains("dest"));
+    assert!(loc.contains("dest"), "paste must happen in dest: {loc}");
     server.req("POST", "/command/clipPaste", "").unwrap();
 
     let items = poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"file.txt\""));
@@ -4770,7 +4774,7 @@ fn text_viewer_search_mnemonic_toggles_options() {
 /// 優先する（トグルせずそのコマンドを実行）。ここでは Alt+C を viewerClose に割り当てて確認。
 #[test]
 fn text_viewer_search_mnemonic_yields_to_user_keybind() {
-    let server = Server::start(&["doc.txt"], "[keybinds_textviewer]\n\"Alt+C\" = \"viewerClose\"\n");
+    let server = Server::start(&["doc.txt"], "[keybinds_textviewer]\n\"Alt+C\" = \"viewerClose()\"\n");
     std::fs::write(server.base.join("sbx").join("doc.txt"), "foo bar\n").unwrap();
     server.req("POST", "/command/cursorDown", "").unwrap();
     server.req("POST", "/command/viewFile", "").expect("viewFile");
@@ -6138,10 +6142,12 @@ fn script_expr_modal_cancel_aborts_silently() {
     let sbx = server.req("GET", "/state/panes/left/location", "").unwrap().1.trim().to_string();
     server.req("POST", "/command/toParent", "").unwrap();
     let parent = poll(&server, "/state/panes/left/location", |b| b.trim() != sbx);
-    // 式が prompt を開く→Esc でキャンセル→prompt は null→移動しない。
+    // 式が prompt を開く→キャンセル→prompt は null→移動しない。Esc キーは既定バインドが
+    // openTaskManager なので、閉じた後にメイン窓へ抜けると別のモーダルが湧く。ここは
+    // キャンセルボタンで閉じる。
     server.req("POST", "/exec", r#"r.changeDirectory(r.prompt("dir?"))"#).unwrap();
     wait_modal(&server);
-    server.req("POST", "/modal/key/esc", "").unwrap();
+    server.req("POST", "/modal/command/cancel", "").unwrap();
     poll(&server, "/state/modal", |b| b.trim() == "null");
     let after = server.req("GET", "/state/panes/left/location", "").unwrap().1;
     assert_eq!(after.trim(), parent.trim(), "式のキャンセルは移動しない（空＝無音中止）");
