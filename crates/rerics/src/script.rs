@@ -1664,7 +1664,10 @@ const BOOTSTRAP: &str = r#"
     listDir: (p) => ops.op_list_dir(abs(p)),
     activePane: () => makePane(ops.op_pane_snapshot(false)),
     oppositePane: () => makePane(ops.op_pane_snapshot(true)),
-    command: (name, ...args) => ops.op_command(String(name), args.map(String)),
+    // null/undefined は「値なし」として空文字で渡す（String(null) は "null" になってしまい、
+    // キャンセルした prompt の戻り値をそのまま組込へ渡す書き方が壊れる）。
+    command: (name, ...args) =>
+      ops.op_command(String(name), args.map((a) => (a == null ? "" : String(a)))),
     copy: (a, b, c) => copyLike(0, a, b, c),
     move: (a, b, c) => copyLike(1, a, b, c),
     renameFiles: (pairs) =>
