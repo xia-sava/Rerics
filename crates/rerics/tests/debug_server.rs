@@ -22,6 +22,15 @@ use std::time::Duration;
 /// テストごとにユニークな作業dirを作るための連番（プロセスIDと併用）。
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
+/// OS のクリップボードは全テストで 1 つしかない共有資源なので、触るテストは直列化する
+/// （並列に開くと「アクセスが拒否されました」で取り合いになる）。
+static CLIPBOARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// クリップボードを使うあいだ保持するガード。毒されていても中身は空なので握り潰して続行する。
+fn clipboard_guard() -> std::sync::MutexGuard<'static, ()> {
+    CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// e2e 用の隔離済みデバッグサーバ。`--debug-server=0`（OS 割当ポート）＋ユニークな
 /// `RERICS_DATA_DIR` で起動し、**Drop で子プロセスの kill と作業dirの削除まで自動**で行う。
 /// テストは `Server::start(...)` して `req()` を叩くだけ＝ポート・後始末・並列衝突を
@@ -3168,6 +3177,7 @@ fn activate_file_does_not_launch_in_headless() {
 /// ※検証で OS のクリップボードを上書きする（汚染許容・テスト実行時のみ）。
 #[test]
 fn shell_clipboard_copy_paste() {
+    let _clip = clipboard_guard();
     let server = Server::start_writable(&["file.txt"]);
     // 貼付先サブフォルダをディスクに作って一覧へ反映。
     std::fs::create_dir_all(server.base.join("sbx").join("dest")).unwrap();
@@ -5415,6 +5425,7 @@ fn script_select_opens_list_and_returns_index() {
 /// の実クリップボードへ書いて読み戻す host 往復）。
 #[test]
 fn script_clipboard_round_trips_text() {
+    let _clip = clipboard_guard();
     let server = Server::start_with_scripts(&["a.txt"], &[]);
     server
         .req(
@@ -5431,6 +5442,7 @@ fn script_clipboard_round_trips_text() {
 /// 実クリップボードへ書いて読み戻し、寸法が保たれる host 往復）。
 #[test]
 fn script_clipboard_round_trips_image() {
+    let _clip = clipboard_guard();
     let dir = std::env::temp_dir().join(format!("rerics_clipimg_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let src = dir.join("src.png");
