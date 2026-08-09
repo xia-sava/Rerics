@@ -57,6 +57,13 @@ jobs:
             sha256  = $hash
           } | ConvertTo-Json | Set-Content -Path manifest.json -Encoding utf8
 
+      # 配布物を固めた後に走らせる。テストは feature 付きで exe を作り直すことがあるので、
+      # zip に入れる exe が差し替わらない位置に置く。落ちれば Publish へ進まない。
+      - name: Test
+        run: |
+          cargo test --release --locked -p rerics-core --lib
+          cargo test --release --locked -p rerics --bin rerics
+
       - name: Publish latest release
         uses: softprops/action-gh-release@v2
         with:
