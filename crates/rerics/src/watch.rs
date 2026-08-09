@@ -3,6 +3,9 @@
 //! サイドごとに専用スレッドを1本立て、`ReadDirectoryChangesW` を overlapped I/O で回す。
 //! 変更を検知したら設定の静穏待ち時間（`wait_ms`）だけ無音が続くのを待ち、静まってから
 //! UI スレッドへ [`RELOAD_WATCH`](crate::winutil::msg::RELOAD_WATCH) を投げて再読込させる。
+//! 未完了の読取は常に1本だけ張りっぱなしにし、畳むのは終了時だけにする。静穏のたびに畳んで
+//! 張り直すと、その隙間に来た変更を落とし得る（同じディレクトリを両ペインで開いていると、
+//! 左右のスレッドが同じ通知で同時に静穏判定するため、隙間もそろって開く）。
 //! `HANDLE` はスレッド跨ぎに送れないので、生ポインタ相当の `isize` で受け渡してスレッド内で
 //! 再構成する。停止は手動リセットイベントの合図＋スレッド join で行なう。停止合図以外で監視が
 //! 終わったときは原因の Win32 エラー値を添えて
@@ -194,55 +197,47 @@ fn run(dir: PathBuf, stop_raw: isize, hwnd_ptr: isize, is_left: bool, wait_ms: u
     let handles = [ov_event, stop];
     // 停止合図以外で抜けたときの原因（Win32 エラー値）。
     let mut died: Option<u32> = None;
-    'outer: loop {
-        if let Err(e) = issue_read(dir_handle, &mut buf, filter, &mut overlapped) {
-            // ディレクトリが消えた等。最後に一度だけ再読込を促して終わる。
-            winutil::post_app_message_params(hwnd_ptr, msg::RELOAD_WATCH, is_left as usize, 0);
-            died = Some(win32_code(&e));
-            break;
-        }
-        // 最初の変更（または停止）を待つ。
-        match unsafe { WaitForMultipleObjects(&handles, false, INFINITE) }.0 {
-            WAIT_CHANGED => consume(dir_handle, &overlapped),
-            WAIT_STOP => {
-                cancel_and_drain(dir_handle, &mut overlapped);
-                break;
-            }
-            _ => {
-                died = Some(last_error());
-                cancel_and_drain(dir_handle, &mut overlapped);
-                break;
-            }
-        }
-        // 変更を検知。静穏（wait_ms 無音）になるまで待って束ねる。
-        loop {
-            if issue_read(dir_handle, &mut buf, filter, &mut overlapped).is_err() {
-                break;
-            }
-            match unsafe { WaitForMultipleObjects(&handles, false, wait_ms as u32) }.0 {
-                WAIT_CHANGED => {
-                    // 追加の変更。タイマを積み直して待ち直す。
-                    consume(dir_handle, &overlapped);
-                }
-                x if x == WAIT_TIMEOUT.0 => {
-                    // 静まった。未完了の読取を畳んで再読込へ。
-                    cancel_and_drain(dir_handle, &mut overlapped);
+    // 未完了の読取を1本抱えているか。定常状態では常に真で、畳むのは終了時だけ。
+    let mut pending = false;
+    // 変更を検知していて、まだ再読込を要求していない（静穏待ちの最中）。
+    let mut dirty = false;
+    loop {
+        if !pending {
+            match issue_read(dir_handle, &mut buf, filter, &mut overlapped) {
+                Ok(()) => pending = true,
+                Err(e) => {
+                    // ディレクトリが消えた等。最後に一度だけ再読込を促して終わる。
+                    winutil::post_app_message_params(hwnd_ptr, msg::RELOAD_WATCH, is_left as usize, 0);
+                    died = Some(win32_code(&e));
                     break;
                 }
-                WAIT_STOP => {
-                    cancel_and_drain(dir_handle, &mut overlapped);
-                    break 'outer;
-                }
-                _ => {
-                    died = Some(last_error());
-                    cancel_and_drain(dir_handle, &mut overlapped);
-                    break 'outer;
-                }
             }
         }
-        winutil::post_app_message_params(hwnd_ptr, msg::RELOAD_WATCH, is_left as usize, 0);
+        // 変更を検知したら静穏（wait_ms 無音）まで待って束ね、それまでは変更を待ち続ける。
+        let timeout = if dirty { wait_ms as u32 } else { INFINITE };
+        match unsafe { WaitForMultipleObjects(&handles, false, timeout) }.0 {
+            WAIT_CHANGED => {
+                // 読取が1本完了した。回収して張り直し、静穏待ちのタイマを積み直す。
+                consume(dir_handle, &overlapped);
+                pending = false;
+                dirty = true;
+            }
+            x if x == WAIT_TIMEOUT.0 => {
+                // 静まった。未完了の読取はそのまま次の変更に備えさせ、再読込だけ要求する。
+                winutil::post_app_message_params(hwnd_ptr, msg::RELOAD_WATCH, is_left as usize, 0);
+                dirty = false;
+            }
+            WAIT_STOP => break,
+            _ => {
+                died = Some(last_error());
+                break;
+            }
+        }
     }
 
+    if pending {
+        cancel_and_drain(dir_handle, &mut overlapped);
+    }
     unsafe {
         let _ = CloseHandle(ov_event);
         let _ = CloseHandle(dir_handle);

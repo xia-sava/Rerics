@@ -1928,6 +1928,20 @@ fn watch_reflects_external_change_when_enabled() {
     assert!(left.contains("\"name\":\"b.txt\""), "監視で b.txt が自動反映される: {left}");
 }
 
+/// 監視は変更→静穏→再読込を繰り返しても効き続ける。静穏のたびに未完了の読取を畳んで張り直すと
+/// その隙間で変更を落とし得るため、読取は張りっぱなしにしている。連続したサイクルで確かめる。
+#[test]
+fn watch_keeps_reporting_across_repeated_changes() {
+    let server = Server::start(&["a.txt"], "[reload_watch]\nenabled = true\nwait_ms = 100\npoll_ms = 0\n");
+    // 点検は切ってあるので、反映されたなら監視自身が届けたことになる。
+    for name in ["b.txt", "c.txt", "d.txt"] {
+        std::fs::write(server.base.join("sbx").join(name), b"x").unwrap();
+        poll(&server, "/state/panes/left/items", |s| s.contains(&format!("\"name\":\"{name}\"")));
+        let items = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+        assert!(items.contains(&format!("\"name\":\"{name}\"")), "{name} が監視で反映される: {items}");
+    }
+}
+
 /// 更新監視を切ると、外部変更は明示 reload まで反映されない（原作 AutoReload=off 相当）。
 #[test]
 fn watch_disabled_needs_explicit_reload() {
