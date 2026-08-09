@@ -1489,9 +1489,17 @@ pub fn code_box(
             // 保存しても実行時に落ちるだけの式（構文エラー・組込引数の不整合・未定義の名前）は
             // 閉じずにヒント行へエラーを出してカレットをその位置へ飛ばす（破棄して閉じるのは
             // キャンセル）。構文 → 意味の順で検査する。
-            let error = syntax_error(&code)
-                .map(|(msg, line, col)| (format!("構文エラー: {msg}"), line, col))
-                .or_else(|| semantic_error(&code, &globals));
+            // 単一の組込呼び出しは JS ではないので JS 構文検査にかけない（`delete()` のように
+            // JS の予約語と同名の組込がある）。引数の整合はどちらの形でも検査する。
+            let is_builtin =
+                matches!(rerics_core::Call::parse(&code), rerics_core::Call::Builtin { .. });
+            let error = if is_builtin {
+                semantic_error(&code, &globals)
+            } else {
+                syntax_error(&code)
+                    .map(|(msg, line, col)| (format!("構文エラー: {msg}"), line, col))
+                    .or_else(|| semantic_error(&code, &globals))
+            };
             if let Some((msg, line, col)) = error {
                 let _ = hint.hwnd().SetWindowText(&error_hint_text(&code, &msg, line, col));
                 let pos = utf16_offset_at(&code, line, col) as i32;
