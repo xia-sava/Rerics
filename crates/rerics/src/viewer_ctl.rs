@@ -462,7 +462,7 @@ impl MainWindow {
     /// ビューアを閉じてファイラ表示へ戻す。
     pub(crate) fn close_viewer(&self) -> w::AnyResult<()> {
         self.cancel_media_prefetch();
-        self.media.stop_playback();
+        self.media.release_media();
         self.active_view.set(ActiveView::None);
         self.viewer.hwnd().ShowWindow(co::SW::HIDE);
         self.media.hwnd().ShowWindow(co::SW::HIDE);

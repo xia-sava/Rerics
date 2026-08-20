@@ -417,10 +417,15 @@ impl MediaView {
         let _ = self.hwnd().SetTimer(MEDIA_TIMER_ID, ms, None);
     }
 
-    /// 再生を止める（タイマ停止）。閉じる/離れる時に呼ぶ。
-    pub fn stop_playback(&self) {
+    /// 再生を止め、フレーム供給元を手放す。閉じる/離れる時に呼ぶ。動画の供給元は再生元の
+    /// ファイルを開いたまま保持するので、抱えたままだとそのファイルや親ディレクトリの
+    /// リネーム・削除が弾かれる。表示中の画素は残すので、再表示しても描画は保たれる。
+    pub fn release_media(&self) {
         let _ = self.hwnd().KillTimer(MEDIA_TIMER_ID);
+        *self.inner.source.borrow_mut() = None;
         self.inner.playing.set(false);
+        self.inner.animated.set(false);
+        self.inner.seeking.set(false);
     }
 
     /// 再生/一時停止をトグルする（アニメ/動画のみ）。
