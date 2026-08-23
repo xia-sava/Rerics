@@ -291,23 +291,26 @@ fn build_resolved_menu(
 fn main() {
     update::cleanup_old_files_if_requested();
     #[cfg(feature = "debug-server")]
-    let (debug_port, debug_allow_write, debug_headless, debug_allow_launch) = (
+    let (debug_port, debug_allow_write, debug_headless, debug_visible, debug_allow_launch) = (
         debug_server::parse_port(),
         debug_server::parse_allow_write(),
         debug_server::parse_headless(),
+        debug_server::parse_visible(),
         debug_server::parse_allow_launch(),
     );
     #[cfg(not(feature = "debug-server"))]
-    let (debug_port, debug_allow_write, debug_headless, debug_allow_launch): (
+    let (debug_port, debug_allow_write, debug_headless, debug_visible, debug_allow_launch): (
         Option<u16>,
         bool,
         bool,
         bool,
-    ) = (None, false, false, false);
-    // 窓を出さない起動では、関連付け・エディタ・ブラウザ・スクリプトのプロセス起動も出さない。
-    // 起動そのものを検証するときだけ `--debug-allow-launch` で解禁する。
-    shell::set_launch_suppressed(debug_headless && !debug_allow_launch);
-    if let Err(e) = MainWindow::new(debug_port, debug_allow_write, debug_headless).run() {
+        bool,
+    ) = (None, false, false, false, false);
+    // デバッグ制御サーバで駆動される起動では、関連付け・エディタ・ブラウザ・スクリプトの
+    // プロセス起動も出さない。起動そのものを検証するときだけ `--debug-allow-launch` で解禁する。
+    shell::set_launch_suppressed(debug_port.is_some() && !debug_allow_launch);
+    if let Err(e) = MainWindow::new(debug_port, debug_allow_write, debug_headless, debug_visible).run()
+    {
         eprintln!("エラー: {}", e);
     }
 }
@@ -553,7 +556,12 @@ struct LoadPlan {
 
 impl MainWindow {
     #[cfg_attr(not(feature = "debug-server"), allow(unused_variables))]
-    fn new(debug_port: Option<u16>, debug_allow_write: bool, debug_headless: bool) -> Self {
+    fn new(
+        debug_port: Option<u16>,
+        debug_allow_write: bool,
+        debug_headless: bool,
+        debug_visible: bool,
+    ) -> Self {
         // OLE ドラッグ＆ドロップ（IDropTarget 登録・DoDragDrop）に必要。ペイン生成（drop
         // target 登録）より先に済ませ、ガードはアプリ終了まで保持する
         // （OleUninitialize は Drop に任せる）。
@@ -746,7 +754,12 @@ impl MainWindow {
             watch_revives: Rc::new(RefCell::new([0, 0])),
             watch_seen: Rc::new(RefCell::new([None, None])),
             #[cfg(feature = "debug-server")]
-            debug: debug_server::Bridge::new(debug_port, debug_allow_write, debug_headless),
+            debug: debug_server::Bridge::new(
+                debug_port,
+                debug_allow_write,
+                debug_headless,
+                debug_visible,
+            ),
             script: script_host::ScriptBridge::new(),
         }
     }
@@ -757,9 +770,11 @@ impl MainWindow {
         // フル表示のフラッシュを避ける（VISIBLE も外してあるので真の最小化起動になる）。
         #[cfg(feature = "debug-server")]
         let cmd_show = if self.debug.port.is_some() {
-            // headless は完全非表示、通常 debug は非アクティブ最小化。
+            // headless は完全非表示、`--debug-visible` は実寸の通常表示、他は非アクティブ最小化。
             if self.debug.headless {
                 Some(co::SW::HIDE)
+            } else if self.debug.visible {
+                Some(co::SW::SHOWNORMAL)
             } else {
                 Some(co::SW::SHOWMINNOACTIVE)
             }

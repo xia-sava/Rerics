@@ -480,15 +480,19 @@ pub struct Bridge {
     pub allow_write: bool,
     /// `--headless` 指定時 true。窓を完全非表示で起動する（最小化でなく hidden）。
     pub headless: bool,
+    /// `--debug-visible` 指定時 true。可視かつ通常サイズで起動する。既定の非アクティブ最小化は
+    /// クライアント領域が潰れるため、実寸のレイアウトを要する検証はこちらで駆動する。
+    pub visible: bool,
 }
 
 impl Bridge {
-    pub fn new(port: Option<u16>, allow_write: bool, headless: bool) -> Self {
+    pub fn new(port: Option<u16>, allow_write: bool, headless: bool, visible: bool) -> Self {
         Self {
             queue: ui_marshal::new_queue(),
             port,
             allow_write,
             headless,
+            visible,
         }
     }
 }
@@ -516,8 +520,13 @@ pub fn parse_headless() -> bool {
     std::env::args().skip(1).any(|a| a == "--headless")
 }
 
-/// `--debug-allow-launch` が指定されているか。headless では外部プロセスの起動を止めるが、
-/// 起動そのものを検証したいときだけこれで解禁する。
+/// `--debug-visible` が指定されているか（可視かつ通常サイズで起動）。
+pub fn parse_visible() -> bool {
+    std::env::args().skip(1).any(|a| a == "--debug-visible")
+}
+
+/// `--debug-allow-launch` が指定されているか。デバッグ制御サーバ起動時は外部プロセスの起動を
+/// 止めるが、起動そのものを検証したいときだけこれで解禁する。
 pub fn parse_allow_launch() -> bool {
     std::env::args().skip(1).any(|a| a == "--debug-allow-launch")
 }
