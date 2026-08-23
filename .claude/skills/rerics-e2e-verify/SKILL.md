@@ -1,6 +1,6 @@
 ---
 name: rerics-e2e-verify
-description: Rerics の GUI を headless のデバッグ制御サーバ（--debug-server）で挙動・見た目を検証する手順。/state 観測・/command(POST)駆動・/snapshot 目視・/modal 自動操作、RERICS_DATA_DIR + state.toml での隔離起動、サーバ停止（netstat→taskkill）、feature ビルドの罠、e2e テストの書き方を含む。Rerics GUI の e2e・スナップショット・目視・実機検証をするときに使う。
+description: Rerics の GUI をデバッグ制御サーバ（--debug-server）で挙動・見た目を検証する手順。headless（窓を出さない）と、画面に出ない別デスクトップでの実寸可視駆動（--debug-visible）の使い分け、/state 観測・/command(POST)駆動・/snapshot 目視・/modal 自動操作、RERICS_DATA_DIR + state.toml での隔離起動、サーバ停止（netstat→taskkill）、feature ビルドの罠、e2e テストの書き方を含む。Rerics GUI の e2e・スナップショット・目視・実機検証をするときに使う。
 ---
 
 # Rerics e2e / スナップショット検証
@@ -25,6 +25,8 @@ description: Rerics の GUI を headless のデバッグ制御サーバ（--debu
    無条件で打ち直してから起動するのが安全）。**feature 無しの exe を起動すると、feature ゲートのフラグ
    （`--headless` 等）が黙って無視され、非表示のはずが実 GUI 窓が画面に出る**（headless 検証のつもりが窓が飛ぶ）。
    **検証が終わったら `./tools/dev.sh build`（plain）で実行用 exe に戻す**（戻し忘れると本番起動でサーバが生きたまま）。
+   **戻ったことの確認に「起動」を使わない**——`--headless` は無視されるので窓が出る（事故あり）。
+   `strings target/debug/rerics.exe | grep -c 'debug-server' || true`（0 件なら plain）で窓を出さずに見る。
 3. **停止は `netstat -ano`→`taskkill //PID`**。`/command/Quit` で正常終了すると **state.toml に現在地が
    保存**され次回起動の初期状態が変わる（＝テスト汚染）。`taskkill //F //IM rerics.exe` でも可だが、
    並列起動時はポートから PID を引いて個別に落とす（下記）。
@@ -48,10 +50,34 @@ RERICS_DATA_DIR=<隔離dir> ./target/debug/rerics.exe --debug-server=<PORT> --he
 起動フラグ：
 - `--debug-server[=PORT]` … 既定 8731・`127.0.0.1` 限定。`=0` で OS 任せ（実ポートは起動ログ
   `[debug-server] listening on http://127.0.0.1:PORT` に出る＝並列起動で衝突しない）。
-- `--headless` … 窓を一切出さず起動（スナップショットも撮れる・決定論）。
-- 無印 `--debug-server` … 真の最小化起動（フォーカスを奪わない）。
+- `--headless` … 窓を一切出さず起動（スナップショットも撮れる・決定論）。**ただし描画を経た値は
+  実機と食い違う**（下記「実寸の可視窓で駆動する」）。
+- `--debug-visible` … 実寸の可視窓で起動（`SW::SHOWNORMAL`）。レイアウト・描画・フォーカスが
+  本番と同じ経路を通る。利用者の画面を汚さないよう**別デスクトップと併用する**。
+- 無印 `--debug-server` … 真の最小化起動（フォーカスを奪わない）。**クライアント領域が潰れるので
+  `page_rows=1`・フォーカス移動不可・ツールチップ空になる**。実寸が要るなら `--debug-visible`。
 - `--debug-allow-write` … 破壊的（ファイル操作）コマンドを許可（既定は 400 拒否）。
 - `RERICS_DATA_DIR=<dir>` … state.toml/config.toml の置き場を上書き（テスト隔離用・**本番 state.toml を汚さない**）。
+
+## 実寸の可視窓で駆動する（別デスクトップ）
+
+`--headless` は窓のレイアウトと `WM_PAINT` が走らないため、**描画の中で確定する値が実機と食い違う**
+（fit/zoom 倍率・パンの丸め・ツールチップ矩形・`page_rows`）。表示領域に依存する挙動を確かめるときは、
+画面に出ない別デスクトップで**実寸の可視窓**を走らせる。
+
+```sh
+./tools/offscreen.sh run target/debug/rerics.exe --debug-server=8731 --debug-visible &
+RERICS_E2E_VISIBLE=1 ./tools/offscreen.sh dev test -p rerics --features debug-server --test debug_server
+```
+
+- 窓は `rerics-offscreen` デスクトップに出るので**利用者の画面には現れない**。
+  `./tools/deskwin.py --desktop rerics-offscreen --proc rerics` で在処を実測できる。
+- `./tools/deskwin.py --watch SEC --proc rerics` で利用者側の前面窓と窓数を見張れる
+  （変化した時だけ出る＝1 行なら画面は無傷）。
+- **止めるときは `rundesk` の python を落とす**。Claude Code の `TaskStop` は起動元の bash を
+  止めるだけで孫の python は生き残り、`rerics.exe` が残る（Windows の kill は子を道連れにしない）。
+  python が死ねば Job Object でデスクトップごと片付く。
+- 実測：headless / 可視とも e2e 231 本が全通。詳細と落とし穴は `.claude/MEMO.local.md`。
 
 ## エンドポイント cheatsheet
 
