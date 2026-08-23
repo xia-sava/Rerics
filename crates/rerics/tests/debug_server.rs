@@ -304,10 +304,17 @@ impl Drop for Server {
 }
 
 /// `--debug-server=0 --headless`（必要なら `--debug-allow-write`）で起動し、`/state` が
-/// 返るまで待って `(子, ポート)` を返す。
+/// 返るまで待って `(子, ポート)` を返す。`RERICS_E2E_VISIBLE` が立っているときは代わりに
+/// `--debug-visible` で起動し、実寸の可視窓のまま走らせる（画面に出ない別デスクトップで
+/// 駆動して、表示・フォーカスを本番と同じ経路で検証するため）。
 fn spawn_and_wait(data: &Path, allow_write: bool, allow_launch: bool) -> (Child, u16) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_rerics"));
-    cmd.arg("--debug-server=0").arg("--headless");
+    cmd.arg("--debug-server=0");
+    if std::env::var_os("RERICS_E2E_VISIBLE").is_some() {
+        cmd.arg("--debug-visible");
+    } else {
+        cmd.arg("--headless");
+    }
     if allow_write {
         cmd.arg("--debug-allow-write");
     }
