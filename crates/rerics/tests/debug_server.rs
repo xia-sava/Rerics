@@ -1805,9 +1805,9 @@ fn view_command_opens_internal_viewer_for_file() {
     assert_eq!(av2.trim(), "\"none\"", "closing the viewer returns to the list");
 }
 
-/// 内容なし PDF（`pages` ページ・各 200x200）をバイト列で組み立てる。xref のオフセットを
-/// 実バイト位置から計算するので厳密なパーサ（PDFium）でも開ける。
-fn make_pdf(pages: usize) -> Vec<u8> {
+/// 内容なし PDF（`pages` ページ・各 `side`×`side` ポイントの正方形）をバイト列で組み立てる。
+/// xref のオフセットを実バイト位置から計算するので厳密なパーサ（PDFium）でも開ける。
+fn make_pdf(pages: usize, side: u32) -> Vec<u8> {
     let mut objs = vec!["<< /Type /Catalog /Pages 2 0 R >>".to_string()];
     let kids = (0..pages)
         .map(|i| format!("{} 0 R", 3 + i))
@@ -1815,7 +1815,9 @@ fn make_pdf(pages: usize) -> Vec<u8> {
         .join(" ");
     objs.push(format!("<< /Type /Pages /Kids [{kids}] /Count {pages} >>"));
     for _ in 0..pages {
-        objs.push("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>".to_string());
+        objs.push(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {side} {side}] >>"
+        ));
     }
     let mut buf = Vec::new();
     buf.extend_from_slice(b"%PDF-1.4\n");
@@ -1841,7 +1843,7 @@ fn make_pdf(pages: usize) -> Vec<u8> {
 /// PNG 化して前後送りする）。状態行の見出しは PDF 名・位置は総ページ数を映す。
 #[test]
 fn view_pdf_shows_pages_in_image_viewer() {
-    let pdf = make_pdf(3);
+    let pdf = make_pdf(3, 200);
     let server = Server::start_dirs(&[("doc.pdf", &pdf)], &[]);
     server
         .req("POST", "/command/setCursorPosition", r#"["doc.pdf"]"#)
@@ -1866,15 +1868,18 @@ fn view_pdf_shows_pages_in_image_viewer() {
 /// 右を見る＝画像を左へ寄せる＝`pan_x` が負へ動き、左パンで中央へ戻る。
 #[test]
 fn image_viewer_pans_with_ctrl_arrows() {
-    let pdf = make_pdf(1);
+    let pdf = make_pdf(1, 2000);
     let server = Server::start_dirs(&[("p.pdf", &pdf)], &[]);
     server
         .req("POST", "/command/setCursorPosition", r#"["p.pdf"]"#)
         .unwrap();
     server.req("POST", "/command/view", "").unwrap();
     poll(&server, "/state/active_view", |b| b.trim() == "\"media\"");
-    // 拡大してパンできる状態にする（初期パンは中央）。
-    server.req("POST", "/view/key/z", "").unwrap();
+    // 1 歩ぶん（`pan_step_px`）のパンが残る余地が出るまで拡大する。表示領域に収まっている
+    // 画像はパンが中央へ丸められるので、はみ出し量が歩幅を上回るまで倍率を上げる。
+    for _ in 0..4 {
+        server.req("POST", "/view/key/z", "").unwrap();
+    }
     let before = server.req("GET", "/state/media", "").unwrap().1;
     assert!(before.contains("\"pan_x\":0"), "初期パンは中央: {before}");
     // Ctrl+Right＝右を見る＝pan_x が負へ。
