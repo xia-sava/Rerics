@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <!-- MAX_PATH（260 文字）を超えるパスを Win32 API へそのまま渡せるようにする。
+           Shell API のように \\?\ 前置を受け付けない呼び出しはこの宣言だけが頼りになる。
+           OS 側で LongPathsEnabled が有効なときに効く。 -->
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+</assembly>

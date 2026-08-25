@@ -55,13 +55,16 @@ fn main() {
     std::fs::write(&dest, text).expect("write licenses.txt");
 }
 
-/// アプリアイコンとバージョン情報を実行ファイルへ埋め込む。アイコンは Explorer/タスクバー用に
-/// リソース ID 1 で入れ、ウィンドウ側は `WindowMainOpts.class_icon = Icon::Id(1)` で同じアイコンを
-/// 参照する。バージョンは patch をビルド番号にした `1.0.123` 形式で、アプリ内の表記
-/// （`src/version.rs`）と揃える。リソースコンパイラが無い等で失敗してもビルドは止めず警告に留める。
+/// アプリアイコン・バージョン情報・マニフェストを実行ファイルへ埋め込む。アイコンは
+/// Explorer/タスクバー用にリソース ID 1 で入れ、ウィンドウ側は
+/// `WindowMainOpts.class_icon = Icon::Id(1)` で同じアイコンを参照する。バージョンは patch を
+/// ビルド番号にした `1.0.123` 形式で、アプリ内の表記（`src/version.rs`）と揃える。マニフェストは
+/// 長いパスの受け入れを宣言する（`assets/rerics.manifest`）。リソースコンパイラが無い等で
+/// 失敗してもビルドは止めず警告に留める。
 #[cfg(windows)]
 fn embed_resources() {
     println!("cargo:rerun-if-changed=assets/icon.ico");
+    println!("cargo:rerun-if-changed=assets/rerics.manifest");
     println!("cargo:rerun-if-env-changed=RERICS_BUILD_NUMBER");
 
     let major = env_number("CARGO_PKG_VERSION_MAJOR");
@@ -71,6 +74,7 @@ fn embed_resources() {
 
     let mut res = winresource::WindowsResource::new();
     res.set_icon_with_id("assets/icon.ico", "1");
+    res.set_manifest_file("assets/rerics.manifest");
     res.set("FileVersion", &version);
     res.set("ProductVersion", &version);
     // 数値フィールドは 16bit 4 つの詰め合わせ（第4要素は使わない）。各要素の上限で飽和させる。
