@@ -46,10 +46,16 @@ impl Server {
     /// 作業dirはプロセスID＋連番でユニーク化するので、並列テストでも衝突しない。
     /// `config_toml` が空なら config.toml は書かない（既定設定で起動）。
     fn start(sandbox_files: &[&str], config_toml: &str) -> Server {
+        Self::start_nested(sandbox_files, config_toml, 0)
+    }
+
+    /// [`Server::start`] のサンドボックスを [`nested_sbx`] で `depth` 段だけ深くした版。
+    /// `MAX_PATH` を超える場所での挙動を確かめるのに使う。
+    fn start_nested(sandbox_files: &[&str], config_toml: &str, depth: usize) -> Server {
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
         let base = std::env::temp_dir().join(format!("rerics_it_{}_{}", std::process::id(), n));
         let data = base.join("data");
-        let sbx = base.join("sbx");
+        let sbx = nested_sbx(&base, depth);
         std::fs::create_dir_all(&data).unwrap();
         std::fs::create_dir_all(&sbx).unwrap();
         for f in sandbox_files {
@@ -292,6 +298,16 @@ impl Server {
     fn req(&self, method: &str, path: &str, body: &str) -> Option<(u16, String)> {
         req(self.port, method, path, body)
     }
+}
+
+/// サンドボックスの位置。`depth` を指定すると 38 文字の階層をその段数だけ下げる
+/// （6 段で `MAX_PATH`＝260 文字を超える）。
+fn nested_sbx(base: &Path, depth: usize) -> PathBuf {
+    let mut p = base.join("sbx");
+    for i in 0..depth {
+        p = p.join(char::from(b'a' + i as u8).to_string().repeat(38));
+    }
+    p
 }
 
 impl Drop for Server {
@@ -1952,6 +1968,28 @@ fn watch_keeps_reporting_across_repeated_changes() {
         let items = server.req("GET", "/state/panes/left/items", "").unwrap().1;
         assert!(items.contains(&format!("\"name\":\"{name}\"")), "{name} が監視で反映される: {items}");
     }
+}
+
+/// `MAX_PATH`（260 文字）を超えるディレクトリでも監視が張られ、外部変更が自動反映される。
+/// Win32 は前置なしのパスをこの長さまでしか受け付けず、監視が張れずに落ちて止まっていた。
+#[test]
+fn watch_works_in_long_path() {
+    const DEPTH: usize = 6;
+    let server = Server::start_nested(
+        &["a.txt"],
+        "[reload_watch]\nenabled = true\nwait_ms = 100\npoll_ms = 0\n",
+        DEPTH,
+    );
+    let sbx = nested_sbx(&server.base, DEPTH);
+    assert!(sbx.as_os_str().len() > 260, "サンドボックスが MAX_PATH を超える: {}", sbx.display());
+    let watch = server.req("GET", "/state/watch/left", "").unwrap().1;
+    assert!(watch.contains("\"alive\":true"), "長いパスでも監視が張られる: {watch}");
+
+    // 点検は切ってあるので、反映されたなら監視自身が届けたことになる。
+    std::fs::write(sbx.join("b.txt"), b"x").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"b.txt\""));
+    let items = server.req("GET", "/state/panes/left/items", "").unwrap().1;
+    assert!(items.contains("\"name\":\"b.txt\""), "長いパスでも監視で自動反映される: {items}");
 }
 
 /// 更新監視を切ると、外部変更は明示 reload まで反映されない（原作 AutoReload=off 相当）。

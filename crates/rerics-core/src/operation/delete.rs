@@ -134,7 +134,6 @@ fn finish_removal(
 /// path の属性ラベルを返す（優先度 システム > 隠し > 読み込み専用、無ければ `None`）。
 #[cfg(windows)]
 fn attribute_label(path: &Path) -> Option<&'static str> {
-    use std::os::windows::ffi::OsStrExt;
     const INVALID_FILE_ATTRIBUTES: u32 = u32::MAX;
     const FILE_ATTRIBUTE_READONLY: u32 = 0x1;
     const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
@@ -143,7 +142,7 @@ fn attribute_label(path: &Path) -> Option<&'static str> {
     unsafe extern "system" {
         fn GetFileAttributesW(path: *const u16) -> u32;
     }
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let wide = crate::wide_path(path);
     let attrs = unsafe { GetFileAttributesW(wide.as_ptr()) };
     if attrs == INVALID_FILE_ATTRIBUTES {
         None

@@ -101,12 +101,11 @@ mod win {
 /// path の編集可能属性を読む。取れなければ `None`。
 #[cfg(windows)]
 pub fn read_attrs(path: &Path) -> Option<FileAttrs> {
-    use std::os::windows::ffi::OsStrExt;
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetFileAttributesW(p: *const u16) -> u32;
     }
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let wide = crate::wide_path(path);
     let a = unsafe { GetFileAttributesW(wide.as_ptr()) };
     if a == win::INVALID {
         return None;
@@ -122,13 +121,12 @@ pub fn read_attrs(path: &Path) -> Option<FileAttrs> {
 /// path の編集可能属性を `attrs` の通りに設定する（ディレクトリ等の他ビットは保つ）。
 #[cfg(windows)]
 pub fn write_attrs(path: &Path, attrs: FileAttrs) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetFileAttributesW(p: *const u16) -> u32;
         fn SetFileAttributesW(p: *const u16, a: u32) -> i32;
     }
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let wide = crate::wide_path(path);
     let cur = unsafe { GetFileAttributesW(wide.as_ptr()) };
     if cur == win::INVALID {
         return Err(std::io::Error::last_os_error());
@@ -174,7 +172,6 @@ fn win_set_times(
     creation: Option<SystemTime>,
     write: Option<SystemTime>,
 ) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
     use std::ptr;
 
     #[repr(C)]
@@ -224,7 +221,7 @@ fn win_set_times(
     let cptr = cft.as_ref().map_or(ptr::null(), |f| f as *const FileTime);
     let wptr = wft.as_ref().map_or(ptr::null(), |f| f as *const FileTime);
 
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let wide = crate::wide_path(path);
     let h = unsafe {
         CreateFileW(
             wide.as_ptr(),

@@ -227,13 +227,12 @@ fn log_op_end(host: &dyn OperationHost, verb: &str, sum: &OpSummary) {
 /// dst の読み込み専用/隠し/システム属性を解除する（強制上書き用）。
 #[cfg(windows)]
 fn clear_attributes(path: &Path) {
-    use std::os::windows::ffi::OsStrExt;
     const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn SetFileAttributesW(path: *const u16, attrs: u32) -> i32;
     }
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let wide = crate::wide_path(path);
     unsafe {
         SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_NORMAL);
     }
@@ -263,7 +262,6 @@ struct Filetime {
 /// 失敗は無視する（コピー本体は既に成功している）。
 #[cfg(windows)]
 fn apply_dir_metadata(src: &Path, dst: &Path, opts: CopyOptions) {
-    use std::os::windows::ffi::OsStrExt;
     use std::time::SystemTime;
 
     if !opts.copy_attribute && !opts.copy_date {
@@ -272,10 +270,6 @@ fn apply_dir_metadata(src: &Path, dst: &Path, opts: CopyOptions) {
     let Ok(meta) = std::fs::metadata(src) else {
         return;
     };
-    let wide = |p: &Path| -> Vec<u16> {
-        p.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
-    };
-
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetFileAttributesW(path: *const u16) -> u32;
@@ -299,10 +293,10 @@ fn apply_dir_metadata(src: &Path, dst: &Path, opts: CopyOptions) {
     }
 
     if opts.copy_attribute {
-        let s = wide(src);
+        let s = crate::wide_path(src);
         let attrs = unsafe { GetFileAttributesW(s.as_ptr()) };
         if attrs != u32::MAX {
-            let d = wide(dst);
+            let d = crate::wide_path(dst);
             unsafe {
                 SetFileAttributesW(d.as_ptr(), attrs);
             }
@@ -314,7 +308,7 @@ fn apply_dir_metadata(src: &Path, dst: &Path, opts: CopyOptions) {
         const FILE_SHARE_ALL: u32 = 0x7;
         const OPEN_EXISTING: u32 = 3;
         const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-        let d = wide(dst);
+        let d = crate::wide_path(dst);
         let handle = unsafe {
             CreateFileW(
                 d.as_ptr(),

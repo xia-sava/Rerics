@@ -1710,7 +1710,6 @@ fn cygwin_symlink_target(path: &Path, size: Option<u64>) -> Option<String> {
 /// `DeviceIoControl(FSCTL_GET_REPARSE_POINT)` で reparse バッファから読む。
 #[cfg(windows)]
 mod win_reparse {
-    use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
 
     /// `WIN32_FIND_DATAW`。使うのは属性と `dwReserved0`（reparse tag）のみで、残りは
@@ -1755,17 +1754,10 @@ mod win_reparse {
 
     const INVALID_HANDLE_VALUE: isize = -1;
 
-    fn to_wide(path: &Path) -> Vec<u16> {
-        path.as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect()
-    }
-
     /// `path` の reparse tag。reparse point でない・取得失敗時は `None`。
     pub(super) fn tag(path: &Path) -> Option<u32> {
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        let wide = to_wide(path);
+        let wide = crate::wide_path(path);
         let mut data: FindDataW = unsafe { std::mem::zeroed() };
         let handle = unsafe { FindFirstFileW(wide.as_ptr(), &mut data) };
         if handle == INVALID_HANDLE_VALUE {
@@ -1784,7 +1776,7 @@ mod win_reparse {
         const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
         const FSCTL_GET_REPARSE_POINT: u32 = 0x0009_00A8;
         const MAXIMUM_REPARSE_DATA_BUFFER_SIZE: usize = 16 * 1024;
-        let wide = to_wide(path);
+        let wide = crate::wide_path(path);
         let handle = unsafe {
             CreateFileW(
                 wide.as_ptr(),

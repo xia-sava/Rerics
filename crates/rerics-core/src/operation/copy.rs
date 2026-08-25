@@ -319,7 +319,6 @@ fn copy_file(
     progress: &mut dyn FnMut(u64, u64) -> bool,
 ) -> std::io::Result<CopyOutcome> {
     use std::ffi::c_void;
-    use std::os::windows::ffi::OsStrExt;
 
     type Routine = unsafe extern "system" fn(
         i64,
@@ -373,8 +372,8 @@ fn copy_file(
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let src_w: Vec<u16> = src.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
-    let dst_w: Vec<u16> = dst.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let src_w = crate::wide_path(src);
+    let dst_w = crate::wide_path(dst);
     let mut cb: &mut dyn FnMut(u64, u64) -> bool = progress;
     let data = (&mut cb) as *mut &mut dyn FnMut(u64, u64) -> bool as *mut c_void;
     let ok = unsafe {

@@ -12,7 +12,6 @@
 //! [`WATCH_DIED`](crate::winutil::msg::WATCH_DIED) を投げ、UI 側が記録して張り直せるようにする。
 
 use std::ffi::c_void;
-use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 
@@ -132,8 +131,9 @@ pub(crate) fn should_watch(dir: &Path, watch_non_fixed: bool) -> bool {
 
 /// `dir` が載っているボリュームのドライブ種別を引く。判定不能なら固定以外として扱う。
 fn drive_type(dir: &Path) -> u32 {
-    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
-    let mut root = [0u16; 260];
+    let wide = rerics_core::wide_path(dir);
+    // ボリュームのマウント位置は `dir` の接頭辞なので、`dir` と同じ長さがあれば必ず収まる。
+    let mut root = vec![0u16; wide.len()];
     unsafe {
         if GetVolumePathNameW(PCWSTR(wide.as_ptr()), &mut root).is_ok() {
             GetDriveTypeW(PCWSTR(root.as_ptr()))
@@ -148,7 +148,7 @@ fn drive_type(dir: &Path) -> u32 {
 /// Win32 エラー値を添えて [`msg::WATCH_DIED`] を投げてから終わる。
 fn run(dir: PathBuf, stop_raw: isize, hwnd_ptr: isize, is_left: bool, wait_ms: u64) {
     let stop = HANDLE(stop_raw as *mut c_void);
-    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let wide = rerics_core::wide_path(&dir);
 
     let dir_handle = unsafe {
         CreateFileW(

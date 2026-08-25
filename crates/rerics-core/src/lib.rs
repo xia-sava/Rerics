@@ -23,6 +23,8 @@ mod spinner;
 mod status;
 mod vfs;
 mod viewer;
+#[cfg(windows)]
+mod winpath;
 
 pub use archive::{
     ArchiveBackend, ArchiveEntry, ArchiveWriter, Caps, extract_all_to, extract_all_to_progress,
@@ -78,6 +80,8 @@ pub use viewer::{
     DisplayLine, Encoding, LineEnding, Matcher, SearchOptions, ViewMode, ViewerModel,
     build_matcher, looks_binary, search_matches,
 };
+#[cfg(windows)]
+pub use winpath::wide_path;
 
 use std::path::Path;
 
