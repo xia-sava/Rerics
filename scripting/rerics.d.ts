@@ -255,7 +255,7 @@ interface RericsClipboard {
 
 /** `rerics.spawn()` / `rerics.run()` の末尾に渡せる起動オプション。 */
 interface RericsProcOptions {
-  /** 作業ディレクトリ（省略時はプロセス既定）。 */
+  /** 作業ディレクトリ（省略時は現在地）。 */
   cwd?: string;
 }
 

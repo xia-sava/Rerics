@@ -1691,11 +1691,11 @@ const BOOTSTRAP: &str = r#"
     modifiers: () => ops.op_modifiers(),
     spawn: (cmd, ...rest) => {
       const { args, cwd } = splitProcArgs(rest);
-      return ops.op_spawn(String(cmd), args, cwd);
+      return ops.op_spawn(String(cmd), args, cwd || ops.op_current_dir());
     },
     run: (cmd, ...rest) => {
       const { args, cwd } = splitProcArgs(rest);
-      return ops.op_run(String(cmd), args, cwd);
+      return ops.op_run(String(cmd), args, cwd || ops.op_current_dir());
     },
     execute: (path, params) =>
       ops.op_execute(String(path), params == null ? "" : String(params), ops.op_current_dir()),
@@ -2737,6 +2737,24 @@ mod tests {
             false
         });
         assert!(appeared, "execute が現在地に空ファイルを作るはず: {}", marker.display());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_defaults_cwd_to_current_dir() {
+        let dir = std::env::temp_dir().join(format!("rerics-run-cwd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let host = Rc::new(MockHost { dir: dir.display().to_string(), ..Default::default() });
+        let mut eng = Engine::new(host.clone());
+        let code = r#"(async () => {
+            const r = await rerics.run("cmd", "/c", "cd");
+            rerics.log(r.stdout.trim());
+        })();"#
+            .to_string();
+        eng.run_to_completion("test:run-cwd", code).unwrap();
+        assert_eq!(*host.logs.borrow(), vec![dir.display().to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
