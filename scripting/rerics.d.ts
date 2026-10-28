@@ -470,7 +470,10 @@ interface RericsApi {
   /** 一覧から 1 つ選ばせる。選んだ行の index、キャンセルなら null。 */
   select(title: string, items: string[]): number | null;
 
-  /** パスを OS の関連付けで開く（ファイル・フォルダ・URL）。起動を待たない。 */
+  /**
+   * パスを OS の関連付けで開く（ファイル・フォルダ・URL）。起動を待たない。作業ディレクトリは
+   * パスの親ディレクトリ（URL などで無ければ現在地）。
+   */
   open(path: string): void;
 
   /** フォルダ選択ダイアログを出す。選んだパス、キャンセルなら null。 */

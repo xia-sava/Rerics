@@ -260,10 +260,7 @@ impl MainWindow {
             self.log.info(&crate::shell::launch_suppressed_line(&path.to_string_lossy()));
             Ok(())
         } else {
-            self.wnd
-                .hwnd()
-                .ShellExecute("open", &path.to_string_lossy(), None, None, co::SW::SHOWNORMAL)
-                .map(|_| ())
+            crate::shell::open_associated(self.wnd.hwnd(), &path.to_string_lossy(), None)
         };
         match opened {
             Ok(()) => {

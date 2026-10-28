@@ -169,7 +169,8 @@ pub trait HostApi {
     /// トークンで進行中の操作を中止する（未知のトークンは無視）。
     fn cancel_operation(&self, token: u64);
     /// パスを関連付けで開く（フォルダなら潜る／ファイルなら既定アプリ）。開きっぱなしで待たない。
-    fn open(&self, path: &str);
+    /// 作業ディレクトリは `path` の親ディレクトリ、無ければ `cwd`（空ならプロセス既定）。
+    fn open(&self, path: &str, cwd: &str);
     /// フォルダ選択ダイアログを開く（`title` 空なら既定見出し）。キャンセルは `None`。
     fn folder_dialog(&self, title: &str) -> Option<String>;
     /// ファイルを開くダイアログを開く（`title` 空なら既定見出し）。キャンセルは `None`。
@@ -932,10 +933,10 @@ async fn op_list_dir(#[string] path: String) -> Result<Vec<DirEntry>, deno_error
         .map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))
 }
 
-/// パスを関連付けで開く（GUI 経由・開きっぱなし）。
+/// パスを関連付けで開く（GUI 経由・開きっぱなし）。`cwd` は親ディレクトリが無いときの作業ディレクトリ。
 #[op2(fast)]
-fn op_open(state: &mut OpState, #[string] path: &str) {
-    state.borrow::<Host>().open(path);
+fn op_open(state: &mut OpState, #[string] path: &str, #[string] cwd: &str) {
+    state.borrow::<Host>().open(path, cwd);
 }
 
 /// フォルダ選択結果を `Vec` で包んで返す（`[]`＝キャンセル・`[s]`＝選んだパス）。理由は [`op_prompt`] と同じ。
@@ -1674,7 +1675,7 @@ const BOOTSTRAP: &str = r#"
       ops.op_rename_files((pairs || []).map((p) => [String(p.from), String(p.to)])),
     delete: (a, b) =>
       Array.isArray(a) ? startOp(2, a, "", b) : startOp(2, null, "", a),
-    open: (p) => ops.op_open(abs(p)),
+    open: (p) => ops.op_open(abs(p), ops.op_current_dir()),
     folderDialog: (t) => {
       const r = ops.op_folder_dialog(t == null ? "" : String(t));
       return r.length ? r[0] : null;
@@ -2272,7 +2273,7 @@ mod tests {
         /// Some なら操作を失敗（中止）として完了させる（reject 検証用）。
         op_error: Option<String>,
         /// `open` で開こうとしたパス（関連付け起動の検証用）。
-        opened: RefCell<Vec<String>>,
+        opened: RefCell<Vec<(String, String)>>,
         /// フォルダ/開く/保存ダイアログの戻り（None でキャンセル）。
         folder_reply: Option<String>,
         open_reply: Option<String>,
@@ -2408,8 +2409,8 @@ mod tests {
         fn cancel_operation(&self, token: u64) {
             self.cancelled.borrow_mut().push(token);
         }
-        fn open(&self, path: &str) {
-            self.opened.borrow_mut().push(path.to_string());
+        fn open(&self, path: &str, cwd: &str) {
+            self.opened.borrow_mut().push((path.to_string(), cwd.to_string()));
         }
         fn folder_dialog(&self, _title: &str) -> Option<String> {
             self.folder_reply.clone()
@@ -2673,12 +2674,15 @@ mod tests {
     }
 
     #[test]
-    fn open_passes_path_to_host() {
-        let host = Rc::new(MockHost::default());
+    fn open_passes_path_and_current_dir_to_host() {
+        let host = Rc::new(MockHost { dir: "C:\\work".to_string(), ..Default::default() });
         let mut eng = Engine::new(host.clone());
         eng.run_to_completion("test:open", r#"rerics.open("C:\\tmp\\file.txt");"#.to_string())
             .unwrap();
-        assert_eq!(*host.opened.borrow(), vec!["C:\\tmp\\file.txt".to_string()]);
+        assert_eq!(
+            *host.opened.borrow(),
+            vec![("C:\\tmp\\file.txt".to_string(), "C:\\work".to_string())]
+        );
     }
 
     #[test]

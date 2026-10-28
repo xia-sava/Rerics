@@ -1867,12 +1867,7 @@ impl MainWindow {
             self.log.info(&shell::launch_suppressed_line(&path.to_string_lossy()));
             return;
         }
-        if self
-            .wnd
-            .hwnd()
-            .ShellExecute("open", &path.to_string_lossy(), None, None, co::SW::SHOWNORMAL)
-            .is_err()
-        {
+        if shell::open_associated(self.wnd.hwnd(), &path.to_string_lossy(), None).is_err() {
             self.log.error("ヘルプをブラウザで開けませんでした");
         }
     }

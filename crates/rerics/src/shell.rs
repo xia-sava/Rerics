@@ -140,6 +140,46 @@ pub fn launch_editor(editor: &str, file: &Path) -> Result<(), String> {
         .map_err(|e| format!("{editor} を起動できません: {e}"))
 }
 
+/// 関連付けで開くときの作業ディレクトリ。開く対象の親ディレクトリが実在すればそこ、
+/// 無ければ（URL など）`fallback`。
+pub fn launch_dir(target: &str, fallback: Option<&Path>) -> Option<PathBuf> {
+    Path::new(target)
+        .parent()
+        .filter(|dir| dir.is_dir())
+        .or(fallback)
+        .map(Path::to_path_buf)
+}
+
+/// `target`（ファイル・フォルダ・URL）を関連付けで開く（非ブロッキング）。作業ディレクトリは
+/// [`launch_dir`] で決める。
+pub fn open_associated(owner: &w::HWND, target: &str, fallback_dir: Option<&Path>) -> Result<(), String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use windows::core::PCWSTR;
+
+    // `ShellExecuteW` は 32 以下の戻り値で失敗を表す。
+    const SHELL_EXECUTE_ERROR_MAX: usize = 32;
+
+    let file: Vec<u16> = target.encode_utf16().chain(std::iter::once(0)).collect();
+    let dir = launch_dir(target, fallback_dir).map(|d| wide(&d));
+    let ret = unsafe {
+        ShellExecuteW(
+            Some(HWND(owner.ptr())),
+            windows::core::w!("open"),
+            PCWSTR(file.as_ptr()),
+            PCWSTR::null(),
+            dir.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr())),
+            SW_SHOWNORMAL,
+        )
+    };
+    if ret.0 as usize > SHELL_EXECUTE_ERROR_MAX {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().to_string())
+    }
+}
+
 const DROPEFFECT_COPY: u32 = 1;
 const DROPEFFECT_MOVE: u32 = 2;
 
@@ -754,11 +794,12 @@ pub fn shell_rename(owner: &w::HWND, item: &Path, new_name: &str) -> Result<bool
 /// メニュー（エクスプローラの右クリックメニュー）をマウス位置に表示し、選ばれた項目を
 /// 実行する。メニューが閉じるまでブロックする。
 pub fn show_context_menu(owner: &w::HWND, paths: &[PathBuf]) -> Result<(), String> {
-    use windows::Win32::Foundation::{HANDLE, HWND, POINT};
+    use windows::Win32::Foundation::{HWND, POINT};
     use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree};
     use windows::Win32::UI::Shell::Common::ITEMIDLIST;
     use windows::Win32::UI::Shell::{
-        CMINVOKECOMMANDINFO, IContextMenu, IShellFolder, SHBindToParent, SHParseDisplayName,
+        CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX, IContextMenu, IShellFolder, SHBindToParent,
+        SHParseDisplayName,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreatePopupMenu, DestroyMenu, GetCursorPos, SW_SHOWNORMAL, TPM_LEFTALIGN, TPM_RETURNCMD,
@@ -770,6 +811,8 @@ pub fn show_context_menu(owner: &w::HWND, paths: &[PathBuf]) -> Result<(), Strin
     const ID_CMD_FIRST: u32 = 1;
     const ID_CMD_LAST: u32 = 0x7fff;
     const CMF_NORMAL: u32 = 0;
+    // `CMINVOKECOMMANDINFOEX` の `...W` 欄を使わせるフラグ。
+    const CMIC_MASK_UNICODE: u32 = 0x0000_4000;
 
     if paths.is_empty() {
         return Ok(());
@@ -824,18 +867,21 @@ pub fn show_context_menu(owner: &w::HWND, paths: &[PathBuf]) -> Result<(), Strin
         let _ = DestroyMenu(hmenu);
 
         if chosen > 0 {
-            let info = CMINVOKECOMMANDINFO {
-                cbSize: std::mem::size_of::<CMINVOKECOMMANDINFO>() as u32,
-                fMask: 0,
+            // 動詞は ID からのオフセット（MAKEINTRESOURCE 相当）で ANSI/Unicode 両方へ渡す。
+            let verb = (chosen as u32 - ID_CMD_FIRST) as usize;
+            let dir = paths[0].parent().filter(|d| d.is_dir()).map(wide);
+            let info = CMINVOKECOMMANDINFOEX {
+                cbSize: std::mem::size_of::<CMINVOKECOMMANDINFOEX>() as u32,
+                fMask: CMIC_MASK_UNICODE,
                 hwnd,
-                lpVerb: PCSTR((chosen as u32 - ID_CMD_FIRST) as usize as *const u8),
-                lpParameters: PCSTR::null(),
-                lpDirectory: PCSTR::null(),
+                lpVerb: PCSTR(verb as *const u8),
+                lpVerbW: PCWSTR(verb as *const u16),
+                lpDirectoryW: dir.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr())),
                 nShow: SW_SHOWNORMAL.0,
-                dwHotKey: 0,
-                hIcon: HANDLE::default(),
+                ..Default::default()
             };
-            menu.InvokeCommand(&info).map_err(|e| e.to_string())?;
+            menu.InvokeCommand(&info as *const CMINVOKECOMMANDINFOEX as *const CMINVOKECOMMANDINFO)
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     })();
@@ -858,6 +904,33 @@ mod tests {
             .collect();
         let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
         String::from_utf16(&units[..end]).unwrap()
+    }
+
+    #[test]
+    fn launch_dir_prefers_existing_parent_of_target() {
+        let dir = std::env::temp_dir();
+        let file = dir.join("rerics-launch-dir.txt");
+        let fallback = Path::new(r"C:\fallback");
+        assert_eq!(
+            launch_dir(&file.to_string_lossy(), Some(fallback)),
+            Some(dir),
+            "ファイル自体が無くても親ディレクトリが実在すればそこ"
+        );
+    }
+
+    #[test]
+    fn launch_dir_falls_back_without_existing_parent() {
+        let fallback = Path::new(r"C:\fallback");
+        let missing = std::env::temp_dir().join("rerics-no-such-dir").join("a.txt");
+        let missing = missing.to_string_lossy();
+        for target in ["https://example.com/page", "file.txt", r"C:\", &missing] {
+            assert_eq!(
+                launch_dir(target, Some(fallback)),
+                Some(fallback.to_path_buf()),
+                "{target}"
+            );
+        }
+        assert_eq!(launch_dir("https://example.com/page", None), None);
     }
 
     #[test]
