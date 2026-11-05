@@ -28,6 +28,11 @@ use winsafe::{self as w, co, gui, prelude::*};
 
 use crate::chrome;
 
+/// WebView2 がフォーカスを得たあと、マウスのボタンが離れるのを見張るタイマー。
+const REFOCUS_TIMER_ID: usize = 0x5246;
+/// 見張りの間隔（ミリ秒）。
+const REFOCUS_POLL_MS: u32 = 50;
+
 const MERMAID_JS: &[u8] = include_bytes!("../assets/rendered/mermaid.min.js");
 const MARKDOWN_CSS: &[u8] = include_bytes!("../assets/rendered/markdown.css");
 const MARKDOWN_JS: &[u8] = include_bytes!("../assets/rendered/markdown.js");
@@ -471,6 +476,11 @@ impl RenderedView {
             Ok(())
         });
         let me = self.clone();
+        self.wnd.on().wm_timer(REFOCUS_TIMER_ID, move || {
+            me.refocus_when_released();
+            Ok(())
+        });
+        let me = self.clone();
         self.wnd.on().wm_show_window(move |p| {
             if let Engine::Ready(ready) = &*me.inner.engine.borrow() {
                 unsafe {
@@ -664,13 +674,13 @@ impl RenderedView {
                 )?;
             }
             // キーボードのフォーカスは呼び出し側へ戻す（WebView2 にはマウス操作だけを渡す）。
+            // クリックやドラッグの途中で取り戻すと WebView2 が取り直すので、ボタンが離れるのを
+            // 待ってから戻す。
             let me = self.clone();
             controller.add_GotFocus(
                 &FocusChangedEventHandler::create(Box::new(move |_, _| {
                     me.inner.focus_events.set(me.inner.focus_events.get().wrapping_add(1));
-                    if let Some(cb) = &*me.inner.on_focus.borrow() {
-                        cb();
-                    }
+                    let _ = me.hwnd().SetTimer(REFOCUS_TIMER_ID, REFOCUS_POLL_MS, None);
                     Ok(())
                 })),
                 &mut token,
@@ -792,6 +802,20 @@ impl RenderedView {
         }
     }
 
+    /// マウスのボタンがすべて離れていれば、見張りをやめてフォーカスを呼び出し側へ戻す。
+    fn refocus_when_released(&self) {
+        let pressed = [co::VK::LBUTTON, co::VK::RBUTTON, co::VK::MBUTTON]
+            .into_iter()
+            .any(w::GetAsyncKeyState);
+        if pressed {
+            return;
+        }
+        let _ = self.hwnd().KillTimer(REFOCUS_TIMER_ID);
+        if let Some(cb) = &*self.inner.on_focus.borrow() {
+            cb();
+        }
+    }
+
     /// 右クリックで既定のメニューを出さず、呼び出し側のメニューを右クリックした位置に出す。
     fn on_context_menu(
         &self,
@@ -802,15 +826,34 @@ impl RenderedView {
             args.SetHandled(true)?;
             args.Location(&mut at)?;
         }
+        // メニューを出している間に見張りがフォーカスを動かさないよう止める（閉じたあとは
+        // 呼び出し側がフォーカスを戻す）。
+        let _ = self.hwnd().KillTimer(REFOCUS_TIMER_ID);
+        // 位置は表示倍率を掛ける前の座標（DIP）で届くので、WebView2 の描画倍率を掛けて画素へ直す。
         // WebView2 はパネルの左上に置いているので、文書内の位置がそのままパネル内の位置になる。
-        let pt = self
-            .hwnd()
-            .ClientToScreen(w::POINT { x: at.x, y: at.y })
-            .unwrap_or_default();
+        let scale = self.rasterization_scale();
+        let client = w::POINT {
+            x: (at.x as f64 * scale).round() as i32,
+            y: (at.y as f64 * scale).round() as i32,
+        };
+        let pt = self.hwnd().ClientToScreen(client).unwrap_or_default();
         if let Some(cb) = &*self.inner.on_menu.borrow() {
             cb(pt);
         }
         Ok(())
+    }
+
+    /// WebView2 の描画倍率（DIP から画素への倍率）。取れなければ窓の DPI から求める。
+    fn rasterization_scale(&self) -> f64 {
+        if let Engine::Ready(ready) = &*self.inner.engine.borrow()
+            && let Ok(c3) = ready.controller.cast::<ICoreWebView2Controller3>()
+        {
+            let mut scale = 0.0f64;
+            if unsafe { c3.RasterizationScale(&mut scale) }.is_ok() && scale > 0.0 {
+                return scale;
+            }
+        }
+        gui::dpi_x(100) as f64 / 100.0
     }
 
     /// WebView2 にフォーカスがある間のキーを Rerics のキー定義へ回す。

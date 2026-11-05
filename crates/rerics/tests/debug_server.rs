@@ -7476,6 +7476,26 @@ fn viewer_rendered_status_shows_link_target() {
     assert!(status.contains("doc.md"), "外れたらファイル名へ戻る: {status}");
 }
 
+/// WebView2 がキーボードのフォーカスを得ても、マウスのボタンが離れていれば本体のキー受けへ戻り、
+/// キーは本体のキー定義で解かれる。WebView2 を作る可視の起動でだけ確かめる（headless では作らない）。
+#[test]
+fn viewer_rendered_returns_keyboard_focus() {
+    let server = Server::start_dirs(&[("doc.html", b"<p>text</p>")], &[]);
+    server.req("POST", "/command/setCursorPosition", r#"["doc.html"]"#).unwrap();
+    server.req("POST", "/command/view", "").unwrap();
+    poll(&server, "/state/active_view", |b| b.trim() == "\"rendered\"");
+    let engine = server.req("GET", "/state/rendered/engine", "").unwrap().1;
+    if engine.contains("disabled") {
+        return;
+    }
+    poll(&server, "/state/rendered/loaded", |b| b.trim() == "true");
+    server.req("POST", "/view/focus", "").unwrap();
+    poll(&server, "/state/rendered/focus_events", |b| b.trim() != "0");
+    poll(&server, "/state/rendered/key_focus", |b| b.trim() == "true");
+    server.req("POST", "/view/key/Tab", "").unwrap();
+    poll(&server, "/state/view/form", |b| b.trim() == "\"text\"");
+}
+
 /// `view("text")` は Markdown もソースのテキストで開く。HTML も既定はレンダリング表示。
 #[test]
 fn viewer_markdown_text_on_request_and_html_rendered() {
