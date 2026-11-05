@@ -105,8 +105,8 @@ RERICS_E2E_VISIBLE=1 ./tools/offscreen.sh dev test -p rerics --features debug-se
   例：`JSON.stringify({svg: document.querySelectorAll("pre.mermaid svg").length})`。
 - `GET /view/capture` … レンダリング表示の見た目を PNG で返す（WebView2 は別プロセスが描くので `/snapshot` には
   写らない。`/snapshot` に写るのはパネル自身が描く地と下端の状態行だけ）。
-- `POST /view/focus` … WebView2 へキーボードのフォーカスを移す（クリックで移るのと同じ状況）。すぐ key_sink へ
-  戻るのが正しい挙動で、`/state/rendered/focus_events`（WebView2 がフォーカスを得た回数）と
+- `POST /view/focus` … WebView2 へキーボードのフォーカスを移す（クリックで移るのと同じ状況）。マウスのボタンが
+  離れていれば数十ミリ秒で key_sink へ戻るのが正しい挙動で、`/state/rendered/focus_events`（WebView2 がフォーカスを得た回数）と
   `/state/rendered/key_focus`（key_sink にあるか）で確かめる。
 - `POST /view/hover`（body＝リンクの URL・空で外す）… リンクにマウスを乗せた状態にして状態行を描き直す。
   文言は `/state/rendered/status`。実際のマウスの乗せ外し（WebView2 の `StatusBarTextChanged`）は
