@@ -103,7 +103,11 @@ RERICS_E2E_VISIBLE=1 ./tools/offscreen.sh dev test -p rerics --features debug-se
   キーを解決して実行する（実キー経路と同じ）。
 - `POST /view/eval`（body＝スクリプト）… レンダリング表示の文書でスクリプトを実行し、結果の JSON を返す。
   例：`JSON.stringify({svg: document.querySelectorAll("pre.mermaid svg").length})`。
-- `GET /view/capture` … レンダリング表示の見た目を PNG で返す（WebView2 は別プロセスが描くので `/snapshot` には写らない）。
+- `GET /view/capture` … レンダリング表示の見た目を PNG で返す（WebView2 は別プロセスが描くので `/snapshot` には
+  写らない。`/snapshot` に写るのはパネル自身が描く地と下端の状態行だけ）。
+- `POST /view/hover`（body＝リンクの URL・空で外す）… リンクにマウスを乗せた状態にして状態行を描き直す。
+  文言は `/state/rendered/status`。実際のマウスの乗せ外し（WebView2 の `StatusBarTextChanged`）は
+  別デスクトップでは起こせないので、そこだけは人の手で確かめる。
 - `POST /modal/text`（body=値）／`POST /modal/command/<ok|cancel|役割名|ctrl_id>`／
   `POST /modal/select/<n>` … 開いてるモーダルの操作。
 - `POST /modal/key/<key>` … 開いてるモーダルへ**実キー送出**（`debug_modal_key`・debug_ctl.rs）。送れるキーは
