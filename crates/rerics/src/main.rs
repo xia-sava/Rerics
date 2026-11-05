@@ -639,7 +639,7 @@ impl MainWindow {
             &wnd,
             gui::dpi(0, 0),
             gui::dpi(400, 400),
-            config.active_colors().viewer_background,
+            &config,
             !debug_headless,
         );
 

@@ -312,6 +312,9 @@ pub enum Request {
     ViewKey { action: String },
     /// `POST /view/eval`：レンダリング表示の文書でスクリプトを実行し、結果の JSON を返す（body＝スクリプト）。
     ViewEval { script: String },
+    /// `POST /view/hover`：レンダリング表示でリンクにマウスを乗せた状態にする（body＝リンクの URL・
+    /// 空なら外す）。WebView2 の状態表示の変化と同じ経路で状態行を描き直す。
+    ViewHover { uri: String },
     /// `GET /view/capture`：レンダリング表示の見た目を PNG で返す（WebView2 は別プロセスが描くので
     /// `/snapshot` には写らない）。
     ViewCapture,
@@ -766,6 +769,10 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 let mut script = String::new();
                 let _ = std::io::Read::read_to_string(req.as_reader(), &mut script);
                 Some(Request::ViewEval { script })
+            } else if path == "/view/hover" {
+                let mut uri = String::new();
+                let _ = std::io::Read::read_to_string(req.as_reader(), &mut uri);
+                Some(Request::ViewHover { uri })
             } else if let Some(action) = path.strip_prefix("/view/key/") {
                 Some(Request::ViewKey { action: action.trim_end_matches('/').to_string() })
             } else if let Some(key) = path.strip_prefix("/modal/key/") {

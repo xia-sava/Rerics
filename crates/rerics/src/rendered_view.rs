@@ -1,7 +1,8 @@
 //! Markdown / HTML のレンダリング表示パネル（WebView2）。
 //!
 //! 他のビューアと同じく、別窓を作らずメイン領域へ重ねる 1 枚の `WindowControl` に WebView2 の
-//! コントローラを載せる。WebView2 の環境は初めて表示するときに非同期で作る。資源は
+//! コントローラを載せる。下端には状態行（ファイル名、リンクにマウスを乗せている間はその行き先）を
+//! 自前で描く。WebView2 の環境は初めて表示するときに非同期で作る。資源は
 //! `WebResourceRequested` で一手に配り（表示中の文書・同じディレクトリのファイル・同梱の
 //! CSS とスクリプト）、それ以外のホストへの要求は拒否する。ページ遷移と新しい窓はすべて止め、
 //! リンク先は呼び出し側へ渡す。
@@ -10,18 +11,20 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use rerics_core::{ASSET_HOST, DOC_HOST, KeyChord, Rgb, html_csp, markdown_csp};
+use rerics_core::{ASSET_HOST, Config, DOC_HOST, KeyChord, Rgb, html_csp, markdown_csp};
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
     AcceleratorKeyPressedEventHandler, CreateCoreWebView2ControllerCompletedHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, ExecuteScriptCompletedHandler,
     NavigationStartingEventHandler, NewWindowRequestedEventHandler,
-    WebResourceRequestedEventHandler, take_pwstr,
+    StatusBarTextChangedEventHandler, WebResourceRequestedEventHandler, take_pwstr,
 };
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::Shell::SHCreateMemStream;
 use windows::core::{HSTRING, Interface, PCWSTR, PWSTR};
 use winsafe::{self as w, co, gui, prelude::*};
+
+use crate::chrome;
 
 const MERMAID_JS: &[u8] = include_bytes!("../assets/rendered/mermaid.min.js");
 const MARKDOWN_CSS: &[u8] = include_bytes!("../assets/rendered/markdown.css");
@@ -42,6 +45,8 @@ pub(crate) enum PageBody {
 pub(crate) struct Page {
     /// ファイル名（文書の URL の末尾。相対パスの基準になる）。
     pub(crate) name: String,
+    /// 文書のある場所の表示名（ディレクトリのパス・書庫内の場所）。リンクの行き先を示すのに使う。
+    pub(crate) location: String,
     pub(crate) body: PageBody,
     /// 同じディレクトリ基準でファイルを読む関数。
     pub(crate) files: FileReader,
@@ -84,6 +89,10 @@ struct Inner {
     page: RefCell<Option<Rc<Page>>>,
     user_data_dir: PathBuf,
     background: Rgb,
+    font_family: String,
+    font_size: i32,
+    /// マウスを乗せているリンクの URL（乗せていなければ空）。
+    hover: RefCell<String>,
     on_link: RefCell<Option<LinkHandler>>,
     on_key: RefCell<Option<KeyHandler>>,
     on_failed: RefCell<Option<FailHandler>>,
@@ -104,7 +113,7 @@ impl RenderedView {
         parent: &(impl GuiParent + 'static),
         position: (i32, i32),
         size: (i32, i32),
-        background: Rgb,
+        cfg: &Config,
         enabled: bool,
     ) -> Self {
         let wnd = gui::WindowControl::new(
@@ -121,7 +130,10 @@ impl RenderedView {
             engine: RefCell::new(if enabled { Engine::Idle } else { Engine::Disabled }),
             page: RefCell::new(None),
             user_data_dir: user_data_dir(),
-            background,
+            background: cfg.active_colors().viewer_background,
+            font_family: cfg.font.family.clone(),
+            font_size: cfg.font.size,
+            hover: RefCell::new(String::new()),
             on_link: RefCell::new(None),
             on_key: RefCell::new(None),
             on_failed: RefCell::new(None),
@@ -161,6 +173,7 @@ impl RenderedView {
     pub fn open(&self, page: Page) {
         *self.inner.page.borrow_mut() = Some(Rc::new(page));
         self.inner.loaded.set(false);
+        self.set_hover(String::new());
         let engine = self.inner.engine.borrow().clone();
         match engine {
             Engine::Idle => self.start_engine(),
@@ -174,6 +187,7 @@ impl RenderedView {
     pub fn release(&self) {
         *self.inner.page.borrow_mut() = None;
         self.inner.loaded.set(false);
+        self.inner.hover.borrow_mut().clear();
         if let Engine::Ready(ready) = &*self.inner.engine.borrow() {
             unsafe {
                 let _ = ready.webview.Navigate(&HSTRING::from("about:blank"));
@@ -203,6 +217,86 @@ impl RenderedView {
     #[cfg(feature = "debug-server")]
     pub fn loaded(&self) -> bool {
         self.inner.loaded.get()
+    }
+
+    /// マウスを乗せているリンクの URL を設定して状態行を描き直す（空ならファイル名に戻す）。
+    /// WebView2 の状態表示の変化を受けて呼ぶ。debug-server からも駆動できる。
+    pub fn set_hover(&self, uri: String) {
+        *self.inner.hover.borrow_mut() = uri;
+        let _ = self.hwnd().InvalidateRect(None, true);
+    }
+
+    /// 状態行の文言。リンクにマウスを乗せている間はその行き先（文書のディレクトリ内なら実際の
+    /// パス）、それ以外はファイル名と操作の案内。
+    pub fn status_text(&self) -> String {
+        let page = self.inner.page.borrow();
+        let hover = self.inner.hover.borrow();
+        if !hover.is_empty() {
+            let location = page.as_ref().map(|p| p.location.as_str()).unwrap_or("");
+            return format!("リンク先: {}", link_display(&hover, location));
+        }
+        match page.as_ref() {
+            Some(p) => format!("{}    (B/Tab:表示形式 Esc:閉じる)", p.name),
+            None => String::new(),
+        }
+    }
+
+    fn status_height(&self) -> i32 {
+        gui::dpi_y(self.inner.font_size + 8)
+    }
+
+    fn on_paint(&self) -> w::AnyResult<()> {
+        let hdc = self.hwnd().BeginPaint()?;
+        let rc = self.hwnd().GetClientRect()?;
+        self.paint_to(&hdc, rc.right - rc.left, rc.bottom - rc.top)
+    }
+
+    /// ターゲットビットマップ選択済みの任意 DC へ、パネル自身が描く部分（地と状態行）を描く
+    /// （debug-server のスナップショット用。本文は WebView2 が描くので写らない）。
+    #[cfg(feature = "debug-server")]
+    pub(crate) fn render_to(&self, dc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
+        self.paint_to(dc, cw, ch)
+    }
+
+    fn paint_to(&self, hdc: &w::HDC, cw: i32, ch: i32) -> w::AnyResult<()> {
+        if cw <= 0 || ch <= 0 {
+            return Ok(());
+        }
+        let sh = self.status_height();
+        let sy = (ch - sh).max(0);
+        // 本文は WebView2 が覆う。作成前・読み込み前に見える地だけ塗る。
+        let bg = self.inner.background;
+        let body = w::HBRUSH::CreateSolidBrush(w::COLORREF::from_rgb(bg.r, bg.g, bg.b))?;
+        hdc.FillRect(w::RECT { left: 0, top: 0, right: cw, bottom: sy }, &body)?;
+        let face = w::HBRUSH::CreateSolidBrush(chrome::face())?;
+        hdc.FillRect(w::RECT { left: 0, top: sy, right: cw, bottom: ch }, &face)?;
+        chrome::hline(hdc, 0, cw, sy, chrome::highlight())?;
+        let font = w::HFONT::CreateFont(
+            w::SIZE { cx: 0, cy: -gui::dpi_y((self.inner.font_size - 2).max(6)) },
+            0,
+            0,
+            co::FW::NORMAL,
+            false,
+            false,
+            false,
+            co::CHARSET::DEFAULT,
+            co::OUT_PRECIS::DEFAULT,
+            co::CLIP::DEFAULT_PRECIS,
+            co::QUALITY::CLEARTYPE,
+            co::PITCH::DEFAULT,
+            &self.inner.font_family,
+        )?;
+        let _sel = hdc.SelectObject(&*font)?;
+        hdc.SetBkMode(co::BKMODE::TRANSPARENT)?;
+        hdc.SetTextColor(chrome::text())?;
+        let pad = gui::dpi_x(self.inner.font_size).max(1);
+        let rect = w::RECT { left: pad, top: sy, right: cw - pad, bottom: ch };
+        hdc.DrawText(
+            &self.status_text(),
+            rect,
+            co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX | co::DT::PATH_ELLIPSIS,
+        )?;
+        Ok(())
     }
 
     /// 文書でスクリプトを実行し、結果（JSON 文字列。失敗したら `null`）をコールバックへ渡す。
@@ -325,8 +419,11 @@ impl RenderedView {
 
     fn setup_events(&self) {
         let me = self.clone();
+        self.wnd.on().wm_paint(move || me.on_paint());
+        let me = self.clone();
         self.wnd.on().wm_size(move |_| {
             me.fit_bounds();
+            let _ = me.hwnd().InvalidateRect(None, true);
             Ok(())
         });
         let me = self.clone();
@@ -340,7 +437,7 @@ impl RenderedView {
         });
     }
 
-    /// WebView2 をパネルのクライアント領域いっぱいに合わせる。
+    /// WebView2 をパネルのクライアント領域（下端の状態行を除く）に合わせる。
     fn fit_bounds(&self) {
         let Engine::Ready(ready) = &*self.inner.engine.borrow() else {
             return;
@@ -348,7 +445,8 @@ impl RenderedView {
         let Ok(rc) = self.hwnd().GetClientRect() else {
             return;
         };
-        let bounds = RECT { left: 0, top: 0, right: rc.right - rc.left, bottom: rc.bottom - rc.top };
+        let bottom = (rc.bottom - rc.top - self.status_height()).max(0);
+        let bounds = RECT { left: 0, top: 0, right: rc.right - rc.left, bottom };
         unsafe {
             let _ = ready.controller.SetBounds(bounds);
         }
@@ -493,6 +591,20 @@ impl RenderedView {
                 })),
                 &mut token,
             )?;
+            // リンクにマウスを乗せたときの行き先（WebView2 自身の状態表示は無効にして自前で出す）。
+            if let Ok(webview12) = webview.cast::<ICoreWebView2_12>() {
+                let me = self.clone();
+                let source = webview12.clone();
+                webview12.add_StatusBarTextChanged(
+                    &StatusBarTextChangedEventHandler::create(Box::new(move |_, _| {
+                        let mut text = PWSTR::null();
+                        source.StatusBarText(&mut text)?;
+                        me.set_hover(take_pwstr(text));
+                        Ok(())
+                    })),
+                    &mut token,
+                )?;
+            }
             let me = self.clone();
             controller.add_AcceleratorKeyPressed(
                 &AcceleratorKeyPressedEventHandler::create(Box::new(move |_, args| {
@@ -713,6 +825,18 @@ fn link_target(uri: &str) -> Option<LinkTarget> {
     }
 }
 
+/// リンクの行き先の表示名。文書のディレクトリ基準のリンクは、文書のある場所 `location` を前に
+/// 付けた実際のパスに直す。外部の URL はそのまま。
+fn link_display(uri: &str, location: &str) -> String {
+    match route(uri) {
+        Route::Doc(path) if !location.is_empty() => {
+            format!("{}\\{}", location.trim_end_matches('\\'), path.replace('/', "\\"))
+        }
+        Route::Doc(path) => path.replace('/', "\\"),
+        _ => uri.to_string(),
+    }
+}
+
 fn doc_url(name: &str) -> String {
     format!("https://{DOC_HOST}/{}", percent_encode(name))
 }
@@ -837,6 +961,15 @@ mod tests {
         ));
         assert!(link_target("javascript:alert(1)").is_none());
         assert!(link_target("file:///C:/Windows").is_none());
+    }
+
+    #[test]
+    fn link_display_shows_real_location() {
+        assert_eq!(
+            link_display(&format!("https://{DOC_HOST}/sub/other%20doc.md#x"), "C:\\work\\"),
+            "C:\\work\\sub\\other doc.md"
+        );
+        assert_eq!(link_display("https://example.com/a?b=1", "C:\\work"), "https://example.com/a?b=1");
     }
 
     #[test]

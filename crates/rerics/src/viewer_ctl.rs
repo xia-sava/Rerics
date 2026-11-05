@@ -159,7 +159,8 @@ impl MainWindow {
             _ => PageBody::File,
         };
         let files = self.rendered_file_reader(is_left);
-        self.rendered.open(Page { name: name.to_string(), body, files });
+        let location = self.cursor_dir(is_left).loc_display();
+        self.rendered.open(Page { name: name.to_string(), location, body, files });
         if at_end {
             self.rendered.scroll_to_end_when_loaded();
         }

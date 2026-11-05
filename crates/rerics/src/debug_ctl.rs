@@ -80,6 +80,10 @@ impl MainWindow {
                         ));
                     }
                 }
+                debug_server::Request::ViewHover { uri } => {
+                    self.rendered.set_hover(uri);
+                    let _ = tx.send(debug_server::Response::Json(self.debug_state_value().to_string()));
+                }
                 debug_server::Request::ViewCapture => {
                     let reply = tx.clone();
                     let ran = self.rendered.capture_png(move |png| {
@@ -1554,8 +1558,14 @@ impl MainWindow {
                     self.media.render_to(d, w, h)
                 })?;
             }
-            // WebView2 は別プロセスが描くので合成できない（`/view/capture` で撮る）。
-            ActiveView::Rendered | ActiveView::None => {}
+            // 本文は WebView2（別プロセス）が描くので合成できない（`/view/capture` で撮る）。
+            // パネル自身が描く地と状態行だけを重ねる。
+            ActiveView::Rendered => {
+                self.render_view_into(&target, &win_dc, self.rendered.hwnd(), |d, w, h| {
+                    self.rendered.render_to(d, w, h)
+                })?;
+            }
+            ActiveView::None => {}
         }
 
         let mut bmi = w::BITMAPINFO::default();
@@ -1764,6 +1774,7 @@ impl MainWindow {
                 "engine": self.rendered.engine_state(),
                 "page": self.rendered.page_name(),
                 "loaded": self.rendered.loaded(),
+                "status": self.rendered.status_text(),
             },
             "panes": {
                 "left": self.debug_pane_json(true),

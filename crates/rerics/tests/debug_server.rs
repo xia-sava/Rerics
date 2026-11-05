@@ -7452,6 +7452,30 @@ fn viewer_markdown_cycles_rendered_text_binary() {
     assert_eq!(rendered.trim(), "null");
 }
 
+/// レンダリング表示の状態行は、ふだんはファイル名を、リンクにマウスを乗せている間はその行き先を
+/// 出す。文書のディレクトリ内へのリンクは実際のパスで示す。
+#[test]
+fn viewer_rendered_status_shows_link_target() {
+    let server = Server::start_dirs(&[("doc.md", b"[x](sub/x.md)\n")], &[]);
+    server.req("POST", "/command/setCursorPosition", r#"["doc.md"]"#).unwrap();
+    server.req("POST", "/command/view", "").unwrap();
+    poll(&server, "/state/active_view", |b| b.trim() == "\"rendered\"");
+    let status = server.req("GET", "/state/rendered/status", "").unwrap().1;
+    assert!(status.contains("doc.md"), "ふだんはファイル名: {status}");
+    let dir = server.req("GET", "/state/panes/left/location", "").unwrap().1;
+    let dir: String = serde_json::from_str(&dir).unwrap();
+    server.req("POST", "/view/hover", "https://doc.rerics.invalid/sub/x.md").unwrap();
+    let status: String =
+        serde_json::from_str(&server.req("GET", "/state/rendered/status", "").unwrap().1).unwrap();
+    assert_eq!(status, format!("リンク先: {}\\sub\\x.md", dir.trim_end_matches('\\')));
+    server.req("POST", "/view/hover", "https://example.com/").unwrap();
+    let status = server.req("GET", "/state/rendered/status", "").unwrap().1;
+    assert!(status.contains("リンク先: https://example.com/"), "外部はそのまま: {status}");
+    server.req("POST", "/view/hover", "").unwrap();
+    let status = server.req("GET", "/state/rendered/status", "").unwrap().1;
+    assert!(status.contains("doc.md"), "外れたらファイル名へ戻る: {status}");
+}
+
 /// `view("text")` は Markdown もソースのテキストで開く。HTML も既定はレンダリング表示。
 #[test]
 fn viewer_markdown_text_on_request_and_html_rendered() {
