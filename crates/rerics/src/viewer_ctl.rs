@@ -235,8 +235,47 @@ impl MainWindow {
             Command::ViewerScrollBottom => self.rendered.scroll_to_edge(true),
             Command::ViewerSelectAll => self.rendered.select_all(),
             Command::ViewerCopy => self.rendered.copy_selection(),
+            Command::ViewerContextMenu => {
+                let pt = self
+                    .rendered
+                    .hwnd()
+                    .ClientToScreen(w::POINT::default())
+                    .unwrap_or_default();
+                let _ = self.show_rendered_menu(pt);
+            }
             _ => {}
         }
+    }
+
+    /// レンダリング表示の右クリックメニューを表示し、選んだ操作を実行する（画面座標 `pt`）。
+    pub(crate) fn show_rendered_menu(&self, pt: w::POINT) -> w::AnyResult<()> {
+        const COPY: u16 = 1;
+        const SELECT_ALL: u16 = 2;
+        const FORM: u16 = 3;
+        const CLOSE: u16 = 4;
+        let items: &[(u16, &str)] = &[
+            (COPY, "コピー(&C)"),
+            (SELECT_ALL, "すべて選択(&A)"),
+            (0, ""),
+            (FORM, "表示形式を切替(&T)"),
+            (0, ""),
+            (CLOSE, "閉じる(&X)"),
+        ];
+        let Some(id) = self.popup_menu(items, pt, self.rendered.hwnd())? else {
+            self.key_sink.hwnd().SetFocus();
+            return Ok(());
+        };
+        match id {
+            COPY => self.rendered.copy_selection(),
+            SELECT_ALL => self.rendered.select_all(),
+            FORM => self.cycle_form()?,
+            CLOSE => self.close_viewer()?,
+            _ => {}
+        }
+        if matches!(self.active_view.get(), ActiveView::Rendered) {
+            self.key_sink.hwnd().SetFocus();
+        }
+        Ok(())
     }
 
     /// カーソル下がファイルならその名前（ディレクトリ・親は `None`）。

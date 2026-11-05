@@ -5,7 +5,8 @@
 //! 自前で描く。WebView2 の環境は初めて表示するときに非同期で作る。資源は
 //! `WebResourceRequested` で一手に配り（表示中の文書・同じディレクトリのファイル・同梱の
 //! CSS とスクリプト）、それ以外のホストへの要求は拒否する。ページ遷移と新しい窓はすべて止め、
-//! リンク先は呼び出し側へ渡す。
+//! リンク先は呼び出し側へ渡す。キーボードのフォーカスは呼び出し側へ戻し、WebView2 には
+//! マウス操作（選択・リンク・ホイール）だけを渡す。右クリックのメニューも呼び出し側が出す。
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -14,12 +15,13 @@ use std::rc::Rc;
 use rerics_core::{ASSET_HOST, Config, DOC_HOST, KeyChord, Rgb, html_csp, markdown_csp};
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{
-    AcceleratorKeyPressedEventHandler, CreateCoreWebView2ControllerCompletedHandler,
-    CreateCoreWebView2EnvironmentCompletedHandler, ExecuteScriptCompletedHandler,
-    NavigationStartingEventHandler, NewWindowRequestedEventHandler,
-    StatusBarTextChangedEventHandler, WebResourceRequestedEventHandler, take_pwstr,
+    AcceleratorKeyPressedEventHandler, ContextMenuRequestedEventHandler,
+    CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
+    ExecuteScriptCompletedHandler, FocusChangedEventHandler, NavigationStartingEventHandler,
+    NewWindowRequestedEventHandler, StatusBarTextChangedEventHandler,
+    WebResourceRequestedEventHandler, take_pwstr,
 };
-use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::UI::Shell::SHCreateMemStream;
 use windows::core::{HSTRING, Interface, PCWSTR, PWSTR};
 use winsafe::{self as w, co, gui, prelude::*};
@@ -63,6 +65,8 @@ pub(crate) enum LinkTarget {
 type LinkHandler = Box<dyn Fn(LinkTarget)>;
 type KeyHandler = Box<dyn Fn(KeyChord) -> bool>;
 type FailHandler = Box<dyn Fn(String)>;
+type MenuHandler = Box<dyn Fn(w::POINT)>;
+type FocusHandler = Box<dyn Fn()>;
 
 /// WebView2 の準備状況。
 #[derive(Clone)]
@@ -96,8 +100,12 @@ struct Inner {
     on_link: RefCell<Option<LinkHandler>>,
     on_key: RefCell<Option<KeyHandler>>,
     on_failed: RefCell<Option<FailHandler>>,
+    on_menu: RefCell<Option<MenuHandler>>,
+    on_focus: RefCell<Option<FocusHandler>>,
     /// 表示中の文書の読み込みが済んだか（debug 観測用）。
     loaded: Cell<bool>,
+    /// WebView2 がキーボードのフォーカスを得た回数（debug 観測用）。
+    focus_events: Cell<u32>,
 }
 
 /// レンダリング表示パネル。
@@ -137,7 +145,10 @@ impl RenderedView {
             on_link: RefCell::new(None),
             on_key: RefCell::new(None),
             on_failed: RefCell::new(None),
+            on_menu: RefCell::new(None),
+            on_focus: RefCell::new(None),
             loaded: Cell::new(false),
+            focus_events: Cell::new(0),
         });
         let me = Self { wnd, inner };
         me.setup_events();
@@ -156,6 +167,18 @@ impl RenderedView {
     /// WebView2 にフォーカスがある間のキー押下を渡すコールバックを登録する。処理したら真を返す。
     pub fn on_key(&self, cb: impl Fn(KeyChord) -> bool + 'static) {
         *self.inner.on_key.borrow_mut() = Some(Box::new(cb));
+    }
+
+    /// 文書を右クリックしたときのコールバック（画面座標）を登録する。WebView2 の既定のメニューの
+    /// 代わりに呼ぶ。
+    pub fn on_menu(&self, cb: impl Fn(w::POINT) + 'static) {
+        *self.inner.on_menu.borrow_mut() = Some(Box::new(cb));
+    }
+
+    /// WebView2 がキーボードのフォーカスを得たときのコールバックを登録する。キー入力は他の
+    /// ビューアと同じ経路で受けるので、呼び出し側はフォーカスを取り戻す。
+    pub fn on_focus(&self, cb: impl Fn() + 'static) {
+        *self.inner.on_focus.borrow_mut() = Some(Box::new(cb));
     }
 
     /// WebView2 を作れなかったときのコールバックを登録する（理由を渡す）。
@@ -217,6 +240,27 @@ impl RenderedView {
     #[cfg(feature = "debug-server")]
     pub fn loaded(&self) -> bool {
         self.inner.loaded.get()
+    }
+
+    /// WebView2 がキーボードのフォーカスを得た回数（debug 観測用）。
+    #[cfg(feature = "debug-server")]
+    pub fn focus_events(&self) -> u32 {
+        self.inner.focus_events.get()
+    }
+
+    /// WebView2 へキーボードのフォーカスを移す（クリックでフォーカスが移るのと同じ状況を
+    /// debug-server から作る）。WebView2 が使えなければ偽。
+    #[cfg(feature = "debug-server")]
+    pub fn focus_webview(&self) -> bool {
+        let Engine::Ready(ready) = &*self.inner.engine.borrow() else {
+            return false;
+        };
+        unsafe {
+            ready
+                .controller
+                .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
+                .is_ok()
+        }
     }
 
     /// マウスを乗せているリンクの URL を設定して状態行を描き直す（空ならファイル名に戻す）。
@@ -510,7 +554,9 @@ impl RenderedView {
         unsafe {
             let settings = webview.Settings()?;
             settings.SetAreDevToolsEnabled(false)?;
-            settings.SetAreDefaultContextMenusEnabled(false)?;
+            // 既定のメニューは有効のままにしないと右クリックの通知が来ない。通知を受けて
+            // 既定のメニューは出さず、呼び出し側のメニューに差し替える。
+            settings.SetAreDefaultContextMenusEnabled(true)?;
             settings.SetAreDefaultScriptDialogsEnabled(false)?;
             settings.SetIsWebMessageEnabled(false)?;
             settings.SetAreHostObjectsAllowed(false)?;
@@ -605,6 +651,30 @@ impl RenderedView {
                     &mut token,
                 )?;
             }
+            if let Ok(webview11) = webview.cast::<ICoreWebView2_11>() {
+                let me = self.clone();
+                webview11.add_ContextMenuRequested(
+                    &ContextMenuRequestedEventHandler::create(Box::new(move |_, args| {
+                        if let Some(args) = args {
+                            me.on_context_menu(&args)?;
+                        }
+                        Ok(())
+                    })),
+                    &mut token,
+                )?;
+            }
+            // キーボードのフォーカスは呼び出し側へ戻す（WebView2 にはマウス操作だけを渡す）。
+            let me = self.clone();
+            controller.add_GotFocus(
+                &FocusChangedEventHandler::create(Box::new(move |_, _| {
+                    me.inner.focus_events.set(me.inner.focus_events.get().wrapping_add(1));
+                    if let Some(cb) = &*me.inner.on_focus.borrow() {
+                        cb();
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )?;
             let me = self.clone();
             controller.add_AcceleratorKeyPressed(
                 &AcceleratorKeyPressedEventHandler::create(Box::new(move |_, args| {
@@ -720,6 +790,27 @@ impl RenderedView {
         if let Some(cb) = &*self.inner.on_link.borrow() {
             cb(target);
         }
+    }
+
+    /// 右クリックで既定のメニューを出さず、呼び出し側のメニューを右クリックした位置に出す。
+    fn on_context_menu(
+        &self,
+        args: &ICoreWebView2ContextMenuRequestedEventArgs,
+    ) -> windows::core::Result<()> {
+        let mut at = POINT::default();
+        unsafe {
+            args.SetHandled(true)?;
+            args.Location(&mut at)?;
+        }
+        // WebView2 はパネルの左上に置いているので、文書内の位置がそのままパネル内の位置になる。
+        let pt = self
+            .hwnd()
+            .ClientToScreen(w::POINT { x: at.x, y: at.y })
+            .unwrap_or_default();
+        if let Some(cb) = &*self.inner.on_menu.borrow() {
+            cb(pt);
+        }
+        Ok(())
     }
 
     /// WebView2 にフォーカスがある間のキーを Rerics のキー定義へ回す。

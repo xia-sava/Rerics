@@ -80,6 +80,14 @@ impl MainWindow {
                         ));
                     }
                 }
+                debug_server::Request::ViewFocus => {
+                    let r = if self.rendered.focus_webview() {
+                        debug_server::Response::Json(self.debug_state_value().to_string())
+                    } else {
+                        debug_server::Response::BadRequest("rendered view is not ready".into())
+                    };
+                    let _ = tx.send(r);
+                }
                 debug_server::Request::ViewHover { uri } => {
                     self.rendered.set_hover(uri);
                     let _ = tx.send(debug_server::Response::Json(self.debug_state_value().to_string()));
@@ -1775,6 +1783,10 @@ impl MainWindow {
                 "page": self.rendered.page_name(),
                 "loaded": self.rendered.loaded(),
                 "status": self.rendered.status_text(),
+                // キーボードのフォーカスが本体のキー受け（key_sink）にあるか。
+                "key_focus": w::HWND::GetFocus()
+                    .is_some_and(|f| f.ptr() == self.key_sink.hwnd().ptr()),
+                "focus_events": self.rendered.focus_events(),
             },
             "panes": {
                 "left": self.debug_pane_json(true),

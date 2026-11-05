@@ -315,6 +315,9 @@ pub enum Request {
     /// `POST /view/hover`：レンダリング表示でリンクにマウスを乗せた状態にする（body＝リンクの URL・
     /// 空なら外す）。WebView2 の状態表示の変化と同じ経路で状態行を描き直す。
     ViewHover { uri: String },
+    /// `POST /view/focus`：レンダリング表示の WebView2 へキーボードのフォーカスを移す（クリックで
+    /// フォーカスが移るのと同じ状況を作る）。
+    ViewFocus,
     /// `GET /view/capture`：レンダリング表示の見た目を PNG で返す（WebView2 は別プロセスが描くので
     /// `/snapshot` には写らない）。
     ViewCapture,
@@ -769,6 +772,8 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 let mut script = String::new();
                 let _ = std::io::Read::read_to_string(req.as_reader(), &mut script);
                 Some(Request::ViewEval { script })
+            } else if path == "/view/focus" {
+                Some(Request::ViewFocus)
             } else if path == "/view/hover" {
                 let mut uri = String::new();
                 let _ = std::io::Read::read_to_string(req.as_reader(), &mut uri);

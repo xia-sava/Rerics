@@ -853,6 +853,16 @@ impl MainWindow {
             });
             let this = self.clone();
             self.rendered.on_failed(move |reason| this.rendered_failed(&reason));
+            let this = self.clone();
+            self.rendered.on_menu(move |pt| {
+                let _ = this.show_rendered_menu(pt);
+            });
+            let this = self.clone();
+            self.rendered.on_focus(move || {
+                if matches!(this.active_view.get(), ActiveView::Rendered) {
+                    this.key_sink.hwnd().SetFocus();
+                }
+            });
             // 検索バーを閉じたら、キー入力先を本体（key_sink）へ戻す。
             let this = self.clone();
             self.viewer.on_search_close(move || {
