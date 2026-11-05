@@ -643,7 +643,7 @@ impl Command {
                     name: "type",
                     ty: ArgType::Enum(&["auto", "rendered", "text", "bin"]),
                     required: false,
-                    doc: "最初に開く表示形式（省略時はディレクトリ・書庫へ入り、ファイルは持っている中で一番上の形式で開く。指定時は入らずに開く）",
+                    doc: "最初に開く表示形式（省略時はディレクトリ・書庫へ入り、ファイルは持っている形式のうち優先順で先頭のもので開く。指定時は入らずに開く）",
                 }],
                 examples: &["view()", r#"view("auto")"#, r#"view("bin")"#],
             },
