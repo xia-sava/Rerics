@@ -122,6 +122,7 @@ mod tests {
         ("editor", Apply::ReadAtUse),
         ("cursor", Apply::ReadAtUse),
         ("image", Apply::ReadAtUse), // ビューアを開くたびに読む
+        ("rendered", Apply::ReadAtUse), // Markdown を開くたびに読む
         ("icons", Apply::Live),
         ("file_ops", Apply::ReadAtUse),
         ("window", Apply::RestartOnly), // 起動時のウィンドウ生成のみ

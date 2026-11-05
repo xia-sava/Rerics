@@ -340,6 +340,20 @@ impl Default for ImageSettings {
     }
 }
 
+/// Markdown のレンダリング表示の設定。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RenderedSettings {
+    /// 本文の文字サイズ（CSS の px）。
+    pub font_size: u32,
+}
+
+impl Default for RenderedSettings {
+    fn default() -> Self {
+        Self { font_size: 15 }
+    }
+}
+
 /// ファイル一覧アイコンの表示サイズ。`Auto` は行（フォント高）に収める。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -457,6 +471,8 @@ pub struct Config {
     pub cursor: CursorSettings,
     /// 画像ビューアの設定。
     pub image: ImageSettings,
+    /// Markdown のレンダリング表示の設定。
+    pub rendered: RenderedSettings,
     /// ファイル一覧アイコンの表示設定。
     pub icons: IconSettings,
     /// ファイル操作の事前確認ダイアログ設定。
@@ -494,6 +510,7 @@ impl Default for Config {
             editor: "notepad.exe".to_owned(),
             cursor: CursorSettings::default(),
             image: ImageSettings::default(),
+            rendered: RenderedSettings::default(),
             icons: IconSettings::default(),
             file_ops: FileOpSettings::default(),
             window: WindowSettings::default(),

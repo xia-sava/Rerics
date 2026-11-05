@@ -2146,7 +2146,52 @@ fn build_viewer(parent: &gui::WindowControl, shared: &Rc<Shared>) {
 
     // テキストセクション（設定項目は今後追加）。
     group_box(parent, "テキスト", 12, 120, 752, 76);
+
+    // Markdown セクション。
+    group_box(parent, "Markdown", 12, 208, 752, 52);
+    label(parent, "文字サイズ（px）", 28, 230, 110);
+    let font_size = shared.cfg.borrow().rendered.font_size;
+    let size_edit = gui::Edit::new(
+        parent,
+        gui::EditOpts {
+            text: &font_size.to_string(),
+            control_style: co::ES::AUTOHSCROLL | co::ES::NUMBER,
+            position: gui::dpi(142, 228),
+            width: gui::dpi_x(60),
+            height: gui::dpi_y(22),
+            ..Default::default()
+        },
+    );
+    let _size_spin = gui::UpDown::new(
+        parent,
+        gui::UpDownOpts {
+            position: gui::dpi(202, 228),
+            height: gui::dpi_y(22),
+            range: (MIN_RENDERED_FONT_PX, MAX_RENDERED_FONT_PX),
+            value: (font_size as i32).clamp(MIN_RENDERED_FONT_PX, MAX_RENDERED_FONT_PX),
+            control_style: co::UDS::AUTOBUDDY
+                | co::UDS::SETBUDDYINT
+                | co::UDS::ALIGNRIGHT
+                | co::UDS::ARROWKEYS,
+            ..Default::default()
+        },
+    );
+    label(parent, "（レンダリング表示の本文。開いている間は Ctrl＋ホイールでも拡大縮小できる）", 268, 230, 480);
+    {
+        let shared = shared.clone();
+        let se = size_edit.clone();
+        size_edit.on().en_change(move || {
+            let cur = shared.cfg.borrow().rendered.font_size as i32;
+            let v = parse_or(&se, cur).clamp(MIN_RENDERED_FONT_PX, MAX_RENDERED_FONT_PX);
+            shared.cfg.borrow_mut().rendered.font_size = v as u32;
+            Ok(())
+        });
+    }
 }
+
+/// Markdown のレンダリング表示の文字サイズ（px）として受け付ける範囲。
+const MIN_RENDERED_FONT_PX: i32 = 8;
+const MAX_RENDERED_FONT_PX: i32 = 48;
 
 /// 「一覧」ページ。ファイルサイズ列の表記スタイルを選ぶ（列構成・既定ソートは今後ここへ追加）。
 fn build_list(parent: &gui::WindowControl, shared: &Rc<Shared>) {

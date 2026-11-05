@@ -29,6 +29,8 @@ pub struct HtmlTheme {
     pub text: Rgb,
     /// 暗い背景か（構文ハイライトと Mermaid の配色を選ぶ）。
     pub dark: bool,
+    /// 本文の文字サイズ（CSS の px）。
+    pub font_size: u32,
 }
 
 /// Markdown 文書に付ける CSP。同梱のスクリプト（Mermaid）だけを動かし、外部へは出さない。
@@ -58,7 +60,7 @@ pub fn markdown_document(source: &str, title: &str, theme: &HtmlTheme) -> String
          <meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">\n\
          <title>{title}</title>\n\
          <link rel=\"stylesheet\" href=\"https://{ASSET_HOST}/markdown.css\">\n\
-         <style>:root {{ --bg: {bg}; --fg: {fg}; color-scheme: {scheme}; }}</style>\n\
+         <style>:root {{ --bg: {bg}; --fg: {fg}; --font-size: {size}px; color-scheme: {scheme}; }}</style>\n\
          </head><body class=\"{scheme}\"><article class=\"markdown-body\">\n{body}</article>\n\
          <script src=\"https://{ASSET_HOST}/mermaid.min.js\"></script>\n\
          <script src=\"https://{ASSET_HOST}/markdown.js\"></script>\n\
@@ -67,6 +69,7 @@ pub fn markdown_document(source: &str, title: &str, theme: &HtmlTheme) -> String
         title = escape_html(title),
         bg = hex(theme.background),
         fg = hex(theme.text),
+        size = theme.font_size,
     )
 }
 
@@ -203,7 +206,12 @@ mod tests {
     use super::*;
 
     fn theme() -> HtmlTheme {
-        HtmlTheme { background: Rgb::new(0, 0, 0), text: Rgb::new(255, 255, 255), dark: true }
+        HtmlTheme {
+            background: Rgb::new(0, 0, 0),
+            text: Rgb::new(255, 255, 255),
+            dark: true,
+            font_size: 17,
+        }
     }
 
     #[test]
@@ -254,6 +262,7 @@ mod tests {
         assert!(doc.contains(&markdown_csp()));
         assert!(doc.contains("<title>a&lt;b&gt;.md</title>"));
         assert!(doc.contains("--bg: #000000"));
+        assert!(doc.contains("--font-size: 17px"));
         assert!(doc.contains("<body class=\"dark\">"));
         assert!(doc.contains(&format!("https://{ASSET_HOST}/mermaid.min.js")));
         assert!(doc.contains("<h1>T</h1>"));

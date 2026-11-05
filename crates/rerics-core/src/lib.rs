@@ -39,7 +39,7 @@ pub use attrs::{
 pub use dts::{HOST_API_MEMBERS, commands_dts, reserved_member};
 pub use config::{
     Bookmark, Config, DEFAULT_CONFIG_TOML, DialogSizes, FileOpSettings, FontSpec, IconSettings, IconSize, ImageSettings,
-    InputHistory, Layout, PATH_HISTORY_CAP, PATH_HISTORY_KEY, ResolvedTheme, State, TabState,
+    InputHistory, Layout, PATH_HISTORY_CAP, PATH_HISTORY_KEY, RenderedSettings, ResolvedTheme, State, TabState,
     Theme, ThemeColors,
     WheelAction, WindowState, clamp_to_work, config_path, data_dir, dialog_sizes_path, history_path, load_toml,
     save_toml, state_path,

@@ -143,12 +143,16 @@ impl MainWindow {
                 let Some((bytes, _)) = self.read_for_view(is_left, name) else {
                     return Ok(());
                 };
-                let colors = self.config.borrow().active_colors();
+                let (colors, font_size) = {
+                    let cfg = self.config.borrow();
+                    (cfg.active_colors(), cfg.rendered.font_size)
+                };
                 let bg = colors.viewer_background;
                 let theme = HtmlTheme {
                     background: bg,
                     text: colors.viewer_text,
                     dark: (bg.r as u32 + bg.g as u32 + bg.b as u32) < 384,
+                    font_size,
                 };
                 PageBody::Document(markdown_document(&decode_text(&bytes), name, &theme))
             }

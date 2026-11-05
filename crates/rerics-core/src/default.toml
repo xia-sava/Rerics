@@ -248,6 +248,9 @@ wheel = "navigate"
 zoom_step_percent = 25
 pan_step_px = 100
 
+[rendered]
+font_size = 15
+
 [icons]
 show = true
 size = "auto"
