@@ -63,5 +63,9 @@ TS/JS で動作をカスタマイズできます．`%APPDATA%\Rerics\scripts` �
   ライセンスは [`vendor/pdfium/licenses/`](vendor/pdfium/licenses)）．
 - **[UnRAR](https://www.rarlab.com/)**（`unrar` / `unrar_sys` クレート経由）… RAR 書庫の展開に使用．
   UnRAR ライセンスにより，RAR 書庫の取り扱いは自由ですが，RAR 圧縮アルゴリズムの再現には使用できません．
+- **[Mermaid](https://mermaid.js.org/)**（MIT）… Markdown のレンダリング表示で図を描くのに使用．
+  配布物の `mermaid.min.js` を `crates/rerics/assets/rendered` に同梱（[`mermaid.LICENSE`](crates/rerics/assets/rendered/mermaid.LICENSE)）．
+- **[WebView2](https://developer.microsoft.com/microsoft-edge/webview2/)**（`webview2-com` クレート経由）… Markdown・HTML の
+  レンダリング表示に使用．実行には Windows 付属の WebView2 ランタイムを使います．
 
 Rerics 本体のライセンスは現時点で未設定です（全権利留保．とはいえクローンアプリで権利を主張するとかおこがましいですが）．
