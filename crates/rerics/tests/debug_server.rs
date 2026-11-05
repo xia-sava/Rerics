@@ -7400,3 +7400,50 @@ fn viewer_pdf_space_pages_then_next_file() {
     let media = poll(&server, "/state/media", |b| b.contains("\"index\":2"));
     assert!(media.contains("\"index\":2"), "前のファイルの PDF は最終ページから: {media}");
 }
+
+/// Markdown はレンダリング表示で開き、Tab でレンダリング表示→テキスト→バイナリ→レンダリング表示と回る。
+/// 画面を持たない起動では WebView2 を作らず、文書と状態だけを持つ。
+#[test]
+fn viewer_markdown_cycles_rendered_text_binary() {
+    let server = Server::start_dirs(&[("doc.md", b"# Title\n\ntext\n")], &[]);
+    server.req("POST", "/command/setCursorPosition", r#"["doc.md"]"#).unwrap();
+    server.req("POST", "/command/view", "").unwrap();
+    poll(&server, "/state/active_view", |b| b.trim() == "\"rendered\"");
+    let forms = server.req("GET", "/state/view/forms", "").unwrap().1;
+    assert!(forms.contains("\"render\":\"markdown\""), "{forms}");
+    assert!(forms.contains("\"text\":true"), "{forms}");
+    assert_eq!(view_state(&server, "layout"), "scroll");
+    let rendered = server.req("GET", "/state/rendered", "").unwrap().1;
+    assert!(rendered.contains("\"page\":\"doc.md\""), "{rendered}");
+    assert!(rendered.contains("\"engine\":\"disabled\""), "{rendered}");
+    server.req("POST", "/view/key/Tab", "").unwrap();
+    poll(&server, "/state/view/form", |b| b.trim() == "\"text\"");
+    server.req("POST", "/view/key/Tab", "").unwrap();
+    poll(&server, "/state/view/form", |b| b.trim() == "\"binary\"");
+    server.req("POST", "/view/key/Tab", "").unwrap();
+    poll(&server, "/state/active_view", |b| b.trim() == "\"rendered\"");
+    // 閉じると文書を手放す。
+    server.req("POST", "/view/key/Esc", "").unwrap();
+    poll(&server, "/state/active_view", |b| b.trim() == "\"none\"");
+    let rendered = server.req("GET", "/state/rendered/page", "").unwrap().1;
+    assert_eq!(rendered.trim(), "null");
+}
+
+/// `view("text")` は Markdown もソースのテキストで開く。HTML も既定はレンダリング表示。
+#[test]
+fn viewer_markdown_text_on_request_and_html_rendered() {
+    let server = Server::start_dirs(&[("a.md", b"# A\n"), ("b.html", b"<p>b</p>")], &[]);
+    server.req("POST", "/command/setCursorPosition", r#"["a.md"]"#).unwrap();
+    server.req("POST", "/command/view", r#"["text"]"#).unwrap();
+    poll(&server, "/state/view/form", |b| b.trim() == "\"text\"");
+    // レンダリング表示は画面を持たない起動では端とみなすので、Space で次のファイルへ進む。
+    server.req("POST", "/view/key/Ctrl+End", "").unwrap();
+    server.req("POST", "/view/key/Space", "").unwrap();
+    poll(&server, "/state/view/name", |b| b.contains("b.html"));
+    assert_eq!(view_state(&server, "form"), "rendered");
+    let forms = server.req("GET", "/state/view/forms", "").unwrap().1;
+    assert!(forms.contains("\"render\":\"html\""), "{forms}");
+    server.req("POST", "/view/key/Shift+Space", "").unwrap();
+    poll(&server, "/state/view/name", |b| b.contains("a.md"));
+    assert_eq!(view_state(&server, "form"), "rendered");
+}

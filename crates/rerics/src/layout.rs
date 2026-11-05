@@ -50,9 +50,11 @@ impl MainWindow {
         let view_h = (total_h - bars_y).max(0);
         place(self.viewer.hwnd(), 0, bars_y, total_w, view_h)?;
         place(self.media.hwnd(), 0, bars_y, total_w, view_h)?;
+        place(self.rendered.hwnd(), 0, bars_y, total_w, view_h)?;
         match self.active_view.get() {
             ActiveView::Text => self.viewer.hwnd().BringWindowToTop()?,
             ActiveView::Media => self.media.hwnd().BringWindowToTop()?,
+            ActiveView::Rendered => self.rendered.hwnd().BringWindowToTop()?,
             ActiveView::None => {}
         }
         self.tab_bar.refresh()?;

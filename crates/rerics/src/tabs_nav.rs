@@ -940,6 +940,8 @@ impl MainWindow {
                     rerics_core::WheelAction::Navigate => self.viewer_page(distance < 0, false),
                 };
             }
+            // レンダリング表示のホイールは WebView2 が自分でスクロールする。
+            ActiveView::Rendered => return Ok(()),
             ActiveView::None => {}
         }
         if let Some(hw) = w::HWND::WindowFromPoint(coords) {

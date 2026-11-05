@@ -69,6 +69,31 @@ impl MainWindow {
                 debug_server::Request::ViewKey { action } => {
                     let _ = tx.send(self.debug_view_key(&action));
                 }
+                debug_server::Request::ViewEval { script } => {
+                    let reply = tx.clone();
+                    let ran = self.rendered.eval(&script, move |json| {
+                        let _ = reply.send(debug_server::Response::Json(json));
+                    });
+                    if !ran {
+                        let _ = tx.send(debug_server::Response::BadRequest(
+                            "rendered view is not ready".into(),
+                        ));
+                    }
+                }
+                debug_server::Request::ViewCapture => {
+                    let reply = tx.clone();
+                    let ran = self.rendered.capture_png(move |png| {
+                        let _ = reply.send(match png {
+                            Some(bytes) => debug_server::Response::Png(bytes),
+                            None => debug_server::Response::Error("capture failed".into()),
+                        });
+                    });
+                    if !ran {
+                        let _ = tx.send(debug_server::Response::BadRequest(
+                            "rendered view is not ready".into(),
+                        ));
+                    }
+                }
                 debug_server::Request::ViewSearch { value } => {
                     let _ = tx.send(self.debug_view_search(&value));
                 }
@@ -1529,7 +1554,8 @@ impl MainWindow {
                     self.media.render_to(d, w, h)
                 })?;
             }
-            ActiveView::None => {}
+            // WebView2 は別プロセスが描くので合成できない（`/view/capture` で撮る）。
+            ActiveView::Rendered | ActiveView::None => {}
         }
 
         let mut bmi = w::BITMAPINFO::default();
@@ -1592,6 +1618,7 @@ impl MainWindow {
             ActiveView::None => "none",
             ActiveView::Text => "text",
             ActiveView::Media => "media",
+            ActiveView::Rendered => "rendered",
         };
         let media = if matches!(self.active_view.get(), ActiveView::Media) {
             let (index, total) = self.media.nav_position();
@@ -1616,6 +1643,8 @@ impl MainWindow {
                     "render": session.forms.render.map(|r| match r {
                         rerics_core::RenderKind::Media(_) => "media",
                         rerics_core::RenderKind::Pdf => "pdf",
+                        rerics_core::RenderKind::Markdown => "markdown",
+                        rerics_core::RenderKind::Html => "html",
                     }),
                     "text": session.forms.text,
                 },
@@ -1731,6 +1760,11 @@ impl MainWindow {
             "active_pane": if self.active_right.get() { "right" } else { "left" },
             "active_view": active_view,
             "view": view,
+            "rendered": {
+                "engine": self.rendered.engine_state(),
+                "page": self.rendered.page_name(),
+                "loaded": self.rendered.loaded(),
+            },
             "panes": {
                 "left": self.debug_pane_json(true),
                 "right": self.debug_pane_json(false),

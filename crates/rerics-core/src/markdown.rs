@@ -174,7 +174,7 @@ impl CodefenceRendererAdapter for MermaidRenderer {
         code: &str,
         _sourcepos: Option<Sourcepos>,
     ) -> fmt::Result {
-        write!(output, "<pre class=\"mermaid\">{}</pre>\n", escape_html(code))
+        writeln!(output, "<pre class=\"mermaid\">{}</pre>", escape_html(code))
     }
 }
 

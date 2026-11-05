@@ -8,3 +8,6 @@
 
 # シェルスクリプトは LF
 *.sh text eol=lf
+
+# 同梱する外部配布物は配布元のバイト列のまま扱う
+crates/rerics/assets/rendered/mermaid.min.js -text -diff

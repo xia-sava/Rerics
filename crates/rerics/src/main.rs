@@ -28,6 +28,7 @@ mod shell;
 mod splitter;
 mod media_view;
 mod pdf;
+mod rendered_view;
 mod status_bar;
 mod tab_bar;
 mod task;
@@ -64,6 +65,7 @@ use log_view::LogView;
 use media_view::MediaView;
 use pane_view::PaneView;
 use path_bar::PathBarView;
+use rendered_view::RenderedView;
 use search_bar::SearchBar;
 use status_bar::StatusBarView;
 use tab_bar::TabBar;
@@ -81,6 +83,8 @@ enum ActiveView {
     None,
     Text,
     Media,
+    /// Markdown / HTML のレンダリング表示。
+    Rendered,
 }
 
 /// スナップショットの範囲指定 `"x,y-WxH"` を解析する。
@@ -218,6 +222,8 @@ fn about_text() -> String {
         software is permitted, provided that full text of this paragraph, starting from \
         \"UnRAR source code\" words, is included in license, or in documentation if license \
         is not available, and in source code comments of resulting package.";
+    // Markdown のレンダリング表示で図を描くために同梱している Mermaid のライセンス。
+    const MERMAID_LICENSE: &str = include_str!("../assets/rendered/mermaid.LICENSE");
 
     let bar = "=".repeat(80);
     format!(
@@ -230,12 +236,18 @@ fn about_text() -> String {
          {unrar}\r\n\
          \r\n\
          {bar}\r\n\
+         Mermaid（Markdown の図の描画）\r\n\
+         {bar}\r\n\
+         {mermaid}\r\n\
+         \r\n\
+         {bar}\r\n\
          サードパーティライセンス\r\n\
          {bar}\r\n\
          \r\n\
          {licenses}",
         ver = version::full(),
         unrar = UNRAR_NOTICE,
+        mermaid = MERMAID_LICENSE.replace("\r\n", "\n").replace('\n', "\r\n"),
         licenses = LICENSES,
     )
 }
@@ -379,6 +391,7 @@ struct MainWindow {
     log: LogView,
     viewer: ViewerView,
     media: MediaView,
+    rendered: RenderedView,
     /// ファイル一覧のシェルアイコンキャッシュ（左右ペイン共有・非同期ローダ保持）。
     icon_cache: Rc<icons::IconCache>,
     /// 現在重ねているビューア。None 以外の間はキー入力をビューア操作へ振り向ける。
@@ -621,6 +634,14 @@ impl MainWindow {
         // メイン領域に重ねるビューア（初期は非表示。layout で位置決め）。
         let viewer = ViewerView::new(&wnd, gui::dpi(0, 0), gui::dpi(400, 400), &config);
         let media = MediaView::new(&wnd, gui::dpi(0, 0), gui::dpi(400, 400), &config);
+        // 画面を持たない起動では WebView2 を作らない（文書の受け付けと状態だけを持つ）。
+        let rendered = RenderedView::new(
+            &wnd,
+            gui::dpi(0, 0),
+            gui::dpi(400, 400),
+            config.active_colors().viewer_background,
+            !debug_headless,
+        );
 
         // 全キー入力を集約する 1x1 の不可視コントロール（Win32 フォーカスはここに固定し、
         // 左右ペインはフォーカスを持たない）。
@@ -711,6 +732,7 @@ impl MainWindow {
             log,
             viewer,
             media,
+            rendered,
             icon_cache,
             active_view: Rc::new(Cell::new(ActiveView::None)),
             view_session: Rc::new(RefCell::new(None)),
@@ -818,6 +840,19 @@ impl MainWindow {
             self.log.on_menu(move |pt, row| {
                 let _ = this.show_log_menu(pt, row);
             });
+            // レンダリング表示：リンクは外へ渡し、WebView2 が持つキーはビューアのキー定義で解く。
+            let this = self.clone();
+            self.rendered.on_link(move |target| this.follow_rendered_link(target));
+            let this = self.clone();
+            self.rendered.on_key(move |chord| match this.resolve_viewer_chord(&chord) {
+                Some(call) => {
+                    let _ = this.exec_viewer(&call);
+                    true
+                }
+                None => false,
+            });
+            let this = self.clone();
+            self.rendered.on_failed(move |reason| this.rendered_failed(&reason));
             // 検索バーを閉じたら、キー入力先を本体（key_sink）へ戻す。
             let this = self.clone();
             self.viewer.on_search_close(move || {

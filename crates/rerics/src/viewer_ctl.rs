@@ -5,10 +5,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use winsafe::{self as w, co, prelude::*};
 use rerics_core::{
-    Call, Command, KeyChord, Location, MediaKind, RenderKind, ViewForm, ViewForms, ViewLayout,
-    ViewMode, data_dir, open_archive,
+    Call, Command, HtmlTheme, KeyChord, Location, MediaKind, RenderKind, ViewForm, ViewForms,
+    ViewLayout, ViewMode, data_dir, decode_text, markdown_document, open_archive,
 };
 use crate::media_view::{NavResolver, PageRerender};
+use crate::rendered_view::{FileReader, LinkTarget, Page, PageBody};
 use crate::file_list::FileListView;
 use crate::{ActiveView, MainWindow, dialog, hash64, join_inner_path, viewer};
 
@@ -75,6 +76,7 @@ impl MainWindow {
         let preferred = match vtype {
             Some(t) if t.eq_ignore_ascii_case("text") => Some(ViewForm::Text),
             Some(t) if t.eq_ignore_ascii_case("bin") => Some(ViewForm::Binary),
+            Some(t) if t.eq_ignore_ascii_case("rendered") => Some(ViewForm::Rendered),
             _ => None,
         };
         self.open_view(is_left, preferred, false)
@@ -112,10 +114,122 @@ impl MainWindow {
                 self.view_media(is_left, kind, &name)
             }
             (ViewForm::Rendered, Some(RenderKind::Pdf)) => self.view_pdf(is_left, &name, at_end),
+            (ViewForm::Rendered, Some(kind @ (RenderKind::Markdown | RenderKind::Html))) => {
+                self.view_rendered(is_left, &name, kind, at_end)
+            }
             (ViewForm::Binary, _) => {
                 self.show_text(is_left, &name, content, Some(ViewMode::Binary), at_end)
             }
             _ => self.show_text(is_left, &name, content, Some(ViewMode::Text), at_end),
+        }
+    }
+
+    /// Markdown / HTML をレンダリング表示で開く。相対パスの資源は、開いたファイルと同じ
+    /// 場所（実FS のディレクトリ・書庫内のディレクトリ）を基準に読む。WebView2 が使えなければ
+    /// テキストで開く。
+    fn view_rendered(
+        &self,
+        is_left: bool,
+        name: &str,
+        kind: RenderKind,
+        at_end: bool,
+    ) -> w::AnyResult<()> {
+        if !self.rendered.available() {
+            return self.show_text(is_left, name, None, Some(ViewMode::Text), at_end);
+        }
+        let body = match kind {
+            RenderKind::Markdown => {
+                let Some((bytes, _)) = self.read_for_view(is_left, name) else {
+                    return Ok(());
+                };
+                let colors = self.config.borrow().active_colors();
+                let bg = colors.viewer_background;
+                let theme = HtmlTheme {
+                    background: bg,
+                    text: colors.viewer_text,
+                    dark: (bg.r as u32 + bg.g as u32 + bg.b as u32) < 384,
+                };
+                PageBody::Document(markdown_document(&decode_text(&bytes), name, &theme))
+            }
+            _ => PageBody::File,
+        };
+        let files = self.rendered_file_reader(is_left);
+        self.rendered.open(Page { name: name.to_string(), body, files });
+        if at_end {
+            self.rendered.scroll_to_end_when_loaded();
+        }
+        self.show_viewer(ActiveView::Rendered)
+    }
+
+    /// レンダリング表示の文書から相対パスで資源を読む関数。基準は開いた時点のカーソル下の
+    /// 場所（検索・比較の結果一覧では項目の出自）。
+    fn rendered_file_reader(&self, is_left: bool) -> FileReader {
+        const MAX_RESOURCE_BYTES: usize = 64 * 1024 * 1024;
+        match self.cursor_dir(is_left) {
+            Location::Real(dir) => Rc::new(move |rel: &str| {
+                let path = dir.join(rel.replace('/', "\\"));
+                path.is_file().then(|| std::fs::read(&path).ok()).flatten()
+            }),
+            Location::Archive { archive, inner } => {
+                let this = self.clone();
+                Rc::new(move |rel: &str| {
+                    let entry = join_inner_path(&inner, rel);
+                    this.read_archive_entry(&archive, &entry, MAX_RESOURCE_BYTES)
+                        .ok()
+                        .map(|(bytes, _)| bytes)
+                })
+            }
+        }
+    }
+
+    /// レンダリング表示の文書内リンクをたどる。外部の URL とローカルのファイルは既定の
+    /// 関連付けで開く（書庫内のファイルは開けない旨をログへ出す）。
+    pub(crate) fn follow_rendered_link(&self, target: LinkTarget) {
+        let target = match target {
+            LinkTarget::External(url) => url,
+            LinkTarget::Local(rel) => {
+                let Some(session) = self.view_session.borrow().clone() else {
+                    return;
+                };
+                match self.cursor_dir(session.is_left) {
+                    Location::Real(dir) => dir.join(rel.replace('/', "\\")).display().to_string(),
+                    Location::Archive { .. } => {
+                        self.log.error(&format!("書庫内のリンク先は開けません: {rel}"));
+                        return;
+                    }
+                }
+            }
+        };
+        if crate::shell::launch_suppressed() {
+            self.log.info(&crate::shell::launch_suppressed_line(&target));
+            return;
+        }
+        if let Err(e) = crate::shell::open_associated(self.wnd.hwnd(), &target, None) {
+            self.log.error(&format!("リンク先を開けません: {target}: {e}"));
+        }
+    }
+
+    /// WebView2 を作れなかった。理由をログへ出し、表示中の文書をテキストで開き直す。
+    pub(crate) fn rendered_failed(&self, reason: &str) {
+        self.log.error(reason);
+        let Some(session) = self.view_session.borrow().clone() else {
+            return;
+        };
+        if matches!(self.active_view.get(), ActiveView::Rendered) {
+            let _ = self.open_view(session.is_left, Some(ViewForm::Text), false);
+        }
+    }
+
+    /// レンダリング表示が受け持つコマンドを実行する。
+    fn exec_rendered(&self, cmd: Command) {
+        match cmd {
+            Command::ViewerScrollUp => self.rendered.scroll_lines(-1),
+            Command::ViewerScrollDown => self.rendered.scroll_lines(1),
+            Command::ViewerScrollTop => self.rendered.scroll_to_edge(false),
+            Command::ViewerScrollBottom => self.rendered.scroll_to_edge(true),
+            Command::ViewerSelectAll => self.rendered.select_all(),
+            Command::ViewerCopy => self.rendered.copy_selection(),
+            _ => {}
         }
     }
 
@@ -508,24 +622,36 @@ impl MainWindow {
         Self::pdf_temp_dir().join(key)
     }
 
-    /// 指定ビューアを最前面に出し、もう一方を隠してキー入力を奪う。
+    /// 指定ビューアを最前面に出し、他を隠してキー入力を奪う。
     pub(crate) fn show_viewer(&self, which: ActiveView) -> w::AnyResult<()> {
         self.active_view.set(which);
+        // 切り替えた先で使わない部品は、再生・先読み・文書を残さない。
+        if which != ActiveView::Media {
+            self.cancel_media_prefetch();
+            self.media.release_media();
+            self.media.hwnd().ShowWindow(co::SW::HIDE);
+        }
+        if which != ActiveView::Rendered {
+            self.rendered.release();
+            self.rendered.hwnd().ShowWindow(co::SW::HIDE);
+        }
+        if which != ActiveView::Text {
+            self.viewer.hwnd().ShowWindow(co::SW::HIDE);
+        }
         match which {
             ActiveView::Text => {
-                // 画像・動画から切り替えたときに再生や先読みを残さない。
-                self.cancel_media_prefetch();
-                self.media.release_media();
-                self.media.hwnd().ShowWindow(co::SW::HIDE);
                 self.viewer.hwnd().ShowWindow(co::SW::SHOW);
                 self.viewer.hwnd().BringWindowToTop()?;
                 self.viewer.refresh()?;
             }
             ActiveView::Media => {
-                self.viewer.hwnd().ShowWindow(co::SW::HIDE);
                 self.media.hwnd().ShowWindow(co::SW::SHOW);
                 self.media.hwnd().BringWindowToTop()?;
                 self.media.refresh()?;
+            }
+            ActiveView::Rendered => {
+                self.rendered.hwnd().ShowWindow(co::SW::SHOW);
+                self.rendered.hwnd().BringWindowToTop()?;
             }
             ActiveView::None => {}
         }
@@ -539,10 +665,12 @@ impl MainWindow {
     pub(crate) fn close_viewer(&self) -> w::AnyResult<()> {
         self.cancel_media_prefetch();
         self.media.release_media();
+        self.rendered.release();
         self.active_view.set(ActiveView::None);
         *self.view_session.borrow_mut() = None;
         self.viewer.hwnd().ShowWindow(co::SW::HIDE);
         self.media.hwnd().ShowWindow(co::SW::HIDE);
+        self.rendered.hwnd().ShowWindow(co::SW::HIDE);
         // ファイラへ戻ったので、そのペインの検索がアクティブなら共有検索バーを復活させる。
         let _ = self.sync_search_bar();
         self.key_sink.hwnd().SetFocus();
@@ -562,7 +690,7 @@ impl MainWindow {
     pub(crate) fn current_form(&self) -> Option<ViewForm> {
         match self.active_view.get() {
             ActiveView::None => None,
-            ActiveView::Media => Some(ViewForm::Rendered),
+            ActiveView::Media | ActiveView::Rendered => Some(ViewForm::Rendered),
             ActiveView::Text => Some(match self.viewer.mode() {
                 ViewMode::Text => ViewForm::Text,
                 ViewMode::Binary => ViewForm::Binary,
@@ -627,6 +755,7 @@ impl MainWindow {
             _ => match self.active_view.get() {
                 ActiveView::Text => self.exec_text_viewer(cmd)?,
                 ActiveView::Media => self.exec_media(cmd)?,
+                ActiveView::Rendered => self.exec_rendered(cmd),
                 ActiveView::None => {}
             },
         }
@@ -724,6 +853,14 @@ impl MainWindow {
                 true
             }
             ActiveView::Media => false,
+            // 端かどうかは文書側でしか分からないので、判定とスクロールを任せて端なら送る。
+            ActiveView::Rendered => {
+                let this = self.clone();
+                self.rendered.page(down, overflow, move || {
+                    let _ = this.step_file(delta, !down);
+                });
+                return Ok(());
+            }
         };
         self.step_file(delta, at_edge && !down)?;
         Ok(())

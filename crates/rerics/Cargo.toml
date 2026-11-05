@@ -35,6 +35,7 @@ ureq = { version = "2", default-features = false, features = ["json", "native-tl
 native-tls = "0.2"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 sha2 = "0.10"
+webview2-com = "0.39"
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

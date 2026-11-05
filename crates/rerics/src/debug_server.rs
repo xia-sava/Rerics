@@ -310,6 +310,11 @@ pub enum Request {
     FilerSysKey { key: String },
     /// `POST /view/key/<action>`：重ね表示中ビューアの操作（next/prev/close）。
     ViewKey { action: String },
+    /// `POST /view/eval`：レンダリング表示の文書でスクリプトを実行し、結果の JSON を返す（body＝スクリプト）。
+    ViewEval { script: String },
+    /// `GET /view/capture`：レンダリング表示の見た目を PNG で返す（WebView2 は別プロセスが描くので
+    /// `/snapshot` には写らない）。
+    ViewCapture,
     /// `POST /view/search`：テキストビューアのインライン検索バーへ文字列を入れて即時検索（値は body）。
     /// バーが閉じていれば開く。インクリメンタル検索を headless から駆動するための直接経路。
     ViewSearch { value: String },
@@ -574,6 +579,8 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::Presentation { pointer: format!("/{}", rest.trim_end_matches('/')) })
             } else if path == "/snapshot" || path == "/snapshot.png" {
                 Some(Request::Snapshot { spec: String::new() })
+            } else if path == "/view/capture" || path == "/view/capture.png" {
+                Some(Request::ViewCapture)
             } else if let Some(rest) = path.strip_prefix("/snapshot/") {
                 let spec = rest.trim_end_matches('/').trim_end_matches(".png");
                 Some(Request::Snapshot { spec: spec.to_string() })
@@ -755,6 +762,10 @@ fn handle(mut req: tiny_http::Request, queue: &SharedQueue, hwnd_ptr: isize) {
                 Some(Request::Search { value })
             } else if let Some(key) = path.strip_prefix("/filer/syskey/") {
                 Some(Request::FilerSysKey { key: key.trim_end_matches('/').to_string() })
+            } else if path == "/view/eval" {
+                let mut script = String::new();
+                let _ = std::io::Read::read_to_string(req.as_reader(), &mut script);
+                Some(Request::ViewEval { script })
             } else if let Some(action) = path.strip_prefix("/view/key/") {
                 Some(Request::ViewKey { action: action.trim_end_matches('/').to_string() })
             } else if let Some(key) = path.strip_prefix("/modal/key/") {
