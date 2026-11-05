@@ -356,14 +356,34 @@ impl ViewerView {
         self.refresh()
     }
 
-    /// テキスト/バイナリを切替する（スクロール位置は先頭へ）。
-    pub fn toggle_mode(&self) -> w::AnyResult<()> {
+    /// テキスト/バイナリを指定のモードにする（スクロール位置は先頭へ）。同じモードなら何もしない。
+    pub fn set_mode(&self, mode: ViewMode) -> w::AnyResult<()> {
+        if self.mode() == mode {
+            return Ok(());
+        }
         self.inner.model.borrow_mut().toggle_mode();
         self.inner.scroll_top.set(0);
         self.inner.dirty.set(true);
         self.inner.match_pos.set(None);
         self.clear_selection();
         self.refresh()
+    }
+
+    /// 現在の表示モード（テキスト/バイナリ）。
+    pub fn mode(&self) -> ViewMode {
+        self.inner.model.borrow().mode
+    }
+
+    /// 末尾まで表示しきっているか（これ以上下へスクロールできない）。
+    pub fn at_end(&self) -> bool {
+        self.ensure_lines();
+        let total = self.inner.lines.borrow().len();
+        self.inner.scroll_top.get() >= total.saturating_sub(self.page_rows())
+    }
+
+    /// 先頭を表示しているか。
+    pub fn at_top(&self) -> bool {
+        self.inner.scroll_top.get() == 0
     }
 
     /// debug-server 観測用：検索語・現在一致 `(行, 桁, 長さ)`・可視全体の一致総数・検索オプション。
@@ -961,6 +981,7 @@ impl ViewerView {
     }
 
     pub fn scroll_end(&self) -> w::AnyResult<()> {
+        self.ensure_lines();
         let total = self.inner.lines.borrow().len();
         let page = self.page_rows();
         self.inner.scroll_top.set(total.saturating_sub(page));
@@ -1449,6 +1470,11 @@ impl ViewerView {
         let (_, _, content_left) = self.gutter_geometry();
         let avail = cw - content_left - cwd; // 右に1文字分の余白
         ((avail / cwd).max(1)) as usize
+    }
+
+    /// 現在の幅で表示行を確定させる（描画前でも行数・末尾判定を正しくするため）。
+    fn ensure_lines(&self) {
+        self.rebuild_if_needed(self.wrap_cols());
     }
 
     /// 必要なら表示行を再生成する。

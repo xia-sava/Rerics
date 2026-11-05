@@ -441,10 +441,12 @@ pub struct Config {
     pub progress_delay_ms: u64,
     /// キーバインド（チョード文字列 → コマンドトークン）。ファイラー用。
     pub keybinds: BTreeMap<String, String>,
-    /// テキストビューア用キーバインド（チョード文字列 → コマンドトークン）。
-    pub keybinds_textviewer: BTreeMap<String, String>,
-    /// 画像・動画ビューア用キーバインド（チョード文字列 → コマンドトークン）。
-    pub keybinds_imageviewer: BTreeMap<String, String>,
+    /// ビューアの全表示形式に共通のキーバインド。表示形式ごとの表に無いキーはここで引く。
+    pub keybinds_viewer: BTreeMap<String, String>,
+    /// スクロール表示（テキスト・バイナリ）のキーバインド。共通の表より優先する。
+    pub keybinds_viewer_scroll: BTreeMap<String, String>,
+    /// 画像・動画・PDF のキーバインド。共通の表より優先する。
+    pub keybinds_viewer_paged: BTreeMap<String, String>,
     /// 登録ディレクトリ（ジャンプ先）。
     pub bookmarks: Vec<Bookmark>,
     /// 名前付きメニュー定義（`menu("名前")` で開く）。
@@ -484,8 +486,9 @@ impl Default for Config {
             reverse_sort_date: false,
             progress_delay_ms: 1000,
             keybinds: KeyMap::default().to_string_map(),
-            keybinds_textviewer: KeyMap::default_textviewer().to_string_map(),
-            keybinds_imageviewer: KeyMap::default_imageviewer().to_string_map(),
+            keybinds_viewer: KeyMap::default_viewer().to_string_map(),
+            keybinds_viewer_scroll: KeyMap::default_viewer_scroll().to_string_map(),
+            keybinds_viewer_paged: KeyMap::default_viewer_paged().to_string_map(),
             bookmarks: Vec::new(),
             menus: Vec::new(),
             editor: "notepad.exe".to_owned(),
@@ -624,14 +627,19 @@ impl Config {
         KeyMap::from_string_map(&self.keybinds)
     }
 
-    /// 設定からテキストビューア用キーマップを組む。
-    pub fn keymap_textviewer(&self) -> KeyMap {
-        KeyMap::from_string_map(&self.keybinds_textviewer)
+    /// 設定からビューア共通のキーマップを組む。
+    pub fn keymap_viewer(&self) -> KeyMap {
+        KeyMap::from_string_map(&self.keybinds_viewer)
     }
 
-    /// 設定から画像・動画ビューア用キーマップを組む。
-    pub fn keymap_imageviewer(&self) -> KeyMap {
-        KeyMap::from_string_map(&self.keybinds_imageviewer)
+    /// 設定からスクロール表示（テキスト・バイナリ）のキーマップを組む。
+    pub fn keymap_viewer_scroll(&self) -> KeyMap {
+        KeyMap::from_string_map(&self.keybinds_viewer_scroll)
+    }
+
+    /// 設定から画像・動画・PDF のキーマップを組む。
+    pub fn keymap_viewer_paged(&self) -> KeyMap {
+        KeyMap::from_string_map(&self.keybinds_viewer_paged)
     }
 
     /// OS のライト判定（`system_is_light`）を渡して実テーマを解決する。

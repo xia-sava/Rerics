@@ -207,25 +207,28 @@ pub enum Command {
     CursorPath,
     MarkedCount,
     HasMarks,
-    // テキストビューア
+    // ビューア（全表示形式に共通）
     ViewerClose,
-    ViewerScrollUp,
-    ViewerScrollDown,
+    ViewerCycleForm,
+    ViewerNext,
+    ViewerPrevious,
     ViewerPageUp,
     ViewerPageDown,
+    ViewerPageDownOrNext,
+    ViewerPageUpOrPrevious,
+    // ビューア（スクロール表示）
+    ViewerScrollUp,
+    ViewerScrollDown,
     ViewerScrollTop,
     ViewerScrollBottom,
     ViewerSearchDialog,
     ViewerFindNext,
     ViewerFindPrevious,
     ViewerSelectAll,
-    ViewerToggleMode,
     ViewerChangeEncoding,
     ViewerCopy,
     ViewerContextMenu,
-    // 画像・動画ビューア
-    ImageNext,
-    ImagePrevious,
+    // ビューア（画像・動画・PDF）
     ImageZoomIn,
     ImageZoomOut,
     ImageFitWindow,
@@ -245,12 +248,11 @@ pub enum Command {
     MediaTogglePlay,
 }
 
-/// コマンドが有効な文脈。設定 UI のキー編集ページをこの単位で分ける。
+/// コマンドが有効な文脈。ファイル一覧を操作するファイラーと、ファイルを表示するビューア。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandContext {
     Filer,
-    TextViewer,
-    ImageViewer,
+    Viewer,
 }
 
 /// 引数の型。機能欄に書けるリテラル引数と名前付きオプションを説明する語彙。
@@ -448,22 +450,24 @@ impl Command {
             (MarkedCount, "markedCount", "マーク数", "マーク（選択）されている項目の数を返す"),
             (HasMarks, "hasMarks", "マークの有無", "マーク（選択）された項目があるかを真偽で返す"),
             (ViewerClose, "viewerClose", "ビューアを閉じる", "ビューアを閉じてファイル一覧へ戻る"),
+            (ViewerCycleForm, "viewerCycleForm", "表示形式を切替", "レンダリング表示・テキスト・バイナリのうちファイルが持つ表示形式を順に切り替える"),
+            (ViewerNext, "viewerNext", "次のファイル", "一覧の次のファイルを表示する"),
+            (ViewerPrevious, "viewerPrevious", "前のファイル", "一覧の前のファイルを表示する"),
+            (ViewerPageUp, "viewerPageUp", "前のページ", "1 ページ前へ戻る（スクロール表示は 1 ページぶん上へ・PDF は前のページ・画像と動画は前のファイル）"),
+            (ViewerPageDown, "viewerPageDown", "次のページ", "1 ページ先へ進む（スクロール表示は 1 ページぶん下へ・PDF は次のページ・画像と動画は次のファイル）"),
+            (ViewerPageDownOrNext, "viewerPageDownOrNext", "次のページ／次のファイル", "1 ページ先へ進み、最後のページなら次のファイルを表示する"),
+            (ViewerPageUpOrPrevious, "viewerPageUpOrPrevious", "前のページ／前のファイル", "1 ページ前へ戻り、最初のページなら前のファイルを末尾から表示する"),
             (ViewerScrollUp, "viewerScrollUp", "1行上へ", "ビューアを 1 行上へスクロールする"),
             (ViewerScrollDown, "viewerScrollDown", "1行下へ", "ビューアを 1 行下へスクロールする"),
-            (ViewerPageUp, "viewerPageUp", "1ページ上へ", "ビューアを 1 ページ上へスクロールする"),
-            (ViewerPageDown, "viewerPageDown", "1ページ下へ", "ビューアを 1 ページ下へスクロールする"),
             (ViewerScrollTop, "viewerScrollTop", "先頭行へ移動", "ビューアを先頭へスクロールする"),
             (ViewerScrollBottom, "viewerScrollBottom", "最終行へ移動", "ビューアを末尾へスクロールする"),
             (ViewerSearchDialog, "viewerSearchDialog", "検索", "ビューア内を検索するダイアログを開く"),
             (ViewerFindNext, "viewerFindNext", "次を検索", "次の検索一致へ移動する"),
             (ViewerFindPrevious, "viewerFindPrevious", "前を検索", "前の検索一致へ移動する"),
             (ViewerSelectAll, "viewerSelectAll", "すべて選択", "ビューアの全文を選択する"),
-            (ViewerToggleMode, "viewerToggleMode", "バイナリ／テキスト切替", "ビューアのテキスト表示とバイナリ表示を切り替える"),
             (ViewerChangeEncoding, "viewerChangeEncoding", "文字コードを切替", "ビューアの文字コードを切り替える"),
             (ViewerCopy, "viewerCopy", "選択範囲をコピー", "ビューアの選択範囲をクリップボードへコピーする"),
             (ViewerContextMenu, "viewerContextMenu", "コンテキストメニュー", "ビューアのコンテキストメニューを開く"),
-            (ImageNext, "imageNext", "次の画像", "次の画像へ送る"),
-            (ImagePrevious, "imagePrevious", "前の画像", "前の画像へ戻る"),
             (ImageZoomIn, "imageZoomIn", "拡大", "画像を拡大する"),
             (ImageZoomOut, "imageZoomOut", "縮小", "画像を縮小する"),
             (ImageFitWindow, "imageFitWindow", "画面に合わせて縮小", "画像を画面に収まるよう縮小して表示する"),
@@ -543,17 +547,16 @@ impl Command {
         use Command::*;
         use CommandContext::*;
         match self {
-            ViewerScrollUp | ViewerScrollDown | ViewerPageUp | ViewerPageDown | ViewerScrollTop
-            | ViewerScrollBottom | ViewerSearchDialog | ViewerFindNext | ViewerFindPrevious
-            | ViewerSelectAll | ViewerToggleMode | ViewerChangeEncoding | ViewerCopy
-            | ViewerContextMenu => &[TextViewer],
-            ViewerClose => &[TextViewer, ImageViewer],
-            ImageNext | ImagePrevious | ImageZoomIn | ImageZoomOut | ImageFitWindow
+            ViewerClose | ViewerCycleForm | ViewerNext | ViewerPrevious | ViewerPageUp
+            | ViewerPageDown | ViewerPageDownOrNext | ViewerPageUpOrPrevious | ViewerScrollUp
+            | ViewerScrollDown | ViewerScrollTop | ViewerScrollBottom | ViewerSearchDialog
+            | ViewerFindNext | ViewerFindPrevious | ViewerSelectAll | ViewerChangeEncoding
+            | ViewerCopy | ViewerContextMenu | ImageZoomIn | ImageZoomOut | ImageFitWindow
             | ImageActualSize | ImageFitWidth | ImageFitHeight | ImageFitLarge
             | ImageRotateRight | ImageRotateLeft | ImageFlipHorizontal
             | ImageFlipVertical | ImagePanUp | ImagePanDown | ImagePanLeft
-            | ImagePanRight | ImageCopy | MediaTogglePlay => &[ImageViewer],
-            Edit | OpenSettings => &[Filer, TextViewer],
+            | ImagePanRight | ImageCopy | MediaTogglePlay => &[Viewer],
+            Edit | OpenSettings => &[Filer, Viewer],
             _ => &[Filer],
         }
     }
@@ -637,12 +640,12 @@ impl Command {
             View => CommandMeta {
                 summary,
                 args: &[ArgSpec {
-                    name: "path",
-                    ty: ArgType::Path,
+                    name: "type",
+                    ty: ArgType::Enum(&["auto", "text", "bin"]),
                     required: false,
-                    doc: "表示するファイル（省略時はカーソル位置）",
+                    doc: "最初に開く表示形式（省略時はディレクトリ・書庫へ入り、ファイルは持っている中で一番上の形式で開く。指定時は入らずに開く）",
                 }],
-                examples: &["view()", r#"view("C:\\note.txt")"#],
+                examples: &["view()", r#"view("auto")"#, r#"view("bin")"#],
             },
             ChangeDirectory => CommandMeta {
                 summary,
@@ -1155,21 +1158,38 @@ impl KeyMap {
         Self { map: HashMap::new() }
     }
 
-    /// テキストビューアの既定キーバインド（実装済みコマンド分）。
-    /// 横スクロール（Left/Right）は折返し表示のため割り当てない。個人設定は
-    /// config.toml の `[keybinds_textviewer]` で上乗せする。
-    pub fn default_textviewer() -> Self {
+    /// ビューアの全表示形式に共通の既定キーバインド。表示形式ごとの表
+    /// （[`KeyMap::default_viewer_scroll`]・[`KeyMap::default_viewer_paged`]）に無いキーはここで引く。
+    /// 個人設定は config.toml の `[keybinds_viewer]` で上乗せする。
+    pub fn default_viewer() -> Self {
         use Command::*;
         let mut m = Self::new();
         // 終了（Enter / Esc / Q）。
         m.bind(KeyChord::key(vk::RETURN), ViewerClose);
         m.bind(KeyChord::key(vk::ESCAPE), ViewerClose);
         m.bind(KeyChord::key(vk::Q), ViewerClose);
-        // スクロール（↑↓ / PageUp/Down / Home/End、Ctrl で先頭・末尾）。
-        m.bind(KeyChord::key(vk::UP), ViewerScrollUp);
-        m.bind(KeyChord::key(vk::DOWN), ViewerScrollDown);
+        // 表示形式の切替（Tab）。
+        m.bind(KeyChord::key(vk::TAB), ViewerCycleForm);
+        // ページ送り（Space＝次のページ・最後なら次のファイル／Shift+Space＝その逆）。
+        m.bind(KeyChord::key(vk::SPACE), ViewerPageDownOrNext);
+        m.bind(KeyChord::new(vk::SPACE, false, true, false), ViewerPageUpOrPrevious);
         m.bind(KeyChord::key(vk::PRIOR), ViewerPageUp);
         m.bind(KeyChord::key(vk::NEXT), ViewerPageDown);
+        // 前のファイル（B）。
+        m.bind(KeyChord::key(vk::B), ViewerPrevious);
+        // エディタ起動（E）。
+        m.bind(KeyChord::key(vk::E), Edit);
+        m
+    }
+
+    /// スクロール表示（テキスト・バイナリ）の既定キーバインド。横スクロール（Left/Right）は
+    /// 折返し表示のため割り当てない。個人設定は config.toml の `[keybinds_viewer_scroll]` で上乗せする。
+    pub fn default_viewer_scroll() -> Self {
+        use Command::*;
+        let mut m = Self::new();
+        // スクロール（↑↓ / Home/End、Ctrl で先頭・末尾）。
+        m.bind(KeyChord::key(vk::UP), ViewerScrollUp);
+        m.bind(KeyChord::key(vk::DOWN), ViewerScrollDown);
         m.bind(KeyChord::new(vk::PRIOR, true, false, false), ViewerScrollTop);
         m.bind(KeyChord::new(vk::NEXT, true, false, false), ViewerScrollBottom);
         m.bind(KeyChord::key(vk::HOME), ViewerScrollTop);
@@ -1179,37 +1199,28 @@ impl KeyMap {
         // 選択・コピー（Ctrl+A / Ctrl+C）。
         m.bind(KeyChord::new(vk::A, true, false, false), ViewerSelectAll);
         m.bind(KeyChord::new(vk::C, true, false, false), ViewerCopy);
-        // 表示モード・文字コード（B / C）。
-        m.bind(KeyChord::key(vk::B), ViewerToggleMode);
+        // 文字コード（C）。
         m.bind(KeyChord::key(vk::C), ViewerChangeEncoding);
         // 検索（Ctrl+F / Ctrl+S・次=N・前=P）。
         m.bind(KeyChord::new(vk::F, true, false, false), ViewerSearchDialog);
         m.bind(KeyChord::new(vk::S, true, false, false), ViewerSearchDialog);
         m.bind(KeyChord::key(vk::N), ViewerFindNext);
         m.bind(KeyChord::key(vk::P), ViewerFindPrevious);
-        // エディタ起動（E）。
-        m.bind(KeyChord::key(vk::E), Edit);
         m
     }
 
-    /// 画像・動画ビューアの既定キーバインド。個人設定は config.toml の
-    /// `[keybinds_imageviewer]` で上乗せする。
-    pub fn default_imageviewer() -> Self {
+    /// 画像・動画・PDF の既定キーバインド。個人設定は config.toml の
+    /// `[keybinds_viewer_paged]` で上乗せする。
+    pub fn default_viewer_paged() -> Self {
         use Command::*;
         let mut m = Self::new();
-        // 終了（Enter / Esc / Q）。
-        m.bind(KeyChord::key(vk::RETURN), ViewerClose);
-        m.bind(KeyChord::key(vk::ESCAPE), ViewerClose);
-        m.bind(KeyChord::key(vk::Q), ViewerClose);
-        // 再生／一時停止（動画・Space）。
-        m.bind(KeyChord::key(vk::SPACE), MediaTogglePlay);
-        // 前後送り（←↑PageUp＝前・→↓PageDown＝次）。
-        m.bind(KeyChord::key(vk::LEFT), ImagePrevious);
-        m.bind(KeyChord::key(vk::UP), ImagePrevious);
-        m.bind(KeyChord::key(vk::PRIOR), ImagePrevious);
-        m.bind(KeyChord::key(vk::RIGHT), ImageNext);
-        m.bind(KeyChord::key(vk::DOWN), ImageNext);
-        m.bind(KeyChord::key(vk::NEXT), ImageNext);
+        // 再生／一時停止（動画・P）。
+        m.bind(KeyChord::key(vk::P), MediaTogglePlay);
+        // ページ送り（←↑＝前・→↓＝次。画像と動画はファイル、PDF はページを送る）。
+        m.bind(KeyChord::key(vk::LEFT), ViewerPageUp);
+        m.bind(KeyChord::key(vk::UP), ViewerPageUp);
+        m.bind(KeyChord::key(vk::RIGHT), ViewerPageDown);
+        m.bind(KeyChord::key(vk::DOWN), ViewerPageDown);
         // 拡大・縮小（+ / -、テンキー +/- も）。
         m.bind(KeyChord::key(vk::OEM_PLUS), ImageZoomIn);
         m.bind(KeyChord::key(vk::ADD), ImageZoomIn);
@@ -1729,14 +1740,28 @@ mod tests {
     }
 
     #[test]
-    fn default_textviewer_binds_origin_keys() {
-        let m = KeyMap::default_textviewer();
-        assert_eq!(m.resolve(&KeyChord::key(vk::UP)), Some(Command::ViewerScrollUp));
-        assert_eq!(m.resolve(&KeyChord::key(vk::DOWN)), Some(Command::ViewerScrollDown));
+    fn default_viewer_binds_common_keys() {
+        let m = KeyMap::default_viewer();
         assert_eq!(m.resolve(&KeyChord::key(vk::RETURN)), Some(Command::ViewerClose));
         assert_eq!(m.resolve(&KeyChord::key(vk::ESCAPE)), Some(Command::ViewerClose));
         assert_eq!(m.resolve(&KeyChord::key(vk::Q)), Some(Command::ViewerClose));
-        assert_eq!(m.resolve(&KeyChord::key(vk::B)), Some(Command::ViewerToggleMode));
+        assert_eq!(m.resolve(&KeyChord::key(vk::TAB)), Some(Command::ViewerCycleForm));
+        assert_eq!(m.resolve(&KeyChord::key(vk::SPACE)), Some(Command::ViewerPageDownOrNext));
+        assert_eq!(
+            m.resolve(&KeyChord::new(vk::SPACE, false, true, false)),
+            Some(Command::ViewerPageUpOrPrevious)
+        );
+        assert_eq!(m.resolve(&KeyChord::key(vk::PRIOR)), Some(Command::ViewerPageUp));
+        assert_eq!(m.resolve(&KeyChord::key(vk::NEXT)), Some(Command::ViewerPageDown));
+        assert_eq!(m.resolve(&KeyChord::key(vk::B)), Some(Command::ViewerPrevious));
+        assert_eq!(m.resolve(&KeyChord::key(vk::E)), Some(Command::Edit));
+    }
+
+    #[test]
+    fn default_viewer_scroll_binds_origin_keys() {
+        let m = KeyMap::default_viewer_scroll();
+        assert_eq!(m.resolve(&KeyChord::key(vk::UP)), Some(Command::ViewerScrollUp));
+        assert_eq!(m.resolve(&KeyChord::key(vk::DOWN)), Some(Command::ViewerScrollDown));
         assert_eq!(m.resolve(&KeyChord::key(vk::C)), Some(Command::ViewerChangeEncoding));
         assert_eq!(
             m.resolve(&KeyChord::new(vk::C, true, false, false)),
@@ -1753,18 +1778,23 @@ mod tests {
         );
         assert_eq!(m.resolve(&KeyChord::key(vk::N)), Some(Command::ViewerFindNext));
         assert_eq!(m.resolve(&KeyChord::key(vk::P)), Some(Command::ViewerFindPrevious));
-        assert_eq!(m.resolve(&KeyChord::key(vk::E)), Some(Command::Edit));
         // 横スクロールは割り当てない（折返し表示のため）。
         assert_eq!(m.resolve(&KeyChord::key(vk::LEFT)), None);
         assert_eq!(m.resolve(&KeyChord::key(vk::RIGHT)), None);
+        // 全表示形式に共通のキーは共通の表に任せる。
+        assert_eq!(m.resolve(&KeyChord::key(vk::RETURN)), None);
+        assert_eq!(m.resolve(&KeyChord::key(vk::SPACE)), None);
     }
 
     #[test]
-    fn default_imageviewer_binds_current_keys() {
-        let m = KeyMap::default_imageviewer();
-        assert_eq!(m.resolve(&KeyChord::key(vk::SPACE)), Some(Command::MediaTogglePlay));
-        assert_eq!(m.resolve(&KeyChord::key(vk::LEFT)), Some(Command::ImagePrevious));
-        assert_eq!(m.resolve(&KeyChord::key(vk::RIGHT)), Some(Command::ImageNext));
+    fn default_viewer_paged_binds_current_keys() {
+        let m = KeyMap::default_viewer_paged();
+        assert_eq!(m.resolve(&KeyChord::key(vk::P)), Some(Command::MediaTogglePlay));
+        assert_eq!(m.resolve(&KeyChord::key(vk::LEFT)), Some(Command::ViewerPageUp));
+        assert_eq!(m.resolve(&KeyChord::key(vk::UP)), Some(Command::ViewerPageUp));
+        assert_eq!(m.resolve(&KeyChord::key(vk::RIGHT)), Some(Command::ViewerPageDown));
+        assert_eq!(m.resolve(&KeyChord::key(vk::DOWN)), Some(Command::ViewerPageDown));
+        assert_eq!(m.resolve(&KeyChord::key(vk::SPACE)), None);
         assert_eq!(m.resolve(&KeyChord::key(vk::ADD)), Some(Command::ImageZoomIn));
         assert_eq!(m.resolve(&KeyChord::key(vk::SUBTRACT)), Some(Command::ImageZoomOut));
         assert_eq!(m.resolve(&KeyChord::key(vk::R)), Some(Command::ImageRotateRight));
@@ -1780,14 +1810,12 @@ mod tests {
             m.resolve(&KeyChord::new(vk::C, true, false, false)),
             Some(Command::ImageCopy)
         );
-        // 終了は両ビューア共有コマンド。
-        assert_eq!(m.resolve(&KeyChord::key(vk::ESCAPE)), Some(Command::ViewerClose));
     }
 
     #[test]
-    fn imageviewer_string_map_roundtrip() {
+    fn viewer_paged_string_map_roundtrip() {
         // テンキー +/- や OEM_- もトークン往復できる（落ちると default.toml 検証が壊れる）。
-        let m = KeyMap::default_imageviewer();
+        let m = KeyMap::default_viewer_paged();
         let sm = m.to_string_map();
         assert!(sm.contains_key("NumPad+"));
         assert!(sm.contains_key("NumPad-"));
@@ -1798,27 +1826,28 @@ mod tests {
     #[test]
     fn command_contexts_partition() {
         use CommandContext::*;
-        // ファイラー専用コマンドはテキストビューアでは無効。
+        // ファイラー専用コマンドはビューアでは無効。
         assert!(Command::CursorDown.available_in(Filer));
-        assert!(!Command::CursorDown.available_in(TextViewer));
+        assert!(!Command::CursorDown.available_in(Viewer));
         // ビューア専用はビューアのみ。
-        assert!(Command::ViewerToggleMode.available_in(TextViewer));
-        assert!(!Command::ViewerToggleMode.available_in(Filer));
+        assert!(Command::ViewerCycleForm.available_in(Viewer));
+        assert!(!Command::ViewerCycleForm.available_in(Filer));
+        assert!(Command::ImageZoomIn.available_in(Viewer));
         // 共有コマンドは両方で有効。
         assert!(Command::Edit.available_in(Filer));
-        assert!(Command::Edit.available_in(TextViewer));
-        // 終了は両ビューアで有効。
-        assert!(Command::ViewerClose.available_in(TextViewer));
-        assert!(Command::ViewerClose.available_in(ImageViewer));
+        assert!(Command::Edit.available_in(Viewer));
     }
 
     #[test]
-    fn textviewer_string_map_roundtrip() {
-        let m = KeyMap::default_textviewer();
-        let sm = m.to_string_map();
-        let back = KeyMap::from_string_map(&sm);
-        assert_eq!(back.to_string_map(), sm);
-        assert_eq!(back.resolve(&KeyChord::key(vk::B)), Some(Command::ViewerToggleMode));
+    fn viewer_string_maps_roundtrip() {
+        for m in [KeyMap::default_viewer(), KeyMap::default_viewer_scroll()] {
+            let sm = m.to_string_map();
+            let back = KeyMap::from_string_map(&sm);
+            assert_eq!(back.to_string_map(), sm);
+        }
+        let sm = KeyMap::default_viewer().to_string_map();
+        assert_eq!(sm.get("Tab").map(String::as_str), Some("viewerCycleForm()"));
+        assert_eq!(sm.get("Shift+Space").map(String::as_str), Some("viewerPageUpOrPrevious()"));
     }
 
     #[test]

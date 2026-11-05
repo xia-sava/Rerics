@@ -10,7 +10,7 @@ use crate::key_editor::command_genre;
 use crate::script::ScriptCommand;
 
 /// 標準キーマップ群・現在キーマップ群・登録スクリプトから、コマンドリファレンスの HTML を作る。
-/// `*_maps` は文脈（ファイラー／テキスト／画像）ごとのキーマップ。組込はジャンル順、スクリプトは
+/// `*_maps` は文脈（ファイラー／ビューアの各表）ごとのキーマップ。組込はジャンル順、スクリプトは
 /// 末尾の専用節に並べる。各行に標準キーと現在キーを併記する。
 pub fn help_html(default_maps: &[&KeyMap], current_maps: &[&KeyMap], scripts: &[ScriptCommand]) -> String {
     let def = sorted_index(keybind_index(default_maps));

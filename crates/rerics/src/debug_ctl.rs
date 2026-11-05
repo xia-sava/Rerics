@@ -502,21 +502,18 @@ impl MainWindow {
             args: args.into_iter().map(serde_json::Value::String).collect(),
         };
         let is_left = !self.active_right.get();
-        // 表示中ビューアのコマンドはそのビューア文脈で実行する。
-        let viewer_is_text = match self.active_view.get() {
-            ActiveView::Text if cmd.available_in(CommandContext::TextViewer) => Some(true),
-            ActiveView::Media if cmd.available_in(CommandContext::ImageViewer) => Some(false),
-            _ => None,
-        };
-        if let Some(is_text) = viewer_is_text {
+        // 表示中ビューアのコマンドはビューア文脈で実行する。
+        let in_viewer = !matches!(self.active_view.get(), ActiveView::None)
+            && cmd.available_in(CommandContext::Viewer);
+        if in_viewer {
             // 検索など、モーダルを開き得るビューアコマンドは exec がモーダルを閉じるまで
             // ブロックする。単一スレッドの HTTP が `/modal/*` を捌けなくなるのを避け、先に応答する。
             if !matches!(debug_command_class(cmd), DebugCmdClass::NonModal) {
                 let _ = tx.send(debug_server::Response::Json("{\"maybe_modal\":true}".to_string()));
-                let _ = if is_text { self.exec_viewer(&call) } else { self.exec_media(&call) };
+                let _ = self.exec_viewer(&call);
                 return;
             }
-            let result = if is_text { self.exec_viewer(&call) } else { self.exec_media(&call) };
+            let result = self.exec_viewer(&call);
             let r = match result {
                 Ok(()) => {
                     self.settle_pending_jobs();
@@ -1027,8 +1024,8 @@ impl MainWindow {
     #[cfg(feature = "debug-server")]
     pub(crate) fn debug_view_key(&self, action: &str) -> debug_server::Response {
         let r = match action {
-            "next" => self.media.navigate(1),
-            "prev" => self.media.navigate(-1),
+            "next" => self.step_file(1, false).map(|_| ()),
+            "prev" => self.step_file(-1, false).map(|_| ()),
             "close" => self.close_viewer(),
             _ => {
                 let Some(chord) = rerics_core::KeyChord::parse(action) else {
@@ -1036,13 +1033,10 @@ impl MainWindow {
                         "unknown view action: {action}"
                     ));
                 };
-                match self.active_view.get() {
-                    ActiveView::Text => self.viewer_key(chord.vk, chord.ctrl, chord.shift),
-                    ActiveView::Media => self.media_key(chord.vk, chord.ctrl, chord.shift),
-                    ActiveView::None => {
-                        return debug_server::Response::BadRequest("no viewer active".to_string());
-                    }
+                if matches!(self.active_view.get(), ActiveView::None) {
+                    return debug_server::Response::BadRequest("no viewer active".to_string());
                 }
+                self.viewer_key(chord.vk, chord.ctrl, chord.shift)
             }
         };
         match r {
@@ -1614,9 +1608,29 @@ impl MainWindow {
         } else {
             serde_json::Value::Null
         };
+        let view = match (self.current_form(), self.view_session.borrow().as_ref()) {
+            (Some(form), Some(session)) => json!({
+                "name": session.name,
+                "form": form.token(),
+                "forms": {
+                    "render": session.forms.render.map(|r| match r {
+                        rerics_core::RenderKind::Media(_) => "media",
+                        rerics_core::RenderKind::Pdf => "pdf",
+                    }),
+                    "text": session.forms.text,
+                },
+                "layout": match session.forms.layout(form) {
+                    rerics_core::ViewLayout::Scroll => "scroll",
+                    rerics_core::ViewLayout::Paged => "paged",
+                },
+            }),
+            _ => serde_json::Value::Null,
+        };
         let viewer = if matches!(self.active_view.get(), ActiveView::Text) {
             let (search, pos, count, opts) = self.viewer.debug_search_state();
             json!({
+                "at_top": self.viewer.at_top(),
+                "at_end": self.viewer.at_end(),
                 "search": search,
                 "search_open": self.viewer.is_search_bar_open(),
                 "match": pos.map(|(l, c, len)| json!({ "line": l, "col": c, "len": len })),
@@ -1716,6 +1730,7 @@ impl MainWindow {
             },
             "active_pane": if self.active_right.get() { "right" } else { "left" },
             "active_view": active_view,
+            "view": view,
             "panes": {
                 "left": self.debug_pane_json(true),
                 "right": self.debug_pane_json(false),
@@ -1889,8 +1904,7 @@ fn context_token(ctx: rerics_core::CommandContext) -> &'static str {
     use rerics_core::CommandContext::*;
     match ctx {
         Filer => "filer",
-        TextViewer => "text",
-        ImageViewer => "image",
+        Viewer => "viewer",
     }
 }
 

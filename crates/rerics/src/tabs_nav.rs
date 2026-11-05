@@ -934,11 +934,10 @@ impl MainWindow {
             ActiveView::Text => return self.viewer.scroll_by_wheel(distance),
             ActiveView::Media => {
                 // ホイール動作は設定で切替（既定＝送り・原作准拠／上=前・下=次）。
-                return match self.config.borrow().image.wheel {
+                let wheel = self.config.borrow().image.wheel;
+                return match wheel {
                     rerics_core::WheelAction::Zoom => self.media.on_wheel(distance),
-                    rerics_core::WheelAction::Navigate => {
-                        self.media.navigate(if distance > 0 { -1 } else { 1 })
-                    }
+                    rerics_core::WheelAction::Navigate => self.viewer_page(distance < 0, false),
                 };
             }
             ActiveView::None => {}

@@ -51,10 +51,12 @@ impl MainWindow {
         *self.config.borrow_mut() = new;
         let km = self.config.borrow().keymap();
         *self.keymap.borrow_mut() = km;
-        let vkm = self.config.borrow().keymap_textviewer();
+        let vkm = self.config.borrow().keymap_viewer();
         *self.viewer_keymap.borrow_mut() = vkm;
-        let mkm = self.config.borrow().keymap_imageviewer();
-        *self.media_keymap.borrow_mut() = mkm;
+        let skm = self.config.borrow().keymap_viewer_scroll();
+        *self.viewer_scroll_keymap.borrow_mut() = skm;
+        let pkm = self.config.borrow().keymap_viewer_paged();
+        *self.viewer_paged_keymap.borrow_mut() = pkm;
         {
             let cfg = self.config.borrow();
             self.left.apply_config(&cfg);
@@ -112,8 +114,9 @@ mod tests {
         ("reverse_sort_date", Apply::Live),
         ("progress_delay_ms", Apply::Live),
         ("keybinds", Apply::Live), // keymap 再構築
-        ("keybinds_textviewer", Apply::Live),
-        ("keybinds_imageviewer", Apply::Live),
+        ("keybinds_viewer", Apply::Live),
+        ("keybinds_viewer_scroll", Apply::Live),
+        ("keybinds_viewer_paged", Apply::Live),
         ("bookmarks", Apply::ReadAtUse),
         ("menus", Apply::ReadAtUse),
         ("editor", Apply::ReadAtUse),

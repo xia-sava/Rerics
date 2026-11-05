@@ -191,11 +191,12 @@ fn debug_command_class(cmd: Command) -> DebugCmdClass {
         }
         // インクリメンタルサーチはインライン検索バーを開く（モーダルを開かない＝即時に応答が返る）。
         IncrementalSearchDialog => DebugCmdClass::NonModal,
-        ViewerClose | ViewerToggleMode | ViewerChangeEncoding | ViewerCopy | ViewerSelectAll
+        ViewerClose | ViewerCycleForm | ViewerNext | ViewerPrevious | ViewerPageDownOrNext
+        | ViewerPageUpOrPrevious | ViewerChangeEncoding | ViewerCopy | ViewerSelectAll
         | ViewerScrollUp | ViewerScrollDown | ViewerScrollTop | ViewerScrollBottom
         | ViewerPageUp | ViewerPageDown | ViewerSearchDialog | ViewerFindNext
         | ViewerFindPrevious | ViewerContextMenu => DebugCmdClass::NonModal,
-        ImageNext | ImagePrevious | ImageZoomIn | ImageZoomOut | ImageFitWindow | ImageFitWidth
+        ImageZoomIn | ImageZoomOut | ImageFitWindow | ImageFitWidth
         | ImageFitHeight | ImageFitLarge | ImageActualSize | ImageRotateLeft | ImageRotateRight
         | ImageFlipHorizontal | ImageFlipVertical | ImagePanUp | ImagePanDown | ImagePanLeft
         | ImagePanRight | ImageCopy | MediaTogglePlay => DebugCmdClass::NonModal,
@@ -382,6 +383,8 @@ struct MainWindow {
     icon_cache: Rc<icons::IconCache>,
     /// 現在重ねているビューア。None 以外の間はキー入力をビューア操作へ振り向ける。
     active_view: Rc<Cell<ActiveView>>,
+    /// ビューアで表示中のファイルと表示形式の組（閉じている間は None）。
+    view_session: Rc<RefCell<Option<viewer_ctl::ViewSession>>>,
     key_sink: gui::WindowControl,
     menu_bar: Rc<w::HMENU>,
     menu_cmds: Rc<std::collections::HashMap<u16, Command>>,
@@ -391,8 +394,12 @@ struct MainWindow {
     left_pane: Rc<RefCell<Pane>>,
     right_pane: Rc<RefCell<Pane>>,
     keymap: Rc<RefCell<KeyMap>>,
+    /// ビューアの全表示形式に共通のキーマップ（表示形式ごとの表に無いキーを引く）。
     viewer_keymap: Rc<RefCell<KeyMap>>,
-    media_keymap: Rc<RefCell<KeyMap>>,
+    /// スクロール表示（テキスト・バイナリ）のキーマップ。
+    viewer_scroll_keymap: Rc<RefCell<KeyMap>>,
+    /// 画像・動画・PDF のキーマップ。
+    viewer_paged_keymap: Rc<RefCell<KeyMap>>,
     initial_window: Option<WindowState>,
     /// 起動時にまだ復元していない保存状態（保存タブがある場合）。窓を先に出してから、
     /// パス探索と一覧読込（オフライン UNC 等でブロックし得る）をワーカーで行うため保持する。
@@ -683,8 +690,9 @@ impl MainWindow {
         let pending_restore = if has_saved_tabs { Some(state.clone()) } else { None };
 
         let keymap = config.keymap();
-        let viewer_keymap = config.keymap_textviewer();
-        let media_keymap = config.keymap_imageviewer();
+        let viewer_keymap = config.keymap_viewer();
+        let viewer_scroll_keymap = config.keymap_viewer_scroll();
+        let viewer_paged_keymap = config.keymap_viewer_paged();
 
         let (menu_bar, menu_cmds) = menu::build().expect("メニューバーの構築");
 
@@ -705,6 +713,7 @@ impl MainWindow {
             media,
             icon_cache,
             active_view: Rc::new(Cell::new(ActiveView::None)),
+            view_session: Rc::new(RefCell::new(None)),
             key_sink,
             menu_bar: Rc::new(menu_bar),
             menu_cmds: Rc::new(menu_cmds),
@@ -714,7 +723,8 @@ impl MainWindow {
             right_pane,
             keymap: Rc::new(RefCell::new(keymap)),
             viewer_keymap: Rc::new(RefCell::new(viewer_keymap)),
-            media_keymap: Rc::new(RefCell::new(media_keymap)),
+            viewer_scroll_keymap: Rc::new(RefCell::new(viewer_scroll_keymap)),
+            viewer_paged_keymap: Rc::new(RefCell::new(viewer_paged_keymap)),
             initial_window,
             pending_restore: Rc::new(RefCell::new(pending_restore)),
             active_right: Rc::new(Cell::new(active_right)),
@@ -817,7 +827,7 @@ impl MainWindow {
             // 割り当て済みなら、そちらを優先して実行する。
             let this = self.clone();
             self.viewer.on_chord(move |chord| {
-                let resolved = this.viewer_keymap.borrow().resolve_call(&chord);
+                let resolved = this.resolve_viewer_chord(&chord);
                 match resolved {
                     Some(call) => {
                         let _ = this.exec_viewer(&call);
@@ -1841,16 +1851,18 @@ impl MainWindow {
     pub(crate) fn build_help_html(&self) -> String {
         let cfg = self.config.borrow();
         let cur_filer = cfg.keymap();
-        let cur_text = cfg.keymap_textviewer();
-        let cur_image = cfg.keymap_imageviewer();
+        let cur_viewer = cfg.keymap_viewer();
+        let cur_scroll = cfg.keymap_viewer_scroll();
+        let cur_paged = cfg.keymap_viewer_paged();
         drop(cfg);
         let def_filer = KeyMap::default();
-        let def_text = KeyMap::default_textviewer();
-        let def_image = KeyMap::default_imageviewer();
+        let def_viewer = KeyMap::default_viewer();
+        let def_scroll = KeyMap::default_viewer_scroll();
+        let def_paged = KeyMap::default_viewer_paged();
         let scripts = self.script_list_commands();
         help::help_html(
-            &[&def_filer, &def_text, &def_image],
-            &[&cur_filer, &cur_text, &cur_image],
+            &[&def_filer, &def_viewer, &def_scroll, &def_paged],
+            &[&cur_filer, &cur_viewer, &cur_scroll, &cur_paged],
             &scripts,
         )
     }
@@ -1970,20 +1982,11 @@ impl MainWindow {
         let this = self.clone();
         self.key_sink.on().wm_key_down(move |p| {
             // ビューア表示中はキーをビューア操作へ振り向ける（ファイラのキーマップは無効）。
-            match this.active_view.get() {
-                ActiveView::Text => {
-                    let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
-                    let shift = w::GetAsyncKeyState(co::VK::SHIFT);
-                    let _ = this.viewer_key(p.vkey_code.raw(), ctrl, shift);
-                    return Ok(());
-                }
-                ActiveView::Media => {
-                    let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
-                    let shift = w::GetAsyncKeyState(co::VK::SHIFT);
-                    let _ = this.media_key(p.vkey_code.raw(), ctrl, shift);
-                    return Ok(());
-                }
-                ActiveView::None => {}
+            if !matches!(this.active_view.get(), ActiveView::None) {
+                let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
+                let shift = w::GetAsyncKeyState(co::VK::SHIFT);
+                let _ = this.viewer_key(p.vkey_code.raw(), ctrl, shift);
+                return Ok(());
             }
             let ctrl = w::GetAsyncKeyState(co::VK::CONTROL);
             let shift = w::GetAsyncKeyState(co::VK::SHIFT);

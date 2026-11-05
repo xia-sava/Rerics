@@ -1871,7 +1871,7 @@ fn view_pdf_shows_pages_in_image_viewer() {
     assert!(media.contains("\"total\":3"), "全 3 ページを巡回対象にする: {media}");
     assert!(media.contains("doc.pdf"), "状態行の見出しは PDF 名: {media}");
     // 次ページへ送れる（1 始まりの位置が 2 へ進む）。
-    server.req("POST", "/view/key/next", "").unwrap();
+    server.req("POST", "/view/key/Right", "").unwrap();
     let media2 = poll(&server, "/state/media", |b| b.contains("\"index\":2"));
     assert!(media2.contains("\"index\":2"), "送りで 2 ページ目へ進む: {media2}");
     // 閉じると一覧へ戻る。
@@ -2107,13 +2107,15 @@ fn viewer_commands_dispatch_in_text_context() {
         .unwrap();
     server.req("POST", "/command/view", "").unwrap();
     poll(&server, "/state/active_view", |b| b.trim() == "\"text\"");
-    // バイナリ/テキスト切替は表示モードだけ変え、ビューアは開いたまま。
+    // テキスト→バイナリの切替は表示モードだけ変え、ビューアは開いたまま。
     let (st, _) = server
-        .req("POST", "/command/viewerToggleMode", "")
-        .expect("viewerToggleMode");
-    assert_eq!(st, 200, "viewerToggleMode はテキストビューア文脈で実行される");
+        .req("POST", "/command/viewerCycleForm", "")
+        .expect("viewerCycleForm");
+    assert_eq!(st, 200, "viewerCycleForm はビューア文脈で実行される");
     let av = server.req("GET", "/state/active_view", "").unwrap().1;
     assert_eq!(av.trim(), "\"text\"", "モード切替後もテキストビューアは開いたまま");
+    let form = server.req("GET", "/state/view/form", "").unwrap().1;
+    assert_eq!(form.trim(), "\"binary\"", "テキストの次はバイナリ表示");
     // 実キー経路（キーマップ解決→コマンド実行）で Esc を送ると閉じる。
     server.req("POST", "/view/key/Esc", "").unwrap();
     let av2 = poll(&server, "/state/active_view", |b| b.trim() == "\"none\"");
@@ -4838,7 +4840,7 @@ fn text_viewer_search_mnemonic_toggles_options() {
 /// 優先する（トグルせずそのコマンドを実行）。ここでは Alt+C を viewerClose に割り当てて確認。
 #[test]
 fn text_viewer_search_mnemonic_yields_to_user_keybind() {
-    let server = Server::start(&["doc.txt"], "[keybinds_textviewer]\n\"Alt+C\" = \"viewerClose()\"\n");
+    let server = Server::start(&["doc.txt"], "[keybinds_viewer]\n\"Alt+C\" = \"viewerClose()\"\n");
     std::fs::write(server.base.join("sbx").join("doc.txt"), "foo bar\n").unwrap();
     server.req("POST", "/command/cursorDown", "").unwrap();
     server.req("POST", "/command/viewFile", "").expect("viewFile");
@@ -7217,4 +7219,184 @@ fn background_task_completion_log_stays_on_origin_tab() {
         !log1.contains("テスト用タスク実行中") && !log1.contains("テスト用タスク終了"),
         "タスクのログは切替先 tab1 へ混入しない: {log1}"
     );
+}
+
+/// 中身のない zip（終端レコードだけ）。書庫として扱われる最小のファイル。
+const EMPTY_ZIP: &[u8] = &[
+    0x50, 0x4B, 0x05, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+
+/// 行数の多いテキスト（1 ページに収まらず、末尾までスクロールの余地がある）。
+fn long_text() -> Vec<u8> {
+    (0..200).map(|i| format!("line {i}\n")).collect::<String>().into_bytes()
+}
+
+/// 左ペインのカーソル下の項目名。
+fn left_cursor_name(server: &Server) -> String {
+    let items = server.req("GET", "/state/panes/left/items", "").expect("items").1;
+    let items: serde_json::Value = serde_json::from_str(&items).unwrap();
+    items
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|it| it["cursor"] == true)
+        .and_then(|it| it["name"].as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// `/state/view/<key>` の文字列値。
+fn view_state(server: &Server, key: &str) -> String {
+    server
+        .req("GET", &format!("/state/view/{key}"), "")
+        .expect("view state")
+        .1
+        .trim()
+        .trim_matches('"')
+        .to_string()
+}
+
+/// テキストファイルは Tab でテキスト表示とバイナリ表示を行き来する。
+#[test]
+fn viewer_tab_cycles_text_and_binary() {
+    let server = Server::start_dirs(&[("note.txt", b"hello\n")], &[]);
+    server.req("POST", "/command/setCursorPosition", r#"["note.txt"]"#).unwrap();
+    server.req("POST", "/command/view", "").unwrap();
+    poll(&server, "/state/view/form", |b| b.trim() == "\"text\"");
+    assert_eq!(view_state(&server, "layout"), "scroll");
+    server.req("POST", "/view/key/Tab", "").unwrap();
+    poll(&server, "/state/view/form", |b| b.trim() == "\"binary\"");
+    server.req("POST", "/view/key/Tab", "").unwrap();
+    poll(&server, "/state/view/form", |b| b.trim() == "\"text\"");
+}
+
+/// 画像は Tab でレンダリング表示とバイナリ表示を行き来する（テキスト表示は持たない）。
+#[test]
+fn viewer_tab_cycles_image_and_binary() {
+    let server = Server::start_dirs(&[("pic.bmp", TINY_BMP)], &[]);
+    server.req("POST", "/command/setCursorPosition", r#"["pic.bmp"]"#).unwrap();
+    server.req("POST", "/command/view", "").unwrap();
+    poll(&server, "/state/active_view", |b| b.trim() == "\"media\"");
+    assert_eq!(view_state(&server, "form"), "rendered");
+    assert_eq!(view_state(&server, "layout"), "paged");
+    server.req("POST", "/view/key/Tab", "").unwrap();
+    poll(&server, "/state/view/form", |b| b.trim() == "\"binary\"");
+    assert_eq!(view_state(&server, "layout"), "scroll");
+    server.req("POST", "/view/key/Tab", "").unwrap();
+    poll(&server, "/state/active_view", |b| b.trim() == "\"media\"");
+    assert_eq!(view_state(&server, "form"), "rendered");
+}
+
+/// 書庫は `view("auto")` なら入らずにバイナリ表示で開き、`view()` なら中へ入る。
+#[test]
+fn viewer_archive_views_binary_or_enters() {
+    let server = Server::start_dirs(&[("pack.zip", EMPTY_ZIP)], &[]);
+    server.req("POST", "/command/setCursorPosition", r#"["pack.zip"]"#).unwrap();
+    server.req("POST", "/command/view", r#"["auto"]"#).unwrap();
+    poll(&server, "/state/view/form", |b| b.trim() == "\"binary\"");
+    let forms = server.req("GET", "/state/view/forms", "").unwrap().1;
+    assert!(forms.contains("\"text\":false"), "書庫はテキスト表示を持たない: {forms}");
+    // バイナリしか持たないので Tab でもバイナリのまま。
+    server.req("POST", "/view/key/Tab", "").unwrap();
+    assert_eq!(view_state(&server, "form"), "binary");
+    server.req("POST", "/view/key/Esc", "").unwrap();
+    poll(&server, "/state/active_view", |b| b.trim() == "\"none\"");
+    server.req("POST", "/command/view", "").unwrap();
+    let loc = poll(&server, "/state/panes/left/location", |b| b.contains("pack.zip"));
+    assert!(loc.contains("pack.zip"), "view() は書庫の中へ入る: {loc}");
+    let av = server.req("GET", "/state/active_view", "").unwrap().1;
+    assert_eq!(av.trim(), "\"none\"", "書庫へ入るときはビューアを開かない");
+}
+
+/// Space は末尾で次のファイルへ進み、Shift+Space は先頭で前のファイルへ戻って末尾から表示する。
+/// ペインのカーソルも表示中のファイルへ追従する。
+#[test]
+fn viewer_space_pages_then_moves_to_adjacent_file() {
+    let text = long_text();
+    let server = Server::start_dirs(&[("a.txt", &text), ("b.txt", &text)], &[]);
+    server.req("POST", "/command/setCursorPosition", r#"["a.txt"]"#).unwrap();
+    server.req("POST", "/command/view", "").unwrap();
+    poll(&server, "/state/view/name", |b| b.contains("a.txt"));
+    // 先頭では Space はスクロールするだけ（ファイルは変わらない）。
+    server.req("POST", "/view/key/Space", "").unwrap();
+    assert_eq!(view_state(&server, "name"), "a.txt");
+    // 末尾まで送ってから Space で次のファイルへ。
+    server.req("POST", "/view/key/Ctrl+End", "").unwrap();
+    poll(&server, "/state/viewer/at_end", |b| b.trim() == "true");
+    server.req("POST", "/view/key/Space", "").unwrap();
+    poll(&server, "/state/view/name", |b| b.contains("b.txt"));
+    assert_eq!(left_cursor_name(&server), "b.txt", "カーソルが表示中のファイルへ追従する");
+    let top = server.req("GET", "/state/viewer/at_top", "").unwrap().1;
+    assert_eq!(top.trim(), "true", "次のファイルは先頭から表示する");
+    // 先頭で Shift+Space＝前のファイルへ戻り、末尾から表示する。
+    server.req("POST", "/view/key/Shift+Space", "").unwrap();
+    poll(&server, "/state/view/name", |b| b.contains("a.txt"));
+    let end = server.req("GET", "/state/viewer/at_end", "").unwrap().1;
+    assert_eq!(end.trim(), "true", "前のファイルは末尾から表示する");
+    assert_eq!(left_cursor_name(&server), "a.txt");
+}
+
+/// B は前のファイルへ戻り、一覧の先頭では止まる（反対の端へ回らない）。
+#[test]
+fn viewer_previous_stops_at_list_edge() {
+    let server = Server::start_dirs(&[("a.txt", b"a\n"), ("b.txt", b"b\n")], &[]);
+    server.req("POST", "/command/setCursorPosition", r#"["b.txt"]"#).unwrap();
+    server.req("POST", "/command/view", "").unwrap();
+    poll(&server, "/state/view/name", |b| b.contains("b.txt"));
+    server.req("POST", "/view/key/B", "").unwrap();
+    poll(&server, "/state/view/name", |b| b.contains("a.txt"));
+    server.req("POST", "/view/key/B", "").unwrap();
+    assert_eq!(view_state(&server, "name"), "a.txt", "先頭では止まる");
+    // 末尾でも同様に止まる。
+    server.req("POST", "/command/viewerNext", "").unwrap();
+    poll(&server, "/state/view/name", |b| b.contains("b.txt"));
+    server.req("POST", "/command/viewerNext", "").unwrap();
+    assert_eq!(view_state(&server, "name"), "b.txt", "末尾では止まる");
+}
+
+/// 画像から送ると、画像の間は画像のまま、次がテキストならテキスト表示で開く。
+#[test]
+fn viewer_moves_from_images_to_text() {
+    let server = Server::start_dirs(
+        &[("a.bmp", TINY_BMP), ("b.bmp", TINY_BMP), ("c.txt", b"text\n")],
+        &[],
+    );
+    server.req("POST", "/command/setCursorPosition", r#"["a.bmp"]"#).unwrap();
+    server.req("POST", "/command/view", "").unwrap();
+    poll(&server, "/state/active_view", |b| b.trim() == "\"media\"");
+    server.req("POST", "/view/key/Space", "").unwrap();
+    poll(&server, "/state/view/name", |b| b.contains("b.bmp"));
+    let media = server.req("GET", "/state/media", "").unwrap().1;
+    assert!(media.contains("\"index\":2"), "画像の巡回セットの 2 枚目: {media}");
+    assert_eq!(left_cursor_name(&server), "b.bmp");
+    server.req("POST", "/view/key/Space", "").unwrap();
+    poll(&server, "/state/view/name", |b| b.contains("c.txt"));
+    assert_eq!(view_state(&server, "form"), "text");
+    let av = server.req("GET", "/state/active_view", "").unwrap().1;
+    assert_eq!(av.trim(), "\"text\"");
+    // 戻ると画像の表示に戻る。
+    server.req("POST", "/view/key/B", "").unwrap();
+    poll(&server, "/state/active_view", |b| b.trim() == "\"media\"");
+    assert_eq!(view_state(&server, "name"), "b.bmp");
+}
+
+/// PDF は Space でページを送り、最終ページでさらに送ると次のファイルへ移る。
+/// 前のファイルとして戻ると最終ページから表示する。
+#[test]
+fn viewer_pdf_space_pages_then_next_file() {
+    let pdf = make_pdf(2, 200);
+    let server = Server::start_dirs(&[("doc.pdf", &pdf), ("z.txt", b"z\n")], &[]);
+    server.req("POST", "/command/setCursorPosition", r#"["doc.pdf"]"#).unwrap();
+    server.req("POST", "/command/view", "").unwrap();
+    poll(&server, "/state/active_view", |b| b.trim() == "\"media\"");
+    server.req("POST", "/view/key/Space", "").unwrap();
+    poll(&server, "/state/media", |b| b.contains("\"index\":2"));
+    assert_eq!(view_state(&server, "name"), "doc.pdf", "ページ送りではファイルは変わらない");
+    server.req("POST", "/view/key/Space", "").unwrap();
+    poll(&server, "/state/view/name", |b| b.contains("z.txt"));
+    server.req("POST", "/view/key/Shift+Space", "").unwrap();
+    poll(&server, "/state/view/name", |b| b.contains("doc.pdf"));
+    let media = poll(&server, "/state/media", |b| b.contains("\"index\":2"));
+    assert!(media.contains("\"index\":2"), "前のファイルの PDF は最終ページから: {media}");
 }

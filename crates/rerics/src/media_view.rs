@@ -297,15 +297,25 @@ impl MediaView {
         *self.inner.rerender.borrow_mut() = Some(rerender);
     }
 
-    /// 前後のファイルへ移動する（巡回）。書庫内は移動先のその1枚だけを resolver が展開する。
-    pub fn navigate(&self, delta: isize) -> w::AnyResult<()> {
+    /// 巡回セットの中を `delta` だけ進める。端を越える移動はせず、動いたかを返す。
+    /// 書庫内は移動先のその1枚だけを resolver が展開する。
+    pub fn step(&self, delta: isize) -> w::AnyResult<bool> {
+        let n = self.inner.nav_len.get() as isize;
+        let next = self.inner.nav_index.get() as isize + delta;
+        if !(0..n).contains(&next) {
+            return Ok(false);
+        }
+        self.go_to(next as usize)?;
+        Ok(true)
+    }
+
+    /// 巡回セットの `index` 番目を表示する。
+    pub fn go_to(&self, index: usize) -> w::AnyResult<()> {
         let n = self.inner.nav_len.get();
-        if n == 0 {
+        if index >= n {
             return Ok(());
         }
-        let cur = self.inner.nav_index.get() as isize;
-        let next = (cur + delta).rem_euclid(n as isize) as usize;
-        self.inner.nav_index.set(next);
+        self.inner.nav_index.set(index);
         self.load_current();
         self.refresh()
     }

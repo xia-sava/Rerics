@@ -978,8 +978,9 @@ const NAV_ROWS: &[NavRow] = &[
     NavRow::Page { label: "メニュー", pane: 13 },
     NavRow::Header("キー"),
     NavRow::Page { label: "ファイラー", pane: 5 },
-    NavRow::Page { label: "テキストビューア", pane: 10 },
-    NavRow::Page { label: "画像ビューア", pane: 11 },
+    NavRow::Page { label: "ビューア共通", pane: 10 },
+    NavRow::Page { label: "テキスト・バイナリ", pane: 11 },
+    NavRow::Page { label: "画像・動画・PDF", pane: 14 },
 ];
 
 /// 選択変更時に pane 番号を渡すコールバック。
@@ -3641,10 +3642,11 @@ pub fn show(
     let pane_list = make_pane(&wnd, pane_pos, pane_wide); // 7
     let pane_behavior = make_pane(&wnd, pane_pos, pane_wide); // 8
     let pane_viewer_colors = make_pane(&wnd, pane_pos, pane_size); // 9
-    let pane_keys_text = make_pane(&wnd, pane_pos, pane_wide); // 10
-    let pane_keys_image = make_pane(&wnd, pane_pos, pane_wide); // 11
+    let pane_keys_viewer = make_pane(&wnd, pane_pos, pane_wide); // 10
+    let pane_keys_scroll = make_pane(&wnd, pane_pos, pane_wide); // 11
     let pane_fileops = make_pane(&wnd, pane_pos, pane_wide); // 12
     let pane_menus = make_pane(&wnd, pane_pos, pane_wide); // 13
+    let pane_keys_paged = make_pane(&wnd, pane_pos, pane_wide); // 14
     let panes = vec![
         pane_appearance.clone(),
         pane_colors.clone(),
@@ -3656,10 +3658,11 @@ pub fn show(
         pane_list.clone(),
         pane_behavior.clone(),
         pane_viewer_colors.clone(),
-        pane_keys_text.clone(),
-        pane_keys_image.clone(),
+        pane_keys_viewer.clone(),
+        pane_keys_scroll.clone(),
         pane_fileops.clone(),
         pane_menus.clone(),
+        pane_keys_paged.clone(),
     ];
 
     // 右カラム：プレビュー（外観カテゴリ選択中だけ表示）。表示テーマは「配色テーマ」に追従する
@@ -3704,18 +3707,26 @@ pub fn show(
         members.clone(),
         globals.clone(),
     );
-    let keys_text = KeyEditor::new(
-        &pane_keys_text,
+    let keys_viewer = KeyEditor::new(
+        &pane_keys_viewer,
         &shared,
-        KeyCategory::TextViewer,
+        KeyCategory::Viewer,
         Vec::new(),
         members.clone(),
         globals.clone(),
     );
-    let keys_image = KeyEditor::new(
-        &pane_keys_image,
+    let keys_scroll = KeyEditor::new(
+        &pane_keys_scroll,
         &shared,
-        KeyCategory::ImageViewer,
+        KeyCategory::ViewerScroll,
+        Vec::new(),
+        members.clone(),
+        globals.clone(),
+    );
+    let keys_paged = KeyEditor::new(
+        &pane_keys_paged,
+        &shared,
+        KeyCategory::ViewerPaged,
         Vec::new(),
         members,
         globals,
@@ -3799,8 +3810,9 @@ pub fn show(
         let nav = nav.clone();
         let panes = panes.clone();
         let keys = keys.clone();
-        let keys_text = keys_text.clone();
-        let keys_image = keys_image.clone();
+        let keys_viewer = keys_viewer.clone();
+        let keys_scroll = keys_scroll.clone();
+        let keys_paged = keys_paged.clone();
         let registered = registered.clone();
         let menus_pane = menus_pane.clone();
         let columns_editor = columns_editor.clone();
@@ -3814,8 +3826,9 @@ pub fn show(
             registered.populate();
             menus_pane.populate();
             keys.populate();
-            keys_text.populate();
-            keys_image.populate();
+            keys_viewer.populate();
+            keys_scroll.populate();
+            keys_paged.populate();
             columns_editor.populate();
             Ok(())
         });
@@ -3853,10 +3866,10 @@ pub fn show(
         }
     }
 
-    // キー編集の検証＋反映：3 ページのどれかにキー重複（衝突）があれば反映せず false を返し
+    // キー編集の検証＋反映：どれかのページにキー重複（衝突）があれば反映せず false を返し
     // （理由は各ページのステータスへ）、無ければ下書きを config へ書き戻して true。
     let validate_and_flush: Rc<dyn Fn() -> bool> = {
-        let editors = vec![keys.clone(), keys_text.clone(), keys_image.clone()];
+        let editors = vec![keys.clone(), keys_viewer.clone(), keys_scroll.clone(), keys_paged.clone()];
         let validation_label = validation_label.clone();
         Rc::new(move || {
             let mut briefs = Vec::new();
@@ -3921,7 +3934,7 @@ pub fn show(
     // 閉じたらキー編集フックを捨てる（破棄済みウィンドウを debug 経路が触らないように）。
     #[cfg(feature = "debug-server")]
     crate::debug_server::modal_registry::clear_key_editors();
-    let _ = (nav, panes, keys, keys_text, keys_image, registered, menus_pane, ok, cancel, apply, preview_label, preview, viewer_preview);
+    let _ = (nav, panes, keys, keys_viewer, keys_scroll, keys_paged, registered, menus_pane, ok, cancel, apply, preview_label, preview, viewer_preview);
 }
 
 #[cfg(test)]

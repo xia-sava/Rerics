@@ -15,8 +15,12 @@ use crate::settings_dialog::{Shared, WM_PRINTCLIENT, label};
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum KeyCategory {
     Filer,
-    TextViewer,
-    ImageViewer,
+    /// ビューアの全表示形式に共通の表。
+    Viewer,
+    /// テキスト・バイナリ表示の表（共通の表より優先）。
+    ViewerScroll,
+    /// 画像・動画・PDF の表（共通の表より優先）。
+    ViewerPaged,
 }
 
 impl KeyCategory {
@@ -24,8 +28,9 @@ impl KeyCategory {
     fn context(self) -> CommandContext {
         match self {
             KeyCategory::Filer => CommandContext::Filer,
-            KeyCategory::TextViewer => CommandContext::TextViewer,
-            KeyCategory::ImageViewer => CommandContext::ImageViewer,
+            KeyCategory::Viewer | KeyCategory::ViewerScroll | KeyCategory::ViewerPaged => {
+                CommandContext::Viewer
+            }
         }
     }
 
@@ -33,8 +38,9 @@ impl KeyCategory {
     fn default_map(self) -> BTreeMap<String, String> {
         match self {
             KeyCategory::Filer => KeyMap::default().to_string_map(),
-            KeyCategory::TextViewer => KeyMap::default_textviewer().to_string_map(),
-            KeyCategory::ImageViewer => KeyMap::default_imageviewer().to_string_map(),
+            KeyCategory::Viewer => KeyMap::default_viewer().to_string_map(),
+            KeyCategory::ViewerScroll => KeyMap::default_viewer_scroll().to_string_map(),
+            KeyCategory::ViewerPaged => KeyMap::default_viewer_paged().to_string_map(),
         }
     }
 
@@ -43,8 +49,9 @@ impl KeyCategory {
     fn debug_str(self) -> &'static str {
         match self {
             KeyCategory::Filer => "filer",
-            KeyCategory::TextViewer => "text",
-            KeyCategory::ImageViewer => "image",
+            KeyCategory::Viewer => "viewer",
+            KeyCategory::ViewerScroll => "viewer_scroll",
+            KeyCategory::ViewerPaged => "viewer_paged",
         }
     }
 
@@ -52,8 +59,9 @@ impl KeyCategory {
     fn display(self) -> &'static str {
         match self {
             KeyCategory::Filer => "ファイラー",
-            KeyCategory::TextViewer => "テキストビューア",
-            KeyCategory::ImageViewer => "画像ビューア",
+            KeyCategory::Viewer => "ビューア共通",
+            KeyCategory::ViewerScroll => "テキスト・バイナリ",
+            KeyCategory::ViewerPaged => "画像・動画・PDF",
         }
     }
 }
@@ -171,11 +179,12 @@ pub(crate) fn command_genre(cmd: Command) -> (u8, &'static str) {
         }
         CursorName | CursorPath | MarkedCount | HasMarks => (14, "情報取得"),
         ViewerScrollUp | ViewerScrollDown | ViewerPageUp | ViewerPageDown | ViewerScrollTop
-        | ViewerScrollBottom => (8, "スクロール"),
+        | ViewerScrollBottom | ViewerNext | ViewerPrevious | ViewerPageDownOrNext
+        | ViewerPageUpOrPrevious => (8, "スクロール・送り"),
         ViewerSearchDialog | ViewerFindNext | ViewerFindPrevious => (9, "検索"),
-        ViewerClose | ViewerSelectAll | ViewerToggleMode | ViewerChangeEncoding | ViewerCopy
+        ViewerClose | ViewerSelectAll | ViewerCycleForm | ViewerChangeEncoding | ViewerCopy
         | ViewerContextMenu => (10, "ビューア操作"),
-        ImageNext | ImagePrevious | ImageZoomIn | ImageZoomOut | ImageFitWindow | ImageActualSize
+        ImageZoomIn | ImageZoomOut | ImageFitWindow | ImageActualSize
         | ImageFitWidth | ImageFitHeight | ImageFitLarge | ImagePanUp | ImagePanDown
         | ImagePanLeft | ImagePanRight => (11, "表示・ズーム"),
         ImageRotateRight | ImageRotateLeft | ImageFlipHorizontal | ImageFlipVertical => {
@@ -711,8 +720,9 @@ impl KeyEditor {
         let mut cfg = self.inner.shared.cfg.borrow_mut();
         let map = match self.inner.category {
             KeyCategory::Filer => &mut cfg.keybinds,
-            KeyCategory::TextViewer => &mut cfg.keybinds_textviewer,
-            KeyCategory::ImageViewer => &mut cfg.keybinds_imageviewer,
+            KeyCategory::Viewer => &mut cfg.keybinds_viewer,
+            KeyCategory::ViewerScroll => &mut cfg.keybinds_viewer_scroll,
+            KeyCategory::ViewerPaged => &mut cfg.keybinds_viewer_paged,
         };
         f(map)
     }

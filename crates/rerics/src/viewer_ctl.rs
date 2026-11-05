@@ -4,10 +4,24 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use winsafe::{self as w, co, prelude::*};
-use rerics_core::{Call, Command, KeyChord, Location, MediaKind, data_dir, open_archive};
+use rerics_core::{
+    Call, Command, KeyChord, Location, MediaKind, RenderKind, ViewForm, ViewForms, ViewLayout,
+    ViewMode, data_dir, open_archive,
+};
 use crate::media_view::{NavResolver, PageRerender};
 use crate::file_list::FileListView;
 use crate::{ActiveView, MainWindow, dialog, hash64, join_inner_path, viewer};
+
+/// ビューアで表示中のファイルと、その表示形式の組。
+#[derive(Clone)]
+pub(crate) struct ViewSession {
+    /// 表示中のファイルが並ぶペイン。
+    pub(crate) is_left: bool,
+    /// 表示中のファイル名（一覧の項目名）。
+    pub(crate) name: String,
+    /// そのファイルが持つ表示形式。
+    pub(crate) forms: ViewForms,
+}
 
 impl MainWindow {
     pub(crate) fn view(&self, is_left: bool) -> &FileListView {
@@ -26,10 +40,10 @@ impl MainWindow {
             .unwrap_or_else(|| self.pane(is_left).borrow().loc().clone())
     }
 
-    /// カーソル下のファイルを種別に応じたビューアで開く（ディレクトリ/親は無視）。
-    /// 原作 `View` 相当。引数なし＝親へ戻る/ディレクトリ・書庫へ潜る/それ以外は内蔵ビューア
-    /// （拡張子で text/media 振り分け）。`type` 指定時はディレクトリでは何もせず、ファイルを
-    /// そのビューアで開く（`"text"`/`"bin"` は強制テキスト・他は拡張子振り分け）。
+    /// カーソル下のファイルを内蔵ビューアで開く。原作 `View` 相当。引数なし＝親へ戻る/
+    /// ディレクトリ・書庫へ潜る/それ以外はファイルが持つ一番上の表示形式で開く。`type` 指定時は
+    /// ディレクトリでは何もせず、ファイルをその表示形式（`"text"`＝テキスト・`"bin"`＝バイナリ・
+    /// 他は一番上の形式）で開く。持っていない形式を指定されたら一番上の形式で開く。
     /// EnterDir（関連付けで外部起動）と違い、ファイルは常に内蔵ビューアで開くのが手触りの差。
     pub(crate) fn view_command(&self, is_left: bool, vtype: Option<&str>) -> w::AnyResult<()> {
         let (is_parent, is_dir, name) = {
@@ -58,42 +72,100 @@ impl MainWindow {
         if is_parent || is_dir {
             return Ok(());
         }
-        match vtype {
-            Some(t) if t.eq_ignore_ascii_case("text") || t.eq_ignore_ascii_case("bin") => {
-                self.view_text(is_left, &name)
-            }
-            _ => self.view_file(is_left),
-        }
+        let preferred = match vtype {
+            Some(t) if t.eq_ignore_ascii_case("text") => Some(ViewForm::Text),
+            Some(t) if t.eq_ignore_ascii_case("bin") => Some(ViewForm::Binary),
+            _ => None,
+        };
+        self.open_view(is_left, preferred, false)
     }
 
     pub(crate) fn view_file(&self, is_left: bool) -> w::AnyResult<()> {
-        let (name, ext) = {
-            let state = self.view(is_left).state();
-            let s = state.borrow();
-            match s.items.get(s.cursor) {
-                Some(it) if !it.is_parent && !it.is_dir => (it.name.clone(), it.extension.clone()),
-                _ => return Ok(()),
-            }
+        self.open_view(is_left, None, false)
+    }
+
+    /// カーソル下のファイルを `preferred`（持っていなければ一番上の形式）で開く。`at_end` なら
+    /// 末尾（スクロール表示は最下部・PDF は最終ページ）から表示する。
+    pub(crate) fn open_view(
+        &self,
+        is_left: bool,
+        preferred: Option<ViewForm>,
+        at_end: bool,
+    ) -> w::AnyResult<()> {
+        let Some(name) = self.cursor_file_name(is_left) else {
+            return Ok(());
         };
-        match MediaKind::from_extension(&ext) {
-            Some(kind) => self.view_media(is_left, kind, &name),
-            None if ext.trim_start_matches('.').eq_ignore_ascii_case("pdf") => {
-                self.view_pdf(is_left, &name)
+        let content = if ViewForms::needs_head(&name) {
+            match self.read_for_view(is_left, &name) {
+                Some(v) => Some(v),
+                None => return Ok(()),
             }
-            None => self.view_text(is_left, &name),
+        } else {
+            None
+        };
+        let forms = ViewForms::detect(&name, content.as_ref().map(|(b, _)| b.as_slice()));
+        let form = forms.resolve(preferred);
+        *self.view_session.borrow_mut() =
+            Some(ViewSession { is_left, name: name.clone(), forms });
+        match (form, forms.render) {
+            (ViewForm::Rendered, Some(RenderKind::Media(kind))) => {
+                self.view_media(is_left, kind, &name)
+            }
+            (ViewForm::Rendered, Some(RenderKind::Pdf)) => self.view_pdf(is_left, &name, at_end),
+            (ViewForm::Binary, _) => {
+                self.show_text(is_left, &name, content, Some(ViewMode::Binary), at_end)
+            }
+            _ => self.show_text(is_left, &name, content, Some(ViewMode::Text), at_end),
         }
     }
 
-    /// テキスト/バイナリビューアで開く（実FS/書庫内とも bytes 直送）。
-    pub(crate) fn view_text(&self, is_left: bool, name: &str) -> w::AnyResult<()> {
-        let (bytes, truncated) = match self.read_pane_file(is_left, name, viewer::MAX_VIEW_BYTES) {
-            Ok(v) => v,
+    /// カーソル下がファイルならその名前（ディレクトリ・親は `None`）。
+    fn cursor_file_name(&self, is_left: bool) -> Option<String> {
+        let state = self.view(is_left).state();
+        let s = state.borrow();
+        s.items
+            .get(s.cursor)
+            .filter(|it| !it.is_parent && !it.is_dir)
+            .map(|it| it.name.clone())
+    }
+
+    /// ビューアに載せる分だけファイルを読む。読めなければログへ出して `None`。
+    fn read_for_view(&self, is_left: bool, name: &str) -> Option<(Vec<u8>, bool)> {
+        match self.read_pane_file(is_left, name, viewer::MAX_VIEW_BYTES) {
+            Ok(v) => Some(v),
             Err(e) => {
                 self.log.error(&format!("ビューアで開けません: {}: {}", name, e));
-                return Ok(());
+                None
             }
+        }
+    }
+
+    /// テキスト/バイナリビューアで開く（モードは内容から自動判定）。レンダリング表示に
+    /// 失敗したファイルの退避先。
+    pub(crate) fn view_text(&self, is_left: bool, name: &str) -> w::AnyResult<()> {
+        self.show_text(is_left, name, None, None, false)
+    }
+
+    /// テキスト/バイナリビューアで開く（実FS/書庫内とも bytes 直送）。`content` が `None` なら
+    /// ここで読む。`mode` が `None` なら内容から自動判定する。
+    fn show_text(
+        &self,
+        is_left: bool,
+        name: &str,
+        content: Option<(Vec<u8>, bool)>,
+        mode: Option<ViewMode>,
+        at_end: bool,
+    ) -> w::AnyResult<()> {
+        let Some((bytes, truncated)) = content.or_else(|| self.read_for_view(is_left, name)) else {
+            return Ok(());
         };
         self.viewer.open(name, bytes, truncated);
+        if let Some(mode) = mode {
+            self.viewer.set_mode(mode)?;
+        }
+        if at_end {
+            self.viewer.scroll_end()?;
+        }
         self.show_viewer(ActiveView::Text)
     }
 
@@ -259,8 +331,8 @@ impl MainWindow {
     /// PDF をインライン表示する。各ページを PDFium で PNG へラスタライズし、画像ビューアの
     /// 前後送りにページ単位で載せる（同階層のファイルではなく PDF のページを巡回対象にする）。
     /// resolver がページ index から PNG を遅延生成・キャッシュする。PDFium 未ロードや PDF を
-    /// 開けないときはテキスト/バイナリビューアへ退避する。
-    pub(crate) fn view_pdf(&self, is_left: bool, name: &str) -> w::AnyResult<()> {
+    /// 開けないときはテキスト/バイナリビューアへ退避する。`at_end` なら最終ページから表示する。
+    pub(crate) fn view_pdf(&self, is_left: bool, name: &str, at_end: bool) -> w::AnyResult<()> {
         self.cancel_media_prefetch();
         let Some(pdf_path) = self.resolve_pdf_path(is_left, name) else {
             return self.view_text(is_left, name);
@@ -275,8 +347,9 @@ impl MainWindow {
         };
         let root = Self::pdf_temp_root(&pdf_path);
         let _ = std::fs::create_dir_all(&root);
+        let start = if at_end { pages - 1 } else { 0 };
         // 先読みスレッドへ現在ページを伝える共有カレントと、停止フラグ。
-        let cur = Arc::new(AtomicUsize::new(0));
+        let cur = Arc::new(AtomicUsize::new(start));
         let cancel = Arc::new(AtomicBool::new(false));
         *self.media_prefetch.borrow_mut() = Some(cancel.clone());
         // 既定幅のページ PNG（前後送りの本体）。確定済みファイルを介して先読みスレッドと協調する
@@ -323,7 +396,7 @@ impl MainWindow {
             })
         };
         self.media
-            .open_nav_captioned(pages, 0, resolver, Some(name.to_string()));
+            .open_nav_captioned(pages, start, resolver, Some(name.to_string()));
         self.media.set_rerender(rerender);
         // 近傍ページを別スレッドで先読み PNG 化し、前後送りを即応にする（書庫メディアと同方式）。
         {
@@ -440,6 +513,9 @@ impl MainWindow {
         self.active_view.set(which);
         match which {
             ActiveView::Text => {
+                // 画像・動画から切り替えたときに再生や先読みを残さない。
+                self.cancel_media_prefetch();
+                self.media.release_media();
                 self.media.hwnd().ShowWindow(co::SW::HIDE);
                 self.viewer.hwnd().ShowWindow(co::SW::SHOW);
                 self.viewer.hwnd().BringWindowToTop()?;
@@ -464,6 +540,7 @@ impl MainWindow {
         self.cancel_media_prefetch();
         self.media.release_media();
         self.active_view.set(ActiveView::None);
+        *self.view_session.borrow_mut() = None;
         self.viewer.hwnd().ShowWindow(co::SW::HIDE);
         self.media.hwnd().ShowWindow(co::SW::HIDE);
         // ファイラへ戻ったので、そのペインの検索がアクティブなら共有検索バーを復活させる。
@@ -481,17 +558,49 @@ impl MainWindow {
         Ok(())
     }
 
-    /// ビューア表示中のキー操作。固定キー（設定対象外）。
+    /// 表示中のファイルの表示形式（ビューアを閉じていれば `None`）。
+    pub(crate) fn current_form(&self) -> Option<ViewForm> {
+        match self.active_view.get() {
+            ActiveView::None => None,
+            ActiveView::Media => Some(ViewForm::Rendered),
+            ActiveView::Text => Some(match self.viewer.mode() {
+                ViewMode::Text => ViewForm::Text,
+                ViewMode::Binary => ViewForm::Binary,
+            }),
+        }
+    }
+
+    /// 表示中の並べ方（キー定義の表を選ぶ）。
+    fn current_layout(&self) -> ViewLayout {
+        let forms = self.view_session.borrow().as_ref().map(|s| s.forms);
+        match (self.current_form(), forms) {
+            (Some(form), Some(forms)) => forms.layout(form),
+            (Some(ViewForm::Rendered), None) => ViewLayout::Paged,
+            _ => ViewLayout::Scroll,
+        }
+    }
+
+    /// ビューアのキーを解決する。表示中の並べ方の表を先に引き、無ければ共通の表を引く。
+    pub(crate) fn resolve_viewer_chord(&self, chord: &KeyChord) -> Option<Call> {
+        let table = match self.current_layout() {
+            ViewLayout::Scroll => &self.viewer_scroll_keymap,
+            ViewLayout::Paged => &self.viewer_paged_keymap,
+        };
+        let resolved = table.borrow().resolve_call(chord);
+        resolved.or_else(|| self.viewer_keymap.borrow().resolve_call(chord))
+    }
+
+    /// ビューア表示中のキー操作。
     pub(crate) fn viewer_key(&self, vk: u16, ctrl: bool, shift: bool) -> w::AnyResult<()> {
         let chord = KeyChord::new(vk, ctrl, shift, false);
-        let resolved = self.viewer_keymap.borrow().resolve_call(&chord);
-        if let Some(call) = resolved {
+        if let Some(call) = self.resolve_viewer_chord(&chord) {
             self.exec_viewer(&call)?;
         }
         Ok(())
     }
 
-    /// テキストビューアのコマンドを実行する（キーバインド・メニューの共通入口）。
+    /// ビューアのコマンドを実行する（キーバインド・メニューの共通入口）。表示中の部品が
+    /// 受け持たないコマンドは何もしない。
     pub(crate) fn exec_viewer(&self, call: &Call) -> w::AnyResult<()> {
         let cmd = match call {
             Call::Builtin { command, .. } => *command,
@@ -502,14 +611,36 @@ impl MainWindow {
         };
         match cmd {
             Command::ViewerClose => self.close_viewer()?,
+            Command::ViewerCycleForm => self.cycle_form()?,
+            Command::ViewerNext => {
+                self.step_file(1, false)?;
+            }
+            Command::ViewerPrevious => {
+                self.step_file(-1, false)?;
+            }
+            Command::ViewerPageDown => self.viewer_page(true, false)?,
+            Command::ViewerPageUp => self.viewer_page(false, false)?,
+            Command::ViewerPageDownOrNext => self.viewer_page(true, true)?,
+            Command::ViewerPageUpOrPrevious => self.viewer_page(false, true)?,
+            Command::Edit => self.edit(!self.active_right.get())?,
+            Command::OpenSettings => self.open_settings()?,
+            _ => match self.active_view.get() {
+                ActiveView::Text => self.exec_text_viewer(cmd)?,
+                ActiveView::Media => self.exec_media(cmd)?,
+                ActiveView::None => {}
+            },
+        }
+        Ok(())
+    }
+
+    /// テキスト/バイナリビューアが受け持つコマンドを実行する。
+    fn exec_text_viewer(&self, cmd: Command) -> w::AnyResult<()> {
+        match cmd {
             Command::ViewerScrollUp => self.viewer.scroll_by(-1)?,
             Command::ViewerScrollDown => self.viewer.scroll_by(1)?,
-            Command::ViewerPageUp => self.viewer.scroll_page(false)?,
-            Command::ViewerPageDown => self.viewer.scroll_page(true)?,
             Command::ViewerScrollTop => self.viewer.scroll_home()?,
             Command::ViewerScrollBottom => self.viewer.scroll_end()?,
             Command::ViewerChangeEncoding => self.viewer.cycle_encoding(true)?,
-            Command::ViewerToggleMode => self.viewer.toggle_mode()?,
             Command::ViewerSearchDialog => self.viewer.open_search_bar()?,
             Command::ViewerFindNext => self.viewer.find_next(true)?,
             Command::ViewerFindPrevious => self.viewer.find_next(false)?,
@@ -526,37 +657,15 @@ impl MainWindow {
                     .unwrap_or_default();
                 self.show_text_menu(pt)?;
             }
-            Command::Edit => self.edit(!self.active_right.get())?,
-            Command::OpenSettings => self.open_settings()?,
             _ => {}
         }
         Ok(())
     }
 
-    /// ビューア表示中の画像/動画キー操作。
-    pub(crate) fn media_key(&self, vk: u16, ctrl: bool, shift: bool) -> w::AnyResult<()> {
-        let chord = KeyChord::new(vk, ctrl, shift, false);
-        let resolved = self.media_keymap.borrow().resolve_call(&chord);
-        if let Some(call) = resolved {
-            self.exec_media(&call)?;
-        }
-        Ok(())
-    }
-
-    /// 画像・動画ビューアのコマンドを実行する（キーバインドの共通入口）。
-    pub(crate) fn exec_media(&self, call: &Call) -> w::AnyResult<()> {
-        let cmd = match call {
-            Call::Builtin { command, .. } => *command,
-            Call::Script { source } => {
-                self.script_send(crate::script_host::EngineCmdKind::Eval(source.clone()));
-                return Ok(());
-            }
-        };
+    /// 画像・動画・PDF ビューアが受け持つコマンドを実行する。
+    fn exec_media(&self, cmd: Command) -> w::AnyResult<()> {
         match cmd {
-            Command::ViewerClose => self.close_viewer()?,
             Command::MediaTogglePlay => self.media.toggle_play()?,
-            Command::ImagePrevious => self.media.navigate(-1)?,
-            Command::ImageNext => self.media.navigate(1)?,
             Command::ImageZoomIn => self.media.zoom(true)?,
             Command::ImageZoomOut => self.media.zoom(false)?,
             Command::ImageFitWindow => self.media.fit_to_window()?,
@@ -576,6 +685,116 @@ impl MainWindow {
             _ => {}
         }
         Ok(())
+    }
+
+    /// 表示中のファイルを、持っている表示形式の次の形式で表示し直す。テキストとバイナリの
+    /// 間はビューアのモード切替で済ませる。
+    fn cycle_form(&self) -> w::AnyResult<()> {
+        let session = self.view_session.borrow().clone();
+        let (Some(session), Some(cur)) = (session, self.current_form()) else {
+            return Ok(());
+        };
+        let next = session.forms.next(cur);
+        match (cur, next) {
+            _ if next == cur => Ok(()),
+            (ViewForm::Text, ViewForm::Binary) => self.viewer.set_mode(ViewMode::Binary),
+            (ViewForm::Binary, ViewForm::Text) => self.viewer.set_mode(ViewMode::Text),
+            _ => self.open_view(session.is_left, Some(next), false),
+        }
+    }
+
+    /// ページを送る。`down` が真なら先へ。スクロール表示は 1 ページぶんスクロール、PDF は
+    /// 1 ページ、画像・動画は 1 ファイル送る。`overflow` が真なら、端のページでさらに送ると
+    /// 隣のファイルへ移る（前のファイルへは末尾から入る）。
+    pub(crate) fn viewer_page(&self, down: bool, overflow: bool) -> w::AnyResult<()> {
+        let delta = if down { 1 } else { -1 };
+        let at_edge = match self.active_view.get() {
+            ActiveView::None => return Ok(()),
+            ActiveView::Text => {
+                let at_edge = if down { self.viewer.at_end() } else { self.viewer.at_top() };
+                if !(overflow && at_edge) {
+                    return self.viewer.scroll_page(down);
+                }
+                true
+            }
+            ActiveView::Media if self.showing_pdf() => {
+                if self.media.step(delta)? || !overflow {
+                    return Ok(());
+                }
+                true
+            }
+            ActiveView::Media => false,
+        };
+        self.step_file(delta, at_edge && !down)?;
+        Ok(())
+    }
+
+    /// PDF のページを表示しているか。
+    fn showing_pdf(&self) -> bool {
+        matches!(self.active_view.get(), ActiveView::Media)
+            && self
+                .view_session
+                .borrow()
+                .as_ref()
+                .is_some_and(|s| s.forms.render == Some(RenderKind::Pdf))
+    }
+
+    /// 一覧で `delta` 先のファイルを表示する（ディレクトリ・親は飛ばす）。一覧の端では止まり、
+    /// 動けたかを返す。ペインのカーソルも移動先へ動かす。`at_end` なら移動先を末尾から表示する。
+    /// 検索・比較の結果一覧では項目ごとに出自が異なるため送らない。
+    pub(crate) fn step_file(&self, delta: isize, at_end: bool) -> w::AnyResult<bool> {
+        let Some(session) = self.view_session.borrow().clone() else {
+            return Ok(false);
+        };
+        let is_left = session.is_left;
+        if self.view(is_left).state().borrow().find_result {
+            return Ok(false);
+        }
+        let files = self.pane_files(is_left);
+        let Some(index) = files.iter().position(|(name, _)| *name == session.name) else {
+            return Ok(false);
+        };
+        let target = index as isize + delta;
+        if target < 0 || target as usize >= files.len() {
+            return Ok(false);
+        }
+        let target = target as usize;
+        let (name, ext) = files[target].clone();
+        self.mutate_state(is_left, |s, pr| {
+            s.set_cursor_position(&name, pr);
+        })?;
+        // 画像・動画どうしの移動は、開いた時点の巡回セット（一覧の画像・動画を同じ順に並べた
+        // もの）の中で送る。書庫内の先読みをそのまま活かせる。
+        let in_media_set = matches!(self.active_view.get(), ActiveView::Media)
+            && matches!(session.forms.render, Some(RenderKind::Media(_)))
+            && MediaKind::from_extension(&ext).is_some();
+        if !in_media_set {
+            self.open_view(is_left, None, at_end)?;
+            return Ok(true);
+        }
+        let media_index = files[..target]
+            .iter()
+            .filter(|(_, e)| MediaKind::from_extension(e).is_some())
+            .count();
+        let forms = ViewForms::detect(&name, None);
+        *self.view_session.borrow_mut() = Some(ViewSession { is_left, name: name.clone(), forms });
+        self.media.go_to(media_index)?;
+        if !self.media.current_loaded() {
+            self.cancel_media_prefetch();
+            self.view_text(is_left, &name)?;
+        }
+        Ok(true)
+    }
+
+    /// ペインの一覧に並ぶファイル（ディレクトリ・親を除く）の名前と拡張子を、一覧の順に返す。
+    fn pane_files(&self, is_left: bool) -> Vec<(String, String)> {
+        let state = self.view(is_left).state();
+        let s = state.borrow();
+        s.items
+            .iter()
+            .filter(|it| !it.is_dir && !it.is_parent)
+            .map(|it| (it.name.clone(), it.extension.clone()))
+            .collect()
     }
 
     /// 画像ビューアの右クリックメニューを表示し、選んだ操作を実行する（画面座標 `pt`）。
@@ -624,8 +843,8 @@ impl MainWindow {
             ROT_L => self.media.rotate_left()?,
             FLIP_H => self.media.flip_horizontal()?,
             FLIP_V => self.media.flip_vertical()?,
-            PREV => self.media.navigate(-1)?,
-            NEXT => self.media.navigate(1)?,
+            PREV => self.viewer_page(false, false)?,
+            NEXT => self.viewer_page(true, false)?,
             CLOSE => self.close_viewer()?,
             _ => {}
         }
@@ -650,7 +869,7 @@ impl MainWindow {
             (FIND_NEXT, "次を検索(&N)"),
             (0, ""),
             (ENCODING, "文字コード切替(&E)"),
-            (MODE, "テキスト／バイナリ切替(&B)"),
+            (MODE, "表示形式を切替(&T)"),
             (0, ""),
             (CLOSE, "閉じる(&X)"),
         ];
@@ -666,7 +885,7 @@ impl MainWindow {
             SEARCH => self.viewer.open_search_bar()?,
             FIND_NEXT => self.viewer.find_next(true)?,
             ENCODING => self.viewer.cycle_encoding(true)?,
-            MODE => self.viewer.toggle_mode()?,
+            MODE => self.cycle_form()?,
             CLOSE => self.close_viewer()?,
             _ => {}
         }
