@@ -641,7 +641,7 @@ impl Command {
                 summary,
                 args: &[ArgSpec {
                     name: "type",
-                    ty: ArgType::Enum(&["auto", "text", "bin"]),
+                    ty: ArgType::Enum(&["auto", "rendered", "text", "bin"]),
                     required: false,
                     doc: "最初に開く表示形式（省略時はディレクトリ・書庫へ入り、ファイルは持っている中で一番上の形式で開く。指定時は入らずに開く）",
                 }],
