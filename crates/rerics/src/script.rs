@@ -503,7 +503,7 @@ fn op_log_text(state: &mut OpState) -> String {
 #[op2]
 #[string]
 fn op_version() -> String {
-    crate::version::full()
+    crate::version::full().to_string()
 }
 
 /// VB の `StrConv` 相当の文字変換。`kind`＝`"wide"`（半角→全角）/`"narrow"`（全角→半角）/

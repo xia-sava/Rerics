@@ -1,8 +1,8 @@
 //! GitHub Releases から最新ビルドを確認し、ダウンロードして自身を差し替える自動更新。
 //!
-//! リリースは push のたびに CI（`.github/workflows/release.yml`）がタグ `latest` を上書きして
-//! 公開する（[`REPO`]・[`TAG`]）。バージョン比較は文字列表記ではなく、版番号の patch にあたる
-//! ビルド番号（[`crate::version`]）で行う。
+//! リリースは `vMAJOR.MINOR.PATCH` のタグを打つと CI（`.github/workflows/release.yml`）が作り、
+//! 同じ中身でタグ `latest` も差し替える（[`REPO`]・[`TAG`]）。アプリは `latest` の `manifest.json`
+//! の版と自分の版（[`crate::version`]）を MAJOR.MINOR.PATCH の数として比べる。
 //! 実行ファイルは実行中でも「リネーム」はできる（メモリマップは既存ハンドル経由で生き続ける）ため、
 //! 差し替えは「退避（rename）→ 新ファイルを配置（copy）→ 新 exe を起動 → 自分は終了」の順で行う。
 //! 退避した旧ファイル（`*.old`）は次回起動時（[`CLEANUP_ARG`] 付き起動）に削除する。
@@ -17,9 +17,9 @@ const TAG: &str = "latest";
 /// 更新適用後の再起動に付ける引数。旧ファイル（`*.old`）の掃除を要求する。
 pub const CLEANUP_ARG: &str = "--cleanup-old-update";
 
+/// `manifest.json` のうちこの版が読む項目。CI は他に `build`（CI の実行番号）も書く。
 #[derive(serde::Deserialize)]
 struct Manifest {
-    build: u64,
     version: String,
     commit: String,
     asset: String,
@@ -28,7 +28,6 @@ struct Manifest {
 
 /// 確認できた新しいビルドの情報。
 pub struct UpdateInfo {
-    pub build: u64,
     pub version: String,
     pub commit: String,
     manifest: Manifest,
@@ -54,11 +53,10 @@ pub fn check_for_update() -> Result<Option<UpdateInfo>, String> {
         .map_err(|e| format!("更新情報の取得に失敗しました: {e}"))?
         .into_json()
         .map_err(|e| format!("更新情報の解析に失敗しました: {e}"))?;
-    if manifest.build <= crate::version::build_number() {
+    if !crate::version::is_newer_than_current(&manifest.version) {
         return Ok(None);
     }
     Ok(Some(UpdateInfo {
-        build: manifest.build,
         version: manifest.version.clone(),
         commit: manifest.commit.clone(),
         manifest,
@@ -76,7 +74,7 @@ pub fn download_and_apply(info: &UpdateInfo) -> Result<(), String> {
     let zip_bytes = download_bytes(&release_asset_url(&info.manifest.asset))?;
     verify_sha256(&zip_bytes, &info.manifest.sha256)?;
 
-    let extract_dir = std::env::temp_dir().join(format!("rerics-update-{}", info.build));
+    let extract_dir = std::env::temp_dir().join(format!("rerics-update-{}", info.version));
     let result = (|| {
         extract_zip(&zip_bytes, &extract_dir)?;
         for name in ["rerics.exe", "pdfium.dll"] {

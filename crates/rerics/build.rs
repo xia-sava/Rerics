@@ -57,20 +57,19 @@ fn main() {
 
 /// アプリアイコン・バージョン情報・マニフェストを実行ファイルへ埋め込む。アイコンは
 /// Explorer/タスクバー用にリソース ID 1 で入れ、ウィンドウ側は
-/// `WindowMainOpts.class_icon = Icon::Id(1)` で同じアイコンを参照する。バージョンは patch を
-/// ビルド番号にした `1.0.123` 形式で、アプリ内の表記（`src/version.rs`）と揃える。マニフェストは
+/// `WindowMainOpts.class_icon = Icon::Id(1)` で同じアイコンを参照する。バージョンは `Cargo.toml`
+/// の MAJOR.MINOR.PATCH で、アプリ内の表記（`src/version.rs`）と揃える。マニフェストは
 /// 長いパスの受け入れを宣言する（`assets/rerics.manifest`）。リソースコンパイラが無い等で
 /// 失敗してもビルドは止めず警告に留める。
 #[cfg(windows)]
 fn embed_resources() {
     println!("cargo:rerun-if-changed=assets/icon.ico");
     println!("cargo:rerun-if-changed=assets/rerics.manifest");
-    println!("cargo:rerun-if-env-changed=RERICS_BUILD_NUMBER");
 
     let major = env_number("CARGO_PKG_VERSION_MAJOR");
     let minor = env_number("CARGO_PKG_VERSION_MINOR");
-    let build = env_number("RERICS_BUILD_NUMBER");
-    let version = format!("{major}.{minor}.{build}");
+    let patch = env_number("CARGO_PKG_VERSION_PATCH");
+    let version = format!("{major}.{minor}.{patch}");
 
     let mut res = winresource::WindowsResource::new();
     res.set_icon_with_id("assets/icon.ico", "1");
@@ -78,7 +77,7 @@ fn embed_resources() {
     res.set("FileVersion", &version);
     res.set("ProductVersion", &version);
     // 数値フィールドは 16bit 4 つの詰め合わせ（第4要素は使わない）。各要素の上限で飽和させる。
-    let packed = (major.min(0xffff) << 48) | (minor.min(0xffff) << 32) | (build.min(0xffff) << 16);
+    let packed = (major.min(0xffff) << 48) | (minor.min(0xffff) << 32) | (patch.min(0xffff) << 16);
     res.set_version_info(winresource::VersionInfo::FILEVERSION, packed);
     res.set_version_info(winresource::VersionInfo::PRODUCTVERSION, packed);
     if let Err(e) = res.compile() {
@@ -89,7 +88,7 @@ fn embed_resources() {
 #[cfg(not(windows))]
 fn embed_resources() {}
 
-/// 数値の環境変数を読む。未設定・解釈不能は 0（ビルド番号は CI 以外では未設定）。
+/// 数値の環境変数を読む。未設定・解釈不能は 0。
 #[cfg(windows)]
 fn env_number(name: &str) -> u64 {
     std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(0)
