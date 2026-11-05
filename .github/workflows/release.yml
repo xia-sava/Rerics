@@ -2,16 +2,16 @@ name: Release
 
 on:
   push:
-    branches: [main]
+    tags: ["v*"]
   workflow_dispatch: {}
 
 permissions:
   contents: write
 
-# 連続 push で古いビルドが後勝ちしないよう、同時実行を1本に絞る。
+# 連続して打ったタグを取りこぼさないよう、キャンセルせず順に流す。
 concurrency:
   group: release
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -19,58 +19,101 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # バージョンはタグ名から v を除いたもの。Cargo.toml の [workspace.package] の version と
+      # 食い違えば止める（アプリが見せる版と配布物の版が合わなくなるため）。タグ以外からの
+      # 手動実行は配布しないので、Cargo の版をそのまま使う。
+      - name: Compute version
+        id: version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $inPackage = $false
+          $cargo = $null
+          foreach ($line in Get-Content Cargo.toml) {
+            if ($line -match '^\[') { $inPackage = ($line -eq '[workspace.package]') ; continue }
+            if ($inPackage -and $line -match '^version = "(.+)"$') { $cargo = $Matches[1]; break }
+          }
+          if (-not $cargo) { throw "Cargo.toml の [workspace.package] に version が見つかりません" }
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $name = $env:GITHUB_REF_NAME -replace '^v', ''
+            if ($name -notmatch '^\d+\.\d+\.\d+$') {
+              throw "タグは vMAJOR.MINOR.PATCH の形で打つこと（受け取った値: $env:GITHUB_REF_NAME）"
+            }
+            if ($name -ne $cargo) {
+              throw "タグ（$env:GITHUB_REF_NAME）と Cargo のバージョン（$cargo）が食い違っています"
+            }
+          } else {
+            $name = $cargo
+          }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "name=$name"
+          Write-Host "version=$name"
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        env:
-          RERICS_BUILD_NUMBER: ${{ github.run_number }}
         run: cargo build --release --locked -p rerics
 
       - name: Package
-        id: package
         shell: pwsh
         env:
+          VERSION_NAME: ${{ steps.version.outputs.name }}
           BUILD_NUMBER: ${{ github.run_number }}
           COMMIT_SHA: ${{ github.sha }}
         run: |
           $ErrorActionPreference = "Stop"
-          # バージョンは Cargo.toml の major.minor に run number を patch として付ける
-          # （アプリ内の表記 crates/rerics/src/version.rs と同じ組み立て）。
-          $m = (Select-String -Path Cargo.toml -Pattern '^version = "(\d+)\.(\d+)' | Select-Object -First 1).Matches[0]
-          $version = "$($m.Groups[1].Value).$($m.Groups[2].Value).$env:BUILD_NUMBER"
-
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target/release/rerics.exe dist/
           Copy-Item target/release/pdfium.dll dist/
 
+          # latest には固定の名前で置く（アプリは manifest.json の asset の名前で取りに来る）。
           $zipPath = "rerics-windows.zip"
           Compress-Archive -Path dist/* -DestinationPath $zipPath -Force
+          Copy-Item $zipPath "rerics-$env:VERSION_NAME-windows.zip"
           $hash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLower()
 
+          # build は CI の実行番号。版で比べるようになる前のアプリはこの値が自分より大きいときだけ
+          # 更新するので、それらが乗り換えられるよう載せ続ける。
           [ordered]@{
             build   = [int]$env:BUILD_NUMBER
             commit  = $env:COMMIT_SHA
-            version = $version
+            version = $env:VERSION_NAME
             asset   = $zipPath
             sha256  = $hash
           } | ConvertTo-Json | Set-Content -Path manifest.json -Encoding utf8
 
       # 配布物を固めた後に走らせる。テストは feature 付きで exe を作り直すことがあるので、
-      # zip に入れる exe が差し替わらない位置に置く。落ちれば Publish へ進まない。
+      # zip に入れる exe が差し替わらない位置に置く。落ちれば公開へ進まない。
       - name: Test
         run: |
           cargo test --release --locked -p rerics-core --lib
           cargo test --release --locked -p rerics --bin rerics
 
-      - name: Publish latest release
+      # バージョンごとのリリース。後からどのバージョンで何を配ったかを辿れる。
+      - name: Publish versioned release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ steps.version.outputs.name }}
+          body: |
+            Rerics ${{ steps.version.outputs.name }}
+
+            zip を展開して中の rerics.exe を起動する。
+          files: |
+            rerics-${{ steps.version.outputs.name }}-windows.zip
+
+      # 自動更新の取得先。アプリは latest から manifest.json と配布物を取得するため、置き場を
+      # 動かさずに中身だけ差し替える。
+      - name: Update latest release
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: "Latest build"
           body: |
-            push のたびに自動更新される最新ビルド。アプリの「その他」メニュー →
+            配布中のバージョン（${{ steps.version.outputs.name }}）。アプリの「その他」メニュー →
             「自動更新」から確認・適用できる。
           prerelease: true
           files: |

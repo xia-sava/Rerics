@@ -15,6 +15,11 @@ Rerics — Windows 向け2画面ファイラー（gary 氏の Records を Rust �
 - ⚠ **feature 有無は同じ exe を奪い合う**。debug-server で検証したら plain `./tools/dev.sh build` に戻す。
 - clippy は自分の変更で新規警告ゼロを保つ。
 
+## リリース
+- バージョンは `Cargo.toml` の `[workspace.package]` の version（MAJOR.MINOR.PATCH）。アプリの表記・exe のバージョン情報・自動更新の比較はすべてこれ。
+- 版を上げたコミットに `vMAJOR.MINOR.PATCH` のタグを打って push すると、CI（`.github/workflows/release.yml`）が版ごとのリリースを作り、自動更新の取得先 `latest` も差し替える。タグと `Cargo.toml` の版が食い違えば CI が止まる。
+- `latest` の `manifest.json` の `build`（CI の実行番号）は、版で比べるようになる前（1.0.x）のアプリが更新を見つけるために残している。
+
 ## 設計の要点（詳細は ARCHITECTURE.md）
 - **コマンドの二層分離**：UI を伴うコマンドは表層（`xxxDialog`＝値集めのみ）と実処理（引数駆動・UI非依存）に分ける。実処理は script/引数キーバインド/debug-server から呼べてテスト可能に。
 - **実処理の正本**：純ロジックは script API `r.xxx`（`script.rs` bootstrap）が唯一の正本。GUI/OS 依存は `rerics` の引数付き関数。
