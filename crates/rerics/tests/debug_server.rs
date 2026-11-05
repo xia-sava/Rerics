@@ -7402,7 +7402,6 @@ fn viewer_pdf_space_pages_then_next_file() {
 }
 
 /// Markdown はレンダリング表示で開き、Tab でレンダリング表示→テキスト→バイナリ→レンダリング表示と回る。
-/// 画面を持たない起動では WebView2 を作らず、文書と状態だけを持つ。
 #[test]
 fn viewer_markdown_cycles_rendered_text_binary() {
     let server = Server::start_dirs(&[("doc.md", b"# Title\n\ntext\n")], &[]);
@@ -7415,7 +7414,8 @@ fn viewer_markdown_cycles_rendered_text_binary() {
     assert_eq!(view_state(&server, "layout"), "scroll");
     let rendered = server.req("GET", "/state/rendered", "").unwrap().1;
     assert!(rendered.contains("\"page\":\"doc.md\""), "{rendered}");
-    assert!(rendered.contains("\"engine\":\"disabled\""), "{rendered}");
+    // 画面を持たない起動では WebView2 を作らない（disabled）。可視の起動では作成中か作成済み。
+    assert!(!rendered.contains("\"engine\":\"failed\""), "{rendered}");
     server.req("POST", "/view/key/Tab", "").unwrap();
     poll(&server, "/state/view/form", |b| b.trim() == "\"text\"");
     server.req("POST", "/view/key/Tab", "").unwrap();
@@ -7436,13 +7436,13 @@ fn viewer_markdown_text_on_request_and_html_rendered() {
     server.req("POST", "/command/setCursorPosition", r#"["a.md"]"#).unwrap();
     server.req("POST", "/command/view", r#"["text"]"#).unwrap();
     poll(&server, "/state/view/form", |b| b.trim() == "\"text\"");
-    // レンダリング表示は画面を持たない起動では端とみなすので、Space で次のファイルへ進む。
     server.req("POST", "/view/key/Ctrl+End", "").unwrap();
     server.req("POST", "/view/key/Space", "").unwrap();
     poll(&server, "/state/view/name", |b| b.contains("b.html"));
     assert_eq!(view_state(&server, "form"), "rendered");
     let forms = server.req("GET", "/state/view/forms", "").unwrap().1;
     assert!(forms.contains("\"render\":\"html\""), "{forms}");
+    // 文書の先頭で Shift+Space＝前のファイルへ（可視の起動では文書側で端を判定するので非同期）。
     server.req("POST", "/view/key/Shift+Space", "").unwrap();
     poll(&server, "/state/view/name", |b| b.contains("a.md"));
     assert_eq!(view_state(&server, "form"), "rendered");
