@@ -1691,7 +1691,7 @@ impl ViewerView {
             }
         };
         format!(
-            "{}    [{}]  {}{}    {}/{} 行    (C:エンコ B:ダンプ F:検索 Ctrl+C/右ク:コピー Esc:閉じる){}{}",
+            "{}    [{}]  {}{}    {}/{} 行    (Tab:表示形式 C:エンコ Ctrl+F:検索 Space/B:次/前 Ctrl+C/右ク:コピー Esc:閉じる){}{}",
             self.inner.title.borrow(),
             model.encoding.label(),
             mode,
