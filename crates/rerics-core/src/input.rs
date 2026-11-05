@@ -1168,15 +1168,12 @@ impl KeyMap {
         m.bind(KeyChord::key(vk::RETURN), ViewerClose);
         m.bind(KeyChord::key(vk::ESCAPE), ViewerClose);
         m.bind(KeyChord::key(vk::Q), ViewerClose);
-        // 表示形式の切替（Tab）。
+        // 表示形式の切替（B / Tab）。
+        m.bind(KeyChord::key(vk::B), ViewerCycleForm);
         m.bind(KeyChord::key(vk::TAB), ViewerCycleForm);
-        // ページ送り（Space＝次のページ・最後なら次のファイル／Shift+Space＝その逆）。
-        m.bind(KeyChord::key(vk::SPACE), ViewerPageDownOrNext);
-        m.bind(KeyChord::new(vk::SPACE, false, true, false), ViewerPageUpOrPrevious);
+        // ページ送り（PageUp / PageDown。画像と動画は前後のファイル、PDF はページを送る）。
         m.bind(KeyChord::key(vk::PRIOR), ViewerPageUp);
         m.bind(KeyChord::key(vk::NEXT), ViewerPageDown);
-        // 前のファイル（B）。
-        m.bind(KeyChord::key(vk::B), ViewerPrevious);
         // エディタ起動（E）。
         m.bind(KeyChord::key(vk::E), Edit);
         m
@@ -1214,8 +1211,8 @@ impl KeyMap {
     pub fn default_viewer_paged() -> Self {
         use Command::*;
         let mut m = Self::new();
-        // 再生／一時停止（動画・P）。
-        m.bind(KeyChord::key(vk::P), MediaTogglePlay);
+        // 再生／一時停止（動画・Space）。
+        m.bind(KeyChord::key(vk::SPACE), MediaTogglePlay);
         // ページ送り（←↑＝前・→↓＝次。画像と動画はファイル、PDF はページを送る）。
         m.bind(KeyChord::key(vk::LEFT), ViewerPageUp);
         m.bind(KeyChord::key(vk::UP), ViewerPageUp);
@@ -1745,16 +1742,15 @@ mod tests {
         assert_eq!(m.resolve(&KeyChord::key(vk::RETURN)), Some(Command::ViewerClose));
         assert_eq!(m.resolve(&KeyChord::key(vk::ESCAPE)), Some(Command::ViewerClose));
         assert_eq!(m.resolve(&KeyChord::key(vk::Q)), Some(Command::ViewerClose));
+        // 表示形式の切替は旧テキストビューアの B に加えて Tab でも。
+        assert_eq!(m.resolve(&KeyChord::key(vk::B)), Some(Command::ViewerCycleForm));
         assert_eq!(m.resolve(&KeyChord::key(vk::TAB)), Some(Command::ViewerCycleForm));
-        assert_eq!(m.resolve(&KeyChord::key(vk::SPACE)), Some(Command::ViewerPageDownOrNext));
-        assert_eq!(
-            m.resolve(&KeyChord::new(vk::SPACE, false, true, false)),
-            Some(Command::ViewerPageUpOrPrevious)
-        );
         assert_eq!(m.resolve(&KeyChord::key(vk::PRIOR)), Some(Command::ViewerPageUp));
         assert_eq!(m.resolve(&KeyChord::key(vk::NEXT)), Some(Command::ViewerPageDown));
-        assert_eq!(m.resolve(&KeyChord::key(vk::B)), Some(Command::ViewerPrevious));
         assert_eq!(m.resolve(&KeyChord::key(vk::E)), Some(Command::Edit));
+        // ファイル送りと端でファイルをまたぐページ送りは既定では割り当てない。
+        assert_eq!(m.resolve(&KeyChord::key(vk::SPACE)), None);
+        assert_eq!(m.resolve(&KeyChord::new(vk::SPACE, false, true, false)), None);
     }
 
     #[test]
@@ -1789,12 +1785,11 @@ mod tests {
     #[test]
     fn default_viewer_paged_binds_current_keys() {
         let m = KeyMap::default_viewer_paged();
-        assert_eq!(m.resolve(&KeyChord::key(vk::P)), Some(Command::MediaTogglePlay));
+        assert_eq!(m.resolve(&KeyChord::key(vk::SPACE)), Some(Command::MediaTogglePlay));
         assert_eq!(m.resolve(&KeyChord::key(vk::LEFT)), Some(Command::ViewerPageUp));
         assert_eq!(m.resolve(&KeyChord::key(vk::UP)), Some(Command::ViewerPageUp));
         assert_eq!(m.resolve(&KeyChord::key(vk::RIGHT)), Some(Command::ViewerPageDown));
         assert_eq!(m.resolve(&KeyChord::key(vk::DOWN)), Some(Command::ViewerPageDown));
-        assert_eq!(m.resolve(&KeyChord::key(vk::SPACE)), None);
         assert_eq!(m.resolve(&KeyChord::key(vk::ADD)), Some(Command::ImageZoomIn));
         assert_eq!(m.resolve(&KeyChord::key(vk::SUBTRACT)), Some(Command::ImageZoomOut));
         assert_eq!(m.resolve(&KeyChord::key(vk::R)), Some(Command::ImageRotateRight));
@@ -1847,7 +1842,7 @@ mod tests {
         }
         let sm = KeyMap::default_viewer().to_string_map();
         assert_eq!(sm.get("Tab").map(String::as_str), Some("viewerCycleForm()"));
-        assert_eq!(sm.get("Shift+Space").map(String::as_str), Some("viewerPageUpOrPrevious()"));
+        assert_eq!(sm.get("B").map(String::as_str), Some("viewerCycleForm()"));
     }
 
     #[test]

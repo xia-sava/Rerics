@@ -7309,44 +7309,67 @@ fn viewer_archive_views_binary_or_enters() {
     assert_eq!(av.trim(), "\"none\"", "書庫へ入るときはビューアを開かない");
 }
 
-/// Space は末尾で次のファイルへ進み、Shift+Space は先頭で前のファイルへ戻って末尾から表示する。
-/// ペインのカーソルも表示中のファイルへ追従する。
+/// `viewerPageDownOrNext` は末尾で次のファイルへ進み、`viewerPageUpOrPrevious` は先頭で前の
+/// ファイルへ戻って末尾から表示する。ペインのカーソルも表示中のファイルへ追従する。
 #[test]
-fn viewer_space_pages_then_moves_to_adjacent_file() {
+fn viewer_page_or_file_moves_to_adjacent_file() {
     let text = long_text();
     let server = Server::start_dirs(&[("a.txt", &text), ("b.txt", &text)], &[]);
     server.req("POST", "/command/setCursorPosition", r#"["a.txt"]"#).unwrap();
     server.req("POST", "/command/view", "").unwrap();
     poll(&server, "/state/view/name", |b| b.contains("a.txt"));
-    // 先頭では Space はスクロールするだけ（ファイルは変わらない）。
-    server.req("POST", "/view/key/Space", "").unwrap();
+    // 先頭ではスクロールするだけ（ファイルは変わらない）。
+    server.req("POST", "/command/viewerPageDownOrNext", "").unwrap();
     assert_eq!(view_state(&server, "name"), "a.txt");
-    // 末尾まで送ってから Space で次のファイルへ。
+    // 末尾まで送ってからもう一度送ると次のファイルへ。
     server.req("POST", "/view/key/Ctrl+End", "").unwrap();
     poll(&server, "/state/viewer/at_end", |b| b.trim() == "true");
-    server.req("POST", "/view/key/Space", "").unwrap();
+    server.req("POST", "/command/viewerPageDownOrNext", "").unwrap();
     poll(&server, "/state/view/name", |b| b.contains("b.txt"));
     assert_eq!(left_cursor_name(&server), "b.txt", "カーソルが表示中のファイルへ追従する");
     let top = server.req("GET", "/state/viewer/at_top", "").unwrap().1;
     assert_eq!(top.trim(), "true", "次のファイルは先頭から表示する");
-    // 先頭で Shift+Space＝前のファイルへ戻り、末尾から表示する。
-    server.req("POST", "/view/key/Shift+Space", "").unwrap();
+    // 先頭で戻すと前のファイルへ戻り、末尾から表示する。
+    server.req("POST", "/command/viewerPageUpOrPrevious", "").unwrap();
     poll(&server, "/state/view/name", |b| b.contains("a.txt"));
     let end = server.req("GET", "/state/viewer/at_end", "").unwrap().1;
     assert_eq!(end.trim(), "true", "前のファイルは末尾から表示する");
     assert_eq!(left_cursor_name(&server), "a.txt");
 }
 
-/// B は前のファイルへ戻り、一覧の先頭では止まる（反対の端へ回らない）。
+/// 表示形式ごとの表に無いキーは共通の表で引く。画像・動画・PDF の表の既定（Space＝再生）は
+/// 共通の表の割り当てより優先する。
+#[test]
+fn viewer_keys_fall_back_to_common_table() {
+    let server = Server::start(
+        &["a.txt", "b.txt", "pic.bmp"],
+        "[keybinds_viewer]\nSpace = \"viewerPageDownOrNext()\"\n",
+    );
+    std::fs::write(server.base.join("sbx").join("pic.bmp"), TINY_BMP).unwrap();
+    server.req("POST", "/command/setCursorPosition", r#"["a.txt"]"#).unwrap();
+    server.req("POST", "/command/view", "").unwrap();
+    poll(&server, "/state/view/name", |b| b.contains("a.txt"));
+    server.req("POST", "/view/key/Ctrl+End", "").unwrap();
+    server.req("POST", "/view/key/Space", "").unwrap();
+    poll(&server, "/state/view/name", |b| b.contains("b.txt"));
+    server.req("POST", "/view/key/Ctrl+End", "").unwrap();
+    server.req("POST", "/view/key/Space", "").unwrap();
+    poll(&server, "/state/active_view", |b| b.trim() == "\"media\"");
+    // 画像の表の Space（再生）が先に引かれるので、ファイルは送られない。
+    server.req("POST", "/view/key/Space", "").unwrap();
+    assert_eq!(view_state(&server, "name"), "pic.bmp");
+}
+
+/// `viewerPrevious` は前のファイルへ戻り、一覧の先頭では止まる（反対の端へ回らない）。
 #[test]
 fn viewer_previous_stops_at_list_edge() {
     let server = Server::start_dirs(&[("a.txt", b"a\n"), ("b.txt", b"b\n")], &[]);
     server.req("POST", "/command/setCursorPosition", r#"["b.txt"]"#).unwrap();
     server.req("POST", "/command/view", "").unwrap();
     poll(&server, "/state/view/name", |b| b.contains("b.txt"));
-    server.req("POST", "/view/key/B", "").unwrap();
+    server.req("POST", "/command/viewerPrevious", "").unwrap();
     poll(&server, "/state/view/name", |b| b.contains("a.txt"));
-    server.req("POST", "/view/key/B", "").unwrap();
+    server.req("POST", "/command/viewerPrevious", "").unwrap();
     assert_eq!(view_state(&server, "name"), "a.txt", "先頭では止まる");
     // 末尾でも同様に止まる。
     server.req("POST", "/command/viewerNext", "").unwrap();
@@ -7365,37 +7388,37 @@ fn viewer_moves_from_images_to_text() {
     server.req("POST", "/command/setCursorPosition", r#"["a.bmp"]"#).unwrap();
     server.req("POST", "/command/view", "").unwrap();
     poll(&server, "/state/active_view", |b| b.trim() == "\"media\"");
-    server.req("POST", "/view/key/Space", "").unwrap();
+    server.req("POST", "/command/viewerPageDownOrNext", "").unwrap();
     poll(&server, "/state/view/name", |b| b.contains("b.bmp"));
     let media = server.req("GET", "/state/media", "").unwrap().1;
     assert!(media.contains("\"index\":2"), "画像の巡回セットの 2 枚目: {media}");
     assert_eq!(left_cursor_name(&server), "b.bmp");
-    server.req("POST", "/view/key/Space", "").unwrap();
+    server.req("POST", "/command/viewerPageDownOrNext", "").unwrap();
     poll(&server, "/state/view/name", |b| b.contains("c.txt"));
     assert_eq!(view_state(&server, "form"), "text");
     let av = server.req("GET", "/state/active_view", "").unwrap().1;
     assert_eq!(av.trim(), "\"text\"");
     // 戻ると画像の表示に戻る。
-    server.req("POST", "/view/key/B", "").unwrap();
+    server.req("POST", "/command/viewerPrevious", "").unwrap();
     poll(&server, "/state/active_view", |b| b.trim() == "\"media\"");
     assert_eq!(view_state(&server, "name"), "b.bmp");
 }
 
-/// PDF は Space でページを送り、最終ページでさらに送ると次のファイルへ移る。
+/// PDF は `viewerPageDownOrNext` でページを送り、最終ページでさらに送ると次のファイルへ移る。
 /// 前のファイルとして戻ると最終ページから表示する。
 #[test]
-fn viewer_pdf_space_pages_then_next_file() {
+fn viewer_pdf_pages_then_next_file() {
     let pdf = make_pdf(2, 200);
     let server = Server::start_dirs(&[("doc.pdf", &pdf), ("z.txt", b"z\n")], &[]);
     server.req("POST", "/command/setCursorPosition", r#"["doc.pdf"]"#).unwrap();
     server.req("POST", "/command/view", "").unwrap();
     poll(&server, "/state/active_view", |b| b.trim() == "\"media\"");
-    server.req("POST", "/view/key/Space", "").unwrap();
+    server.req("POST", "/command/viewerPageDownOrNext", "").unwrap();
     poll(&server, "/state/media", |b| b.contains("\"index\":2"));
     assert_eq!(view_state(&server, "name"), "doc.pdf", "ページ送りではファイルは変わらない");
-    server.req("POST", "/view/key/Space", "").unwrap();
+    server.req("POST", "/command/viewerPageDownOrNext", "").unwrap();
     poll(&server, "/state/view/name", |b| b.contains("z.txt"));
-    server.req("POST", "/view/key/Shift+Space", "").unwrap();
+    server.req("POST", "/command/viewerPageUpOrPrevious", "").unwrap();
     poll(&server, "/state/view/name", |b| b.contains("doc.pdf"));
     let media = poll(&server, "/state/media", |b| b.contains("\"index\":2"));
     assert!(media.contains("\"index\":2"), "前のファイルの PDF は最終ページから: {media}");
@@ -7437,13 +7460,13 @@ fn viewer_markdown_text_on_request_and_html_rendered() {
     server.req("POST", "/command/view", r#"["text"]"#).unwrap();
     poll(&server, "/state/view/form", |b| b.trim() == "\"text\"");
     server.req("POST", "/view/key/Ctrl+End", "").unwrap();
-    server.req("POST", "/view/key/Space", "").unwrap();
+    server.req("POST", "/command/viewerPageDownOrNext", "").unwrap();
     poll(&server, "/state/view/name", |b| b.contains("b.html"));
     assert_eq!(view_state(&server, "form"), "rendered");
     let forms = server.req("GET", "/state/view/forms", "").unwrap().1;
     assert!(forms.contains("\"render\":\"html\""), "{forms}");
-    // 文書の先頭で Shift+Space＝前のファイルへ（可視の起動では文書側で端を判定するので非同期）。
-    server.req("POST", "/view/key/Shift+Space", "").unwrap();
+    // 文書の先頭で戻すと前のファイルへ（可視の起動では文書側で端を判定するので非同期）。
+    server.req("POST", "/command/viewerPageUpOrPrevious", "").unwrap();
     poll(&server, "/state/view/name", |b| b.contains("a.md"));
     assert_eq!(view_state(&server, "form"), "rendered");
 }
