@@ -83,7 +83,9 @@ RERICS_E2E_VISIBLE=1 ./tools/offscreen.sh dev test -p rerics --features debug-se
 
 ### 観測（GET・`/state` と `/presentation` は JSON Pointer でサブツリー取得可）
 - `GET /state[/<ptr>]` … モデル状態。両ペインの items/cursor/scroll_top/visible/mask/sort/columns、
-  `active_view`・`media`・`tab_bar`・`tabs`・`log`・`modal`・`window`・`active_pane`。
+  `active_view`・`view`（表示中のファイル名・表示形式 `form`＝rendered/text/binary・持っている形式 `forms`・
+  キー表の種類 `layout`＝scroll/paged）・`viewer`（`at_top`/`at_end`・検索状態）・`media`・`tab_bar`・`tabs`・
+  `log`・`modal`・`window`・`active_pane`。
   例：`/state/panes/left/cursor`・`/state/panes/left/items`・`/state/modal`。
   - **item のマークは `marked` フィールド**（`selected` ではない）。`cursor` は bool（その行がカーソルか）。
 - `GET /presentation[/<ptr>]` … 解決済み外見。`theme`・`resolved_colors`（hex）・`font`・`layout`・各ペインの
@@ -94,7 +96,9 @@ RERICS_E2E_VISIBLE=1 ./tools/offscreen.sh dev test -p rerics --features debug-se
   `crates/rerics-core/src/input.rs` の `from_token`（例 `CursorDown`/`CursorUp`/`MarkToggle`/`SelectAll`/
   `FocusLeft`/`FocusRight`/`EnterDir`/`ToParent`/`SortBySize`/`ViewFile`…）。未知/不可は 400。
   書込み系（`MakeDirectory`/`Rename`/`Delete`/`Copy`/`Move`）は要 `--debug-allow-write`。
-- `POST /view/key/<next|prev|close>` … 重ね表示ビューア（画像/テキスト）の操作。
+- `POST /view/key/<next|prev|close>` … 重ね表示ビューアの操作（`next`/`prev` は一覧の前後のファイルへ送る）。
+  それ以外はキー名（`Tab`・`Space`・`Shift+Space`・`Right` 等）を渡すと、表示形式に応じた表→共通の表の順で
+  キーを解決して実行する（実キー経路と同じ）。
 - `POST /modal/text`（body=値）／`POST /modal/command/<ok|cancel|役割名|ctrl_id>`／
   `POST /modal/select/<n>` … 開いてるモーダルの操作。
 - `POST /modal/key/<key>` … 開いてるモーダルへ**実キー送出**（`debug_modal_key`・debug_ctl.rs）。送れるキーは
