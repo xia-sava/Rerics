@@ -105,6 +105,16 @@ fn detect_bom(bytes: &[u8]) -> Option<Encoding> {
     }
 }
 
+/// テキストとして表示できる内容か。BOM 付きは常にテキスト、それ以外は [`looks_binary`] の逆。
+pub fn looks_text(bytes: &[u8]) -> bool {
+    detect_bom(bytes).is_some() || !looks_binary(bytes)
+}
+
+/// テキストとしてデコードする。BOM があればそれに従い、無ければ文字コードを推定する。
+pub fn decode_text(bytes: &[u8]) -> String {
+    detect_bom(bytes).unwrap_or_else(|| detect_encoding(bytes)).decode(bytes)
+}
+
 /// 先頭の一定範囲を見て、テキストとして表示できそうになければ true（バイナリ）。
 /// NUL を含むか、どのエンコーディングで解釈しても表示不可文字が多いならバイナリとみなす（軽量判定）。
 pub fn looks_binary(bytes: &[u8]) -> bool {

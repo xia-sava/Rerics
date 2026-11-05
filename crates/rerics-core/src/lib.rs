@@ -13,6 +13,7 @@ mod find;
 mod highlight;
 mod input;
 mod log;
+mod markdown;
 mod media;
 mod menu;
 mod naming;
@@ -61,6 +62,7 @@ pub use input::{
 pub use menu::{MenuDef, MenuItem, MenuRegistry, ResolvedItem};
 pub use naming::unique_name;
 pub use log::{LogLevel, LogLine, LogState};
+pub use markdown::{ASSET_HOST, DOC_HOST, HtmlTheme, html_csp, markdown_csp, markdown_document};
 pub use media::{
     AnimatedImage, Frame, FrameSource, MediaKind, Placement, StillImage, clamp_pan,
     composite_over_checker, decode_thumbnail, fit_scale, fit_scale_height, fit_scale_look_large,
@@ -80,7 +82,7 @@ pub use vfs::{Location, is_archive_path, resolve_path};
 pub use view_form::{RenderKind, ViewForm, ViewForms, ViewLayout};
 pub use viewer::{
     DisplayLine, Encoding, LineEnding, Matcher, SearchOptions, ViewMode, ViewerModel,
-    build_matcher, looks_binary, search_matches,
+    build_matcher, decode_text, looks_binary, search_matches,
 };
 #[cfg(windows)]
 pub use winpath::wide_path;

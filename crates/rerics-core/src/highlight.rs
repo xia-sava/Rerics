@@ -40,8 +40,16 @@ impl Highlighter {
     /// 拡張子から言語を、テーマフラグ（dark/light）から配色を選んで作る。
     /// 言語を判定できなければ `None`（＝ハイライトしない）。
     pub fn for_extension(ext: &str, dark: bool) -> Option<Self> {
-        let ss = syntaxes();
-        let syntax = ss.find_syntax_by_extension(ext)?;
+        Self::with_syntax(syntaxes().find_syntax_by_extension(ext)?, dark)
+    }
+
+    /// 言語名または拡張子（Markdown のコードブロックの言語指定など）から作る。
+    /// 言語を判定できなければ `None`（＝ハイライトしない）。
+    pub fn for_token(token: &str, dark: bool) -> Option<Self> {
+        Self::with_syntax(syntaxes().find_syntax_by_token(token)?, dark)
+    }
+
+    fn with_syntax(syntax: &'static syntect::parsing::SyntaxReference, dark: bool) -> Option<Self> {
         // プレーンテキストはハイライトしない（ユーザ設定の本文色をそのまま使う）。
         if syntax.name == "Plain Text" {
             return None;
@@ -81,6 +89,13 @@ mod tests {
         // キーワード fn と識別子 main などで色が分かれる（全部同じ色ではない）。
         let first = styled[0].1;
         assert!(styled.iter().any(|(_, c)| *c != first), "複数のトークン色が出るはず");
+    }
+
+    #[test]
+    fn language_name_token_highlights() {
+        assert!(Highlighter::for_token("rust", false).is_some());
+        assert!(Highlighter::for_token("js", false).is_some());
+        assert!(Highlighter::for_token("no_such_lang_xyz", false).is_none());
     }
 
     #[test]

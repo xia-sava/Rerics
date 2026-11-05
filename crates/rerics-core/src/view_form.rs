@@ -8,7 +8,7 @@ use std::path::Path;
 
 use crate::archive::is_known_archive;
 use crate::media::MediaKind;
-use crate::viewer::looks_binary;
+use crate::viewer::looks_text;
 
 /// レンダリング表示の種類。どの描画部品で見せるかを決める。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +17,17 @@ pub enum RenderKind {
     Media(MediaKind),
     /// PDF（ページを画像へ描いて見せる）。
     Pdf,
+    /// Markdown（HTML へ変換して見せる）。
+    Markdown,
+    /// HTML。
+    Html,
+}
+
+impl RenderKind {
+    /// ソースをテキストとしても読めるか（Markdown・HTML）。
+    fn has_source_text(self) -> bool {
+        matches!(self, RenderKind::Markdown | RenderKind::Html)
+    }
 }
 
 /// ビューアの表示形式。
@@ -51,7 +62,7 @@ impl ViewForm {
 /// 表示の並べ方。キー定義の表をどれにするかを決める。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewLayout {
-    /// 長い本文を上下にスクロールして読む（テキスト・バイナリ）。
+    /// 長い本文を上下にスクロールして読む（テキスト・バイナリ・Markdown・HTML）。
     Scroll,
     /// 1 枚ずつ送る（画像・動画・PDF）。
     Paged,
@@ -71,12 +82,12 @@ impl ViewForms {
     /// 決まらないファイルのテキスト判定に使い、`None` ならテキストを持つとみなす。
     pub fn detect(name: &str, head: Option<&[u8]>) -> ViewForms {
         if let Some(render) = render_kind(name) {
-            return ViewForms { render: Some(render), text: false };
+            return ViewForms { render: Some(render), text: render.has_source_text() };
         }
         if is_known_archive(Path::new(name)) {
             return ViewForms { render: None, text: false };
         }
-        let text = head.is_none_or(|h| !looks_binary(h));
+        let text = head.is_none_or(looks_text);
         ViewForms { render: None, text }
     }
 
@@ -133,7 +144,12 @@ fn render_kind(name: &str) -> Option<RenderKind> {
     if let Some(kind) = MediaKind::from_extension(ext) {
         return Some(RenderKind::Media(kind));
     }
-    ext.eq_ignore_ascii_case("pdf").then_some(RenderKind::Pdf)
+    match ext.to_ascii_lowercase().as_str() {
+        "pdf" => Some(RenderKind::Pdf),
+        "md" | "markdown" => Some(RenderKind::Markdown),
+        "html" | "htm" => Some(RenderKind::Html),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -178,6 +194,34 @@ mod tests {
         assert_eq!(f.initial(), ViewForm::Binary);
         // 巡回先が無ければその場に留まる。
         assert_eq!(f.next(ViewForm::Binary), ViewForm::Binary);
+    }
+
+    #[test]
+    fn markdown_renders_then_text_then_binary() {
+        let f = ViewForms::detect("README.md", None);
+        assert_eq!(f, ViewForms { render: Some(RenderKind::Markdown), text: true });
+        assert_eq!(f.initial(), ViewForm::Rendered);
+        assert_eq!(f.next(ViewForm::Rendered), ViewForm::Text);
+        assert_eq!(f.next(ViewForm::Text), ViewForm::Binary);
+        assert_eq!(f.next(ViewForm::Binary), ViewForm::Rendered);
+        // 文書のレンダリング表示はスクロールして読む。
+        assert_eq!(f.layout(ViewForm::Rendered), ViewLayout::Scroll);
+        assert!(!ViewForms::needs_head("README.md"));
+    }
+
+    #[test]
+    fn html_renders_then_text() {
+        let f = ViewForms::detect("index.HTM", None);
+        assert_eq!(f.render, Some(RenderKind::Html));
+        assert!(f.text);
+        assert_eq!(f.initial(), ViewForm::Rendered);
+    }
+
+    #[test]
+    fn utf16_with_bom_is_text() {
+        // UTF-16 は NUL を含むが、BOM があればテキストとして扱う。
+        let f = ViewForms::detect("wide.txt", Some(&[0xFF, 0xFE, b'a', 0, b'b', 0]));
+        assert!(f.text);
     }
 
     #[test]
