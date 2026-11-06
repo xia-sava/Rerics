@@ -7310,7 +7310,7 @@ fn viewer_archive_views_binary_or_enters() {
 }
 
 /// `viewerPageDownOrNext` は末尾で次のファイルへ進み、`viewerPageUpOrPrevious` は先頭で前の
-/// ファイルへ戻って末尾から表示する。ペインのカーソルも表示中のファイルへ追従する。
+/// ファイルへ戻って末尾から表示する。ペインのカーソルはビューアを開いたファイルに留まる。
 #[test]
 fn viewer_page_or_file_moves_to_adjacent_file() {
     let text = long_text();
@@ -7326,7 +7326,7 @@ fn viewer_page_or_file_moves_to_adjacent_file() {
     poll(&server, "/state/viewer/at_end", |b| b.trim() == "true");
     server.req("POST", "/command/viewerPageDownOrNext", "").unwrap();
     poll(&server, "/state/view/name", |b| b.contains("b.txt"));
-    assert_eq!(left_cursor_name(&server), "b.txt", "カーソルが表示中のファイルへ追従する");
+    assert_eq!(left_cursor_name(&server), "a.txt", "カーソルはビューアを開いたファイルに留まる");
     let top = server.req("GET", "/state/viewer/at_top", "").unwrap().1;
     assert_eq!(top.trim(), "true", "次のファイルは先頭から表示する");
     // 先頭で戻すと前のファイルへ戻り、末尾から表示する。
@@ -7378,6 +7378,20 @@ fn viewer_previous_stops_at_list_edge() {
     assert_eq!(view_state(&server, "name"), "b.txt", "末尾では止まる");
 }
 
+/// ビューアでファイルを送ってからエディタで開くと、カーソル下ではなく表示中のファイルを開く。
+#[test]
+fn viewer_edit_opens_shown_file() {
+    let server = Server::start_dirs(&[("a.txt", b"a\n"), ("b.txt", b"b\n")], &[]);
+    server.req("POST", "/command/setCursorPosition", r#"["a.txt"]"#).unwrap();
+    server.req("POST", "/command/view", "").unwrap();
+    poll(&server, "/state/view/name", |b| b.contains("a.txt"));
+    server.req("POST", "/command/viewerNext", "").unwrap();
+    poll(&server, "/state/view/name", |b| b.contains("b.txt"));
+    server.req("POST", "/view/key/E", "").unwrap();
+    let log = poll(&server, "/state/log", |b| b.contains("外部プロセスの起動を止めました"));
+    assert!(log.contains("b.txt") && !log.contains("a.txt"), "表示中の b.txt を開く: {log}");
+}
+
 /// 画像から送ると、画像の間は画像のまま、次がテキストならテキスト表示で開く。
 #[test]
 fn viewer_moves_from_images_to_text() {
@@ -7392,7 +7406,7 @@ fn viewer_moves_from_images_to_text() {
     poll(&server, "/state/view/name", |b| b.contains("b.bmp"));
     let media = server.req("GET", "/state/media", "").unwrap().1;
     assert!(media.contains("\"index\":2"), "画像の巡回セットの 2 枚目: {media}");
-    assert_eq!(left_cursor_name(&server), "b.bmp");
+    assert_eq!(left_cursor_name(&server), "a.bmp", "カーソルはビューアを開いたファイルに留まる");
     server.req("POST", "/command/viewerPageDownOrNext", "").unwrap();
     poll(&server, "/state/view/name", |b| b.contains("c.txt"));
     assert_eq!(view_state(&server, "form"), "text");

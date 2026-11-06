@@ -80,24 +80,26 @@ impl MainWindow {
             Some(t) if t.eq_ignore_ascii_case("rendered") => Some(ViewForm::Rendered),
             _ => None,
         };
-        self.open_view(is_left, preferred, false)
+        self.open_view(is_left, &name, preferred, false)
     }
 
     pub(crate) fn view_file(&self, is_left: bool) -> w::AnyResult<()> {
-        self.open_view(is_left, None, false)
-    }
-
-    /// カーソル下のファイルを `preferred`（持っていなければ最初に開く形式）で開く。`at_end` なら
-    /// 末尾（スクロール表示は最下部・PDF は最終ページ）から表示する。
-    pub(crate) fn open_view(
-        &self,
-        is_left: bool,
-        preferred: Option<ViewForm>,
-        at_end: bool,
-    ) -> w::AnyResult<()> {
         let Some(name) = self.cursor_file_name(is_left) else {
             return Ok(());
         };
+        self.open_view(is_left, &name, None, false)
+    }
+
+    /// ペインの一覧にあるファイル `name` を `preferred`（持っていなければ最初に開く形式）で開く。
+    /// `at_end` なら末尾（スクロール表示は最下部・PDF は最終ページ）から表示する。
+    pub(crate) fn open_view(
+        &self,
+        is_left: bool,
+        name: &str,
+        preferred: Option<ViewForm>,
+        at_end: bool,
+    ) -> w::AnyResult<()> {
+        let name = name.to_string();
         let content = if ViewForms::needs_head(&name) {
             match self.read_for_view(is_left, &name) {
                 Some(v) => Some(v),
@@ -222,7 +224,7 @@ impl MainWindow {
             return;
         };
         if matches!(self.active_view.get(), ActiveView::Rendered) {
-            let _ = self.open_view(session.is_left, Some(ViewForm::Text), false);
+            let _ = self.open_view(session.is_left, &session.name, Some(ViewForm::Text), false);
         }
     }
 
@@ -795,7 +797,12 @@ impl MainWindow {
             Command::ViewerPageUp => self.viewer_page(false, false)?,
             Command::ViewerPageDownOrNext => self.viewer_page(true, true)?,
             Command::ViewerPageUpOrPrevious => self.viewer_page(false, true)?,
-            Command::Edit => self.edit(!self.active_right.get())?,
+            Command::Edit => {
+                let session = self.view_session.borrow().clone();
+                if let Some(session) = session {
+                    self.edit_file(session.is_left, &session.name)?;
+                }
+            }
             Command::OpenSettings => self.open_settings()?,
             _ => match self.active_view.get() {
                 ActiveView::Text => self.exec_text_viewer(cmd)?,
@@ -873,7 +880,7 @@ impl MainWindow {
             _ if next == cur => Ok(()),
             (ViewForm::Text, ViewForm::Binary) => self.viewer.set_mode(ViewMode::Binary),
             (ViewForm::Binary, ViewForm::Text) => self.viewer.set_mode(ViewMode::Text),
-            _ => self.open_view(session.is_left, Some(next), false),
+            _ => self.open_view(session.is_left, &session.name, Some(next), false),
         }
     }
 
@@ -922,7 +929,7 @@ impl MainWindow {
     }
 
     /// 一覧で `delta` 先のファイルを表示する（ディレクトリ・親は飛ばす）。一覧の端では止まり、
-    /// 動けたかを返す。ペインのカーソルも移動先へ動かす。`at_end` なら移動先を末尾から表示する。
+    /// 動けたかを返す。ペインのカーソルは動かさない。`at_end` なら移動先を末尾から表示する。
     /// 検索・比較の結果一覧では項目ごとに出自が異なるため送らない。
     pub(crate) fn step_file(&self, delta: isize, at_end: bool) -> w::AnyResult<bool> {
         let Some(session) = self.view_session.borrow().clone() else {
@@ -942,16 +949,13 @@ impl MainWindow {
         }
         let target = target as usize;
         let (name, ext) = files[target].clone();
-        self.mutate_state(is_left, |s, pr| {
-            s.set_cursor_position(&name, pr);
-        })?;
         // 画像・動画どうしの移動は、開いた時点の巡回セット（一覧の画像・動画を同じ順に並べた
         // もの）の中で送る。書庫内の先読みをそのまま活かせる。
         let in_media_set = matches!(self.active_view.get(), ActiveView::Media)
             && matches!(session.forms.render, Some(RenderKind::Media(_)))
             && MediaKind::from_extension(&ext).is_some();
         if !in_media_set {
-            self.open_view(is_left, None, at_end)?;
+            self.open_view(is_left, &name, None, at_end)?;
             return Ok(true);
         }
         let media_index = files[..target]

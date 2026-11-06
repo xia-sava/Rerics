@@ -1443,10 +1443,6 @@ impl MainWindow {
 
     /// カーソル上のファイルを設定エディタ（config の editor）で開く（外部プロセス・実FSのみ）。
     pub(crate) fn edit(&self, is_left: bool) -> w::AnyResult<()> {
-        if self.pane(is_left).borrow().is_archive() {
-            self.log.warn("書庫内のファイルは編集起動に未対応です。");
-            return Ok(());
-        }
         let name = {
             let view = self.view(is_left);
             let state = view.state();
@@ -1456,7 +1452,16 @@ impl MainWindow {
                 _ => return Ok(()),
             }
         };
-        let path = self.pane(is_left).borrow().path().join(&name);
+        self.edit_file(is_left, &name)
+    }
+
+    /// ペインの現在地にある `name` を設定エディタ（config の editor）で開く（外部プロセス・実FSのみ）。
+    pub(crate) fn edit_file(&self, is_left: bool, name: &str) -> w::AnyResult<()> {
+        if self.pane(is_left).borrow().is_archive() {
+            self.log.warn("書庫内のファイルは編集起動に未対応です。");
+            return Ok(());
+        }
+        let path = self.pane(is_left).borrow().path().join(name);
         let editor = self.config.borrow().editor.clone();
         if editor.trim().is_empty() {
             self.log.warn("エディタが設定されていません（config の editor）。");
