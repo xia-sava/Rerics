@@ -371,7 +371,7 @@ impl MainWindow {
                 debug_server::Request::CompletionKey { name } => {
                     // 補完キー操作の実経路を模擬：↑↓は WM_KEYDOWN、Enter は WM_CHAR、Ctrl+Space は
                     // Ctrl 押下→Space 押下→Ctrl 解放を送る。keyhook サブクラスがこれを横取りする。
-                    let key_down = |vk: u16| w::msg::wm::KeyDown {
+                    let key_down = |vk: u16| w::msg::WmKeyDown {
                         vkey_code: unsafe { co::VK::from_raw(vk) },
                         repeat_count: 1,
                         scan_code: 0,
@@ -383,7 +383,7 @@ impl MainWindow {
                     let resp = match self.debug_modal_hwnd().as_ref().and_then(Self::debug_modal_edit) {
                         Some(edit) => {
                             unsafe {
-                                let key_up = |vk: u16| w::msg::wm::KeyUp {
+                                let key_up = |vk: u16| w::msg::WmKeyUp {
                                     vkey_code: co::VK::from_raw(vk),
                                     repeat_count: 1,
                                     scan_code: 0,
@@ -415,7 +415,7 @@ impl MainWindow {
                                         edit.SendMessage(key_up(0x27));
                                     }
                                     "enter" => {
-                                        edit.SendMessage(w::msg::wm::Char {
+                                        edit.SendMessage(w::msg::WmChar {
                                             char_code: 0x0D,
                                             repeat_count: 1,
                                             scan_code: 0,
@@ -428,7 +428,7 @@ impl MainWindow {
                                     "ctrlspace" => {
                                         edit.SendMessage(key_down(0x11));
                                         edit.SendMessage(key_down(0x20));
-                                        edit.SendMessage(w::msg::wm::KeyUp {
+                                        edit.SendMessage(w::msg::WmKeyUp {
                                             vkey_code: co::VK::from_raw(0x11),
                                             repeat_count: 1,
                                             scan_code: 0,
@@ -453,7 +453,7 @@ impl MainWindow {
                         Some(edit) => {
                             for ch in text.chars() {
                                 unsafe {
-                                    edit.SendMessage(w::msg::wm::Char {
+                                    edit.SendMessage(w::msg::WmChar {
                                         char_code: ch as u16,
                                         repeat_count: 1,
                                         scan_code: 0,
@@ -748,7 +748,7 @@ impl MainWindow {
         };
         const BM_CLICK: u32 = 0x00F5;
         unsafe {
-            let _ = cb.PostMessage(w::msg::WndMsg {
+            let _ = cb.PostMessage(w::msg::Wm {
                 msg_id: co::WM::from_raw(BM_CLICK),
                 wparam: 0,
                 lparam: 0,
@@ -780,7 +780,7 @@ impl MainWindow {
         };
         const BM_CLICK: u32 = 0x00F5;
         unsafe {
-            let _ = rb.PostMessage(w::msg::WndMsg {
+            let _ = rb.PostMessage(w::msg::Wm {
                 msg_id: co::WM::from_raw(BM_CLICK),
                 wparam: 0,
                 lparam: 0,
@@ -801,7 +801,7 @@ impl MainWindow {
             let style = c.GetWindowLongPtr(co::GWLP::STYLE) as u32;
             if is_btn && matches!(style & 0xF, 4 | 9) {
                 let checked =
-                    unsafe { c.SendMessage(w::msg::bm::GetCheck {}) } == co::BST::CHECKED;
+                    unsafe { c.SendMessage(w::msg::BmGetCheck {}) } == co::BST::CHECKED;
                 radios.push(json!({
                     "label": c.GetWindowText().unwrap_or_default(),
                     "enabled": c.IsWindowEnabled(),
@@ -848,7 +848,7 @@ impl MainWindow {
         match Self::debug_modal_listbox(&modal) {
             Some(list) => {
                 unsafe {
-                    let _ = list.SendMessage(w::msg::lb::SetCurSel { index: Some(index as u32) });
+                    let _ = list.SendMessage(w::msg::LbSetCurSel { index: Some(index as u32) });
                 }
                 debug_server::Response::Json(self.debug_state_value().to_string())
             }
@@ -902,7 +902,7 @@ impl MainWindow {
             })
             .unwrap_or(0);
         unsafe {
-            let _ = list.SendMessage(w::msg::WndMsg {
+            let _ = list.SendMessage(w::msg::Wm {
                 msg_id: co::WM::from_raw(WM_MOUSEWHEEL),
                 wparam,
                 lparam,
@@ -959,14 +959,14 @@ impl MainWindow {
         let target = focus.as_ref().unwrap_or(&modal);
         unsafe {
             if send_down {
-                let _ = target.PostMessage(w::msg::WndMsg {
+                let _ = target.PostMessage(w::msg::Wm {
                     msg_id: co::WM::KEYDOWN,
                     wparam: vk as usize,
                     lparam: 0,
                 });
             }
             if send_up {
-                let _ = target.PostMessage(w::msg::WndMsg {
+                let _ = target.PostMessage(w::msg::Wm {
                     msg_id: co::WM::from_raw(0x0101), // WM_KEYUP
                     wparam: vk as usize,
                     lparam: 0,
@@ -990,7 +990,7 @@ impl MainWindow {
             _ => return debug_server::Response::BadRequest(format!("unknown filer key: {key}")),
         };
         unsafe {
-            let _ = self.key_sink.hwnd().PostMessage(w::msg::WndMsg {
+            let _ = self.key_sink.hwnd().PostMessage(w::msg::Wm {
                 msg_id: co::WM::SYSKEYDOWN,
                 wparam: vk as usize,
                 lparam: 0,
@@ -1046,7 +1046,7 @@ impl MainWindow {
         };
         // 親へ WM_COMMAND(BN_CLICKED) を送る（winsafe の bn_clicked が ctrl_id で振り分ける）。
         unsafe {
-            let _ = modal.PostMessage(w::msg::WndMsg {
+            let _ = modal.PostMessage(w::msg::Wm {
                 msg_id: co::WM::COMMAND,
                 wparam: id as usize,
                 lparam: btn.ptr() as isize,
@@ -1738,13 +1738,13 @@ impl MainWindow {
                             e.selected
                         } else {
                             lb.as_ref()
-                                .and_then(|l| unsafe { l.SendMessage(w::msg::lb::GetCurSel {}) })
+                                .and_then(|l| unsafe { l.SendMessage(w::msg::LbGetCurSel {}) })
                                 .map(|n| n as usize)
                                 .unwrap_or(e.selected)
                         };
                         // 先頭表示行（ホイール/スクロールの観測用）。
                         let top = lb
-                            .and_then(|l| unsafe { l.SendMessage(w::msg::lb::GetTopIndex {}).ok() })
+                            .and_then(|l| unsafe { l.SendMessage(w::msg::LbGetTopIndex {}).ok() })
                             .map(|n| n as usize)
                             .unwrap_or(0);
                         (Vec::new(), Vec::new(), selected, top)

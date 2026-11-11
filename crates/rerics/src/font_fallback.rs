@@ -244,7 +244,7 @@ impl FontSet {
         &self,
         dc: &w::HDC,
         text: &str,
-        rect: w::RECT,
+        mut rect: w::RECT,
         flags: co::DT,
     ) -> w::AnyResult<()> {
         let text = if flags.has(co::DT::END_ELLIPSIS) {
@@ -255,7 +255,7 @@ impl FontSet {
             Cow::Borrowed(text)
         };
         let Some(runs) = self.runs(dc, &text) else {
-            dc.DrawText(&text, rect, flags)?;
+            dc.DrawText(&text, &mut rect, flags)?;
             return Ok(());
         };
         let total_w: i32 = runs.iter().map(|(fi, s)| self.run_width(dc, *fi, s)).sum();

@@ -4,6 +4,7 @@ use crate::co;
 use crate::decl::*;
 use crate::guard::*;
 use crate::kernel::{ffi, privs::*};
+use crate::macros::*;
 use crate::prelude::*;
 
 handle! { HFINDFILE;
@@ -17,7 +18,8 @@ impl HFINDFILE {
 	/// function.
 	///
 	/// This method is rather tricky, consider using
-	/// [`path::dir_list`](crate::path::dir_list).
+	/// [`path::dir_list_flat`](crate::path::dir_list_flat) or
+	/// [`path::dir_list_recursive`](crate::path::dir_list_recursive)
 	#[must_use]
 	pub fn FindFirstFile(
 		file_name: &str,
@@ -47,7 +49,8 @@ impl HFINDFILE {
 	/// function.
 	///
 	/// This method is rather tricky, consider using
-	/// [`path::dir_list`](crate::path::dir_list).
+	/// [`path::dir_list_flat`](crate::path::dir_list_flat) or
+	/// [`path::dir_list_recursive`](crate::path::dir_list_recursive)
 	#[must_use]
 	pub fn FindNextFile(&self, wfd: &mut WIN32_FIND_DATA) -> SysResult<bool> {
 		match unsafe { ffi::FindNextFileW(self.ptr(), pvoid(wfd)) } {

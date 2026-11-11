@@ -2857,7 +2857,7 @@ dependencies = [
  "windows",
  "windows-core",
  "winresource",
- "winsafe 0.0.27",
+ "winsafe 0.0.29",
  "zip",
 ]
 
@@ -4717,7 +4717,7 @@ checksum = "d135d17ab770252ad95e9a872d365cf3090e3be864a34ab46f48555993efc904"
 
 [[package]]
 name = "winsafe"
-version = "0.0.27"
+version = "0.0.29"
 
 [[package]]
 name = "wit-bindgen"

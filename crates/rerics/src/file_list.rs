@@ -697,9 +697,7 @@ impl FileListView {
 
         let this = self.clone();
         self.wnd.on().wm_mouse_wheel(move |p| {
-            // winsafe 0.0.27 は wheel_distance と keys を取り違えるため、回転量は
-            // keys（実際は HIWORD=回転量）から取り出す。
-            let dist = p.keys.raw() as i16;
+            let dist = p.wheel_distance;
             if let Some(cb) = this.inner.on_wheel.borrow().as_ref() {
                 cb(dist, p.coords);
             } else {
@@ -1674,8 +1672,8 @@ impl FileListView {
                 .max(SORT_GLYPH_MIN_SIZE);
             let small = self.create_font_family(&self.inner.font_family.borrow(), size)?;
             let _small_sel = dc.SelectObject(&*small)?;
-            let rect = w::RECT { left: x0, top: 0, right, bottom: header_h };
-            dc.DrawText(glyph, rect, co::DT::SINGLELINE | co::DT::NOPREFIX | co::DT::VCENTER)?;
+            let mut rect = w::RECT { left: x0, top: 0, right, bottom: header_h };
+            dc.DrawText(glyph, &mut rect, co::DT::SINGLELINE | co::DT::NOPREFIX | co::DT::VCENTER)?;
         }
         Ok(())
     }

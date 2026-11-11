@@ -11,6 +11,12 @@ pub fn AttachConsole(process: PidParent) -> SysResult<()> {
 	BoolRet(unsafe { ffi::AttachConsole(process.as_u32()) }).to_sysresult()
 }
 
+/// [`FreeConsole`](https://learn.microsoft.com/en-us/windows/console/freeconsole)
+/// function.
+pub fn FreeConsole() -> SysResult<()> {
+	BoolRet(unsafe { ffi::FreeConsole() }).to_sysresult()
+}
+
 /// [`CopyFile`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-copyfilew)
 /// function.
 ///
@@ -48,6 +54,32 @@ pub fn CreateDirectory(
 
 /// [`CreateProcess`](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)
 /// function.
+///
+/// # Examples
+///
+/// ```no_run
+/// use winsafe::{self as w, prelude::*, co};
+///
+/// let mut si = w::STARTUPINFO::default();
+/// si.dwFlags = co::STARTF::USESHOWWINDOW;
+/// si.set_wShowWindow(co::SW::SHOW);
+///
+/// let pi = w::CreateProcess(
+///     None,
+///     Some("C:\\Temp\\foo.exe"),
+///     None,
+///     None,
+///     false,
+///     co::CREATE::NoValue,
+///     &[],
+///     None,
+///     &mut si,
+/// )?;
+///
+/// pi.hProcess.WaitForSingleObject(None)?;
+/// let exit_code = pi.hProcess.GetExitCodeProcess()?;
+/// # w::SysResult::Ok(())
+/// ```
 #[must_use]
 pub fn CreateProcess(
 	application_name: Option<&str>,
@@ -167,10 +199,25 @@ pub fn ExpandEnvironmentStrings(src: &str) -> SysResult<String> {
 /// must also pass the returned `SYSTEMTIME` to
 /// [`SystemTimeToTzSpecificLocalTime`](crate::SystemTimeToTzSpecificLocalTime).
 ///
+/// # Examples
+///
+/// ```no_run
+/// use winsafe::{self as w, prelude::*};
+///
+/// let ft_utc = w::GetSystemTimeAsFileTime();
+/// let st_utc = w::FileTimeToSystemTime(&ft_utc)?;
+///
+/// println!("{:04}-{:02}-{:02}",
+///     st_utc.wYear, st_utc.wMonth, st_utc.wDay);
+///
+/// # w::SysResult::Ok(())
+/// ```
+///
 /// # Related functions
 ///
 /// * [`GetLocalTime`](crate::GetLocalTime)
 /// * [`GetSystemTime`](crate::GetSystemTime)
+/// * [`GetSystemTimeAsFileTime`](crate::GetSystemTimeAsFileTime)
 /// * [`SystemTimeToFileTime`](crate::SystemTimeToFileTime)
 /// * [`SystemTimeToTzSpecificLocalTime`](crate::SystemTimeToTzSpecificLocalTime)
 #[must_use]
@@ -469,18 +516,27 @@ pub fn GetLastError() -> co::ERROR {
 /// This function retrieves local time; for UTC time use
 /// [`GetSystemTime`](crate::GetSystemTime).
 ///
+/// # Examples
+///
+/// ```no_run
+/// use winsafe::{self as w, prelude::*};
+///
+/// let st = w::GetLocalTime();
+/// println!("{:04}-{:02}-{:02}",
+///     st.wYear, st.wMonth, st.wDay);
+/// ```
+///
 /// # Related functions
 ///
 /// * [`FileTimeToSystemTime`](crate::FileTimeToSystemTime)
 /// * [`GetSystemTime`](crate::GetSystemTime)
+/// * [`GetSystemTimeAsFileTime`](crate::GetSystemTimeAsFileTime)
 /// * [`SystemTimeToFileTime`](crate::SystemTimeToFileTime)
 /// * [`SystemTimeToTzSpecificLocalTime`](crate::SystemTimeToTzSpecificLocalTime)
 #[must_use]
 pub fn GetLocalTime() -> SYSTEMTIME {
 	let mut st = SYSTEMTIME::default();
-	unsafe {
-		ffi::GetLocalTime(pvoid(&mut st));
-	}
+	unsafe { ffi::GetLocalTime(pvoid(&mut st)) };
 	st
 }
 
@@ -532,9 +588,7 @@ pub fn GetLongPathName(short_path: &str) -> SysResult<String> {
 #[must_use]
 pub fn GetNativeSystemInfo() -> SYSTEM_INFO {
 	let mut si = SYSTEM_INFO::default();
-	unsafe {
-		ffi::GetNativeSystemInfo(pvoid(&mut si));
-	}
+	unsafe { ffi::GetNativeSystemInfo(pvoid(&mut si)) };
 	si
 }
 
@@ -718,9 +772,7 @@ pub fn GetPrivateProfileString(
 #[must_use]
 pub fn GetStartupInfo<'a, 'b>() -> STARTUPINFO<'a, 'b> {
 	let mut si = STARTUPINFO::default();
-	unsafe {
-		ffi::GetStartupInfoW(pvoid(&mut si));
-	}
+	unsafe { ffi::GetStartupInfoW(pvoid(&mut si)) };
 	si
 }
 
@@ -763,9 +815,7 @@ pub fn GetSystemFileCacheSize() -> SysResult<(usize, usize, co::FILE_CACHE)> {
 #[must_use]
 pub fn GetSystemInfo() -> SYSTEM_INFO {
 	let mut si = SYSTEM_INFO::default();
-	unsafe {
-		ffi::GetSystemInfo(pvoid(&mut si));
-	}
+	unsafe { ffi::GetSystemInfo(pvoid(&mut si)) };
 	si
 }
 
@@ -775,29 +825,52 @@ pub fn GetSystemInfo() -> SYSTEM_INFO {
 /// This function retrieves UTC time; for local time use
 /// [`GetLocalTime`](crate::GetLocalTime).
 ///
+/// # Examples
+///
+/// ```no_run
+/// use winsafe::{self as w, prelude::*};
+///
+/// let st_utc = w::GetSystemTime();
+/// println!("{:04}-{:02}-{:02}",
+///     st_utc.wYear, st_utc.wMonth, st_utc.wDay);
+/// ```
+///
 /// # Related functions
 ///
 /// * [`FileTimeToSystemTime`](crate::FileTimeToSystemTime)
 /// * [`GetLocalTime`](crate::GetLocalTime)
+/// * [`GetSystemTimeAsFileTime`](crate::GetSystemTimeAsFileTime)
 /// * [`SystemTimeToFileTime`](crate::SystemTimeToFileTime)
 /// * [`SystemTimeToTzSpecificLocalTime`](crate::SystemTimeToTzSpecificLocalTime)
 #[must_use]
 pub fn GetSystemTime() -> SYSTEMTIME {
 	let mut st = SYSTEMTIME::default();
-	unsafe {
-		ffi::GetSystemTime(pvoid(&mut st));
-	}
+	unsafe { ffi::GetSystemTime(pvoid(&mut st)) };
 	st
 }
 
 /// [`GetSystemTimeAsFileTime`](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getsystemtimeasfiletime)
 /// function.
+///
+/// # Examples
+///
+/// ```no_run
+/// use winsafe::{self as w, prelude::*};
+///
+/// let ft_utc = w::GetSystemTimeAsFileTime();
+/// ```
+///
+/// # Related functions
+///
+/// * [`FileTimeToSystemTime`](crate::FileTimeToSystemTime)
+/// * [`GetLocalTime`](crate::GetLocalTime)
+/// * [`GetSystemTime`](crate::GetSystemTime)
+/// * [`SystemTimeToFileTime`](crate::SystemTimeToFileTime)
+/// * [`SystemTimeToTzSpecificLocalTime`](crate::SystemTimeToTzSpecificLocalTime)
 #[must_use]
 pub fn GetSystemTimeAsFileTime() -> FILETIME {
 	let mut ft = FILETIME::default();
-	unsafe {
-		ffi::GetSystemTimeAsFileTime(pvoid(&mut ft));
-	}
+	unsafe { ffi::GetSystemTimeAsFileTime(pvoid(&mut ft)) };
 	ft
 }
 
@@ -806,9 +879,7 @@ pub fn GetSystemTimeAsFileTime() -> FILETIME {
 #[must_use]
 pub fn GetSystemTimePreciseAsFileTime() -> FILETIME {
 	let mut ft = FILETIME::default();
-	unsafe {
-		ffi::GetSystemTimePreciseAsFileTime(pvoid(&mut ft));
-	}
+	unsafe { ffi::GetSystemTimePreciseAsFileTime(pvoid(&mut ft)) };
 	ft
 }
 
@@ -838,6 +909,31 @@ pub fn GetSystemTimes() -> SysResult<(FILETIME, FILETIME, FILETIME)> {
 	})
 	.to_sysresult()
 	.map(|_| (idle_time, kernel_time, user_time))
+}
+
+/// [`GetSystemWow64Directory`](https://learn.microsoft.com/en-us/windows/win32/api/wow64apiset/nf-wow64apiset-getsystemwow64directoryw)
+/// function.
+#[must_use]
+pub fn GetSystemWow64Directory() -> SysResult<String> {
+	let mut buf_sz = match unsafe { ffi::GetSystemWow64DirectoryW(std::ptr::null_mut(), 0) } {
+		0 => return Err(GetLastError()),
+		n => n,
+	}; // includes terminating null count
+
+	loop {
+		let mut buf = WString::new_alloc_buf(buf_sz as _);
+		let returned_chars =
+			match unsafe { ffi::GetSystemWow64DirectoryW(buf.as_mut_ptr(), buf_sz) } {
+				0 => return Err(GetLastError()),
+				n => n,
+			};
+
+		if returned_chars < buf_sz {
+			return Ok(buf.to_string());
+		}
+
+		buf_sz = returned_chars; // includes terminating null count; set the new buffer size to try again
+	}
 }
 
 /// [`GetTempFileName`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-gettempfilenamew)
@@ -968,6 +1064,16 @@ pub fn GetVolumePathName(file_name: &str) -> SysResult<String> {
 
 /// [`GlobalMemoryStatusEx`](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-globalmemorystatusex)
 /// function.
+///
+/// # Examples
+///
+/// ```no_run
+/// use winsafe::{self as w, prelude::*};
+///
+/// let msx = w::GlobalMemoryStatusEx()?;
+/// println!("Total mem: {} bytes", msx.ullTotalPhys);
+/// # w::SysResult::Ok(())
+/// ```
 #[must_use]
 pub fn GlobalMemoryStatusEx() -> SysResult<MEMORYSTATUSEX> {
 	let mut msx = MEMORYSTATUSEX::default();
@@ -1441,6 +1547,27 @@ pub fn SetCurrentDirectory(path_name: &str) -> SysResult<()> {
 		.to_sysresult()
 }
 
+/// [`SetDllDirectory`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setdlldirectoryw)
+/// function.
+pub fn SetDllDirectory(path_name: Option<&str>) -> SysResult<()> {
+	let empty_str_buf = [0u16];
+	let str_buf: WString;
+
+	let pwstr = match path_name {
+		None => std::ptr::null(), // null restores default order
+		Some(path_name) => {
+			if path_name.is_empty() {
+				empty_str_buf.as_ptr() // empty string removes current dir
+			} else {
+				str_buf = WString::from_str(path_name);
+				str_buf.as_ptr() // set new dir
+			}
+		},
+	};
+
+	BoolRet(unsafe { ffi::SetDllDirectoryW(pwstr) }).to_sysresult()
+}
+
 /// [`SetFileAttributes`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileattributesw)
 /// function.
 pub fn SetFileAttributes(file_name: &str, attributes: co::FILE_ATTRIBUTE) -> SysResult<()> {
@@ -1482,11 +1609,23 @@ pub fn SwitchToThread() -> SysResult<()> {
 /// [`SystemTimeToFileTime`](https://learn.microsoft.com/en-us/windows/win32/api/timezoneapi/nf-timezoneapi-systemtimetofiletime)
 /// function.
 ///
+/// # Examples
+///
+/// ```no_run
+/// use winsafe::{self as w, prelude::*};
+///
+/// let st_utc = w::GetSystemTime();
+/// let ft_utc = w::SystemTimeToFileTime(&st_utc)?;
+///
+/// # w::SysResult::Ok(())
+/// ```
+///
 /// # Related functions
 ///
 /// * [`FileTimeToSystemTime`](crate::FileTimeToSystemTime)
 /// * [`GetLocalTime`](crate::GetLocalTime)
 /// * [`GetSystemTime`](crate::GetSystemTime)
+/// * [`GetSystemTimeAsFileTime`](crate::GetSystemTimeAsFileTime)
 /// * [`SystemTimeToTzSpecificLocalTime`](crate::SystemTimeToTzSpecificLocalTime)
 #[must_use]
 pub fn SystemTimeToFileTime(st: &SYSTEMTIME) -> SysResult<FILETIME> {
@@ -1504,6 +1643,7 @@ pub fn SystemTimeToFileTime(st: &SYSTEMTIME) -> SysResult<FILETIME> {
 /// * [`FileTimeToSystemTime`](crate::FileTimeToSystemTime)
 /// * [`GetLocalTime`](crate::GetLocalTime)
 /// * [`GetSystemTime`](crate::GetSystemTime)
+/// * [`GetSystemTimeAsFileTime`](crate::GetSystemTimeAsFileTime)
 /// * [`SystemTimeToFileTime`](crate::SystemTimeToFileTime)
 #[must_use]
 pub fn SystemTimeToTzSpecificLocalTime(

@@ -1,6 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use winsafe::msg::{cb, lb};
+use winsafe::msg::{CbSetEditSel, LbGetCurSel, LbGetItemHeight, LbSetCurSel, LbSetItemHeight};
 use winsafe::{co, gui};
 use super::*;
 
@@ -85,7 +85,7 @@ pub fn input_box_full(
             let _ = f.hwnd().SetFocus();
             if matches!(select, InputSelect::All) {
                 let _ = unsafe {
-                    f.hwnd().SendMessage(cb::SetEditSel { start_pos: Some(0), end_pos: None })
+                    f.hwnd().SendMessage(CbSetEditSel { start_pos: Some(0), end_pos: None })
                 };
             }
         });
@@ -705,7 +705,7 @@ fn match_rank(query: &str, name: &str, label: Option<&str>) -> Option<u8> {
     None
 }
 
-/// Edit のカレット位置（UTF-16 オフセット）を返す。winsafe の `em::GetSel` はポインタ出力の
+/// Edit のカレット位置（UTF-16 オフセット）を返す。winsafe の `EmGetSel` はポインタ出力の
 /// マーシャリングが効かない（常に 0）ので、EM_GETSEL の戻り値（上位 16bit＝選択終端＝カレット）を読む。
 fn caret_offset(edit: &gui::Edit) -> u32 {
     struct GetSelRaw;
@@ -714,8 +714,8 @@ fn caret_offset(edit: &gui::Edit) -> u32 {
         unsafe fn isize_to_ret(&self, v: isize) -> u32 {
             (v as u32) >> 16
         }
-        fn as_generic_wm(&mut self) -> winsafe::msg::WndMsg {
-            winsafe::msg::WndMsg { msg_id: co::EM::GETSEL.into(), wparam: 0, lparam: 0 }
+        fn as_generic_wm(&mut self) -> winsafe::msg::Wm {
+            winsafe::msg::Wm { msg_id: co::EM::GETSEL.into(), wparam: 0, lparam: 0 }
         }
     }
     unsafe { edit.hwnd().SendMessage(GetSelRaw) }
@@ -993,7 +993,7 @@ fn install_completion(
                     // 初期選択は先頭の選択可能行（先頭がジャンルラベルのことがある）。
                     let first = items.iter().position(|i| i.selectable).unwrap_or(0) as u32;
                     *rows.borrow_mut() = items;
-                    let _ = unsafe { cand.hwnd().SendMessage(lb::SetCurSel { index: Some(first) }) };
+                    let _ = unsafe { cand.hwnd().SendMessage(LbSetCurSel { index: Some(first) }) };
                     let _ = cand.hwnd().ShowWindow(co::SW::SHOW);
                     range.set(Some((start, caret)));
                 }
@@ -1018,7 +1018,7 @@ fn install_completion(
         let cand2 = cand.clone();
         let do_insert = do_insert.clone();
         cand.on().lbn_sel_change(move || {
-            if let Some(idx) = unsafe { cand2.hwnd().SendMessage(lb::GetCurSel {}) } {
+            if let Some(idx) = unsafe { cand2.hwnd().SendMessage(LbGetCurSel {}) } {
                 do_insert(idx);
             }
             Ok(())
@@ -1042,7 +1042,7 @@ fn install_completion(
             edit_focus.hwnd().SetFocus();
             // オーナードロー（LBS_OWNERDRAWFIXED）は行高が定まらないので明示する。
             let _ = unsafe {
-                cand_h.hwnd().SendMessage(lb::SetItemHeight {
+                cand_h.hwnd().SendMessage(LbSetItemHeight {
                     index: None,
                     height: gui::dpi_y(18).clamp(1, 255) as u8,
                 })
@@ -1111,14 +1111,14 @@ fn install_completion(
                     // 1 画面の行数（PageUp/Down の移動量）＝候補欄の高さ ÷ 行高。
                     let page = {
                         let item_h =
-                            unsafe { cand_h.hwnd().SendMessage(lb::GetItemHeight { index: None }) }
+                            unsafe { cand_h.hwnd().SendMessage(LbGetItemHeight { index: None }) }
                                 .map(|h| h.max(1))
                                 .unwrap_or(1) as i32;
                         let client_h =
                             cand_h.hwnd().GetClientRect().map(|r| r.bottom - r.top).unwrap_or(0);
                         (client_h / item_h).max(1) as usize
                     };
-                    let cur = unsafe { cand_h.hwnd().SendMessage(lb::GetCurSel {}) }.unwrap_or(0);
+                    let cur = unsafe { cand_h.hwnd().SendMessage(LbGetCurSel {}) }.unwrap_or(0);
                     let pos = sel_rows.iter().position(|&i| i >= cur).unwrap_or(sel_rows.len() - 1);
                     let next = match vk {
                         0x26 => pos.saturating_sub(1),
@@ -1127,13 +1127,13 @@ fn install_completion(
                         _ => (pos + page).min(sel_rows.len() - 1),
                     };
                     let _ = unsafe {
-                        cand_h.hwnd().SendMessage(lb::SetCurSel { index: Some(sel_rows[next]) })
+                        cand_h.hwnd().SendMessage(LbSetCurSel { index: Some(sel_rows[next]) })
                     };
                     return true;
                 }
                 // Enter（WM_CHAR 0x0D）：選択中の候補を確定（消費して改行を防ぐ）。
                 if msg == keyhook::WM_CHAR && wparam == 0x0D {
-                    if let Some(idx) = unsafe { cand_h.hwnd().SendMessage(lb::GetCurSel {}) } {
+                    if let Some(idx) = unsafe { cand_h.hwnd().SendMessage(LbGetCurSel {}) } {
                         do_insert(idx);
                     }
                     return true;
@@ -1168,7 +1168,7 @@ fn install_completion(
             }),
             visible: Box::new(move || range_v.get().is_some()),
             selected: Box::new(move || {
-                unsafe { cand_v.hwnd().SendMessage(lb::GetCurSel {}) }.map_or(-1, |i| i as i32)
+                unsafe { cand_v.hwnd().SendMessage(LbGetCurSel {}) }.map_or(-1, |i| i as i32)
             }),
             accept: Box::new(move |idx| do_insert(idx)),
             text: Box::new(move || edit_p.text().unwrap_or_default()),
@@ -1212,7 +1212,7 @@ fn install_candidate_drawing(
             let _ = dc.SetTextColor(GetSysColor(COLOR::GRAYTEXT));
             let mut rc = dis.rcItem;
             rc.left += pad;
-            let _ = dc.DrawText(&item.display, rc, style);
+            let _ = dc.DrawText(&item.display, &mut rc, style);
             return Ok(1);
         }
         // 通常行：名前列（左）＋説明列（固定位置・選択中以外はグレー）。
@@ -1224,13 +1224,13 @@ fn install_candidate_drawing(
             name_rc.right = name_rc.right.min(detail_x - gui::dpi_x(8));
         }
         let _ = dc.SetTextColor(GetSysColor(name_color));
-        let _ = dc.DrawText(&item.display, name_rc, style);
+        let _ = dc.DrawText(&item.display, &mut name_rc, style);
         if let Some(detail) = &item.detail {
             let detail_color = if selected { COLOR::HIGHLIGHTTEXT } else { COLOR::GRAYTEXT };
             let mut detail_rc = dis.rcItem;
             detail_rc.left = detail_x;
             let _ = dc.SetTextColor(GetSysColor(detail_color));
-            let _ = dc.DrawText(detail, detail_rc, style);
+            let _ = dc.DrawText(detail, &mut detail_rc, style);
         }
         Ok(1)
     });

@@ -6,7 +6,8 @@ use std::sync::Arc;
 use crate::co;
 use crate::decl::*;
 use crate::gui::{privs::*, *};
-use crate::msg::*;
+use crate::macros::*;
+use crate::msg;
 use crate::prelude::*;
 
 struct ButtonObj {
@@ -66,7 +67,7 @@ native_ctrl! { Button: ButtonObj => GuiEventsButton;
 	///
 	///     fn events(&self) {
 	///         let self2 = self.clone();
-	///             self.btn.on().bn_clicked(move || {
+	///         self.btn.on().bn_clicked(move || {
 	///             self2.wnd.hwnd().SetWindowText("Button clicked")?;
 	///             Ok(())
 	///         });
@@ -151,11 +152,9 @@ impl Button {
 	}
 
 	/// Fires the click event for the button by sending a
-	/// [`bm::Click`](crate::msg::bm::Click) message.
+	/// [`BmClick`](crate::msg::BmClick) message.
 	pub fn trigger_click(&self) {
-		unsafe {
-			self.hwnd().SendMessage(bm::Click {});
-		}
+		unsafe { self.hwnd().SendMessage(msg::BmClick {}) };
 	}
 }
 

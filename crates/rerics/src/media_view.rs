@@ -950,8 +950,8 @@ impl MediaView {
         let mark = if self.inner.playing.get() { "▶" } else { "‖" };
         let label = format!("{}  {} / {}", mark, fmt_time(pos), fmt_time(dur));
         let pad = gui::dpi_x(self.inner.font_size).max(1);
-        let rect = w::RECT { left: pad, top, right: x0, bottom: top + h };
-        dc.DrawText(&label, rect, co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX)?;
+        let mut rect = w::RECT { left: pad, top, right: x0, bottom: top + h };
+        dc.DrawText(&label, &mut rect, co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX)?;
         Ok(())
     }
 

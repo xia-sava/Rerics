@@ -3,7 +3,6 @@
 use crate::co;
 use crate::decl::*;
 use crate::kernel::privs::*;
-
 use crate::winspool::ffi;
 
 impl HWND {
@@ -44,7 +43,7 @@ impl HWND {
 			)
 		} {
 			1 => Ok(mode_output),
-			_ => Err(co::ERROR::INVALID_PARAMETER),
+			_ => Err(co::ERROR::UNIDENTIFIED_ERROR),
 		}
 	}
 

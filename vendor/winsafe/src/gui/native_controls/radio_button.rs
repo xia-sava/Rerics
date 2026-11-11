@@ -6,7 +6,8 @@ use std::sync::Arc;
 use crate::co;
 use crate::decl::*;
 use crate::gui::{privs::*, *};
-use crate::msg::*;
+use crate::macros::*;
+use crate::msg;
 use crate::prelude::*;
 
 struct RadioButtonObj {
@@ -55,14 +56,13 @@ impl RadioButton {
 						opts.window_style & !(co::WS::GROUP | co::WS::TABSTOP)
 					} | opts.control_style.into(),
 					opts.position.into(),
-					if opts.size == (0, 0) {
-						text_calc::bound_box_with_check(&text_calc::remove_accel_ampersands(&text2))
-					} else {
-						opts.size.into()
-					},
+					opts.size.into(),
 					&parent2,
 				);
 				ui_font::set(self2.hwnd());
+				if opts.size == (0, 0) {
+					self2.set_text_and_resize(&text2).expect(DONTFAIL);
+				}
 				if opts.selected {
 					self2.select(true);
 				}
@@ -107,26 +107,26 @@ impl RadioButton {
 	}
 
 	/// Tells if this radio button is the currently selected one by sending a
-	/// [`bm::GetCheck`](crate::msg::bm::GetCheck) message.
+	/// [`BmGetCheck`](crate::msg::BmGetCheck) message.
 	#[must_use]
 	pub fn is_selected(&self) -> bool {
-		unsafe { self.hwnd().SendMessage(bm::GetCheck {}) == co::BST::CHECKED }
+		unsafe { self.hwnd().SendMessage(msg::BmGetCheck {}) == co::BST::CHECKED }
 	}
 
 	/// Sets the this radio button as the currently selected one by sending a
-	/// [`bm::SetCheck`](crate::msg::bm::SetCheck) message.
+	/// [`BmSetCheck`](crate::msg::BmSetCheck) message.
 	pub fn select(&self, selected: bool) {
 		unsafe {
-			self.hwnd().SendMessage(bm::SetCheck {
+			self.hwnd().SendMessage(msg::BmSetCheck {
 				state: if selected { co::BST::CHECKED } else { co::BST::UNCHECKED },
 			});
 		}
 	}
 
 	/// Sets the this radio button as the currently selected one by sending a
-	/// [`bm::SetCheck`](crate::msg::bm::SetCheck) message, then sends a
-	/// [`wm::Command`](crate::msg::wm::Command) message to the parent, so it
-	/// can handle the event.
+	/// [`BmSetCheck`](crate::msg::BmSetCheck) message, then sends a
+	/// [`WmCommand`](crate::msg::WmCommand) message to the parent, so it can
+	/// handle the event.
 	pub fn select_and_trigger(&self, selected: bool) -> SysResult<()> {
 		self.select(selected);
 		self.hwnd().GetParent()?.SendCommand(AccelMenuCtrl::Ctrl {
@@ -140,23 +140,21 @@ impl RadioButton {
 	/// Calls [`HWND::SetWindowText`](crate::HWND::SetWindowText) to set the
 	/// text and resizes the control to exactly fit it.
 	pub fn set_text_and_resize(&self, text: &str) -> SysResult<()> {
-		let bound_box = text_calc::bound_box_with_check(&text_calc::remove_accel_ampersands(text));
+		self.hwnd().SetWindowText(text)?;
+		let bound_box = text_calc::bound_box_bcm(self.hwnd());
 		self.hwnd().SetWindowPos(
 			HwndPlace::None,
 			POINT::default(),
 			bound_box,
 			co::SWP::NOZORDER | co::SWP::NOMOVE,
 		)?;
-		self.hwnd().SetWindowText(text)?;
 		Ok(())
 	}
 
 	/// Fires the click event for the button by sending a
-	/// [`bm::Click`](crate::msg::bm::Click) message.
+	/// [`BmClick`](crate::msg::BmClick) message.
 	pub fn trigger_click(&self) {
-		unsafe {
-			self.hwnd().SendMessage(bm::Click {});
-		}
+		unsafe { self.hwnd().SendMessage(msg::BmClick {}) };
 	}
 }
 
@@ -183,7 +181,7 @@ pub struct RadioButtonOpts<'a> {
 	/// Radio button styles to be
 	/// [created](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-createwindowexw).
 	///
-	/// Defaults to `BS::AUTORADIOBUTTON`.
+	/// Defaults to `BS::AUTORADIOBUTTON | co::BS::MULTILINE`.
 	pub control_style: co::BS,
 	/// Window styles to be
 	/// [created](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-createwindowexw).
@@ -222,7 +220,7 @@ impl<'a> Default for RadioButtonOpts<'a> {
 			text: "",
 			position: (0, 0),
 			size: (0, 0), // will resize to fit the text
-			control_style: co::BS::AUTORADIOBUTTON,
+			control_style: co::BS::AUTORADIOBUTTON | co::BS::MULTILINE,
 			window_style: co::WS::CHILD | co::WS::VISIBLE,
 			window_ex_style: co::WS_EX::LEFT,
 			ctrl_id: 0,

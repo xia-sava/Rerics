@@ -3,9 +3,11 @@
 [![Crates.io](https://img.shields.io/crates/v/winsafe.svg?style=flat-square)](https://crates.io/crates/winsafe)
 [![Crates.io total downloads](https://img.shields.io/crates/d/winsafe?color=seagreen&style=flat-square)](https://crates.io/crates/winsafe)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?label=license&style=flat-square)](https://opensource.org/licenses/MIT)
-[![Lines of code](https://img.shields.io/badge/LoC-78.3k-blue?style=flat-square)](https://github.com/rodrigocfd/winsafe)
+[![Lines of code](https://img.shields.io/badge/LoC-70.2k-blue?style=flat-square)](https://github.com/rodrigocfd/winsafe)
 
 Windows API and GUI in safe, idiomatic Rust.
+
+Handwritten since 2019.
 
 WinSafe has:
 
@@ -25,13 +27,13 @@ WinSafe documentation:
 
 | Native FFI item | Count |
 | - | -: |
-| Functions | 902 |
-| Structs | 263 |
-| Constants | 15,105 |
+| Functions | 914 |
+| Structs | 264 |
+| Constants | 12,307 |
 | Window messages | 684 |
 | Handles | 54 |
-| COM interfaces | 96 |
-| COM methods | 603 |
+| COM interfaces | 99 |
+| COM methods | 645 |
 
 Although WinSafe already has a lot of Win32 APIs, it doesn't have *everything*, simply because Win32 API is gigantic. So if you're looking for a comprehensive Win32 coverage, take a look at [winapi](https://crates.io/crates/winapi) or [windows](https://crates.io/crates/windows) crates, which are *unsafe*, but have everything.
 
@@ -46,7 +48,7 @@ Add the dependency in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-winsafe = { version = "0.0.27", features = [] }
+winsafe = { version = "0.0.29", features = [] }
 ```
 
 Then you must enable the [Cargo features](https://doc.rust-lang.org/cargo/reference/features.html#the-features-section) you want to be included – these modules are named after native Windows DLL and library names, mostly.
@@ -66,6 +68,7 @@ The following Cargo features are available so far:
 | `dxgi` | [DirectX Graphics Infrastructure](https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/dx-graphics-dxgi) |
 | `gdi` | Gdi32.dll, the [Windows GDI](https://learn.microsoft.com/en-us/windows/win32/gdi/windows-gdi) |
 | **`gui`** | **The WinSafe high-level GUI abstractions** |
+| `htmlhelp` | [HTML Help](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/htmlhelp/microsoft-html-help-1-4-sdk) |
 | `kernel` | Kernel32.dll, basic kernel functions |
 | `mf` | [Media Foundation](https://learn.microsoft.com/en-us/windows/win32/medfound/microsoft-media-foundation-sdk) |
 | `ole` | Basic OLE/COM support |
@@ -77,6 +80,7 @@ The following Cargo features are available so far:
 | `user` | User32.dll and ComDlg32.dll, the basic Windows GUI support |
 | `uxtheme` | UxTheme.dll, extended window theming |
 | `version` | Version.dll, to manipulate *.exe version info |
+| `winmm` | [Windows Multimedia](https://learn.microsoft.com/en-us/windows/win32/multimedia/windows-multimedia-start-page) |
 | `wininet` | [Windows Internet](https://learn.microsoft.com/en-us/windows/win32/wininet/portal) |
 | `winspool` | [Print Spooler API](https://learn.microsoft.com/en-us/windows/win32/printdocs/print-spooler-api) |
 
@@ -99,7 +103,7 @@ The [example below](https://github.com/rodrigocfd/winsafe-examples/tree/master/0
 
 ```toml
 [dependencies]
-winsafe = { version = "0.0.27", features = ["gui"] }
+winsafe = { version = "0.0.29", features = ["gui"] }
 ```
 
 ```rust

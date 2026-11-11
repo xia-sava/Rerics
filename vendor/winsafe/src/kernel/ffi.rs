@@ -1,4 +1,5 @@
 use crate::kernel::ffi_types::*;
+use crate::macros::*;
 
 extern_sys! { "kernel32";
 	ActivateActCtx(HANDLE, *mut usize) -> BOOL
@@ -38,6 +39,7 @@ extern_sys! { "kernel32";
 	FlushProcessWriteBuffers()
 	FlushViewOfFile(PVOID, usize) -> BOOL
 	FormatMessageW(u32, PCVOID, u32, u32, PSTR, u32, PCVOID) -> u32
+	FreeConsole() -> BOOL
 	FreeEnvironmentStringsW(HANDLE) -> BOOL
 	FreeLibrary(HANDLE) -> BOOL
 	GetBinaryTypeW(PCSTR, *mut u32) -> BOOL
@@ -94,6 +96,7 @@ extern_sys! { "kernel32";
 	GetSystemTimeAsFileTime(PVOID)
 	GetSystemTimePreciseAsFileTime(PVOID)
 	GetSystemTimes(PVOID, PVOID, PVOID) -> BOOL
+	GetSystemWow64DirectoryW(PSTR, u32) -> u32
 	GetTempFileNameW(PCSTR, PCSTR, u32, PSTR) -> u32
 	GetTempPathW(u32, PSTR) -> u32
 	GetThreadId(HANDLE) -> u32
@@ -172,6 +175,7 @@ extern_sys! { "kernel32";
 	ResumeThread(HANDLE) -> u32
 	SetConsoleMode(HANDLE, u32) -> BOOL
 	SetCurrentDirectoryW(PCSTR) -> BOOL
+	SetDllDirectoryW(PCSTR) -> BOOL
 	SetEndOfFile(HANDLE) -> BOOL
 	SetEvent(HANDLE) -> BOOL
 	SetFileAttributesW(PCSTR, u32) -> BOOL

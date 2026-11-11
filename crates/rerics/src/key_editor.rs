@@ -1712,10 +1712,10 @@ impl KeyEditor {
             Ok(())
         });
 
-        // マウスホイール：3 行ずつスクロール（winsafe 0.0.27 は回転量が keys に入る）。
+        // マウスホイール：3 行ずつスクロール。
         let this = self.clone();
         self.list.on().wm_mouse_wheel(move |p| {
-            let dist = p.keys.raw() as i16 as i32;
+            let dist = i32::from(p.wheel_distance);
             let lines = (dist / 120) * 3;
             this.scroll_to(this.inner.top.get() as isize - lines as isize);
             Ok(())
@@ -1827,10 +1827,10 @@ impl KeyEditor {
     /// 隣の列へはみ出さないようにする（全文は hover ツールチップで見せる）。
     fn draw_cell(dc: &w::HDC, text: &str, x0: i32, x1: i32, y: i32, row_h: i32) {
         let pad = gui::dpi_x(8);
-        let rc = w::RECT { left: x0, top: y, right: (x1 - pad).max(x0 + 1), bottom: y + row_h };
+        let mut rc = w::RECT { left: x0, top: y, right: (x1 - pad).max(x0 + 1), bottom: y + row_h };
         let _ = dc.DrawText(
             text,
-            rc,
+            &mut rc,
             co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX | co::DT::END_ELLIPSIS,
         );
     }

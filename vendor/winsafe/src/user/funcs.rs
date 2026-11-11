@@ -122,8 +122,8 @@ pub unsafe fn BroadcastSystemMessage<M: MsgSend>(
 /// This function originally takes a [`HHOOK`](crate::HHOOK) as its first
 /// parameter, but since it's ignored, it has been ommited here. Thus,
 /// `CallNextHookEx` is a free function instead of a `HHOOK` method.
-pub fn CallNextHookEx(code: co::WH, wparam: usize, lparam: isize) -> isize {
-	unsafe { ffi::CallNextHookEx(std::ptr::null_mut(), code.raw(), wparam, lparam) }
+pub fn CallNextHookEx(code: i32, wparam: usize, lparam: isize) -> isize {
+	unsafe { ffi::CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
 }
 
 /// [`ChangeDisplaySettings`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-changedisplaysettingsw)
@@ -132,8 +132,8 @@ pub fn ChangeDisplaySettings(
 	dev_mode: Option<&mut DEVMODE>,
 	flags: co::CDS,
 ) -> Result<co::DISP_CHANGE, co::DISP_CHANGE> {
-	let ret = unsafe { ffi::ChangeDisplaySettingsW(pvoid_or_null(dev_mode), flags.raw()) };
 	unsafe {
+		let ret = ffi::ChangeDisplaySettingsW(pvoid_or_null(dev_mode), flags.raw());
 		if ret < 0 {
 			Err(co::DISP_CHANGE::from_raw(ret))
 		} else {
@@ -149,17 +149,15 @@ pub fn ChangeDisplaySettingsEx(
 	dev_mode: Option<&mut DEVMODE>,
 	flags: co::CDS,
 ) -> Result<co::DISP_CHANGE, co::DISP_CHANGE> {
-	let ret = unsafe {
-		ffi::ChangeDisplaySettingsExW(
+	unsafe {
+		let ret = ffi::ChangeDisplaySettingsExW(
 			WString::from_opt_str(device_name).as_ptr(),
 			pvoid_or_null(dev_mode),
 			std::ptr::null_mut(),
 			flags.raw(),
 			std::ptr::null_mut(),
-		)
-	};
+		);
 
-	unsafe {
 		if ret < 0 {
 			Err(co::DISP_CHANGE::from_raw(ret))
 		} else {
@@ -538,6 +536,52 @@ pub fn GetGUIThreadInfo(thread_id: u32) -> SysResult<GUITHREADINFO> {
 		.map(|_| gti)
 }
 
+/// [`GetKeyNameText`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getkeynametextw)
+/// function.
+#[must_use]
+pub fn GetKeyNameText(scan_code: u8, is_extended_key: bool, dont_care: bool) -> SysResult<String> {
+	let mut buf = WString::new_alloc_buf(256 + 1);
+	match unsafe {
+		ffi::GetKeyNameTextW(
+			MAKEDWORD(
+				0,
+				MAKEWORD(
+					scan_code,
+					if is_extended_key { 0b0000_0001 } else { 0 }
+						| if dont_care { 0b0000_0010 } else { 0 },
+				),
+			) as _,
+			buf.as_mut_ptr(),
+			buf.buf_len() as _,
+		)
+	} {
+		0 => Err(GetLastError()),
+		_ => Ok(buf.to_string()),
+	}
+}
+
+/// [`GetKeyState`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getkeystate)
+/// function.
+///
+/// Returns two `bool` values:
+/// 1) key is pressed;
+/// 2) key is toggled (usually caps lock).
+///
+/// # Examples
+///
+/// ```no_run
+/// use winsafe::{self as w, prelude::*, co};
+///
+/// let (is_down, _) = w::GetKeyState(co::VK::CONTROL);
+/// ```
+#[must_use]
+pub fn GetKeyState(virt_key: co::VK) -> (bool, bool) {
+	let short = unsafe { ffi::GetKeyState(virt_key.raw() as _) } as u16;
+	let is_down = (short & 0x8000) != 0;
+	let is_toggled = (short & 0x0001) != 0;
+	(is_down, is_toggled)
+}
+
 /// [`GetLastInputInfo`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getlastinputinfo)
 /// function.
 #[must_use]
@@ -735,6 +779,12 @@ pub fn LockSetForegroundWindow(lock_code: co::LSFW) -> SysResult<()> {
 /// function.
 pub fn LockWorkStation() -> SysResult<()> {
 	BoolRet(unsafe { ffi::LockWorkStation() }).to_sysresult()
+}
+
+/// [`MapVirtualKey`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-mapvirtualkeyw)
+/// function.
+pub fn MapVirtualKey(uCode: u32, uMapType: co::MAPVK) -> u32 {
+	unsafe { ffi::MapVirtualKeyW(uCode, uMapType.raw()) }
 }
 
 /// [`MessageBeep`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-messagebeep)
@@ -966,8 +1016,8 @@ pub fn ShowCursor(show: bool) -> i32 {
 
 /// [`SoundSentry`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-soundsentry)
 /// function.
-pub fn SoundSentry() -> bool {
-	unsafe { ffi::SoundSentry() != 0 }
+pub fn SoundSentry() -> SysResult<()> {
+	BoolRet(unsafe { ffi::SoundSentry() }).to_invalidparm()
 }
 
 /// [`SubtractRect`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-subtractrect)

@@ -339,10 +339,10 @@ impl RenderedView {
         hdc.SetBkMode(co::BKMODE::TRANSPARENT)?;
         hdc.SetTextColor(chrome::text())?;
         let pad = gui::dpi_x(self.inner.font_size).max(1);
-        let rect = w::RECT { left: pad, top: sy, right: cw - pad, bottom: ch };
+        let mut rect = w::RECT { left: pad, top: sy, right: cw - pad, bottom: ch };
         hdc.DrawText(
             &self.status_text(),
-            rect,
+            &mut rect,
             co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX | co::DT::PATH_ELLIPSIS,
         )?;
         Ok(())

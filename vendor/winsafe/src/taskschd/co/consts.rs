@@ -1,5 +1,7 @@
 #![allow(non_camel_case_types)]
 
+use crate::macros::*;
+
 const_ordinary! { TASK_ACTION_TYPE: u32;
 	/// [`TASK_ACTION_TYPE`](https://learn.microsoft.com/en-us/windows/win32/api/taskschd/ne-taskschd-task_action_type)
 	/// enumeration (`u32`);
@@ -8,6 +10,19 @@ const_ordinary! { TASK_ACTION_TYPE: u32;
 	COM_HANDLER 5
 	SEND_EMAIL 6
 	SHOW_MESSAGE 7
+}
+
+const_ordinary! { TASK_COMPATIBILITY: u32;
+	/// [`TASK_COMPATIBILITY`](https://learn.microsoft.com/en-us/windows/win32/api/taskschd/ne-taskschd-task_compatibility)
+	/// enumeration (`u32`).
+	=>
+	AT 0
+	V1 1
+	V2 2
+	V2_1 3
+	V2_2 4
+	V2_3 5
+	V2_4 6
 }
 
 const_bitflag! { TASK_CREATION: u32;
@@ -23,6 +38,16 @@ const_bitflag! { TASK_CREATION: u32;
 	DISABL 0x8
 	DONT_ADD_PRINCIPAL_ACE 0x10
 	IGNORE_REGISTRATION_TRIGGERS 0x20
+}
+
+const_ordinary! { TASK_INSTANCES: u32;
+	/// [`TASK_INSTANCES_POLICY`](https://learn.microsoft.com/en-us/windows/win32/api/taskschd/ne-taskschd-task_instances_policy)
+	/// enumeration (`u32`).
+	=>
+	PARALLEL 0
+	QUEUE 1
+	IGNORE_NEW 2
+	STOP_EXISTING 3
 }
 
 const_bitflag! { TASK_LOGON: u32;

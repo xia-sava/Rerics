@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicU32;
 use crate::co;
 use crate::decl::*;
 use crate::kernel::ffi_types::*;
+use crate::macros::*;
 use crate::mf::vts::*;
 use crate::ole::{privs::*, vts::*};
 use crate::prelude::*;
@@ -60,7 +61,7 @@ impl IMFAsyncCallbackImpl {
 
 	fn_com_userdef_iunknown_impls!(Self);
 
-	fn GetParameters(p: COMPTR, pdwFlags: *mut u32, pdwQueue: *mut u32) -> HRES {
+	extern "system" fn GetParameters(p: COMPTR, pdwFlags: *mut u32, pdwQueue: *mut u32) -> HRES {
 		let box_impl = box_impl_of::<Self>(p);
 		hrresult_to_hres(match &box_impl.GetParameters {
 			Some(func) => unsafe {
@@ -70,7 +71,7 @@ impl IMFAsyncCallbackImpl {
 		})
 	}
 
-	fn Invoke(p: COMPTR, pAsyncResult: COMPTR) -> HRES {
+	extern "system" fn Invoke(p: COMPTR, pAsyncResult: COMPTR) -> HRES {
 		let box_impl = box_impl_of::<Self>(p);
 		hrresult_to_hres(match &box_impl.Invoke {
 			Some(func) => anyresult_to_hresult(func(&ManuallyDrop::new(unsafe {

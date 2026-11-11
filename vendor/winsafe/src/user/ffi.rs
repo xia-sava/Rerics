@@ -1,4 +1,5 @@
 use crate::kernel::ffi_types::*;
+use crate::macros::*;
 
 extern_sys! { "comdlg32";
 	ChooseColorW(PVOID) -> BOOL
@@ -7,15 +8,17 @@ extern_sys! { "comdlg32";
 
 #[cfg(target_pointer_width = "32")]
 extern_sys! { "user32";
+	GetClassLongW(HANDLE, i32) -> usize
 	GetWindowLongW(HANDLE, i32) -> isize
 	SetWindowLongW(HANDLE, i32, isize) -> isize
 }
 
 #[cfg(target_pointer_width = "64")]
 extern_sys! { "user32";
+	GetClassLongPtrW(HANDLE, i32) -> usize
 	GetWindowLongPtrW(HANDLE, i32) -> isize
-	SetWindowLongPtrW(HANDLE, i32, isize) -> isize
 	InSendMessageEx() -> u32
+	SetWindowLongPtrW(HANDLE, i32, isize) -> isize
 }
 
 extern_sys! { "user32";
@@ -96,7 +99,6 @@ extern_sys! { "user32";
 	GetCaretBlinkTime() -> u32
 	GetCaretPos(PVOID) -> BOOL
 	GetClassInfoExW(HANDLE, PCSTR, PVOID) -> BOOL
-	GetClassLongPtrW(HANDLE, i32) -> usize
 	GetClassNameW(HANDLE, PSTR, i32) -> i32
 	GetClientRect(HANDLE, PVOID) -> BOOL
 	GetClipboardData(u32) -> HANDLE
@@ -119,6 +121,8 @@ extern_sys! { "user32";
 	GetGUIThreadInfo(u32, PVOID) -> BOOL
 	GetIconInfo(HANDLE, PVOID) -> BOOL
 	GetIconInfoExW(HANDLE, PVOID) -> BOOL
+	GetKeyNameTextW(i32, PSTR, i32) -> i32
+	GetKeyState(i32) -> i16
 	GetLastActivePopup(HANDLE) -> HANDLE
 	GetLastInputInfo(PVOID) -> BOOL
 	GetMenu(HANDLE) -> HANDLE
@@ -200,6 +204,7 @@ extern_sys! { "user32";
 	LockWorkStation() -> BOOL
 	LogicalToPhysicalPoint(HANDLE, PVOID) -> BOOL
 	MapDialogRect(HANDLE, PVOID) -> BOOL
+	MapVirtualKeyW(u32, u32) -> u32
 	MapWindowPoints(HANDLE, HANDLE, PVOID, u32) -> i32
 	MessageBeep(u32) -> BOOL
 	MessageBoxW(HANDLE, PCSTR, PCSTR, u32) -> i32

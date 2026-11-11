@@ -1,7 +1,7 @@
 use crate::co;
 use crate::decl::*;
 use crate::gui::{privs::*, *};
-use crate::msg::*;
+use crate::msg;
 use crate::prelude::*;
 
 /// Base to all ordinary windows.
@@ -69,7 +69,6 @@ impl RawBase {
 		};
 		wcx.set_lpszClassName(Some(&mut wclass_name));
 
-		SetLastError(co::ERROR::SUCCESS);
 		match unsafe { RegisterClassEx(&wcx) } {
 			Ok(atom) => atom,
 			Err(err) => match err {
@@ -125,7 +124,7 @@ impl RawBase {
 	pub(in crate::gui) fn delegate_focus_to_first_child(&self) {
 		if let Some(hwnd_cur_focus) = HWND::GetFocus() {
 			if *self.base.hwnd() == hwnd_cur_focus {
-				// https://stackoverflow.com/a/2835220/6923555
+				// https://stackoverflow.com/a/2835220
 				if let Ok(hchild_first) = self.base.hwnd().GetWindow(co::GW::CHILD) {
 					hchild_first.SetFocus(); // if window receives focus, delegate to first child
 				}
@@ -134,18 +133,18 @@ impl RawBase {
 	}
 
 	extern "system" fn wnd_proc(hwnd: HWND, msg: co::WM, wparam: usize, lparam: isize) -> isize {
-		let wm_any = WndMsg::new(msg, wparam, lparam);
+		let wm_any = msg::Wm::new(msg, wparam, lparam);
 		Self::wnd_proc_proc(hwnd, wm_any).unwrap_or_else(|err| {
 			quit_error::post_quit_error(wm_any, err);
 			0
 		})
 	}
 
-	fn wnd_proc_proc(hwnd: HWND, p: WndMsg) -> AnyResult<isize> {
+	fn wnd_proc_proc(hwnd: HWND, p: msg::Wm) -> AnyResult<isize> {
 		let ptr_self = match p.msg_id {
 			co::WM::NCCREATE => {
 				// First message being handled.
-				let msg = unsafe { wm::NcCreate::from_generic_wm(p) };
+				let msg = unsafe { msg::WmNcCreate::from_generic_wm(p) };
 				let ptr_self = msg.createstruct.lpCreateParams as *const Self;
 				unsafe {
 					hwnd.SetWindowLongPtr(co::GWLP::USERDATA, ptr_self as _); // store

@@ -539,7 +539,7 @@ impl ViewerView {
         let g = self.search_bar_geom(cw);
         let (ex, ew) = g.edit;
         let width = ew + g.history.1;
-        let item_h = unsafe { list.SendMessage(w::msg::lb::GetItemHeight { index: None }) }
+        let item_h = unsafe { list.SendMessage(w::msg::LbGetItemHeight { index: None }) }
             .map(|h| h as i32)
             .unwrap_or(gui::dpi_y(18))
             .max(1);
@@ -548,7 +548,7 @@ impl ViewerView {
         let top = self.search_bar_height();
         let _ = list.MoveWindow(w::POINT { x: ex, y: top }, w::SIZE { cx: width, cy: height }, true);
         unsafe {
-            let _ = list.SendMessage(w::msg::lb::SetCurSel { index: Some(0) });
+            let _ = list.SendMessage(w::msg::LbSetCurSel { index: Some(0) });
         }
         list.ShowWindow(co::SW::SHOW);
         list.BringWindowToTop()?;
@@ -572,7 +572,7 @@ impl ViewerView {
     /// ドロップダウンの現在選択項目を確定する（入力欄へ入れて検索）。
     fn pick_history_selection(&self) -> w::AnyResult<()> {
         let list = self.inner.search_list.hwnd();
-        let sel = unsafe { list.SendMessage(w::msg::lb::GetCurSel {}) };
+        let sel = unsafe { list.SendMessage(w::msg::LbGetCurSel {}) };
         let text = sel.and_then(|i| self.inner.search_list.items().text(i).ok());
         self.close_history_dropdown(true);
         if let Some(text) = text {
@@ -828,10 +828,10 @@ impl ViewerView {
                 format!("{cur} / {total}")
             };
             let (cx, cwd) = g.counter;
-            let rect = w::RECT { left: cx + gui::dpi_x(4), top: 0, right: cx + cwd, bottom: bar_h };
+            let mut rect = w::RECT { left: cx + gui::dpi_x(4), top: 0, right: cx + cwd, bottom: bar_h };
             dc.DrawText(
                 &text,
-                rect,
+                &mut rect,
                 co::DT::SINGLELINE | co::DT::VCENTER | co::DT::LEFT | co::DT::NOPREFIX,
             )?;
         }
@@ -869,8 +869,8 @@ impl ViewerView {
             let _ = r;
         }
         let text = format!("[{}]{}", if on { "x" } else { " " }, label);
-        let r = w::RECT { left: x + gui::dpi_x(2), top: y, right: x + w, bottom: y + h };
-        dc.DrawText(&text, r, co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX)?;
+        let mut r = w::RECT { left: x + gui::dpi_x(2), top: y, right: x + w, bottom: y + h };
+        dc.DrawText(&text, &mut r,co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX)?;
         Ok(())
     }
 
@@ -880,8 +880,8 @@ impl ViewerView {
         chrome::hline(dc, x, x + w, y + h - 1, chrome::shadow())?;
         chrome::vline(dc, x, y, y + h, chrome::shadow())?;
         chrome::vline(dc, x + w - 1, y, y + h, chrome::shadow())?;
-        let r = w::RECT { left: x, top: y, right: x + w, bottom: y + h };
-        dc.DrawText(glyph, r, co::DT::SINGLELINE | co::DT::VCENTER | co::DT::CENTER | co::DT::NOPREFIX)?;
+        let mut r = w::RECT { left: x, top: y, right: x + w, bottom: y + h };
+        dc.DrawText(glyph, &mut r,co::DT::SINGLELINE | co::DT::VCENTER | co::DT::CENTER | co::DT::NOPREFIX)?;
         Ok(())
     }
 
@@ -1058,7 +1058,7 @@ impl ViewerView {
 
         let this = self.clone();
         self.wnd.on().wm_mouse_wheel(move |p| {
-            let dist = p.keys.raw() as i16;
+            let dist = p.wheel_distance;
             this.scroll_by_wheel(dist)?;
             Ok(())
         });
@@ -1598,8 +1598,8 @@ impl ViewerView {
             }
             if !line.gutter.is_empty() {
                 dc.SetTextColor(rgb(colors.viewer_line))?;
-                let rect = w::RECT { left: 0, top: y, right: num_right, bottom: y + lh };
-                dc.DrawText(&line.gutter, rect, co::DT::SINGLELINE | co::DT::RIGHT | co::DT::NOPREFIX)?;
+                let mut rect = w::RECT { left: 0, top: y, right: num_right, bottom: y + lh };
+                dc.DrawText(&line.gutter, &mut rect,co::DT::SINGLELINE | co::DT::RIGHT | co::DT::NOPREFIX)?;
             }
             if !line.body.is_empty() {
                 self.draw_body_line(dc, fonts, line, &spans, cur_off, y, content_left, cwd, &colors)?;
@@ -1612,8 +1612,8 @@ impl ViewerView {
             if let Some(nl) = line.newline {
                 let bx = self.col_x(&line.body, line.body.chars().count(), content_left, cwd);
                 dc.SetTextColor(rgb(colors.viewer_symbol))?;
-                let rect = w::RECT { left: bx, top: y, right: cw, bottom: y + lh };
-                dc.DrawText(newline_glyph(nl), rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
+                let mut rect = w::RECT { left: bx, top: y, right: cw, bottom: y + lh };
+                dc.DrawText(newline_glyph(nl), &mut rect,co::DT::SINGLELINE | co::DT::NOPREFIX)?;
             }
             y += lh;
             i += 1;
@@ -1629,8 +1629,8 @@ impl ViewerView {
                     let nl_gap = if last.newline.is_some() { cwd * 2 } else { cwd };
                     let x = self.col_x(&last.body, end_col, content_left, cwd) + nl_gap;
                     dc.SetTextColor(rgb(colors.viewer_symbol))?;
-                    let rect = w::RECT { left: x, top: eof_y, right: cw, bottom: eof_y + lh };
-                    dc.DrawText("[EOF]", rect, co::DT::SINGLELINE | co::DT::NOPREFIX)?;
+                    let mut rect = w::RECT { left: x, top: eof_y, right: cw, bottom: eof_y + lh };
+                    dc.DrawText("[EOF]", &mut rect,co::DT::SINGLELINE | co::DT::NOPREFIX)?;
                 }
             }
 

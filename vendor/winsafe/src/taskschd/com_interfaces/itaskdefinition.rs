@@ -1,6 +1,7 @@
 #![allow(non_camel_case_types, non_snake_case)]
 
 use crate::decl::*;
+use crate::macros::*;
 use crate::prelude::*;
 use crate::taskschd::vts::*;
 
@@ -42,6 +43,11 @@ pub trait taskschd_ITaskDefinition: oleaut_IDispatch {
 
 	fn_com_interface_get! { get_RegistrationInfo: ITaskDefinitionVT => IRegistrationInfo;
 		/// [`ITaskDefinition::get_RegistrationInfo`](https://learn.microsoft.com/en-us/windows/win32/api/taskschd/nf-taskschd-itaskdefinition-get_registrationinfo)
+		/// method.
+	}
+
+	fn_com_interface_get! { get_Settings: ITaskDefinitionVT => ITaskSettings;
+		/// [`ITaskDefinition::get_Settings`](https://learn.microsoft.com/en-us/windows/win32/api/taskschd/nf-taskschd-itaskdefinition-get_settings)
 		/// method.
 	}
 

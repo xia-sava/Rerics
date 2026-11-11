@@ -78,7 +78,7 @@ pub fn list_box(
                 unsafe {
                     let _ = list
                         .hwnd()
-                        .SendMessage(w::msg::lb::SetCurSel { index: Some(initial as u32) });
+                        .SendMessage(w::msg::LbSetCurSel { index: Some(initial as u32) });
                 }
             }
             list.hwnd().SetFocus();
@@ -91,7 +91,7 @@ pub fn list_box(
         let list_cap = list.clone();
         let wnd2 = wnd.clone();
         ok.on().bn_clicked(move || {
-            let sel = unsafe { list_cap.hwnd().SendMessage(w::msg::lb::GetCurSel {}) };
+            let sel = unsafe { list_cap.hwnd().SendMessage(w::msg::LbGetCurSel {}) };
             if let Some(i) = sel {
                 *result.borrow_mut() = Some(i as usize);
             }
@@ -105,7 +105,7 @@ pub fn list_box(
         let list_cap = list.clone();
         let wnd2 = wnd.clone();
         list.on().lbn_dbl_clk(move || {
-            let sel = unsafe { list_cap.hwnd().SendMessage(w::msg::lb::GetCurSel {}) };
+            let sel = unsafe { list_cap.hwnd().SendMessage(w::msg::LbGetCurSel {}) };
             if let Some(i) = sel {
                 *result.borrow_mut() = Some(i as usize);
             }
@@ -147,14 +147,13 @@ pub fn list_box(
     {
         let list = list.clone();
         wnd.on().wm_mouse_wheel(move |p| {
-            // winsafe 0.0.27 は回転量を keys 側（HIWORD）へ入れて渡す。
-            let notches = (p.keys.raw() as i16 as i32) / 120;
+            let notches = i32::from(p.wheel_distance) / 120;
             if notches != 0 {
                 let lines = notches * crate::file_list::os_wheel_scroll_lines() as i32;
                 unsafe {
-                    let top = list.hwnd().SendMessage(w::msg::lb::GetTopIndex {}).unwrap_or(0) as i32;
-                    let count = list.hwnd().SendMessage(w::msg::lb::GetCount {}).unwrap_or(0) as i32;
-                    let _ = list.hwnd().SendMessage(w::msg::lb::SetTopIndex {
+                    let top = list.hwnd().SendMessage(w::msg::LbGetTopIndex {}).unwrap_or(0) as i32;
+                    let count = list.hwnd().SendMessage(w::msg::LbGetCount {}).unwrap_or(0) as i32;
+                    let _ = list.hwnd().SendMessage(w::msg::LbSetTopIndex {
                         index: scrolled_top(top, count, lines) as u32,
                     });
                 }

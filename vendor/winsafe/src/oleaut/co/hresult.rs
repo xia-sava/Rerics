@@ -1,5 +1,10 @@
 use crate::co::*;
+use crate::macros::*;
 
 const_values_pub! { HRESULT;
 	CTL_E_INVALIDPICTURE 0x800a_01e1
+
+	INPLACE_E_NOTUNDOABLE 0x8004_01a0
+	INPLACE_E_NOTOOLSPACE 0x8004_01a1
+	INPLACE_S_TRUNCATED 0x0004_01a0
 }

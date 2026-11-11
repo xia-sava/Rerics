@@ -6,6 +6,8 @@ Windows API and GUI in safe, idiomatic Rust.
 [Docs (master branch)](https://rodrigocfd.github.io/winsafe/winsafe/) •
 [Examples](https://github.com/rodrigocfd/winsafe-examples)
 
+Handwritten since 2019.
+
 WinSafe has:
 
 * low-level Win32 API constants, functions and structs;
@@ -17,7 +19,7 @@ Add the dependency in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-winsafe = { version = "0.0.27", features = [] }
+winsafe = { version = "0.0.29", features = [] }
 ```
 
 Then you must enable the [Cargo features](https://doc.rust-lang.org/cargo/reference/features.html#the-features-section) you want to be included – these modules are named after native Windows DLL and library names, mostly.
@@ -33,6 +35,7 @@ The following Cargo features are available so far:
 | `dxgi` | [DirectX Graphics Infrastructure](https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/dx-graphics-dxgi) |
 | `gdi` | Gdi32.dll, the [Windows GDI](https://learn.microsoft.com/en-us/windows/win32/gdi/windows-gdi) |
 | **`gui`** | **The WinSafe high-level GUI abstractions** |
+| `htmlhelp` | [HTML Help](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/htmlhelp/microsoft-html-help-1-4-sdk) |
 | `kernel` | Kernel32.dll, basic kernel functions |
 | `mf` | [Media Foundation](https://learn.microsoft.com/en-us/windows/win32/medfound/microsoft-media-foundation-sdk) |
 | `ole` | Basic OLE/COM support |
@@ -44,12 +47,13 @@ The following Cargo features are available so far:
 | `user` | User32.dll and ComDlg32.dll, the basic Windows GUI support |
 | `uxtheme` | UxTheme.dll, extended window theming |
 | `version` | Version.dll, to manipulate *.exe version info |
+| `winmm` | [Windows Multimedia](https://learn.microsoft.com/en-us/windows/win32/multimedia/windows-multimedia-start-page) |
 | `wininet` | [Windows Internet](https://learn.microsoft.com/en-us/windows/win32/wininet/portal) |
 | `winspool` | [Print Spooler API](https://learn.microsoft.com/en-us/windows/win32/printdocs/print-spooler-api) |
 
 You can visualize the complete dependency graph [here](https://github.com/rodrigocfd/winsafe/blob/master/features-chart.md).
 
-If you're looking for a comprehensive Win32 coverage, take a look at [winapi](https://crates.io/crates/winapi) or [windows](https://crates.io/crates/windows) crates, which are *unsafe*, but have everything.
+Note that raw-dylib doesn't work properly in 32-bit architecture, and even with other architectures, weird linking bugs may appear. Use with care.
 
 # The GUI API
 
@@ -183,6 +187,7 @@ WinSafe declares a few [`Result` aliases](https://doc.rust-lang.org/rust-by-exam
 | - | - | - |
 | [`SysResult`] | [`ERROR`](crate::co::ERROR) | Standard [system errors](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes). |
 | [`HrResult`] | [`HRESULT`](crate::co::HRESULT) | [COM errors](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/0642cb2f-2075-4469-918c-4441e69c548a).
+| (none) | [`CDERR`](crate::co::CDERR) | Common dialog box [error codes](https://learn.microsoft.com/en-us/windows/win32/api/commdlg/nf-commdlg-commdlgextendederror). |
 | [`AnyResult`] | `Box<dyn Error + Send + Sync>` | Holding different error types. All other `Result` aliases can be converted into it. |
 
 # Utilities

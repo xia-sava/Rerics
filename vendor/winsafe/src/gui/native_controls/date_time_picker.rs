@@ -6,7 +6,8 @@ use std::sync::Arc;
 use crate::co;
 use crate::decl::*;
 use crate::gui::{privs::*, *};
-use crate::msg::*;
+use crate::macros::*;
+use crate::msg;
 use crate::prelude::*;
 
 struct DateTimePickerObj {
@@ -57,7 +58,7 @@ impl DateTimePicker {
 				if opts.width == 0 {
 					let mut sz = SIZE::default();
 					unsafe {
-						self2.hwnd().SendMessage(dtm::GetIdealSize {
+						self2.hwnd().SendMessage(msg::DtmGetIdealSize {
 							size: &mut sz, // ask OS the ideal width
 						});
 					}
@@ -121,23 +122,23 @@ impl DateTimePicker {
 	}
 
 	/// Retrieves the currently selected date by sending a
-	/// [`dtm::GetSystemTime`](crate::msg::dtm::GetSystemTime) message.
+	/// [`DtmGetSystemTime`](crate::msg::DtmGetSystemTime) message.
 	#[must_use]
 	pub fn date(&self) -> SysResult<SYSTEMTIME> {
 		let mut st = SYSTEMTIME::default();
 		unsafe {
 			self.hwnd()
-				.SendMessage(dtm::GetSystemTime { system_time: &mut st })?;
+				.SendMessage(msg::DtmGetSystemTime { system_time: &mut st })?;
 		}
 		Ok(st)
 	}
 
 	/// Sets the currently selected date by sending a
-	/// [`dtm::SetSystemTime`](crate::msg::dtm::SetSystemTime) message.
+	/// [`DtmSetSystemTime`](crate::msg::DtmSetSystemTime) message.
 	pub fn set_date(&self, st: &SYSTEMTIME) -> SysResult<()> {
 		unsafe {
 			self.hwnd()
-				.SendMessage(dtm::SetSystemTime { system_time: Some(st) })
+				.SendMessage(msg::DtmSetSystemTime { system_time: Some(st) })
 		}
 	}
 }
@@ -156,8 +157,8 @@ pub struct DateTimePickerOpts {
 	/// [created](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-createwindowexw).
 	///
 	/// Defaults to ideal width retrieved with
-	/// [`dtm::GetIdealSize`](crate::msg::dtm::GetIdealSize) message, usually
-	/// around `gui::dpi_x(250)`.
+	/// [`DtmGetIdealSize`](crate::msg::DtmGetIdealSize) message, usually around
+	/// `gui::dpi_x(250)`.
 	pub width: i32,
 	/// Date and time picker styles to be
 	/// [created](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-createwindowexw).

@@ -6,6 +6,7 @@ use crate::co;
 use crate::comctl::{callbacks, privs::*};
 use crate::decl::*;
 use crate::kernel::{ffi_types::*, privs::*};
+use crate::macros::*;
 use crate::prelude::*;
 
 /// [`BUTTON_IMAGELIST`](https://learn.microsoft.com/en-us/windows/win32/api/commctrl/ns-commctrl-button_imagelist)
@@ -1576,7 +1577,7 @@ pub struct TBBUTTON<'a> {
 	pub iBitmap: i32,
 	pub idCommand: i32,
 	pub fsState: co::TBSTATE,
-	pub fsStyle: co::BTNS,
+	fsStyle: u8,        // BTNS is actually u32 window style
 	bReserved: [u8; 6], // assumes 64-bit architecture
 	pub dwData: usize,
 	iString: isize,
@@ -1587,6 +1588,17 @@ pub struct TBBUTTON<'a> {
 impl_default!(TBBUTTON, 'a);
 
 impl<'a> TBBUTTON<'a> {
+	/// Returns the `fsStyle` field.
+	#[must_use]
+	pub const fn fsStyle(&self) -> co::BTNS {
+		unsafe { co::BTNS::from_raw(self.fsStyle as _) }
+	}
+
+	/// Sets the `fsStyle` field.
+	pub const fn set_fsStyle(&mut self, val: co::BTNS) {
+		self.fsStyle = val.raw() as _;
+	}
+
 	/// Returns the `iString` field.
 	#[must_use]
 	pub fn iString(&self) -> IdxStr {
@@ -1615,7 +1627,7 @@ pub struct TBBUTTONINFO<'a> {
 	pub idCommand: i32,
 	pub iImage: i32,
 	pub fsState: co::TBSTATE,
-	pub fsStyle: co::BTNS,
+	fsStyle: u8, // BTNS is actually u32 window style
 	pub cx: u16,
 	pub lParam: usize,
 	pszText: *mut u16,
@@ -1627,6 +1639,17 @@ pub struct TBBUTTONINFO<'a> {
 impl_default!(TBBUTTONINFO, cbSize, 'a);
 
 impl<'a> TBBUTTONINFO<'a> {
+	/// Returns the `fsStyle` field.
+	#[must_use]
+	pub const fn fsStyle(&self) -> co::BTNS {
+		unsafe { co::BTNS::from_raw(self.fsStyle as _) }
+	}
+
+	/// Sets the `fsStyle` field.
+	pub const fn set_fsStyle(&mut self, val: co::BTNS) {
+		self.fsStyle = val.raw() as _;
+	}
+
 	pub_fn_string_buf_get_set!('a, pszText, set_pszText, raw_pszText, cchText);
 }
 

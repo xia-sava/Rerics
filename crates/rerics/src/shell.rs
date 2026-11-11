@@ -257,7 +257,7 @@ fn parse_hdrop(bytes: &[u8]) -> Vec<PathBuf> {
 /// （クリップボード履歴ツール等）が一瞬掴むと `OpenClipboard` が失敗する。そうした
 /// 一過性の競合を吸収するため、短い間隔で数回リトライしてから諦める。全リトライが
 /// 失敗したら、呼び出し側がユーザーへ明示できるようエラー文字列を返す（黙って空振りしない）。
-fn open_clipboard_retry(owner: &w::HWND) -> Result<w::guard::CloseClipboardGuard<'_>, String> {
+fn open_clipboard_retry(owner: &w::HWND) -> Result<w::guard::CloseClipboardGuard, String> {
     const ATTEMPTS: u32 = 8;
     const INTERVAL: Duration = Duration::from_millis(25);
     let mut last = String::new();

@@ -411,7 +411,7 @@ impl LogView {
 
         let this = self.clone();
         self.wnd.on().wm_mouse_wheel(move |p| {
-            let dist = p.keys.raw() as i16;
+            let dist = p.wheel_distance;
             this.scroll_by_wheel(dist)?;
             Ok(())
         });

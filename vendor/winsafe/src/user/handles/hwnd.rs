@@ -4,7 +4,8 @@ use crate::co;
 use crate::decl::*;
 use crate::guard::*;
 use crate::kernel::privs::*;
-use crate::msg::*;
+use crate::macros::*;
+use crate::msg;
 use crate::prelude::*;
 use crate::user::{callbacks, ffi, privs::*};
 
@@ -32,7 +33,7 @@ impl HWND {
 
 	/// Calls
 	/// [`HWND::GetClassLongPtr`](crate::HWND::GetClassLongPtr) to retrieve the
-	/// [class atom](https://stackoverflow.com/a/64437627/6923555) and check
+	/// [class atom](https://stackoverflow.com/a/64437627) and check
 	/// whether the window was created from a dialog resource.
 	#[must_use]
 	pub fn is_dialog(&self) -> bool {
@@ -129,7 +130,7 @@ impl HWND {
 	/// # w::SysResult::Ok(())
 	/// ```
 	#[must_use]
-	pub fn BeginPaint(&self) -> SysResult<EndPaintGuard<'_>> {
+	pub fn BeginPaint(&self) -> SysResult<EndPaintGuard> {
 		let mut ps = PAINTSTRUCT::default();
 		unsafe {
 			PtrRet(ffi::BeginPaint(self.ptr(), pvoid(&mut ps)))
@@ -194,7 +195,7 @@ impl HWND {
 	/// provide its own window procedure.
 	///
 	/// The usable ID range for child controls is
-	/// [8 to 57,343](https://stackoverflow.com/a/18192766/6923555).
+	/// [8 to 57,343](https://stackoverflow.com/a/18192766).
 	pub unsafe fn CreateWindowEx(
 		ex_style: co::WS_EX,
 		class_name: AtomStr,
@@ -258,8 +259,7 @@ impl HWND {
 	///
 	/// Usually you don't need to call this method directly, since it's
 	/// automatically called inside the internal message loop. The ordinary way
-	/// to close a window is sending a [`wm::Close`](crate::msg::wm::Close)
-	/// message.
+	/// to close a window is sending a [`WmClose`](crate::msg::WmClose) message.
 	pub fn DestroyWindow(&self) -> SysResult<()> {
 		BoolRet(unsafe { ffi::DestroyWindow(self.ptr()) }).to_sysresult()
 	}
@@ -436,14 +436,24 @@ impl HWND {
 		PtrRet(unsafe { ffi::GetCapture() }).to_opt_handle()
 	}
 
+	/// [`GetClassLong`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getclasslongw)
+	/// function (x32) or
 	/// [`GetClassLongPtr`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getclasslongptrw)
-	/// function.
+	/// function (x64).
 	///
 	/// If you just want to check whether the window is a dialog, prefer using
 	/// [`HWND::is_dialog`](crate::HWND::is_dialog) method.
 	#[must_use]
 	pub fn GetClassLongPtr(&self, index: co::GCLP) -> usize {
-		unsafe { ffi::GetClassLongPtrW(self.ptr(), index.raw()) }
+		#[cfg(target_pointer_width = "32")]
+		unsafe {
+			ffi::GetClassLongW(self.ptr(), index.raw())
+		}
+
+		#[cfg(target_pointer_width = "64")]
+		unsafe {
+			ffi::GetClassLongPtrW(self.ptr(), index.raw())
+		}
 	}
 
 	/// [`GetClassName`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getclassnamew)
@@ -480,7 +490,7 @@ impl HWND {
 	/// # w::SysResult::Ok(())
 	/// ```
 	#[must_use]
-	pub fn GetDC(&self) -> SysResult<ReleaseDCGuard<'_>> {
+	pub fn GetDC(&self) -> SysResult<ReleaseDCGuard> {
 		unsafe {
 			PtrRet(ffi::GetDC(self.ptr()))
 				.to_sysresult_handle()
@@ -491,7 +501,7 @@ impl HWND {
 	/// [`GetDCEx`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getdcex)
 	/// function.
 	#[must_use]
-	pub fn GetDCEx(&self, hrgn_clip: &HRGN, flags: co::DCX) -> SysResult<ReleaseDCGuard<'_>> {
+	pub fn GetDCEx(&self, hrgn_clip: &HRGN, flags: co::DCX) -> SysResult<ReleaseDCGuard> {
 		unsafe {
 			PtrRet(ffi::GetDCEx(self.ptr(), hrgn_clip.ptr(), flags.raw()))
 				.to_sysresult_handle()
@@ -523,7 +533,6 @@ impl HWND {
 	/// function.
 	#[must_use]
 	pub fn GetDlgCtrlID(&self) -> SysResult<u16> {
-		SetLastError(co::ERROR::SUCCESS);
 		match unsafe { ffi::GetDlgCtrlID(self.ptr()) } {
 			0 => match GetLastError() {
 				co::ERROR::SUCCESS => Ok(0), // actual ID is zero
@@ -697,7 +706,7 @@ impl HWND {
 	/// [`GetWindowDC`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowdc)
 	/// function.
 	#[must_use]
-	pub fn GetWindowDC(&self) -> SysResult<ReleaseDCGuard<'_>> {
+	pub fn GetWindowDC(&self) -> SysResult<ReleaseDCGuard> {
 		unsafe {
 			PtrRet(ffi::GetWindowDC(self.ptr()))
 				.to_sysresult_handle()
@@ -845,7 +854,6 @@ impl HWND {
 	/// [`String`](std::string::String), performing all necessary allocations.
 	#[must_use]
 	pub fn GetWindowTextLength(&self) -> SysResult<i32> {
-		SetLastError(co::ERROR::SUCCESS);
 		match unsafe { ffi::GetWindowTextLengthW(self.ptr()) } {
 			0 => match GetLastError() {
 				co::ERROR::SUCCESS => Ok(0), // actual zero length
@@ -1174,7 +1182,7 @@ impl HWND {
 	/// # w::SysResult::Ok(())
 	/// ```
 	#[must_use]
-	pub fn OpenClipboard(&self) -> SysResult<CloseClipboardGuard<'_>> {
+	pub fn OpenClipboard(&self) -> SysResult<CloseClipboardGuard> {
 		unsafe {
 			BoolRet(ffi::OpenClipboard(self.ptr()))
 				.to_sysresult()
@@ -1300,7 +1308,7 @@ impl HWND {
 	}
 
 	/// [`SendMessage`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendmessagew)
-	/// function, specialized to send a [`wm::Command`](crate::msg::wm::Command)
+	/// function, specialized to send a [`WmCommand`](crate::msg::WmCommand)
 	/// message.
 	///
 	/// Unlike the general [`SendMessage`](crate::HWND::SendMessage), sending a
@@ -1321,9 +1329,7 @@ impl HWND {
 	/// );
 	/// ```
 	pub fn SendCommand(&self, cmd: AccelMenuCtrl) {
-		unsafe {
-			self.SendMessage(wm::Command { event: cmd });
-		}
+		unsafe { self.SendMessage(msg::WmCommand { event: cmd }) };
 	}
 
 	/// [`SendMessage`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendmessagew)
@@ -1340,9 +1346,9 @@ impl HWND {
 	///
 	/// # Examples
 	///
-	/// Sending a [`bm::GetImage`](crate::msg::bm::GetImage) button message,
-	/// which demands an image type parameter. Note that this specific message
-	/// can also return an error, which is handled with
+	/// Sending a [`BmGetImage`](crate::msg::BmGetImage) button message, which
+	/// demands an image type parameter. Note that this specific message can
+	/// also return an error, which is handled with
 	/// [`?`](https://doc.rust-lang.org/std/result/index.html#the-question-mark-operator-):
 	///
 	/// ```no_run
@@ -1353,7 +1359,7 @@ impl HWND {
 	///
 	/// let bmp = unsafe {
 	///     hwnd.SendMessage(
-	///         msg::bm::GetImage {
+	///         msg::BmGetImage {
 	///             img_type: co::IMAGE_TYPE::BITMAP,
 	///         },
 	///     )
@@ -1361,7 +1367,7 @@ impl HWND {
 	/// # w::SysResult::Ok(())
 	/// ```
 	///
-	/// Sending an [`em::CharFromPos`](crate::msg::em::CharFromPos) edit message,
+	/// Sending an [`EmCharFromPos`](crate::msg::EmCharFromPos) edit message,
 	/// which receives point coordinates and returns two values:
 	///
 	/// ```no_run
@@ -1372,7 +1378,7 @@ impl HWND {
 	///
 	/// let (char_pos, line_pos) = unsafe {
 	///     hwnd.SendMessage(
-	///         msg::em::CharFromPos {
+	///         msg::EmCharFromPos {
 	///             coords: w::POINT::with(12, 20),
 	///         },
 	///     )
@@ -1431,7 +1437,7 @@ impl HWND {
 
 	/// [`SetCapture`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setcapture)
 	/// function.
-	pub fn SetCapture(&self) -> ReleaseCaptureGuard<'_> {
+	pub fn SetCapture(&self) -> ReleaseCaptureGuard {
 		unsafe {
 			ReleaseCaptureGuard::new(
 				self,

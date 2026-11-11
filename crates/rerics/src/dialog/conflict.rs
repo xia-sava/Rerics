@@ -179,7 +179,7 @@ pub fn conflict_box(parent: &impl GuiParent, name: &str) -> (ConflictResolution,
                     if down && in_rename && (vk == 0x26 || vk == 0x28) {
                         let target = if vk == 0x26 { 2 } else { 4 };
                         unsafe {
-                            radios_k[target].hwnd().SendMessage(w::msg::bm::Click {});
+                            radios_k[target].hwnd().SendMessage(w::msg::BmClick {});
                         }
                         return false;
                     }

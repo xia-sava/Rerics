@@ -551,7 +551,7 @@ pub fn focus_initial(parent: &w::HWND) {
         h.GetClassName().map(|c| c.eq_ignore_ascii_case("button")).unwrap_or(false)
             && matches!(style(h) & 0x0F, 0x04 | 0x09)
     };
-    let checked = |h: &w::HWND| unsafe { h.SendMessage(w::msg::bm::GetCheck {}) } == co::BST::CHECKED;
+    let checked = |h: &w::HWND| unsafe { h.SendMessage(w::msg::BmGetCheck {}) } == co::BST::CHECKED;
 
     // タブ順の先頭コントロール（ダイアログマネージャの規則で解決＝z 順依存しない）。
     let Ok(first) = parent.GetNextDlgTabItem(&w::HWND::NULL, false) else {

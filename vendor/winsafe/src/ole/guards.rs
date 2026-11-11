@@ -3,6 +3,7 @@ use std::ops::Deref;
 use crate::co;
 use crate::decl::*;
 use crate::kernel::privs::*;
+use crate::macros::*;
 use crate::ole::ffi;
 use crate::prelude::*;
 
@@ -100,9 +101,7 @@ pub struct CoUninitializeGuard {
 
 impl Drop for CoUninitializeGuard {
 	fn drop(&mut self) {
-		unsafe {
-			ffi::CoUninitialize();
-		}
+		unsafe { ffi::CoUninitialize() };
 	}
 }
 
@@ -136,9 +135,7 @@ pub struct OleUninitializeGuard {}
 
 impl Drop for OleUninitializeGuard {
 	fn drop(&mut self) {
-		unsafe {
-			ffi::OleUninitialize();
-		}
+		unsafe { ffi::OleUninitialize() };
 	}
 }
 
@@ -165,9 +162,7 @@ pub struct ReleaseStgMediumGuard {
 
 impl Drop for ReleaseStgMediumGuard {
 	fn drop(&mut self) {
-		unsafe {
-			ffi::ReleaseStgMedium(pvoid(&mut self.stgm));
-		}
+		unsafe { ffi::ReleaseStgMedium(pvoid(&mut self.stgm)) };
 	}
 }
 

@@ -5,6 +5,7 @@ use std::marker::PhantomData;
 use crate::co;
 use crate::decl::*;
 use crate::kernel::{ffi_types::*, privs::*};
+use crate::macros::*;
 use crate::user::privs::*;
 
 /// [`ACCEL`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-accel)
@@ -707,6 +708,31 @@ impl INPUT {
 				self.union0.mi = mi;
 			},
 		}
+	}
+}
+
+/// [`KBDLLHOOKSTRUCT`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-kbdllhookstruct)
+/// struct.
+#[repr(C)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+pub struct KBDLLHOOKSTRUCT {
+	vkCode: u32,
+	pub scanCode: u32,
+	pub flags: co::LLKHF,
+	pub time: u32,
+	pub dwExtraInfo: usize,
+}
+
+impl KBDLLHOOKSTRUCT {
+	/// Returns the `vkCode` field.
+	#[must_use]
+	pub const fn vkCode(&self) -> co::VK {
+		unsafe { co::VK::from_raw(self.vkCode as _) }
+	}
+
+	/// Sets the `vkCode` field.
+	pub const fn set_vkCode(&mut self, val: co::VK) {
+		self.vkCode = val.raw() as _;
 	}
 }
 

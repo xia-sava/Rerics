@@ -6,7 +6,8 @@ use std::sync::Arc;
 use crate::co;
 use crate::decl::*;
 use crate::gui::{privs::*, *};
-use crate::msg::*;
+use crate::macros::*;
+use crate::msg;
 use crate::prelude::*;
 
 struct MonthCalendarObj {
@@ -59,7 +60,7 @@ impl MonthCalendar {
 				unsafe {
 					self2
 						.hwnd()
-						.SendMessage(mcm::GetMinReqRect { bounds_rect: &mut bounds_rect })
+						.SendMessage(msg::McmGetMinReqRect { bounds_rect: &mut bounds_rect })
 						.expect(DONTFAIL);
 				}
 				self2
@@ -117,20 +118,21 @@ impl MonthCalendar {
 	}
 
 	/// Retrieves the currently selected date by sending a
-	/// [`mcm::GetCurSel`](crate::msg::mcm::GetCurSel) message.
+	/// [`McmGetCurSel`](crate::msg::McmGetCurSel) message.
 	#[must_use]
 	pub fn date(&self) -> SysResult<SYSTEMTIME> {
 		let mut st = SYSTEMTIME::default();
 		unsafe {
-			self.hwnd().SendMessage(mcm::GetCurSel { info: &mut st })?;
+			self.hwnd()
+				.SendMessage(msg::McmGetCurSel { info: &mut st })?;
 		}
 		Ok(st)
 	}
 
 	/// Sets the currently selected date by sending a
-	/// [`mcm::SetCurSel`](crate::msg::mcm::SetCurSel) message.
+	/// [`McmSetCurSel`](crate::msg::McmSetCurSel) message.
 	pub fn set_date(&self, st: &SYSTEMTIME) -> SysResult<()> {
-		unsafe { self.hwnd().SendMessage(mcm::SetCurSel { info: st }) }
+		unsafe { self.hwnd().SendMessage(msg::McmSetCurSel { info: st }) }
 	}
 }
 

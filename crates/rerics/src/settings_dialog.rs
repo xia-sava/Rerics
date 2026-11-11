@@ -14,7 +14,7 @@ use rerics_core::{
     Bookmark, Colors, Column, ColumnKind, Config, FileOpSettings, FontSpec, IconSize, Layout,
     MenuDef, MenuItem, Rgb, ResolvedTheme, SizeFormat, SortType, Theme, WheelAction,
 };
-use winsafe::{self as w, co, gui, msg::lb, prelude::*};
+use winsafe::{self as w, co, gui, msg::LbGetCurSel, prelude::*};
 
 use crate::font_fallback::FontSet;
 use crate::key_editor::{KeyCategory, KeyEditor};
@@ -2572,7 +2572,7 @@ impl ColumnsEditor {
             let rebuild = rebuild.clone();
             let available = available.clone();
             to_shown.on().bn_clicked(move || {
-                if let Some(ki) = unsafe { available.hwnd().SendMessage(lb::GetCurSel {}) }
+                if let Some(ki) = unsafe { available.hwnd().SendMessage(LbGetCurSel {}) }
                     && let Some((kind, _)) = COLUMN_KINDS.get(ki as usize) {
                         let col = Column {
                             kind: *kind,

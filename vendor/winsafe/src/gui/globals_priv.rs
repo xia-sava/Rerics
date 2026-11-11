@@ -1,6 +1,6 @@
 use crate::co;
 use crate::decl::*;
-use crate::msg::*;
+use crate::msg;
 use crate::prelude::*;
 
 /// Message to be used on `expect()` of internal calls, which are not supposed
@@ -86,7 +86,7 @@ pub(in crate::gui) mod quit_error {
 	pub(in crate::gui) static QUIT_ERROR: Mutex<Option<MsgError>> = Mutex::new(None);
 
 	/// Calls `PostQuitMessage` to terminate the program with the given error.
-	pub(in crate::gui) fn post_quit_error(src_msg: WndMsg, err: Box<dyn Error + Send + Sync>) {
+	pub(in crate::gui) fn post_quit_error(src_msg: Wm, err: Box<dyn Error + Send + Sync>) {
 		{
 			let mut msg_error = QUIT_ERROR.lock().unwrap();
 			*msg_error = Some(MsgError::new(src_msg, err)); // store the error, so the main window loop can grab it
@@ -100,12 +100,12 @@ pub(in crate::gui) mod ui_font {
 	use crate::decl::*;
 	use crate::guard::*;
 	use crate::gui::privs::*;
-	use crate::msg::*;
+	use crate::msg;
 
 	/// Global UI font object, cached.
 	static mut UI_HFONT: Option<DeleteObjectGuard<HFONT>> = None;
 
-	// Returns the global UI font, creating it of not yet.
+	/// Returns the global UI font, creating it of not yet.
 	pub(in crate::gui) fn get() -> HFONT {
 		unsafe {
 			match &*&raw const UI_HFONT {
@@ -131,9 +131,7 @@ pub(in crate::gui) mod ui_font {
 
 	/// Sets the global UI font on the given window.
 	pub(in crate::gui) fn set(hwnd: &HWND) {
-		unsafe {
-			hwnd.SendMessage(wm::SetFont { hfont: get(), redraw: true });
-		}
+		unsafe { hwnd.SendMessage(msg::WmSetFont { hfont: get(), redraw: true }) };
 	}
 
 	/// Frees the global UI font object.
@@ -146,7 +144,7 @@ pub(in crate::gui) mod ui_font {
 
 pub(in crate::gui) mod auto_id {
 	/// Next auto control ID to be assigned to controls without one.
-	static mut BASE_CTRL_ID: u16 = 0xdfff; // https://stackoverflow.com/a/18192766/6923555
+	static mut BASE_CTRL_ID: u16 = 0xdfff; // https://stackoverflow.com/a/18192766
 
 	/// Returns the next sequential control ID.
 	#[must_use]
@@ -168,7 +166,63 @@ pub(in crate::gui) mod auto_id {
 pub(in crate::gui) mod text_calc {
 	use crate::co;
 	use crate::decl::*;
-	use crate::gui::privs::*;
+	use crate::gui::{privs::*, *};
+	use crate::msg;
+
+	/// Calculates the bound rectangle to fit the text with current system font.
+	#[must_use]
+	pub(in crate::gui) fn bound_box(text: &str) -> SIZE {
+		let desktop_hwnd = HWND::GetDesktopWindow();
+		let desktop_hdc = desktop_hwnd.GetDC().expect(DONTFAIL);
+		let clone_dc = desktop_hdc.CreateCompatibleDC().expect(DONTFAIL);
+		let _prev_font = clone_dc.SelectObject(&ui_font::get()).expect(DONTFAIL);
+
+		let (text_is_empty, text2) = if text.trim().is_empty() {
+			(true, "Pj".to_string()) // just a placeholder to get the text height
+		} else {
+			(false, text.to_string())
+		};
+
+		let mut bounds = clone_dc.GetTextExtentPoint32(&text2).expect(DONTFAIL);
+		if text_is_empty {
+			bounds.cx = 0; // if no text was given, return just the height
+		}
+
+		if text2.contains('\n') {
+			// Multi-line, height must be recalculated.
+			let mut rc = RECT::new();
+			clone_dc
+				.DrawText(&text2, &mut rc, co::DT::CALCRECT | co::DT::EDITCONTROL)
+				.expect(DONTFAIL);
+			bounds.cx = rc.right;
+			bounds.cy = rc.bottom;
+		}
+
+		bounds
+	}
+
+	/// Calculates the button bound rectangle with `BCM_GETIDEALSIZE`.
+	#[must_use]
+	pub(in crate::gui) fn bound_box_bcm(hctrl: &HWND) -> SIZE {
+		let mut bounds = SIZE::new();
+		if unsafe { hctrl.SendMessage(msg::BcmGetIdealSize { size: &mut bounds }) }.is_ok() {
+			return bounds;
+		}
+
+		// BCM_GETIDEALSIZE fails without ComCtrl v6 (missing app manifest); so calc manually.
+
+		let text = remove_accel_ampersands(&hctrl.GetWindowText().expect(DONTFAIL));
+		let mut bounds = bound_box(&text);
+		bounds.cx += GetSystemMetrics(co::SM::CXMENUCHECK) // https://stackoverflow.com/a/1165052
+			+ GetSystemMetrics(co::SM::CXEDGE)
+			+ dpi_x(6); // arbitrary; BS_MULTILINE adds padding, enlarge anyway
+
+		let cy_check = GetSystemMetrics(co::SM::CYMENUCHECK);
+		if cy_check > bounds.cy {
+			bounds.cy = cy_check; // if the check is taller than the font, use its height
+		}
+		bounds
+	}
 
 	/// "&He && she" becomes "He & she".
 	#[must_use]
@@ -190,43 +244,10 @@ pub(in crate::gui) mod text_calc {
 
 		txt_no_ampersands
 	}
-
-	/// Calculates the bound rectangle to fit the text with current system font.
-	#[must_use]
-	pub(in crate::gui) fn bound_box(text: &str) -> SIZE {
-		let desktop_hwnd = HWND::GetDesktopWindow();
-		let desktop_hdc = desktop_hwnd.GetDC().expect(DONTFAIL);
-		let clone_dc = desktop_hdc.CreateCompatibleDC().expect(DONTFAIL);
-		let _prev_font = clone_dc.SelectObject(&ui_font::get()).expect(DONTFAIL);
-
-		let mut bounds = clone_dc
-			.GetTextExtentPoint32(if text.trim().is_empty() { "Pj" } else { text }) // "Pj" is a placeholder to get the height
-			.expect(DONTFAIL);
-
-		if text.is_empty() {
-			bounds.cx = 0; // if no text was given, return just the height
-		}
-		bounds
-	}
-
-	/// Calculates the bound rectangle to fit the text with current system font,
-	/// along with the system check/radio box.
-	#[must_use]
-	pub(in crate::gui) fn bound_box_with_check(text: &str) -> SIZE {
-		let mut bounds = bound_box(text);
-		bounds.cx += GetSystemMetrics(co::SM::CXMENUCHECK) // https://stackoverflow.com/a/1165052/6923555
-			+ GetSystemMetrics(co::SM::CXEDGE);
-
-		let cy_check = GetSystemMetrics(co::SM::CYMENUCHECK);
-		if cy_check > bounds.cy {
-			bounds.cy = cy_check; // if the check is taller than the font, use its height
-		}
-		bounds
-	}
 }
 
 /// Paints the themed border of an user control, if it has the proper styles.
-pub(in crate::gui) fn paint_control_borders(hwnd: &HWND, wm_ncp: wm::NcPaint) {
+pub(in crate::gui) fn paint_control_borders(hwnd: &HWND, wm_ncp: msg::WmNcPaint) {
 	unsafe {
 		hwnd.DefWindowProc(wm_ncp); // let the system draw the scrollbar for us
 	}

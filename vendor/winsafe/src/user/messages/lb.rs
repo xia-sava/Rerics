@@ -1,6 +1,7 @@
 use crate::co;
 use crate::decl::*;
 use crate::kernel::privs::*;
+use crate::macros::*;
 use crate::msg::*;
 use crate::prelude::*;
 use crate::user::privs::*;
@@ -9,11 +10,11 @@ use crate::user::privs::*;
 /// message parameters.
 ///
 /// Return type: `SysResult<u32>`.
-pub struct AddFile {
+pub struct LbAddFile {
 	pub text: WString,
 }
 
-impl MsgSend for AddFile {
+impl MsgSend for LbAddFile {
 	type RetType = SysResult<u32>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -24,8 +25,8 @@ impl MsgSend for AddFile {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::ADDFILE.into(),
 			wparam: 0,
 			lparam: self.text.as_ptr() as _,
@@ -37,11 +38,11 @@ impl MsgSend for AddFile {
 /// message parameters.
 ///
 /// Return type: `SysResult<u32>`.
-pub struct AddString {
+pub struct LbAddString {
 	pub text: WString,
 }
 
-impl MsgSend for AddString {
+impl MsgSend for LbAddString {
 	type RetType = SysResult<u32>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -52,8 +53,8 @@ impl MsgSend for AddString {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::ADDSTRING.into(),
 			wparam: 0,
 			lparam: self.text.as_ptr() as _,
@@ -65,11 +66,11 @@ impl MsgSend for AddString {
 /// message parameters.
 ///
 /// Return type: `SysResult<u32>`.
-pub struct DeleteString {
+pub struct LbDeleteString {
 	pub index: u32,
 }
 
-impl MsgSend for DeleteString {
+impl MsgSend for LbDeleteString {
 	type RetType = SysResult<u32>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -79,8 +80,8 @@ impl MsgSend for DeleteString {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::DELETESTRING.into(),
 			wparam: self.index as _,
 			lparam: 0,
@@ -92,12 +93,12 @@ impl MsgSend for DeleteString {
 /// message parameters.
 ///
 /// Return type: `SysResult<u32>`.
-pub struct Dir {
+pub struct LbDir {
 	pub attributes: co::DDL,
 	pub path: WString,
 }
 
-impl MsgSend for Dir {
+impl MsgSend for LbDir {
 	type RetType = SysResult<u32>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -108,8 +109,8 @@ impl MsgSend for Dir {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::DIR.into(),
 			wparam: self.attributes.raw() as _,
 			lparam: self.path.as_ptr() as _,
@@ -121,12 +122,12 @@ impl MsgSend for Dir {
 /// message parameters.
 ///
 /// Return type: `Option<u32>`.
-pub struct FindString {
+pub struct LbFindString {
 	pub preceding_index: Option<u32>,
 	pub text: WString,
 }
 
-impl MsgSend for FindString {
+impl MsgSend for LbFindString {
 	type RetType = Option<u32>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -136,8 +137,8 @@ impl MsgSend for FindString {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::FINDSTRING.into(),
 			wparam: self.preceding_index.map_or(-1, |idx| idx as i32) as _,
 			lparam: self.text.as_ptr() as _,
@@ -149,12 +150,12 @@ impl MsgSend for FindString {
 /// message parameters.
 ///
 /// Return type: `Option<u32>`.
-pub struct FindStringExact {
+pub struct LbFindStringExact {
 	pub preceding_index: Option<u32>,
 	pub text: WString,
 }
 
-impl MsgSend for FindStringExact {
+impl MsgSend for LbFindStringExact {
 	type RetType = Option<u32>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -164,8 +165,8 @@ impl MsgSend for FindStringExact {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::FINDSTRINGEXACT.into(),
 			wparam: self.preceding_index.map_or(-1, |idx| idx as i32) as _,
 			lparam: self.text.as_ptr() as _,
@@ -177,17 +178,17 @@ impl MsgSend for FindStringExact {
 /// message, which has no parameters.
 ///
 /// Return type: `u32`.
-pub struct GetAnchorIndex {}
+pub struct LbGetAnchorIndex {}
 
-impl MsgSend for GetAnchorIndex {
+impl MsgSend for LbGetAnchorIndex {
 	type RetType = u32;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
 		v as _
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::GETANCHORINDEX.into(),
 			wparam: 0,
 			lparam: 0,
@@ -199,17 +200,17 @@ impl MsgSend for GetAnchorIndex {
 /// message, which has no parameters.
 ///
 /// Return type: `u32`.
-pub struct GetCaretIndex {}
+pub struct LbGetCaretIndex {}
 
-impl MsgSend for GetCaretIndex {
+impl MsgSend for LbGetCaretIndex {
 	type RetType = u32;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
 		v as _
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::GETCARETINDEX.into(),
 			wparam: 0,
 			lparam: 0,
@@ -221,9 +222,9 @@ impl MsgSend for GetCaretIndex {
 /// message, which has no parameters.
 ///
 /// Return type: `SysResult<u32>`.
-pub struct GetCount {}
+pub struct LbGetCount {}
 
-impl MsgSend for GetCount {
+impl MsgSend for LbGetCount {
 	type RetType = SysResult<u32>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -233,8 +234,8 @@ impl MsgSend for GetCount {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::GETCOUNT.into(),
 			wparam: 0,
 			lparam: 0,
@@ -246,9 +247,9 @@ impl MsgSend for GetCount {
 /// message, which has no parameters.
 ///
 /// Return type: `Option<u32>`.
-pub struct GetCurSel {}
+pub struct LbGetCurSel {}
 
-impl MsgSend for GetCurSel {
+impl MsgSend for LbGetCurSel {
 	type RetType = Option<u32>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -258,8 +259,8 @@ impl MsgSend for GetCurSel {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::GETCURSEL.into(),
 			wparam: 0,
 			lparam: 0,
@@ -271,17 +272,17 @@ impl MsgSend for GetCurSel {
 /// message, which has no parameters.
 ///
 /// Return type: `u32`.
-pub struct GetHorizontalExtent {}
+pub struct LbGetHorizontalExtent {}
 
-impl MsgSend for GetHorizontalExtent {
+impl MsgSend for LbGetHorizontalExtent {
 	type RetType = u32;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
 		v as _
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::GETHORIZONTALEXTENT.into(),
 			wparam: 0,
 			lparam: 0,
@@ -293,11 +294,11 @@ impl MsgSend for GetHorizontalExtent {
 /// message parameters.
 ///
 /// Return type: `SysResult<isize>`.
-pub struct GetItemData {
+pub struct LbGetItemData {
 	pub index: u32,
 }
 
-impl MsgSend for GetItemData {
+impl MsgSend for LbGetItemData {
 	type RetType = SysResult<isize>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -308,8 +309,8 @@ impl MsgSend for GetItemData {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::GETITEMDATA.into(),
 			wparam: self.index as _,
 			lparam: 0,
@@ -321,11 +322,11 @@ impl MsgSend for GetItemData {
 /// message parameters.
 ///
 /// Return type: `SysResult<u8>`.
-pub struct GetItemHeight {
+pub struct LbGetItemHeight {
 	pub index: Option<u32>,
 }
 
-impl MsgSend for GetItemHeight {
+impl MsgSend for LbGetItemHeight {
 	type RetType = SysResult<u8>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -335,8 +336,8 @@ impl MsgSend for GetItemHeight {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::GETITEMHEIGHT.into(),
 			wparam: self.index.unwrap_or(0) as _,
 			lparam: 0,
@@ -348,12 +349,12 @@ impl MsgSend for GetItemHeight {
 /// message parameters.
 ///
 /// Return type: `SysResult<()>`.
-pub struct GetItemRect<'a> {
+pub struct LbGetItemRect<'a> {
 	pub index: u32,
 	pub rect: &'a mut RECT,
 }
 
-impl<'a> MsgSend for GetItemRect<'a> {
+impl<'a> MsgSend for LbGetItemRect<'a> {
 	type RetType = SysResult<()>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -363,8 +364,8 @@ impl<'a> MsgSend for GetItemRect<'a> {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::GETITEMRECT.into(),
 			wparam: self.index as _,
 			lparam: self.rect as *mut _ as _,
@@ -376,17 +377,17 @@ impl<'a> MsgSend for GetItemRect<'a> {
 /// message, which has no parameters.
 ///
 /// Return type: `u32`.
-pub struct GetListBoxInfo {}
+pub struct LbGetListBoxInfo {}
 
-impl MsgSend for GetListBoxInfo {
+impl MsgSend for LbGetListBoxInfo {
 	type RetType = u32;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
 		v as _
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::GETLISTBOXINFO.into(),
 			wparam: 0,
 			lparam: 0,
@@ -398,17 +399,17 @@ impl MsgSend for GetListBoxInfo {
 /// message, which has no parameters.
 ///
 /// Return type: `LCID`.
-pub struct GetLocale {}
+pub struct LbGetLocale {}
 
-impl MsgSend for GetLocale {
+impl MsgSend for LbGetLocale {
 	type RetType = LCID;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
 		unsafe { LCID::from_raw(v as _) }
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::GETLOCALE.into(),
 			wparam: 0,
 			lparam: 0,
@@ -420,11 +421,11 @@ impl MsgSend for GetLocale {
 /// message parameters.
 ///
 /// Return type: `SysResult<bool>`.
-pub struct GetSel {
+pub struct LbGetSel {
 	pub index: u32,
 }
 
-impl MsgSend for GetSel {
+impl MsgSend for LbGetSel {
 	type RetType = SysResult<bool>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -434,8 +435,8 @@ impl MsgSend for GetSel {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::GETSEL.into(),
 			wparam: self.index as _,
 			lparam: 0,
@@ -447,9 +448,9 @@ impl MsgSend for GetSel {
 /// message, which has no parameters.
 ///
 /// Return type: `SysResult<u32>`.
-pub struct GetSelCount {}
+pub struct LbGetSelCount {}
 
-impl MsgSend for GetSelCount {
+impl MsgSend for LbGetSelCount {
 	type RetType = SysResult<u32>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -459,8 +460,8 @@ impl MsgSend for GetSelCount {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::GETSELCOUNT.into(),
 			wparam: 0,
 			lparam: 0,
@@ -472,11 +473,11 @@ impl MsgSend for GetSelCount {
 /// message parameters.
 ///
 /// Return type `SysResult<u32>`.
-pub struct GetSelItems<'a> {
+pub struct LbGetSelItems<'a> {
 	pub buffer: &'a mut [u32],
 }
 
-impl<'a> MsgSend for GetSelItems<'a> {
+impl<'a> MsgSend for LbGetSelItems<'a> {
 	type RetType = SysResult<u32>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -486,8 +487,8 @@ impl<'a> MsgSend for GetSelItems<'a> {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::GETSELITEMS.into(),
 			wparam: self.buffer.len(),
 			lparam: self.buffer.as_mut_ptr() as _,
@@ -499,12 +500,12 @@ impl<'a> MsgSend for GetSelItems<'a> {
 /// message parameters.
 ///
 /// Return type: `SysResult<u32>`.
-pub struct GetText<'a> {
+pub struct LbGetText<'a> {
 	pub index: u32,
 	pub text: &'a mut WString,
 }
 
-impl<'a> MsgSend for GetText<'a> {
+impl<'a> MsgSend for LbGetText<'a> {
 	type RetType = SysResult<u32>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -514,8 +515,8 @@ impl<'a> MsgSend for GetText<'a> {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::GETTEXT.into(),
 			wparam: self.index as _,
 			lparam: unsafe { self.text.as_mut_ptr() } as _,
@@ -527,11 +528,11 @@ impl<'a> MsgSend for GetText<'a> {
 /// message parameters.
 ///
 /// Return type: `SysResult<u32>`.
-pub struct GetTextLen {
+pub struct LbGetTextLen {
 	pub index: u32,
 }
 
-impl MsgSend for GetTextLen {
+impl MsgSend for LbGetTextLen {
 	type RetType = SysResult<u32>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -541,8 +542,8 @@ impl MsgSend for GetTextLen {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::GETTEXTLEN.into(),
 			wparam: self.index as _,
 			lparam: 0,
@@ -554,9 +555,9 @@ impl MsgSend for GetTextLen {
 /// message parameters.
 ///
 /// Return type: `SysResult<u32>`.
-pub struct GetTopIndex {}
+pub struct LbGetTopIndex {}
 
-impl MsgSend for GetTopIndex {
+impl MsgSend for LbGetTopIndex {
 	type RetType = SysResult<u32>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -566,8 +567,8 @@ impl MsgSend for GetTopIndex {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::GETTOPINDEX.into(),
 			wparam: 0,
 			lparam: 0,
@@ -579,12 +580,12 @@ impl MsgSend for GetTopIndex {
 /// message parameters.
 ///
 /// Return type: `SysResult<u32>`.
-pub struct InitStorage {
+pub struct LbInitStorage {
 	pub num_items: u32,
 	pub memory_bytes: u32,
 }
 
-impl MsgSend for InitStorage {
+impl MsgSend for LbInitStorage {
 	type RetType = SysResult<u32>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -594,8 +595,8 @@ impl MsgSend for InitStorage {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::INITSTORAGE.into(),
 			wparam: self.num_items as _,
 			lparam: self.memory_bytes as _,
@@ -607,12 +608,12 @@ impl MsgSend for InitStorage {
 /// message parameters.
 ///
 /// Return type: `SysResult<u32>`.
-pub struct InsertString {
+pub struct LbInsertString {
 	pub insertion_index: Option<u32>,
 	pub text: WString,
 }
 
-impl MsgSend for InsertString {
+impl MsgSend for LbInsertString {
 	type RetType = SysResult<u32>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -623,8 +624,8 @@ impl MsgSend for InsertString {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::INSERTSTRING.into(),
 			wparam: self.insertion_index.map_or(-1, |idx| idx as i32) as _,
 			lparam: self.text.as_ptr() as _,
@@ -636,19 +637,19 @@ impl MsgSend for InsertString {
 /// message parameters.
 ///
 /// Return type: `(i32, bool)`.
-pub struct ItemFromPoint {
+pub struct LbItemFromPoint {
 	pub coords: POINT,
 }
 
-impl MsgSend for ItemFromPoint {
+impl MsgSend for LbItemFromPoint {
 	type RetType = (i32, bool);
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
 		(LOWORD(v as _) as _, HIWORD(v as _) == 1)
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::ITEMFROMPOINT.into(),
 			wparam: 0,
 			lparam: u32::from(self.coords) as _,
@@ -656,7 +657,7 @@ impl MsgSend for ItemFromPoint {
 	}
 }
 
-pub_struct_msg_empty! { ResetContent: co::LB::RESETCONTENT.into();
+pub_struct_msg_empty! { LbResetContent: co::LB::RESETCONTENT.into();
 	/// [`LB_RESETCONTENT`](https://learn.microsoft.com/en-us/windows/win32/controls/lb-resetcontent)
 }
 
@@ -664,12 +665,12 @@ pub_struct_msg_empty! { ResetContent: co::LB::RESETCONTENT.into();
 /// message parameters.
 ///
 /// Return type: `SysResult<u32>`.
-pub struct SelectString {
+pub struct LbSelectString {
 	pub index: Option<u32>,
 	pub prefix: WString,
 }
 
-impl MsgSend for SelectString {
+impl MsgSend for LbSelectString {
 	type RetType = SysResult<u32>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -680,8 +681,8 @@ impl MsgSend for SelectString {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::SELECTSTRING.into(),
 			wparam: self.index.map_or(-1, |idx| idx as i32) as _,
 			lparam: self.prefix.as_ptr() as _,
@@ -693,13 +694,13 @@ impl MsgSend for SelectString {
 /// message parameters.
 ///
 /// Return type: `SysResult<()>`.
-pub struct SelItemRange {
+pub struct LbSelItemRange {
 	pub select: bool,
 	pub first_item: u16,
 	pub last_item: u16,
 }
 
-impl MsgSend for SelItemRange {
+impl MsgSend for LbSelItemRange {
 	type RetType = SysResult<()>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -709,8 +710,8 @@ impl MsgSend for SelItemRange {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::SELITEMRANGE.into(),
 			wparam: self.select as _,
 			lparam: MAKEDWORD(self.first_item, self.last_item) as _,
@@ -722,12 +723,12 @@ impl MsgSend for SelItemRange {
 /// message parameters.
 ///
 /// Return type: `SysResult<()>`.
-pub struct SelItemRangeEx {
+pub struct LbSelItemRangeEx {
 	pub first_index: u32,
 	pub last_index: u32,
 }
 
-impl MsgSend for SelItemRangeEx {
+impl MsgSend for LbSelItemRangeEx {
 	type RetType = SysResult<()>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -737,8 +738,8 @@ impl MsgSend for SelItemRangeEx {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::SELITEMRANGEEX.into(),
 			wparam: self.first_index as _,
 			lparam: self.last_index as _,
@@ -750,11 +751,11 @@ impl MsgSend for SelItemRangeEx {
 /// message parameters.
 ///
 /// Return type: `SysResult<()>`.
-pub struct SetAnchorIndex {
+pub struct LbSetAnchorIndex {
 	pub index: u32,
 }
 
-impl MsgSend for SetAnchorIndex {
+impl MsgSend for LbSetAnchorIndex {
 	type RetType = SysResult<()>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -764,8 +765,8 @@ impl MsgSend for SetAnchorIndex {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::SETANCHORINDEX.into(),
 			wparam: self.index as _,
 			lparam: 0,
@@ -777,12 +778,12 @@ impl MsgSend for SetAnchorIndex {
 /// message parameters.
 ///
 /// Return type: `SysResult<()>`.
-pub struct SetCaretIndex {
+pub struct LbSetCaretIndex {
 	pub index: u32,
 	pub at_least_partially_visible: bool,
 }
 
-impl MsgSend for SetCaretIndex {
+impl MsgSend for LbSetCaretIndex {
 	type RetType = SysResult<()>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -792,8 +793,8 @@ impl MsgSend for SetCaretIndex {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::SETCARETINDEX.into(),
 			wparam: self.index as _,
 			lparam: self.at_least_partially_visible as _,
@@ -805,19 +806,19 @@ impl MsgSend for SetCaretIndex {
 /// message parameters.
 ///
 /// Return type: `()`.
-pub struct SetColumnWidth {
+pub struct LbSetColumnWidth {
 	pub width: u32,
 }
 
-impl MsgSend for SetColumnWidth {
+impl MsgSend for LbSetColumnWidth {
 	type RetType = ();
 
 	unsafe fn isize_to_ret(&self, _: isize) -> Self::RetType {
 		()
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::SETCOLUMNWIDTH.into(),
 			wparam: self.width as _,
 			lparam: 0,
@@ -829,11 +830,11 @@ impl MsgSend for SetColumnWidth {
 /// message parameters.
 ///
 /// Return type: `SysResult<()>`.
-pub struct SetCount {
+pub struct LbSetCount {
 	pub new_count: u32,
 }
 
-impl MsgSend for SetCount {
+impl MsgSend for LbSetCount {
 	type RetType = SysResult<()>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -844,8 +845,8 @@ impl MsgSend for SetCount {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::SETCOUNT.into(),
 			wparam: self.new_count as _,
 			lparam: 0,
@@ -857,11 +858,11 @@ impl MsgSend for SetCount {
 /// message parameters.
 ///
 /// Return type: `SysResult<()>`.
-pub struct SetCurSel {
+pub struct LbSetCurSel {
 	pub index: Option<u32>,
 }
 
-impl MsgSend for SetCurSel {
+impl MsgSend for LbSetCurSel {
 	type RetType = SysResult<()>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -875,8 +876,8 @@ impl MsgSend for SetCurSel {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::SETCURSEL.into(),
 			wparam: self.index.map_or(-1, |idx| idx as i32) as _,
 			lparam: 0,
@@ -888,19 +889,19 @@ impl MsgSend for SetCurSel {
 /// message parameters.
 ///
 /// Return type: `()`.
-pub struct SetHorizontalExtent {
+pub struct LbSetHorizontalExtent {
 	pub width: u32,
 }
 
-impl MsgSend for SetHorizontalExtent {
+impl MsgSend for LbSetHorizontalExtent {
 	type RetType = ();
 
 	unsafe fn isize_to_ret(&self, _: isize) -> Self::RetType {
 		()
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::SETHORIZONTALEXTENT.into(),
 			wparam: self.width as _,
 			lparam: 0,
@@ -912,12 +913,12 @@ impl MsgSend for SetHorizontalExtent {
 /// message parameters.
 ///
 /// Return type: `SysResult<()>`.
-pub struct SetItemData {
+pub struct LbSetItemData {
 	pub index: u32,
 	pub data: isize,
 }
 
-impl MsgSend for SetItemData {
+impl MsgSend for LbSetItemData {
 	type RetType = SysResult<()>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -927,8 +928,8 @@ impl MsgSend for SetItemData {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::SETITEMDATA.into(),
 			wparam: self.index as _,
 			lparam: self.data,
@@ -940,12 +941,12 @@ impl MsgSend for SetItemData {
 /// message parameters.
 ///
 /// Return type: `SysResult<()>`.
-pub struct SetItemHeight {
+pub struct LbSetItemHeight {
 	pub index: Option<u32>,
 	pub height: u8,
 }
 
-impl MsgSend for SetItemHeight {
+impl MsgSend for LbSetItemHeight {
 	type RetType = SysResult<()>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -955,8 +956,8 @@ impl MsgSend for SetItemHeight {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::SETITEMHEIGHT.into(),
 			wparam: self.index.unwrap_or(0) as _,
 			lparam: self.height as _,
@@ -968,11 +969,11 @@ impl MsgSend for SetItemHeight {
 /// message parameters.
 ///
 /// Return type: `SysResult<LCID>`.
-pub struct SetLocale {
+pub struct LbSetLocale {
 	pub locale: LCID,
 }
 
-impl MsgSend for SetLocale {
+impl MsgSend for LbSetLocale {
 	type RetType = SysResult<LCID>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -982,8 +983,8 @@ impl MsgSend for SetLocale {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::SETLOCALE.into(),
 			wparam: u32::from(self.locale) as _,
 			lparam: 0,
@@ -995,12 +996,12 @@ impl MsgSend for SetLocale {
 /// message parameters.
 ///
 /// Return type: `SysResult<()>`.
-pub struct SetSel {
+pub struct LbSetSel {
 	pub select: bool,
 	pub index: Option<u32>,
 }
 
-impl MsgSend for SetSel {
+impl MsgSend for LbSetSel {
 	type RetType = SysResult<()>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -1010,8 +1011,8 @@ impl MsgSend for SetSel {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::SETSEL.into(),
 			wparam: self.select as _,
 			lparam: self.index.map_or(-1, |idx| idx as i32) as _,
@@ -1023,19 +1024,19 @@ impl MsgSend for SetSel {
 /// message parameters.
 ///
 /// Return type: `SysResult<()>`.
-pub struct SetTabStops<'a> {
+pub struct LbSetTabStops<'a> {
 	pub tab_stops: &'a [u32],
 }
 
-impl<'a> MsgSend for SetTabStops<'a> {
+impl<'a> MsgSend for LbSetTabStops<'a> {
 	type RetType = SysResult<()>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
 		zero_as_badargs(v).map(|_| ())
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::SETTABSTOPS.into(),
 			wparam: self.tab_stops.len(),
 			lparam: vec_ptr(self.tab_stops) as _,
@@ -1047,11 +1048,11 @@ impl<'a> MsgSend for SetTabStops<'a> {
 /// message parameters.
 ///
 /// Return type: `SysResult<()>`.
-pub struct SetTopIndex {
+pub struct LbSetTopIndex {
 	pub index: u32,
 }
 
-impl MsgSend for SetTopIndex {
+impl MsgSend for LbSetTopIndex {
 	type RetType = SysResult<()>;
 
 	unsafe fn isize_to_ret(&self, v: isize) -> Self::RetType {
@@ -1061,8 +1062,8 @@ impl MsgSend for SetTopIndex {
 		}
 	}
 
-	fn as_generic_wm(&mut self) -> WndMsg {
-		WndMsg {
+	fn as_generic_wm(&mut self) -> Wm {
+		Wm {
 			msg_id: co::LB::SETTOPINDEX.into(),
 			wparam: self.index as _,
 			lparam: 0,

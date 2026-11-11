@@ -1,6 +1,7 @@
 #![allow(non_camel_case_types, non_upper_case_globals)]
 
 use crate::co::*;
+use crate::macros::*;
 
 const_ordinary! { AC_SRC: u8;
 	/// [`BLENDFUNCTION`](crate::BLENDFUNCTION) `BlendOp` and `AlphaFormat`
@@ -27,7 +28,7 @@ const_bitflag! { ACCELF: u8;
 }
 
 const_ordinary! { APPCOMMAND: u16;
-	/// [`wm::AppCommand`](crate::msg::wm::AppCommand) commands (`u16`).
+	/// [`WmAppCommand`](crate::msg::WmAppCommand) commands (`u16`).
 	=>
 	BROWSER_BACKWARD 1
 	BROWSER_FORWARD 2
@@ -119,7 +120,7 @@ const_cmd! { BN;
 	KILLFOCUS 7
 }
 
-const_ws! { BS: u32;
+const_ws! { BS;
 	/// Button control
 	/// [styles](https://learn.microsoft.com/en-us/windows/win32/controls/button-styles)
 	/// (`u32`).
@@ -186,7 +187,7 @@ const_bitflag! { BSF: u32;
 }
 
 const_ordinary! { BST: u32;
-	/// [`bm::GetCheck`](crate::msg::bm::GetCheck) return value (`u32`).
+	/// [`BmGetCheck`](crate::msg::BmGetCheck) return value (`u32`).
 	=>
 	UNCHECKED 0x0000
 	CHECKED 0x0001
@@ -255,7 +256,7 @@ const_cmd! { CBN;
 	SELENDCANCEL 10
 }
 
-const_ws! { CBS: u32;
+const_ws! { CBS;
 	/// Combo box control
 	/// [styles](https://learn.microsoft.com/en-us/windows/win32/controls/combo-box-styles)
 	/// (`u32`).
@@ -414,7 +415,7 @@ const_ordinary! { CLR: u32;
 }
 
 const_ordinary! { CMD: u16;
-	/// [`wm::Command`](crate::msg::wm::Command) notification codes (`u16`).
+	/// [`WmCommand`](crate::msg::WmCommand) notification codes (`u16`).
 	///
 	/// Note that control-specific notification codes have their own types,
 	/// which are convertible to `CMD`.
@@ -428,6 +429,8 @@ const_bitflag! { CS: u32;
 	/// [`styles`](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-class-styles)
 	/// (`u32`).
 	=>
+	/// None of the actual values (zero).
+	NoValue 0
 	VREDRAW 0x0001
 	HREDRAW 0x0002
 	DBLCLKS 0x0008
@@ -490,8 +493,8 @@ const_ordinary! { DDC: u32;
 }
 
 const_bitflag! { DDL: u16;
-	/// [`cb::Dir`](crate::msg::cb::Dir) and [`lb::Dir`](crate::msg::lb::Dir)
-	/// attributes (`u16`).
+	/// [`CbDir`](crate::msg::CbDir) and [`LbDir`](crate::msg::LbDir) attributes
+	/// (`u16`).
 	=>
 	READWRITE 0x0000
 	READONLY 0x0001
@@ -1047,7 +1050,7 @@ const_ordinary! { DMTT: i16;
 }
 
 const_ordinary! { DLGC: u16;
-	/// [`wm::GetDlgCode`](crate::msg::wm::GetDlgCode) return value (`u16`).
+	/// [`WmGetDlgCode`](crate::msg::WmGetDlgCode) return value (`u16`).
 	=>
 	/// None of the actual values (zero).
 	NoValue 0
@@ -1119,7 +1122,7 @@ const_bitflag! { DT: u32;
 }
 
 const_bitflag! { EC: u16;
-	/// [`em::GetImeStatus`](crate::msg::em::SetMargins) margins to set (`u16`).
+	/// [`EmGetImeStatus`](crate::msg::EmSetMargins) margins to set (`u16`).
 	=>
 	LEFTMARGIN 0x0001
 	RIGHTMARGIN 0x0002
@@ -1140,8 +1143,8 @@ const_bitflag! { EDS: u32;
 }
 
 const_bitflag! { EIMES: u16;
-	/// [`em::GetImeStatus`](crate::msg::em::GetImeStatus) and
-	/// [`em::SetImeStatus`](crate::msg::em::SetImeStatus) status (`u16`).
+	/// [`EmGetImeStatus`](crate::msg::EmGetImeStatus) and
+	/// [`EmSetImeStatus`](crate::msg::EmSetImeStatus) status (`u16`).
 	=>
 	GETCOMPSTRATONCE 0x0001
 	CANCELCOMPSTRINFOCUS 0x0002
@@ -1215,7 +1218,7 @@ const_cmd! { EN;
 }
 
 const_bitflag! { ENDSESSION: u32;
-	/// [`wm::EndSession`](crate::msg::wm::EndSession) event (`u32`).
+	/// [`WmEndSession`](crate::msg::WmEndSession) event (`u32`).
 	=>
 	RESTARTORSHUTDOWN 0
 	CLOSEAPP 0x0000_0001
@@ -1233,7 +1236,7 @@ const_ordinary! { ENUM_SETTINGS: u32;
 	REGISTRY -2i32 as u32
 }
 
-const_ws! { ES: u32;
+const_ws! { ES;
 	/// Edit control
 	/// [styles](https://learn.microsoft.com/en-us/windows/win32/controls/edit-control-styles)
 	/// (`u32`).
@@ -1257,7 +1260,7 @@ const_ws! { ES: u32;
 	/// Displays an asterisk (*) for each character typed into the edit control.
 	/// This style is valid only for single-line edit controls. To change the
 	/// characters that is displayed, or set or clear this style, use the
-	/// [`EM_SETPASSWORDCHAR`](crate::msg::em::SetPasswordChar) message.
+	/// [`EM_SETPASSWORDCHAR`](crate::msg::EmSetPasswordChar) message.
 	PASSWORD 0x0020
 	/// Automatically scrolls text up one page when the user presses the ENTER
 	/// key on the last line.
@@ -1319,7 +1322,7 @@ const_bitflag! { EWX: u32;
 }
 
 const_ordinary! { FAPPCOMMAND: u16;
-	/// [`wm::AppCommand`](crate::msg::wm::AppCommand) input event (`u16`).
+	/// [`WmAppCommand`](crate::msg::WmAppCommand) input event (`u16`).
 	=>
 	MOUSE 0x8000
 	KEY 0
@@ -1410,8 +1413,8 @@ const_ordinary! { GW: u32;
 }
 
 const_ordinary! { GWL_C: i8;
-	/// [`wm::StyleChanged`](crate::msg::wm::StyleChanged) and
-	/// [`wm::StyleChanging`](crate::msg::wm::StyleChanging) change (`i8`).
+	/// [`WmStyleChanged`](crate::msg::WmStyleChanged) and
+	/// [`WmStyleChanging`](crate::msg::WmStyleChanging) change (`i8`).
 	///
 	/// Originally has `GWL` prefix.
 	=>
@@ -1475,8 +1478,8 @@ const_ordinary! { HELPW: u32;
 }
 
 const_bitflag! { HOTKEYF: u16;
-	/// [`wm::GetHotkey`](crate::msg::wm::GetHotKey) and
-	/// [`wm::SetHotKey`](crate::msg::wm::SetHotKey) modifiers.
+	/// [`WmGetHotkey`](crate::msg::WmGetHotKey) and
+	/// [`WmSetHotKey`](crate::msg::WmSetHotKey) modifiers.
 	=>
 	/// None of the actual values (zero).
 	NoValue 0
@@ -1487,8 +1490,8 @@ const_bitflag! { HOTKEYF: u16;
 }
 
 const_ordinary! { HT: u16;
-	/// [`wm::NcHitTest`](crate::msg::wm::NcHitTest),
-	/// [`wm::SetCursor`](crate::msg::wm::SetCursor) `hit_test` (`u16`).
+	/// [`WmNcHitTest`](crate::msg::WmNcHitTest),
+	/// [`WmSetCursor`](crate::msg::WmSetCursor) `hit_test` (`u16`).
 	=>
 	BORDER 18
 	BOTTOM 15
@@ -1529,7 +1532,7 @@ const_ordinary! { HWND_PLACE: isize;
 }
 
 const_ordinary! { ICON_SZ: u8;
-	/// [`wm::SetIcon`](crate::msg::wm::SetIcon) icon size (`u8`).
+	/// [`WmSetIcon`](crate::msg::WmSetIcon) icon size (`u8`).
 	///
 	/// Originally has `ICON` prefix.
 	=>
@@ -1576,8 +1579,8 @@ const_ordinary! { IDI: u32;
 }
 
 const_ordinary! { IMAGE_TYPE: u8;
-	/// [`bm::GetImage`](crate::msg::bm::GetImage) `img_type`;
-	/// [`stm::GetImage`](crate::msg::stm::GetImage) `img_type` (`u8`).
+	/// [`BmGetImage`](crate::msg::BmGetImage) `img_type`;
+	/// [`StmGetImage`](crate::msg::StmGetImage) `img_type` (`u8`).
 	///
 	/// Originally has `IMAGE` prefix.
 	=>
@@ -1621,14 +1624,22 @@ const_bitflag! { KEYEVENTF: u32;
 }
 
 const_ordinary! { LAYOUT: u32;
-	/// [`GetProcessDefaultLayout`](crate::GetProcessDefaultLayout) and
-	/// [`SetProcessDefaultLayout`](crate::SetProcessDefaultLayout) value
-	/// (`u32`).
+	/// [`GetProcessDefaultLayout`](crate::GetProcessDefaultLayout),
+	/// [`SetProcessDefaultLayout`](crate::SetProcessDefaultLayout),
+	/// [`HDC::GetLayout`](crate::HDC::GetLayout) and
+	/// [`HDC::SetLayout`](crate::HDC::SetLayout) value (`u32`).
 	=>
-	/// None of the actual values (zero).
-	NoValue 0
-	/// Default horizontal layout is right to left.
+	/// Left to right.
+	LTR 0x0000_0000
+	/// Right to left.
 	RTL 0x0000_0001
+	/// Bottom to top.
+	BTT 0x0000_0002
+	/// Vertical before horizontal.
+	VBH 0x0000_0004
+	/// Disables any reflection during [`BitBlt`](crate::HDC::BitBlt) and
+	/// [`StretchBlt`](crate::HDC::StretchBlt) operations.
+	BITMAPORIENTATIONPRESERVED 0x0000_0008
 }
 
 const_wm! { LB;
@@ -1692,7 +1703,7 @@ const_cmd! { LBN;
 	KILLFOCUS 5
 }
 
-const_ws! { LBS: u32;
+const_ws! { LBS;
 	/// List box control
 	/// [styles](https://learn.microsoft.com/en-us/windows/win32/controls/list-box-styles)
 	/// (`u32`).
@@ -1718,6 +1729,19 @@ const_ws! { LBS: u32;
 	STANDARD Self::NOTIFY.0 | Self::SORT.0 | WS::VSCROLL.0 | WS::BORDER.0
 }
 
+const_bitflag! { LLKHF: u32;
+	/// [`KBDLLHOOKSTRUCT`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-kbdllhookstruct)
+	/// `flags` (`u32`).
+	=>
+	/// None of the actual values (zero).
+	NoValue 0
+	EXTENDEDKEY 0x0001
+	LOWER_IL_INJECTED 0x0002
+	INJECTED 0x0010
+	ALTDOWN 0x0020
+	UP 0x0080
+}
+
 const_ordinary! { LSFW: u32;
 	/// [`LockSetForegroundWindow`](crate::LockSetForegroundWindow) `lock_code`
 	/// (`u32`).
@@ -1734,6 +1758,16 @@ const_bitflag! { LWA: u32;
 	COLORKEY 0x0000_0001
 }
 
+const_ordinary! { MAPVK: u32;
+	/// [`MapVirtualKey`](crate::MapVirtualKey) `uMapType` (`u32`).
+	=>
+	VK_TO_VSC 0
+	VSC_TO_VK 1
+	VK_TO_CHAR 2
+	VSC_TO_VK_EX 3
+	VK_TO_VSC_EX 4
+}
+
 const_bitflag! { MB: u32;
 	/// [`HWND::MessageBox`](crate::HWND::MessageBox) `flags` (`u32`).
 	=>
@@ -1744,8 +1778,8 @@ const_bitflag! { MB: u32;
 	/// [`MB::ABORTRETRYIGNORE`](crate::co::MB::ABORTRETRYIGNORE).
 	CANCELTRYCONTINUE 0x0000_0006
 	/// Adds a Help button to the message box. When the user clicks the Help
-	/// button or presses F1 the system sends a
-	/// [`wm::Help`](crate::msg::wm::Help) message to the owner.
+	/// button or presses F1 the system sends a [`WmHelp`](crate::msg::WmHelp)
+	/// message to the owner.
 	HELP 0x0000_4000
 	/// The message box contains one push button: OK. This is the default.
 	OK 0x0000_0000
@@ -1917,8 +1951,8 @@ const_bitflag! { MIM: u32;
 }
 
 const_bitflag! { MK: u16;
-	/// [`wm::LButtonDown`](crate::msg::wm::LButtonDown) (and similar) virtual
-	/// keys (`u16`).
+	/// [`WmLButtonDown`](crate::msg::WmLButtonDown) (and similar) virtual keys
+	/// (`u16`).
 	=>
 	LBUTTON 0x0001
 	RBUTTON 0x0002
@@ -1992,7 +2026,7 @@ const_bitflag! { MFT: u32;
 }
 
 const_ordinary! { MND: u8;
-	/// [`wm::MenuDrag`](crate::msg::wm::MenuDrag) return value (`u8`).
+	/// [`WmMenuDrag`](crate::msg::WmMenuDrag) return value (`u8`).
 	=>
 	CONTINUE 0
 	ENDMENU 1
@@ -2059,7 +2093,7 @@ const_bitflag! { MOUSEEVENTF: u32;
 }
 
 const_ordinary! { MSGF: u8;
-	/// [`wm::EnterIdle`](crate::msg::wm::EnterIdle) reason (`u8`).
+	/// [`WmEnterIdle`](crate::msg::WmEnterIdle) reason (`u8`).
 	=>
 	DIALOGBOX 0
 	MENU 2
@@ -2261,7 +2295,7 @@ const_ordinary! { REGION: i32;
 }
 
 const_ordinary! { SB_EM: u16;
-	/// [`em::Scroll`](crate::msg::em::Scroll) action.
+	/// [`EmScroll`](crate::msg::EmScroll) action.
 	///
 	/// Originally has `SB` prefix.
 	=>
@@ -2272,8 +2306,8 @@ const_ordinary! { SB_EM: u16;
 }
 
 const_ordinary! { SB_REQ: u16;
-	/// [`wm::HScroll`](crate::msg::wm::HScroll) and
-	/// [`wm::VScroll`](crate::msg::wm::VScroll) request (`u16`).
+	/// [`WmHScroll`](crate::msg::WmHScroll) and
+	/// [`WmVScroll`](crate::msg::WmVScroll) request (`u16`).
 	///
 	/// Originally has `SB` prefix.
 	=>
@@ -2310,7 +2344,7 @@ const_ordinary! { SBB: i32;
 }
 
 const_ordinary! { SC: u32;
-	/// [`wm::SysCommand`](crate::msg::wm::SysCommand) type of system command
+	/// [`WmSysCommand`](crate::msg::WmSysCommand) type of system command
 	/// requested (`u32`).
 	=>
 	CLOSE 0xf060
@@ -2359,7 +2393,7 @@ const_bitflag! { SIF: u32;
 }
 
 const_ordinary! { SIZE_R: u8;
-	/// [`wm::Size`](crate::msg::wm::Size) request (`u8`).
+	/// [`WmSize`](crate::msg::WmSize) request (`u8`).
 	=>
 	/// The window has been resized but neither the `SIZE_R::MINIMIZED` nor
 	/// `SIZE_R::MAXIMIZED` value applies.
@@ -2420,12 +2454,12 @@ const_ordinary! { SM: i32;
 	/// The minimum tracking width of a window in pixels. The user cannot drag
 	/// the window frame to a size smaller than these dimensions. A window can
 	/// override this value by processing the
-	/// [`wm::GetMinMaxInfo`](crate::msg::wm::GetMinMaxInfo) message.
+	/// [`WmGetMinMaxInfo`](crate::msg::WmGetMinMaxInfo) message.
 	CXMINTRACK 34
 	/// The minimum tracking height of a window in pixels. The user cannot drag
 	/// the window frame to a size smaller than these dimensions. A window can
 	/// override this value by processing the
-	/// [`wm::GetMinMaxInfo`](crate::msg::wm::GetMinMaxInfo) message.
+	/// [`WmGetMinMaxInfo`](crate::msg::WmGetMinMaxInfo) message.
 	CYMINTRACK 35
 	CXDOUBLECLK 36
 	CYDOUBLECLK 37
@@ -2660,7 +2694,7 @@ const_bitflag! { SPIF: u32;
 	SENDCHANGE Self::SENDWININICHANGE.0
 }
 
-const_ws! { SS: u32;
+const_ws! { SS;
 	/// Label control
 	/// [styles](https://learn.microsoft.com/en-us/windows/win32/controls/static-control-styles)
 	/// (`u32`).
@@ -2773,7 +2807,7 @@ const_bitflag! { SWP: u32;
 }
 
 const_ordinary! { SW_S: u8;
-	/// [`wm::ShowWindow`](crate::msg::wm::ShowWindow) status (`u8`).
+	/// [`WmShowWindow`](crate::msg::WmShowWindow) status (`u8`).
 	///
 	/// Originally has `SW` prefix.
 	=>
@@ -2888,6 +2922,8 @@ const_ordinary! { VK: u16;
 	HANJA 0x19
 	/// IME Kanji mode.
 	KANJI 0x19
+	/// IME off.
+	IME_OFF 0x1a
 	/// ESC key.
 	ESCAPE 0x1b
 	/// IME convert.
@@ -3152,7 +3188,7 @@ const_ordinary! { VK: u16;
 }
 
 const_ordinary! { WA: u16;
-	/// [`wm::Activate`](crate::msg::wm::Activate) activation state (`u16`).
+	/// [`WmActivate`](crate::msg::WmActivate) activation state (`u16`).
 	=>
 	INACTIVE 0
 	ACTIVE 1
@@ -3467,7 +3503,7 @@ const_ordinary! { WM: u32;
 }
 
 const_ordinary! { WMPN: u16;
-	/// [`wm::ParentNotify`](crate::msg::wm::ParentNotify) event (`u16`).
+	/// [`WmParentNotify`](crate::msg::WmParentNotify) event (`u16`).
 	=>
 	CREATE WM::CREATE.0 as u16
 	DESTROY WM::DESTROY.0 as u16
@@ -3479,7 +3515,7 @@ const_ordinary! { WMPN: u16;
 }
 
 const_ordinary! { WMSZ: u8;
-	/// [`wm::Sizing`](crate::msg::wm::Sizing) window edge (`u8`).
+	/// [`WmSizing`](crate::msg::WmSizing) window edge (`u8`).
 	=>
 	LEFT 1
 	RIGHT 2
@@ -3521,12 +3557,12 @@ const_bitflag! { WS: u32;
 	/// [`HWND::EnableWindow`](crate::HWND::EnableWindow) function.
 	DISABLED 0x0800_0000
 	/// Clips child windows relative to each other; that is when a particular
-	/// child window receives a [`wm::Paint`](crate::msg::wm::Paint) message,
-	/// the `WS::CLIPSIBLINGS` style clips all other overlapping child windows
-	/// out of the region of the child window to be updated. If
-	/// `WS::CLIPSIBLINGS` is not specified and child windows overlap it is
-	/// possible when drawing within the client area of a child window to draw
-	/// within the client area of a neighboring child window.
+	/// child window receives a [`WmPaint`](crate::msg::WmPaint) message, the
+	/// `WS::CLIPSIBLINGS` style clips all other overlapping child windows out
+	/// of the region of the child window to be updated. If `WS::CLIPSIBLINGS`
+	/// is not specified and child windows overlap it is possible when drawing
+	/// within the client area of a child window to draw within the client area
+	/// of a neighboring child window.
 	CLIPSIBLINGS 0x0400_0000
 	/// Excludes the area occupied by child windows when drawing occurs within
 	/// the parent window. This style is used when creating the parent window.
@@ -3614,7 +3650,7 @@ const_bitflag! { WS_EX: u32;
 	/// [`WS::CAPTION`](crate::co::WS::CAPTION) style in the dwStyle parameter.
 	DLGMODALFRAME 0x0000_0001
 	/// The child window created with this style does not send the
-	/// [`wm::ParentNotify`](crate::msg::wm::ParentNotify) message to its parent
+	/// [`WmParentNotify`](crate::msg::WmParentNotify) message to its parent
 	/// window when it is created or destroyed.
 	NOPARENTNOTIFY 0x0000_0004
 	/// The window should be placed above all non-topmost windows and should
@@ -3649,8 +3685,8 @@ const_bitflag! { WS_EX: u32;
 	/// The title bar of the window includes a question mark. When the user
 	/// clicks the question mark the cursor changes to a question mark with a
 	/// pointer. If the user then clicks a child window the child receives a
-	/// [`wm::Help`](crate::msg::wm::Help) message. The child window should pass
-	/// the message to the parent window procedure which should call the
+	/// [`WmHelp`](crate::msg::WmHelp) message. The child window should pass the
+	/// message to the parent window procedure which should call the
 	/// [`WinHelp`](crate::HWND::WinHelp) function using the `HELP_WM_HELP`
 	/// command. The Help application displays a pop-up window that typically
 	/// contains help for the child window.
@@ -3749,7 +3785,7 @@ const_bitflag! { WS_EX: u32;
 }
 
 const_bitflag! { WVR: u32;
-	/// [`wm::NcCalcSize`](crate::msg::wm::NcCalcSize) return flags (`u32`).
+	/// [`WmNcCalcSize`](crate::msg::WmNcCalcSize) return flags (`u32`).
 	=>
 	/// None of the actual values (zero).
 	NoValue 0

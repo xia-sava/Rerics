@@ -1,5 +1,7 @@
 #![allow(non_camel_case_types, non_upper_case_globals)]
 
+use crate::macros::*;
+
 const_bitflag! { DXGI_ADAPTER_FLAG: u32;
 	/// [`DXGI_ADAPTER_FLAG`](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/ne-dxgi-dxgi_adapter_flag)
 	/// enumeration (`u32`).
@@ -18,6 +20,14 @@ const_ordinary! { DXGI_COMPUTE_PREEMPTION: u32;
 	THREAD_GROUP_BOUNDARY 2
 	THREAD_BOUNDARY 3
 	INSTRUCTION_BOUNDARY 4
+}
+
+const_ordinary! { DXGI_CREATE_FACTORY: u32;
+	/// [`CreateDXGIFactory2`](crate::CreateDXGIFactory2) `Flags` (`u32`).
+	=>
+	/// None of the actual values (zero).
+	NoValue 0
+	DEBUG 0x1
 }
 
 const_bitflag! { DXGI_ENUM_MODES: u32;

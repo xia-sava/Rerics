@@ -5,6 +5,7 @@ use crate::co;
 use crate::decl::*;
 use crate::guard::*;
 use crate::kernel::privs::*;
+use crate::macros::*;
 use crate::prelude::*;
 
 handle! { HACCESSTOKEN;
@@ -159,10 +160,11 @@ impl HACCESSTOKEN {
 		.to_sysresult()
 		{
 			Err(err) => match err {
-				co::ERROR::INSUFFICIENT_BUFFER => {}, // all good
+				// Some TOKEN_INFORMATION_CLASS (like Elevation) will return BAD_LENGTH.
+				co::ERROR::INSUFFICIENT_BUFFER | co::ERROR::BAD_LENGTH => {}, // all good
 				err => return Err(err),
 			},
-			Ok(_) => return Err(co::ERROR::INVALID_PARAMETER), // should never happen
+			Ok(_) => return Err(co::ERROR::UNIDENTIFIED_ERROR), // should never happen
 		};
 
 		let mut buf = vec![0u8; num_bytes as usize].into_boxed_slice();

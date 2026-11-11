@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicU32;
 use crate::co;
 use crate::decl::*;
 use crate::kernel::ffi_types::*;
+use crate::macros::*;
 use crate::ole::{privs::*, vts::*};
 use crate::prelude::*;
 use crate::shell::vts::*;
@@ -210,7 +211,7 @@ impl IFileOperationProgressSinkImpl {
 
 	fn_com_userdef_impl_noparm!(StartOperations);
 
-	fn FinishOperations(p: COMPTR, hrResult: HRES) -> HRES {
+	extern "system" fn FinishOperations(p: COMPTR, hrResult: HRES) -> HRES {
 		let box_impl = box_impl_of::<Self>(p);
 		hrresult_to_hres(match &box_impl.FinishOperations {
 			Some(func) => anyresult_to_hresult(func(unsafe { co::HRESULT::from_raw(hrResult) })),
@@ -218,7 +219,12 @@ impl IFileOperationProgressSinkImpl {
 		})
 	}
 
-	fn PreRenameItem(p: COMPTR, dwFlags: u32, psiItem: COMPTR, pszNewName: PCSTR) -> HRES {
+	extern "system" fn PreRenameItem(
+		p: COMPTR,
+		dwFlags: u32,
+		psiItem: COMPTR,
+		pszNewName: PCSTR,
+	) -> HRES {
 		let box_impl = box_impl_of::<Self>(p);
 		hrresult_to_hres(match &box_impl.PreRenameItem {
 			Some(func) => unsafe {
@@ -232,7 +238,7 @@ impl IFileOperationProgressSinkImpl {
 		})
 	}
 
-	fn PostRenameItem(
+	extern "system" fn PostRenameItem(
 		p: COMPTR,
 		dwFlags: u32,
 		psiItem: COMPTR,
@@ -255,7 +261,7 @@ impl IFileOperationProgressSinkImpl {
 		})
 	}
 
-	fn PreMoveItem(
+	extern "system" fn PreMoveItem(
 		p: COMPTR,
 		dwFlags: u32,
 		psiItem: COMPTR,
@@ -276,7 +282,7 @@ impl IFileOperationProgressSinkImpl {
 		})
 	}
 
-	fn PostMoveItem(
+	extern "system" fn PostMoveItem(
 		p: COMPTR,
 		dwFlags: u32,
 		psiItem: COMPTR,
@@ -301,7 +307,7 @@ impl IFileOperationProgressSinkImpl {
 		})
 	}
 
-	fn PreCopyItem(
+	extern "system" fn PreCopyItem(
 		p: COMPTR,
 		dwFlags: u32,
 		psiItem: COMPTR,
@@ -322,7 +328,7 @@ impl IFileOperationProgressSinkImpl {
 		})
 	}
 
-	fn PostCopyItem(
+	extern "system" fn PostCopyItem(
 		p: COMPTR,
 		dwFlags: u32,
 		psiItem: COMPTR,
@@ -347,7 +353,7 @@ impl IFileOperationProgressSinkImpl {
 		})
 	}
 
-	fn PreDeleteItem(p: COMPTR, dwFlags: u32, psiItem: COMPTR) -> HRES {
+	extern "system" fn PreDeleteItem(p: COMPTR, dwFlags: u32, psiItem: COMPTR) -> HRES {
 		let box_impl = box_impl_of::<Self>(p);
 		hrresult_to_hres(match &box_impl.PreDeleteItem {
 			Some(func) => unsafe {
@@ -360,7 +366,7 @@ impl IFileOperationProgressSinkImpl {
 		})
 	}
 
-	fn PostDeleteItem(
+	extern "system" fn PostDeleteItem(
 		p: COMPTR,
 		dwFlags: u32,
 		psiItem: COMPTR,
@@ -381,7 +387,7 @@ impl IFileOperationProgressSinkImpl {
 		})
 	}
 
-	fn PreNewItem(
+	extern "system" fn PreNewItem(
 		p: COMPTR,
 		dwFlags: u32,
 		psiDestinationFolder: COMPTR,
@@ -400,7 +406,7 @@ impl IFileOperationProgressSinkImpl {
 		})
 	}
 
-	fn PostNewItem(
+	extern "system" fn PostNewItem(
 		p: COMPTR,
 		dwFlags: u32,
 		psiDestinationFolder: COMPTR,
@@ -427,7 +433,7 @@ impl IFileOperationProgressSinkImpl {
 		})
 	}
 
-	fn UpdateProgress(p: COMPTR, iWorkTotal: u32, iWorkSoFar: u32) -> HRES {
+	extern "system" fn UpdateProgress(p: COMPTR, iWorkTotal: u32, iWorkSoFar: u32) -> HRES {
 		let box_impl = box_impl_of::<Self>(p);
 		hrresult_to_hres(match &box_impl.UpdateProgress {
 			Some(func) => anyresult_to_hresult(func(iWorkTotal, iWorkSoFar)),

@@ -358,7 +358,7 @@ impl SearchBar {
         let g = self.geom(cw);
         let (ex, ew) = g.edit;
         let width = ew + g.history.1;
-        let item_h = unsafe { list.SendMessage(w::msg::lb::GetItemHeight { index: None }) }
+        let item_h = unsafe { list.SendMessage(w::msg::LbGetItemHeight { index: None }) }
             .map(|h| h as i32)
             .unwrap_or(gui::dpi_y(18))
             .max(1);
@@ -375,7 +375,7 @@ impl SearchBar {
             true,
         );
         unsafe {
-            let _ = list.SendMessage(w::msg::lb::SetCurSel { index: Some(0) });
+            let _ = list.SendMessage(w::msg::LbSetCurSel { index: Some(0) });
         }
         list.ShowWindow(co::SW::SHOW);
         list.BringWindowToTop()?;
@@ -399,7 +399,7 @@ impl SearchBar {
     /// ドロップダウンの現在選択を確定する（入力欄へ入れて検索）。
     fn pick_selection(&self) -> w::AnyResult<()> {
         let list = self.inner.list.hwnd();
-        let sel = unsafe { list.SendMessage(w::msg::lb::GetCurSel {}) };
+        let sel = unsafe { list.SendMessage(w::msg::LbGetCurSel {}) };
         let text = sel.and_then(|i| self.inner.list.items().text(i).ok());
         self.close_dropdown(true);
         if let Some(text) = text {
@@ -808,10 +808,10 @@ impl SearchBar {
         let status = self.inner.status.borrow().clone();
         if !status.is_empty() {
             let (sx, sw) = g.status;
-            let rect = w::RECT { left: sx, top: 0, right: sx + sw, bottom: ch };
+            let mut rect = w::RECT { left: sx, top: 0, right: sx + sw, bottom: ch };
             dc.DrawText(
                 &status,
-                rect,
+                &mut rect,
                 co::DT::SINGLELINE | co::DT::VCENTER | co::DT::LEFT | co::DT::NOPREFIX,
             )?;
         }
@@ -850,8 +850,8 @@ impl SearchBar {
             chrome::vline(dc, x + wd - 1, y, y + h, chrome::shadow())?;
         }
         let text = format!("[{}]{}", if on { "x" } else { " " }, label);
-        let r = w::RECT { left: x + gui::dpi_x(2), top: y, right: x + wd, bottom: y + h };
-        dc.DrawText(&text, r, co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX)?;
+        let mut r = w::RECT { left: x + gui::dpi_x(2), top: y, right: x + wd, bottom: y + h };
+        dc.DrawText(&text, &mut r, co::DT::SINGLELINE | co::DT::VCENTER | co::DT::NOPREFIX)?;
         Ok(())
     }
 
@@ -860,8 +860,8 @@ impl SearchBar {
         chrome::hline(dc, x, x + wd, y + h - 1, chrome::shadow())?;
         chrome::vline(dc, x, y, y + h, chrome::shadow())?;
         chrome::vline(dc, x + wd - 1, y, y + h, chrome::shadow())?;
-        let r = w::RECT { left: x, top: y, right: x + wd, bottom: y + h };
-        dc.DrawText(glyph, r, co::DT::SINGLELINE | co::DT::VCENTER | co::DT::CENTER | co::DT::NOPREFIX)?;
+        let mut r = w::RECT { left: x, top: y, right: x + wd, bottom: y + h };
+        dc.DrawText(glyph, &mut r,co::DT::SINGLELINE | co::DT::VCENTER | co::DT::CENTER | co::DT::NOPREFIX)?;
         Ok(())
     }
 }

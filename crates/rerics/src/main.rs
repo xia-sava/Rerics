@@ -1018,7 +1018,7 @@ impl MainWindow {
                 // 最小化起動時は最大化復元を抑止する（最小化が打ち消されないように）。
                 if applied && ws.maximized && !debug_minimized {
                     unsafe {
-                        let _ = this.wnd.hwnd().PostMessage(w::msg::WndMsg {
+                        let _ = this.wnd.hwnd().PostMessage(w::msg::Wm {
                             msg_id: winutil::msg::RESTORE_MAXIMIZE,
                             wparam: 0,
                             lparam: 0,
@@ -1058,7 +1058,7 @@ impl MainWindow {
                 this.log.error("設定ファイル config.toml を読み込めませんでした。既定の設定で起動しています。");
                 this.log.warn(&format!("config.toml の詳細: {detail}"));
                 unsafe {
-                    let _ = this.wnd.hwnd().PostMessage(w::msg::WndMsg {
+                    let _ = this.wnd.hwnd().PostMessage(w::msg::Wm {
                         msg_id: winutil::msg::CONFIG_WARN,
                         wparam: 0,
                         lparam: 0,
@@ -1089,7 +1089,7 @@ impl MainWindow {
 
         let this = self.clone();
         self.wnd.on().wm_mouse_wheel(move |p| {
-            let dist = p.keys.raw() as i16;
+            let dist = p.wheel_distance;
             this.scroll_under_cursor(dist, p.coords)?;
             Ok(())
         });

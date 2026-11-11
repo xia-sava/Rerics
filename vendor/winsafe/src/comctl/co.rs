@@ -2,6 +2,7 @@
 
 use crate::co::*;
 use crate::comctl::privs::*;
+use crate::macros::*;
 
 const_ordinary! { ADRF: u32;
 	/// [`NMTVASYNCDRAW`](crate::NMTVASYNCDRAW) `dwRetFlags` (`u32`).
@@ -72,7 +73,7 @@ const_ordinary! { BIA: u32;
 	CENTER 4
 }
 
-const_ws! { BTNS: u8;
+const_ws! { BTNS;
 	/// Toolbar control
 	/// [styles](https://learn.microsoft.com/en-us/windows/win32/controls/toolbar-control-and-button-styles)
 	/// (`u8`).
@@ -269,7 +270,7 @@ const_nm! { DTN;
 	WMKEYDOWN DTN_FIRST - 4
 }
 
-const_ws! { DTS: u32;
+const_ws! { DTS;
 	/// Date and time picker control
 	/// [styles](https://learn.microsoft.com/en-us/windows/win32/controls/date-and-time-picker-control-styles)
 	/// (`u32`).
@@ -328,7 +329,7 @@ const_bitflag! { GDT: u32;
 }
 
 const_ordinary! { GDTR: u32;
-	/// [`dtm::GetRange`](crate::msg::dtm::GetRange) return value (`u32`).
+	/// [`DtmGetRange`](crate::msg::DtmGetRange) return value (`u32`).
 	=>
 	MIN 0x0001
 	MAX 0x0002
@@ -474,7 +475,7 @@ const_nm! { HDN;
 	BEGINDRAG HDN_FIRST - 10
 }
 
-const_ws! { HDS: u32;
+const_ws! { HDS;
 	/// Header control
 	/// [styles](https://learn.microsoft.com/en-us/windows/win32/controls/header-control-styles)
 	/// (`u32`).
@@ -495,8 +496,8 @@ const_ws! { HDS: u32;
 }
 
 const_ordinary! { HDSIL: u8;
-	/// [`hdm::GetImageList`](crate::msg::hdm::GetImageList) and
-	/// [`hdm::SetImageList`](crate::msg::hdm::SetImageList) `which` (`u8`).
+	/// [`HdmGetImageList`](crate::msg::HdmGetImageList) and
+	/// [`HdmSetImageList`](crate::msg::HdmSetImageList) `which` (`u8`).
 	=>
 	NORMAL 0
 	STATE 1
@@ -563,7 +564,7 @@ const_bitflag! { ICC: u32;
 }
 
 const_ordinary! { ID_PB: u32;
-	/// [`psm::GetResult`](crate::msg::psm::GetResult) return type (`i32`).
+	/// [`PsmGetResult`](crate::msg::PsmGetResult) return type (`i32`).
 	=>
 	RESTARTWINDOWS 0x2
 	REBOOTSYSTEM Self::RESTARTWINDOWS.0 | 0x1
@@ -724,7 +725,7 @@ const_ordinary! { LV_VIEW: u32;
 }
 
 const_ordinary! { LVA: u16;
-	/// [`lvm::Arrange`](crate::msg::lvm::Arrange) arrangement (`u16`).
+	/// [`LvmArrange`](crate::msg::LvmArrange) arrangement (`u16`).
 	=>
 	DEFAULT 0x0000
 	SNAPTOGRID 0x0005
@@ -870,7 +871,7 @@ const_bitflag! { LVGF: u32;
 }
 
 const_ordinary! { LVGGR: i32;
-	/// [`lvm::GetGroupRect`](crate::msg::lvm::GetGroupRect) `flags` (`i32`).
+	/// [`LvmGetGroupRect`](crate::msg::LvmGetGroupRect) `flags` (`i32`).
 	=>
 	GROUP 0
 	HEADER 1
@@ -962,7 +963,7 @@ const_ordinary! { LVIM: u32;
 }
 
 const_ordinary! { LVIR: u8;
-	/// [`lvm::GetItemRect`](crate::msg::lvm::GetItemRect) `portion` (`u8`).
+	/// [`LvmGetItemRect`](crate::msg::LvmGetItemRect) `portion` (`u8`).
 	=>
 	BOUNDS 0
 	ICON 1
@@ -988,7 +989,7 @@ const_bitflag! { LVIS: u32;
 }
 
 const_ordinary! { LVSIL: u8;
-	/// [`lvm::GetImageList`](crate::msg::lvm::GetImageList) `kind` (`u8`).
+	/// [`LvmGetImageList`](crate::msg::LvmGetImageList) `kind` (`u8`).
 	=>
 	NORMAL 0
 	SMALL 1
@@ -1164,7 +1165,7 @@ const_nm! { LVN;
 }
 
 const_bitflag! { LVNI: u32;
-	/// [`lvm::GetNextItem`](crate::msg::lvm::GetNextItem) relationship (`u32`).
+	/// [`LvmGetNextItem`](crate::msg::LvmGetNextItem) relationship (`u32`).
 	=>
 	ALL 0x0000
 	FOCUSED 0x0001
@@ -1183,7 +1184,7 @@ const_bitflag! { LVNI: u32;
 	DIRECTIONMASK Self::ABOVE.0 | Self::BELOW.0 | Self::TOLEFT.0 | Self::TORIGHT.0
 }
 
-const_ws! { LVS: u32;
+const_ws! { LVS;
 	/// List view control
 	/// [styles](https://learn.microsoft.com/en-us/windows/win32/controls/list-view-window-styles)
 	/// (`u32`).
@@ -1254,7 +1255,7 @@ const_wsex! { LVS_EX;
 }
 
 const_bitflag! { LVSICF: u32;
-	/// [`lvm::SetItemCount`](crate::msg::lvm::SetItemCount) `behavior` (`u32`).
+	/// [`LvmSetItemCount`](crate::msg::LvmSetItemCount) `behavior` (`u32`).
 	=>
 	NOINVALIDATEALL 0x0000_0001
 	NOSCROLL 0x0000_0002
@@ -1278,7 +1279,7 @@ const_bitflag! { LVTVIM: u32;
 	LABELMARGIN 0x0000_0004
 }
 
-const_ws! { LWS: u32;
+const_ws! { LWS;
 	/// SysLink control
 	/// [styles](https://learn.microsoft.com/en-us/windows/win32/controls/syslink-control-styles)
 	/// (`u32`).
@@ -1408,7 +1409,7 @@ const_nm! { MCN;
 	VIEWCHANGE MCN_FIRST - 4
 }
 
-const_ws! { MCS: u32;
+const_ws! { MCS;
 	/// Month calendar control
 	/// [styles](https://learn.microsoft.com/en-us/windows/win32/controls/month-calendar-control-styles)
 	/// (`u32`).
@@ -1426,7 +1427,7 @@ const_ws! { MCS: u32;
 }
 
 const_ordinary! { MCSC: u8;
-	/// [`dtm::GetMcColor`](crate::msg::dtm::GetMcColor) color (`u8`).
+	/// [`DtmGetMcColor`](crate::msg::DtmGetMcColor) color (`u8`).
 	=>
 	BACKGROUND 0
 	TEXT 1
@@ -1461,7 +1462,7 @@ const_nm! { NM;
 	THEMECHANGED NM_FIRST - 22
 }
 
-const_ws! { PBS: u32;
+const_ws! { PBS;
 	/// Progress bar control
 	/// [styles](https://learn.microsoft.com/en-us/windows/win32/controls/progress-bar-control-styles)
 	/// (`u32`).
@@ -1510,7 +1511,7 @@ const_ordinary! { PBST: u32;
 }
 
 const_ordinary! { PSBTN: u32;
-	/// [`psm::PressButton`](crate::msg::psm::PressButton) `index` (`u32`).
+	/// [`PsmPressButton`](crate::msg::PsmPressButton) `index` (`u32`).
 	=>
 	BACK 0
 	NEXT 1
@@ -1658,11 +1659,10 @@ const_bitflag! { PSP: u32;
 }
 
 const_bitflag! { PSWIZB: u32;
-	/// [`psm::EnableWizButtons`](crate::msg::psm::EnableWizButtons),
-	/// [`psm::SetButtonText`](crate::msg::psm::SetButtonText),
-	/// [`psm::SetWizButtons`](crate::msg::psm::SetWizButtons) and
-	/// [`psm::ShowWizButtons`](crate::msg::psm::ShowWizButtons) buttons
-	/// (`u32`).
+	/// [`PsmEnableWizButtons`](crate::msg::PsmEnableWizButtons),
+	/// [`PsmSetButtonText`](crate::msg::PsmSetButtonText),
+	/// [`PsmSetWizButtons`](crate::msg::PsmSetWizButtons) and
+	/// [`PsmShowWizButtons`](crate::msg::PsmShowWizButtons) buttons (`u32`).
 	=>
 	BACK 0x0000_0001
 	NEXT 0x0000_0002
@@ -1672,8 +1672,7 @@ const_bitflag! { PSWIZB: u32;
 }
 
 const_ordinary! { PSWIZBF: u32;
-	/// [`psm::SetWizButtons`](crate::msg::psm::SetWizButtons) `elev_icon`
-	/// (`u32`).
+	/// [`PsmSetWizButtons`](crate::msg::PsmSetWizButtons) `elev_icon` (`u32`).
 	=>
 	/// None of the actual values (zero).
 	NoValue 0
@@ -1749,7 +1748,7 @@ const_nm! { RBN;
 	AUTOBREAK RBN_FIRST - 22
 }
 
-const_ws! { RBS: u32;
+const_ws! { RBS;
 	/// Rebar control
 	/// [styles](https://learn.microsoft.com/en-us/windows/win32/controls/rebar-control-styles)
 	/// (`u32`).
@@ -1790,7 +1789,7 @@ const_wm! { SB;
 	SETBKCOLOR CCM::SETBKCOLOR.0
 }
 
-const_ws! { SBARS: u32;
+const_ws! { SBARS;
 	/// Status bar control
 	/// [styles](https://learn.microsoft.com/en-us/windows/win32/controls/status-bar-styles)
 	/// (`u32`).
@@ -1810,9 +1809,9 @@ const_nm! { SBN;
 }
 
 const_ordinary! { SBT: u16;
-	/// [`sb::GetText`](crate::msg::sb::GetText),
-	/// [`sb::GetTextLength`](crate::msg::sb::GetTextLength) and
-	/// [`sb::SetText`](crate::msg::sb::SetText) drawing operation (`u16`).
+	/// [`SbGetText`](crate::msg::SbGetText),
+	/// [`SbGetTextLength`](crate::msg::SbGetTextLength) and
+	/// [`SbSetText`](crate::msg::SbSetText) drawing operation (`u16`).
 	=>
 	BORDER 0
 	OWNERDRAW 0x1000
@@ -1849,8 +1848,7 @@ const_ordinary! { TB: i32;
 }
 
 const_bitflag! { TBBF: u32;
-	/// [`tbm::GetBitmapFlags`](crate::msg::tbm::GetBitmapFlags) return value
-	/// (`u32`).
+	/// [`TbGetBitmapFlags`](crate::msg::TbGetBitmapFlags) return value (`u32`).
 	=>
 	LARGE 0x0001
 }
@@ -2020,7 +2018,7 @@ const_nm! { TBN;
 	WRAPHOTITEM TBN_FIRST - 24
 }
 
-const_ws! { TBS: u32;
+const_ws! { TBS;
 	/// Trackbar control
 	/// [styles](https://learn.microsoft.com/en-us/windows/win32/controls/trackbar-control-styles)
 	/// (`u32`).
@@ -2079,7 +2077,7 @@ const_wsex! { TBSTYLE_EX;
 }
 
 const_ordinary! { TBTS: u8;
-	/// [`trbm::SetTipSide`](crate::msg::trbm::SetTipSide) `location` (`u8`).
+	/// [`TbmSetTipSide`](crate::msg::TbmSetTipSide) `location` (`u8`).
 	=>
 	TOP 0
 	LEFT 1
@@ -2165,7 +2163,7 @@ const_nm! { TCN;
 	SELCHANGING TCN_FIRST - 2
 }
 
-const_ws! { TCS: u32;
+const_ws! { TCS;
 	/// Tab control
 	/// [styles](https://learn.microsoft.com/en-us/windows/win32/controls/tab-control-styles)
 	/// (`u32`).
@@ -2349,7 +2347,7 @@ const_ordinary! { TVC: u32;
 }
 
 const_ordinary! { TVE: u32;
-	/// [`tvm::Expand`](crate::msg::tvm::Expand) `action` (`u32`).
+	/// [`TvmExpand`](crate::msg::TvmExpand) `action` (`u32`).
 	=>
 	COLLAPSE 0x0001
 	EXPAND 0x0002
@@ -2359,7 +2357,7 @@ const_ordinary! { TVE: u32;
 }
 
 const_ordinary! { TVGN: u32;
-	/// [`tvm::GetNextItem`](crate::msg::tvm::GetNextItem) `which` (`u32`).
+	/// [`TvmGetNextItem`](crate::msg::TvmGetNextItem) `which` (`u32`).
 	=>
 	ROOT 0x0000
 	NEXT 0x0001
@@ -2449,7 +2447,7 @@ const_bitflag! { TVIS_EX: u32;
 }
 
 const_bitflag! { TVSBF: u32;
-	/// [`tvm::SetBorder`](crate::msg::tvm::SetBorder) `action` (`u32`).
+	/// [`TvmSetBorder`](crate::msg::TvmSetBorder) `action` (`u32`).
 	=>
 	XBORDER 0x0000_0001
 	YBORDER 0x0000_0002
@@ -2537,7 +2535,7 @@ const_nm! { TVN;
 	ASYNCDRAW TVN_FIRST - 20
 }
 
-const_ws! { TVS: u32;
+const_ws! { TVS;
 	/// Tree view control
 	/// [styles](https://learn.microsoft.com/en-us/windows/win32/controls/tree-view-control-window-styles)
 	/// (`u32`).
@@ -2583,8 +2581,8 @@ const_wsex! { TVS_EX;
 }
 
 const_ordinary! { TVSIL: u8;
-	/// [`tvm::GetImageList`](crate::msg::tvm::GetImageList) and
-	/// [`tvm::SetImageList`](crate::msg::tvm::SetImageList) `kind`.
+	/// [`TvmGetImageList`](crate::msg::TvmGetImageList) and
+	/// [`TvmSetImageList`](crate::msg::TvmSetImageList) `kind`.
 	=>
 	NORMAL 0
 	STATE 2
@@ -2621,7 +2619,7 @@ const_nm! { UDN;
 	DELTAPOS UDN_FIRST - 1
 }
 
-const_ws! { UDS: u32;
+const_ws! { UDS;
 	/// Up-down control
 	/// [styles](https://learn.microsoft.com/en-us/windows/win32/controls/up-down-control-styles)
 	/// (`u32`).
@@ -2632,7 +2630,7 @@ const_ws! { UDS: u32;
 	/// the ending or beginning of the range.
 	WRAP 0x0001
 	/// Causes the up-down control to set the text of the buddy window (using
-	/// the [`WM_SETTEXT`](crate::msg::wm::SetText) message) when the position
+	/// the [`WM_SETTEXT`](crate::msg::WmSetText) message) when the position
 	/// changes. The text consists of the position formatted as a decimal or
 	/// hexadecimal string.
 	SETBUDDYINT 0x0002

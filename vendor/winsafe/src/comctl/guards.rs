@@ -2,6 +2,7 @@ use std::marker::PhantomData;
 
 use crate::comctl::ffi;
 use crate::decl::*;
+use crate::macros::*;
 use crate::prelude::*;
 
 handle_guard! { DestroyPropertySheetPageGuard: HPROPSHEETPAGE;
@@ -29,9 +30,7 @@ pub struct ImageListEndDragGuard<'a> {
 
 impl<'a> Drop for ImageListEndDragGuard<'a> {
 	fn drop(&mut self) {
-		unsafe {
-			ffi::ImageList_EndDrag();
-		}
+		unsafe { ffi::ImageList_EndDrag() };
 	}
 }
 

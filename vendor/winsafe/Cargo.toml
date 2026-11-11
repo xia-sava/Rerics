@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.87"
 name = "winsafe"
-version = "0.0.27"
+version = "0.0.29"
 authors = ["Rodrigo Cesar de Freitas Dias <rcesar@gmail.com>"]
 build = false
 include = [
@@ -68,6 +68,7 @@ gui = [
     "comctl",
     "uxtheme",
 ]
+htmlhelp = ["user"]
 kernel = []
 mf = ["oleaut"]
 ole = ["user"]
@@ -83,6 +84,7 @@ uxtheme = [
 ]
 version = ["kernel"]
 wininet = ["kernel"]
+winmm = ["kernel"]
 winspool = ["user"]
 
 [lib]

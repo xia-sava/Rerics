@@ -6,7 +6,8 @@ use std::sync::Arc;
 use crate::co;
 use crate::decl::*;
 use crate::gui::{privs::*, *};
-use crate::msg::*;
+use crate::macros::*;
+use crate::msg;
 use crate::prelude::*;
 
 struct CheckBoxObj {
@@ -52,14 +53,13 @@ impl CheckBox {
 					Some(&text2),
 					opts.window_style | opts.control_style.into(),
 					opts.position.into(),
-					if opts.size == (0, 0) {
-						text_calc::bound_box_with_check(&text_calc::remove_accel_ampersands(&text2))
-					} else {
-						opts.size.into()
-					},
+					opts.size.into(),
 					&parent2,
 				);
 				ui_font::set(self2.hwnd());
+				if opts.size == (0, 0) {
+					self2.set_text_and_resize(&text2).expect(DONTFAIL);
+				}
 				self2.set_state(opts.check_state);
 				parent2
 					.as_ref()
@@ -102,7 +102,7 @@ impl CheckBox {
 		new_self
 	}
 
-	/// Sends a [`bm::GetCheck`](crate::msg::bm::GetCheck) message and returns
+	/// Sends a [`BmGetCheck`](crate::msg::BmGetCheck) message and returns
 	/// `true` if current state is `co::BST::CHECKED`.
 	#[must_use]
 	pub fn is_checked(&self) -> bool {
@@ -110,31 +110,29 @@ impl CheckBox {
 	}
 
 	/// Sets or unsets the check mark by sending a
-	/// [`bm::SetCheck`](crate::msg::bm::SetCheck) message.
+	/// [`BmSetCheck`](crate::msg::BmSetCheck) message.
 	pub fn set_check(&self, check: bool) {
 		self.set_state(if check { co::BST::CHECKED } else { co::BST::UNCHECKED });
 	}
 
 	/// Sets the current check state by sending a
-	/// [`bm::SetCheck`](crate::msg::bm::SetCheck) message, then sends a
-	/// [`wm::Command`](crate::msg::wm::Command) message to the parent, so it
-	/// can handle the event.
+	/// [`BmSetCheck`](crate::msg::BmSetCheck) message, then sends a
+	/// [`WmCommand`](crate::msg::WmCommand) message to the parent, so it can
+	/// handle the event.
 	pub fn set_check_and_trigger(&self, check: bool) -> SysResult<()> {
 		self.set_state_and_trigger(if check { co::BST::CHECKED } else { co::BST::UNCHECKED })
 	}
 
 	/// Sets the current check state by sending a
-	/// [`bm::SetCheck`](crate::msg::bm::SetCheck) message.
+	/// [`BmSetCheck`](crate::msg::BmSetCheck) message.
 	pub fn set_state(&self, state: co::BST) {
-		unsafe {
-			self.hwnd().SendMessage(bm::SetCheck { state });
-		}
+		unsafe { self.hwnd().SendMessage(msg::BmSetCheck { state }) };
 	}
 
 	/// Sets the current check state by sending a
-	/// [`bm::SetCheck`](crate::msg::bm::SetCheck) message, then sends a
-	/// [`wm::Command`](crate::msg::wm::Command) message to the parent, so it
-	/// can handle the event.
+	/// [`BmSetCheck`](crate::msg::BmSetCheck) message, then sends a
+	/// [`WmCommand`](crate::msg::WmCommand) message to the parent, so it can
+	/// handle the event.
 	pub fn set_state_and_trigger(&self, state: co::BST) -> SysResult<()> {
 		self.set_state(state);
 		self.hwnd().GetParent()?.SendCommand(AccelMenuCtrl::Ctrl {
@@ -148,30 +146,28 @@ impl CheckBox {
 	/// Calls [`HWND::SetWindowText`](crate::HWND::SetWindowText) to set the
 	/// text and resizes the control to exactly fit it.
 	pub fn set_text_and_resize(&self, text: &str) -> SysResult<()> {
-		let bound_box = text_calc::bound_box_with_check(&text_calc::remove_accel_ampersands(text));
+		self.hwnd().SetWindowText(text)?;
+		let bound_box = text_calc::bound_box_bcm(self.hwnd());
 		self.hwnd().SetWindowPos(
 			HwndPlace::None,
 			POINT::default(),
 			bound_box,
 			co::SWP::NOZORDER | co::SWP::NOMOVE,
 		)?;
-		self.hwnd().SetWindowText(text)?;
 		Ok(())
 	}
 
 	/// Retrieves the current check state by sending a
-	/// [`bm::GetCheck`](crate::msg::bm::GetCheck) message.
+	/// [`BmGetCheck`](crate::msg::BmGetCheck) message.
 	#[must_use]
 	pub fn state(&self) -> co::BST {
-		unsafe { self.hwnd().SendMessage(bm::GetCheck {}) }
+		unsafe { self.hwnd().SendMessage(msg::BmGetCheck {}) }
 	}
 
 	/// Fires the click event for the check box by sending a
-	/// [`bm::Click`](crate::msg::bm::Click) message.
+	/// [`BmClick`](crate::msg::BmClick) message.
 	pub fn trigger_click(&self) {
-		unsafe {
-			self.hwnd().SendMessage(bm::Click {});
-		}
+		unsafe { self.hwnd().SendMessage(msg::BmClick {}) };
 	}
 }
 
@@ -197,7 +193,7 @@ pub struct CheckBoxOpts<'a> {
 	/// Check box styles to be
 	/// [created](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-createwindowexw).
 	///
-	/// Defaults to `BS::AUTOCHECKBOX`.
+	/// Defaults to `BS::AUTOCHECKBOX | co::BS::MULTILINE`.
 	///
 	/// Suggestions:
 	/// * replace with `BS::AUTO3STATE` for a 3-state check box.
@@ -235,7 +231,7 @@ impl<'a> Default for CheckBoxOpts<'a> {
 			text: "",
 			position: dpi(0, 0),
 			size: (0, 0), // will resize to fit the text
-			control_style: co::BS::AUTOCHECKBOX,
+			control_style: co::BS::AUTOCHECKBOX | co::BS::MULTILINE,
 			window_style: co::WS::CHILD | co::WS::GROUP | co::WS::TABSTOP | co::WS::VISIBLE,
 			window_ex_style: co::WS_EX::LEFT,
 			ctrl_id: 0,

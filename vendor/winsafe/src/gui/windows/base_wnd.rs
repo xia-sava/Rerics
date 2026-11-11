@@ -69,7 +69,7 @@ impl BaseWnd {
 		&self.after_events
 	}
 
-	pub(in crate::gui) fn process_msgs(&self, p: WndMsg) -> AnyResult<(bool, Option<isize>, bool)> {
+	pub(in crate::gui) fn process_msgs(&self, p: Wm) -> AnyResult<(bool, Option<isize>, bool)> {
 		Ok((
 			self.before_events.process_all_messages(p)?,
 			self.user_events.process_last_message(p).transpose()?,
@@ -99,7 +99,7 @@ impl BaseWnd {
 				let pack = Box::new(ThreadPack { func: Box::new(|| Err(err)) });
 				let ptr_pack = Box::into_raw(pack);
 				hwnd.GetAncestor(co::GA::ROOTOWNER).map(|hwnd| unsafe {
-					hwnd.SendMessage(WndMsg {
+					hwnd.SendMessage(Wm {
 						msg_id: Self::WM_UI_THREAD,
 						wparam: Self::WM_UI_THREAD.raw() as _,
 						lparam: ptr_pack as _, // send pointer
@@ -128,7 +128,7 @@ impl BaseWnd {
 		self.hwnd()
 			.GetAncestor(co::GA::ROOTOWNER)
 			.map(|hwnd| unsafe {
-				hwnd.SendMessage(WndMsg {
+				hwnd.SendMessage(Wm {
 					msg_id: Self::WM_UI_THREAD,
 					wparam: Self::WM_UI_THREAD.raw() as _,
 					lparam: ptr_pack as _, // send pointer
@@ -200,9 +200,7 @@ impl BaseWnd {
 			}
 
 			TranslateMessage(&msg);
-			unsafe {
-				DispatchMessage(&msg);
-			}
+			unsafe { DispatchMessage(&msg) };
 		}
 	}
 
@@ -215,7 +213,7 @@ impl BaseWnd {
 				// WM_QUIT was sent, exit modal loop now and signal parent.
 				// wParam has the program exit code.
 				// https://devblogs.microsoft.com/oldnewthing/20050222-00/?p=36393
-				// https://stackoverflow.com/a/29359913/6923555
+				// https://stackoverflow.com/a/29359913
 				PostQuitMessage(msg.wParam as _);
 				return Ok(0); // raw modals will always return 0
 			}
@@ -242,9 +240,7 @@ impl BaseWnd {
 			}
 
 			TranslateMessage(&msg);
-			unsafe {
-				DispatchMessage(&msg);
-			}
+			unsafe { DispatchMessage(&msg) };
 
 			if *self.hwnd() == HWND::NULL || !self.hwnd().IsWindow() {
 				return Ok(0); // our modal was destroyed, terminate loop
