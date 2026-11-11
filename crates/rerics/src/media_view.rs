@@ -366,15 +366,20 @@ impl MediaView {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         match MediaKind::from_extension(&ext) {
-            Some(MediaKind::Video) => match crate::video::VideoSource::open(path) {
-                Some(src) => self.set_source(Box::new(src)),
-                None => self.set_message("この動画は再生できません（コーデック未対応の可能性）"),
-            },
+            Some(MediaKind::Video) => {
+                let shown = crate::video::VideoSource::open(path)
+                    .is_some_and(|src| self.set_source(Box::new(src)));
+                if !shown {
+                    self.set_message("この動画は再生できません（コーデック未対応の可能性）");
+                }
+            }
             Some(MediaKind::Image) | Some(MediaKind::Animation) => match read_capped(path, MAX_IMAGE_BYTES) {
-                Some(bytes) => match load_image(&bytes) {
-                    Some(src) => self.set_source(src),
-                    None => self.set_message("この画像は表示できません"),
-                },
+                Some(bytes) => {
+                    let shown = load_image(&bytes).is_some_and(|src| self.set_source(src));
+                    if !shown {
+                        self.set_message("この画像は表示できません");
+                    }
+                }
                 None => self.set_message("ファイルを読み込めません"),
             },
             None => self.set_message("この形式は表示できません"),
@@ -385,17 +390,22 @@ impl MediaView {
     }
 
     /// フレーム供給元をセットし、先頭フレームを表示する。アニメ/動画なら再生を開始する。
-    fn set_source(&self, src: Box<dyn FrameSource>) {
+    /// 先頭フレームを得られなければ供給元を手放して偽を返す（表示中の画素は書き換えない）。
+    fn set_source(&self, src: Box<dyn FrameSource>) -> bool {
         let animated = src.is_animated();
         self.inner.has_alpha.set(src.has_alpha());
         *self.inner.source.borrow_mut() = Some(src);
         *self.inner.message.borrow_mut() = None;
         self.inner.animated.set(animated);
         self.inner.playing.set(animated);
-        self.show_next(true);
+        if self.show_next(true).is_none() {
+            self.release_media();
+            return false;
+        }
         if animated {
             self.schedule_timer();
         }
+        true
     }
 
     /// 次フレーム（終端なら `loop_at_end` でループ）を取り出して表示用バッファへ反映する。
@@ -552,7 +562,9 @@ impl MediaView {
         let Some(src) = load_image(&bytes) else {
             return;
         };
-        self.set_source(src);
+        if !self.set_source(src) {
+            return;
+        }
         let new_base_w = self.inner.base_w.get();
         if new_base_w == 0 {
             return;

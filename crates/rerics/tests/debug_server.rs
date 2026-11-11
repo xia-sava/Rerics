@@ -4642,6 +4642,34 @@ fn view_falls_back_to_text_for_undecodable_media() {
     assert_eq!(av.trim().trim_matches('"'), "text", "デコード不可の .ts はテキストへ退避: {av}");
 }
 
+/// H.264 の High 4:4:4 Predictive プロファイルの動画（16x16・2フレーム）。Media Foundation は
+/// 開けて出力形式も決まるが、OS 標準のデコーダが対応しないためフレームを1枚も返さない。
+const HIGH444_MP4: &[u8] = include_bytes!("fixtures/high444.mp4");
+
+/// 画像を表示した後に、開けるがフレームを読めない動画を開くと、前の画像の画素を表示し続けず
+/// バイナリ表示へ退避する。退避後も UI は応答し続ける。
+#[test]
+fn view_falls_back_for_frameless_video_after_image() {
+    let server = Server::start_dirs(&[("a.bmp", TINY_BMP), ("b.mp4", HIGH444_MP4)], &[]);
+
+    server.req("POST", "/command/setCursorPosition", r#"["a.bmp"]"#).unwrap();
+    server.req("POST", "/command/view", "").expect("view a.bmp");
+    poll(&server, "/state/active_view", |b| b.trim() == "\"media\"");
+    server.req("POST", "/view/key/close", "").unwrap();
+    poll(&server, "/state/active_view", |b| b.trim() == "\"none\"");
+
+    server.req("POST", "/command/setCursorPosition", r#"["b.mp4"]"#).unwrap();
+    server.req("POST", "/command/view", "").expect("view b.mp4");
+    let av = poll(&server, "/state/active_view", |b| b.trim() != "\"none\"");
+    assert_eq!(av.trim(), "\"text\"", "フレームを読めない動画はバイナリ表示へ退避: {av}");
+    assert_eq!(view_state(&server, "form"), "binary");
+
+    // 再生タイマの間隔を何度か越えても応答する。
+    std::thread::sleep(Duration::from_millis(300));
+    let av = server.req("GET", "/state/active_view", "").expect("UI が応答する").1;
+    assert_eq!(av.trim(), "\"text\"");
+}
+
 /// テキストビューアの検索が、可視範囲の全一致を桁単位で捉え、N で一致箇所単位に
 /// 移動するのを debug-server で観測する（大小無視・同一行内の複数一致も辿る）。
 #[test]
