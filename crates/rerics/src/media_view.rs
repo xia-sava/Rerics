@@ -511,7 +511,8 @@ impl MediaView {
         self.has_image() || self.inner.unplayable_video.get()
     }
 
-    /// 画像の代わりに中央へ出している文言。
+    /// 画像の代わりに中央へ出している文言（debug-server 観測用）。
+    #[cfg(feature = "debug-server")]
     pub fn message(&self) -> Option<String> {
         self.inner.message.borrow().clone()
     }
