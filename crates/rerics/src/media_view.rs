@@ -37,6 +37,9 @@ const MAX_RENDER_WIDTH: u32 = 4096;
 /// アニメ/動画の再生用タイマ ID。
 const MEDIA_TIMER_ID: usize = 0x6D31;
 
+/// 動画を再生できないときに中央へ出す文言。
+const VIDEO_UNPLAYABLE_MESSAGE: &str = "この動画は再生できません（コーデック未対応の可能性）";
+
 /// 巡回 index から表示すべき実パスを解決する。実FS はパスを直に返し、書庫内エントリは
 /// ここで遅延展開（既展開なら再利用）する。`None` は「読み込めない」（展開失敗等）を表す。
 /// これにより `MediaView` 自身は書庫を一切知らずに前後送りできる。
@@ -93,6 +96,8 @@ struct Inner {
     caption: RefCell<Option<String>>,
     /// 画像が無いとき（未対応・読込失敗・動画）に中央へ出す文言。
     message: RefCell<Option<String>>,
+    /// 現在のメディアが、開けたがフレームを1枚も読めない動画か（再生できない旨の文言を出す）。
+    unplayable_video: Cell<bool>,
     /// フレーム供給元（静止画/アニメ/動画）。
     source: RefCell<Option<Box<dyn FrameSource>>>,
     /// アニメ/動画か（再生バーを出す）。
@@ -174,6 +179,7 @@ impl MediaView {
             title: RefCell::new(String::new()),
             caption: RefCell::new(None),
             message: RefCell::new(None),
+            unplayable_video: Cell::new(false),
             source: RefCell::new(None),
             animated: Cell::new(false),
             playing: Cell::new(false),
@@ -321,6 +327,7 @@ impl MediaView {
     }
 
     fn load_current(&self) {
+        self.inner.unplayable_video.set(false);
         let idx = self.inner.nav_index.get();
         let resolved = {
             let r = self.inner.resolver.borrow();
@@ -366,13 +373,15 @@ impl MediaView {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         match MediaKind::from_extension(&ext) {
-            Some(MediaKind::Video) => {
-                let shown = crate::video::VideoSource::open(path)
-                    .is_some_and(|src| self.set_source(Box::new(src)));
-                if !shown {
-                    self.set_message("この動画は再生できません（コーデック未対応の可能性）");
+            Some(MediaKind::Video) => match crate::video::VideoSource::open(path) {
+                Some(src) => {
+                    if !self.set_source(Box::new(src)) {
+                        self.set_message(VIDEO_UNPLAYABLE_MESSAGE);
+                        self.inner.unplayable_video.set(true);
+                    }
                 }
-            }
+                None => self.set_message(VIDEO_UNPLAYABLE_MESSAGE),
+            },
             Some(MediaKind::Image) | Some(MediaKind::Animation) => match read_capped(path, MAX_IMAGE_BYTES) {
                 Some(bytes) => {
                     let shown = load_image(&bytes).is_some_and(|src| self.set_source(src));
@@ -494,10 +503,17 @@ impl MediaView {
         !self.inner.bgra.borrow().is_empty()
     }
 
-    /// 直近に開いたメディアが表示可能なフレームを得られたか。デコード不可・コーデック
-    /// 非対応・壊れたファイルでは偽になり、呼び出し側がテキスト/バイナリ表示へ退避できる。
-    pub fn current_loaded(&self) -> bool {
-        self.has_image()
+    /// 直近に開いたメディアをこのビューアで見せられるか。表示可能なフレームを得たとき、
+    /// または開けたがフレームを読めない動画で再生できない旨を出しているときに真。画像の
+    /// デコード不可・動画として開けない（拡張子の衝突・壊れたファイル）では偽になり、呼び出し
+    /// 側がテキスト/バイナリ表示へ退避できる。
+    pub fn can_present(&self) -> bool {
+        self.has_image() || self.inner.unplayable_video.get()
+    }
+
+    /// 画像の代わりに中央へ出している文言。
+    pub fn message(&self) -> Option<String> {
+        self.inner.message.borrow().clone()
     }
 
     /// ホイール 1 ノッチでズームする（上＝拡大）。

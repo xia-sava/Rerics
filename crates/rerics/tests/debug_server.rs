@@ -4647,9 +4647,10 @@ fn view_falls_back_to_text_for_undecodable_media() {
 const HIGH444_MP4: &[u8] = include_bytes!("fixtures/high444.mp4");
 
 /// 画像を表示した後に、開けるがフレームを読めない動画を開くと、前の画像の画素を表示し続けず
-/// バイナリ表示へ退避する。退避後も UI は応答し続ける。
+/// メディア表示に再生できない旨を出す。表示形式の切り替えでバイナリ表示へ移れ、その間も UI は
+/// 応答し続ける。
 #[test]
-fn view_falls_back_for_frameless_video_after_image() {
+fn view_shows_unplayable_message_for_frameless_video_after_image() {
     let server = Server::start_dirs(&[("a.bmp", TINY_BMP), ("b.mp4", HIGH444_MP4)], &[]);
 
     server.req("POST", "/command/setCursorPosition", r#"["a.bmp"]"#).unwrap();
@@ -4661,13 +4662,19 @@ fn view_falls_back_for_frameless_video_after_image() {
     server.req("POST", "/command/setCursorPosition", r#"["b.mp4"]"#).unwrap();
     server.req("POST", "/command/view", "").expect("view b.mp4");
     let av = poll(&server, "/state/active_view", |b| b.trim() != "\"none\"");
-    assert_eq!(av.trim(), "\"text\"", "フレームを読めない動画はバイナリ表示へ退避: {av}");
-    assert_eq!(view_state(&server, "form"), "binary");
+    assert_eq!(av.trim(), "\"media\"", "フレームを読めない動画もメディア表示で開く: {av}");
+    let media = server.req("GET", "/state/media", "").unwrap().1;
+    assert!(media.contains("\"title\":\"b.mp4\""), "見出しは動画の名前: {media}");
+    assert!(media.contains("再生できません"), "再生できない旨を出す: {media}");
 
     // 再生タイマの間隔を何度か越えても応答する。
     std::thread::sleep(Duration::from_millis(300));
     let av = server.req("GET", "/state/active_view", "").expect("UI が応答する").1;
-    assert_eq!(av.trim(), "\"text\"");
+    assert_eq!(av.trim(), "\"media\"");
+
+    server.req("POST", "/command/viewerCycleForm", "").expect("viewerCycleForm");
+    poll(&server, "/state/view/form", |b| b.trim() == "\"binary\"");
+    assert_eq!(server.req("GET", "/state/active_view", "").unwrap().1.trim(), "\"text\"");
 }
 
 /// テキストビューアの検索が、可視範囲の全一致を桁単位で捉え、N で一致箇所単位に

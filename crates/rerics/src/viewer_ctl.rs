@@ -455,10 +455,11 @@ impl MainWindow {
         self.show_media_or_text(is_left, name)
     }
 
-    /// メディアが表示フレームを得られていれば前面へ、デコードできなければ（コーデック非対応・
-    /// 壊れ・テキストの拡張子衝突など）テキスト/バイナリビューアへ退避する。
+    /// メディアが表示フレームを得られていれば、または再生できない動画の旨を出していれば前面へ、
+    /// そうでなければ（画像のデコード不可・壊れ・テキストの拡張子衝突など）テキスト/バイナリ
+    /// ビューアへ退避する。
     fn show_media_or_text(&self, is_left: bool, name: &str) -> w::AnyResult<()> {
-        if self.media.current_loaded() {
+        if self.media.can_present() {
             return self.show_viewer(ActiveView::Media);
         }
         self.cancel_media_prefetch();
@@ -965,7 +966,7 @@ impl MainWindow {
         let forms = ViewForms::detect(&name, None);
         *self.view_session.borrow_mut() = Some(ViewSession { is_left, name: name.clone(), forms });
         self.media.go_to(media_index)?;
-        if !self.media.current_loaded() {
+        if !self.media.can_present() {
             self.cancel_media_prefetch();
             self.view_text(is_left, &name)?;
         }

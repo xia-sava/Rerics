@@ -1649,6 +1649,7 @@ impl MainWindow {
                 "scale_percent": self.media.scale_percent(),
                 "pan_x": pan_x,
                 "pan_y": pan_y,
+                "message": self.media.message(),
             })
         } else {
             serde_json::Value::Null
