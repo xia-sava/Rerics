@@ -13,7 +13,9 @@ Rerics — Windows 向け2画面ファイラー（gary 氏の Records を Rust �
 - core `cargo test -p rerics-core --lib` ／ bin `cargo test -p rerics --bin rerics`
 - e2e（headless）`cargo test -p rerics --features debug-server --test debug_server`
 - ⚠ **feature 有無は同じ exe を奪い合う**。debug-server で検証したら plain `./tools/dev.sh build` に戻す。
-- clippy は自分の変更で新規警告ゼロを保つ。
+- 警告は既存のものも含めてゼロを保つ。普段のビルド（`./tools/dev.sh build`）と、clippy を feature の有無の両方
+  （`./tools/dev.sh clippy -p rerics -p rerics-core --all-targets`、同じく `--features rerics/debug-server` 付き）で
+  確かめ、どれも 0 件にする。リリースの CI も警告があれば止まる。
 
 ## リリース
 - バージョンは `Cargo.toml` の `[workspace.package]` の version（MAJOR.MINOR.PATCH）。アプリの表記・exe のバージョン情報・自動更新の比較はすべてこれ。

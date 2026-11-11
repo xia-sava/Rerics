@@ -15,7 +15,7 @@ description: Rerics のバージョンを上げて配布する。Cargo のバー
 
 ## 打つ前の確認
 
-1. **作業ツリーがクリーンで、検証が通っていること。** CI は core と bin の単体テストしか回さないので、
+1. **作業ツリーがクリーンで、検証が通っていること。** CI は clippy と core・bin の単体テストしか回さないので、
    e2e は手元で通しておく。
 
    ```
@@ -25,8 +25,13 @@ description: Rerics のバージョンを上げて配布する。Cargo のバー
    ./tools/dev.sh build
    ```
 
-   e2e は feature 付きで exe を作り直すので、最後に plain のビルドへ戻す。clippy は自分の変更で
-   新規警告ゼロを保つ（`./tools/dev.sh clippy -p rerics -p rerics-core`）。
+   e2e は feature 付きで exe を作り直すので、最後に plain のビルドへ戻す。警告は既存のものも含めて
+   0 件にしておく（CI の clippy は警告で止まる）。
+
+   ```
+   ./tools/dev.sh clippy -p rerics -p rerics-core --all-targets
+   ./tools/dev.sh clippy -p rerics -p rerics-core --all-targets --features rerics/debug-server
+   ```
 
 2. **配布中のバージョンを確認して、次のバージョンを決める。**
 
