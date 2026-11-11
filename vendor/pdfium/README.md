@@ -3,7 +3,7 @@
 PDF ページのラスタライズに用いる PDFium の事前ビルド動的ライブラリ。
 
 - 取得元: https://github.com/bblanchon/pdfium-binaries
-- リリース: chromium/7763（PDFium 148.0.7763.0）＝`pdfium-render 0.9.2` の既定バインディング（`pdfium_latest`）が想定する版
+- リリース: chromium/8125（PDFium 158.0.8125.0）＝`pdfium-render 0.9.5` の既定バインディング（`pdfium_latest`）が想定する版
 - 対象: Windows x64
 - `pdfium.dll` はビルド時に `build.rs` が実行ファイルと同じディレクトリへコピーし、
   実行時に `Pdfium::bind_to_library` で動的ロードする。
@@ -17,7 +17,7 @@ PDF ページのラスタライズに用いる PDFium の事前ビルド動的�
 ## 再取得
 
 ```sh
-curl -L -o pdfium.tgz "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F7763/pdfium-win-x64.tgz"
+curl -L -o pdfium.tgz "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F8125/pdfium-win-x64.tgz"
 tar xzf pdfium.tgz
 cp bin/pdfium.dll vendor/pdfium/pdfium.dll
 cp LICENSE vendor/pdfium/LICENSE
