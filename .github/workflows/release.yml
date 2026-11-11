@@ -52,6 +52,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # 警告が一つでも残っていれば止める。debug-server の有無で通るコードが変わるので両方見る。
+      - name: Clippy
+        run: cargo clippy --locked -p rerics -p rerics-core --all-targets -- -D warnings
+
+      - name: Clippy (debug-server)
+        run: cargo clippy --locked -p rerics -p rerics-core --all-targets --features rerics/debug-server -- -D warnings
+
       - name: Build
         run: cargo build --release --locked -p rerics
 
