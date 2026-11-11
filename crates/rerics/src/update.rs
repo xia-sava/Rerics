@@ -7,7 +7,6 @@
 //! 差し替えは「退避（rename）→ 新ファイルを配置（copy）→ 新 exe を起動 → 自分は終了」の順で行う。
 //! 退避した旧ファイル（`*.old`）は次回起動時（[`CLEANUP_ARG`] 付き起動）に削除する。
 
-use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
@@ -37,21 +36,28 @@ fn release_asset_url(name: &str) -> String {
     format!("https://github.com/{REPO}/releases/download/{TAG}/{name}")
 }
 
-/// native-tls（Windows は Schannel）を明示的に配線した Agent を作る。`ureq::get` 等の
-/// ショートカット関数は既定の rustls 実装専用で、native-tls feature を有効にしただけでは
-/// 使われない（`AgentBuilder::tls_connector` で渡して初めて有効になる）ため。
-fn http_agent() -> Result<ureq::Agent, String> {
-    let connector = native_tls::TlsConnector::new().map_err(|e| format!("TLS の初期化に失敗しました: {e}"))?;
-    Ok(ureq::AgentBuilder::new().tls_connector(std::sync::Arc::new(connector)).build())
+/// 更新パッケージとして受け取る大きさの上限（バイト）。
+const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
+
+/// native-tls（Windows は Schannel）と OS のルート証明書で通信する Agent を作る。ureq の既定は
+/// rustls なので、TLS の実装とルート証明書の出所を明示する。
+fn http_agent() -> ureq::Agent {
+    use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
+    let tls = TlsConfig::builder()
+        .provider(TlsProvider::NativeTls)
+        .root_certs(RootCerts::PlatformVerifier)
+        .build();
+    ureq::Agent::new_with_config(ureq::Agent::config_builder().tls_config(tls).build())
 }
 
 /// 最新ビルドを確認する。現在の自ビルドより新しければ `Some` を返す。
 pub fn check_for_update() -> Result<Option<UpdateInfo>, String> {
-    let manifest: Manifest = http_agent()?
+    let manifest: Manifest = http_agent()
         .get(&release_asset_url("manifest.json"))
         .call()
         .map_err(|e| format!("更新情報の取得に失敗しました: {e}"))?
-        .into_json()
+        .body_mut()
+        .read_json()
         .map_err(|e| format!("更新情報の解析に失敗しました: {e}"))?;
     if !crate::version::is_newer_than_current(&manifest.version) {
         return Ok(None);
@@ -90,15 +96,15 @@ pub fn download_and_apply(info: &UpdateInfo) -> Result<(), String> {
 }
 
 fn download_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let mut buf = Vec::new();
-    http_agent()?
+    http_agent()
         .get(url)
         .call()
         .map_err(|e| format!("ダウンロードに失敗しました: {e}"))?
-        .into_reader()
-        .read_to_end(&mut buf)
-        .map_err(|e| format!("ダウンロードの読み込みに失敗しました: {e}"))?;
-    Ok(buf)
+        .body_mut()
+        .with_config()
+        .limit(MAX_DOWNLOAD_BYTES)
+        .read_to_vec()
+        .map_err(|e| format!("ダウンロードの読み込みに失敗しました: {e}"))
 }
 
 fn verify_sha256(bytes: &[u8], expected_hex: &str) -> Result<(), String> {

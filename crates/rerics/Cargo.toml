@@ -31,8 +31,7 @@ deno_ast = { version = "0.53.2", features = ["transpiling"] }
 # 自動更新（GitHub Releases からの確認・ダウンロード・展開・検証）。TLS は既定の rustls
 # ではなく native-tls（Windows は Schannel）を使い、OS のトラストストアへ一本化する
 # （組込 CA バンドル crate の追加ライセンス条項を持ち込まずに済む）。
-ureq = { version = "2", default-features = false, features = ["json", "native-tls"] }
-native-tls = "0.2"
+ureq = { version = "3", default-features = false, features = ["json", "native-tls-no-default"] }
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 sha2 = "0.11"
 webview2-com = "0.39"
