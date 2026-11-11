@@ -331,42 +331,15 @@ fn main() {
 /// OS のアプリ配色がライトかどうかを返す（レジストリ `AppsUseLightTheme`）。
 /// 値が取れない場合は Windows 標準のライト扱いにフォールバックする。
 fn system_is_light() -> bool {
-    use std::ffi::c_void;
-    // winsafe 0.0.27 にレジストリ読み出しが無いため advapi32 を直接叩く。
-    #[link(name = "advapi32")]
-    unsafe extern "system" {
-        fn RegGetValueW(
-            hkey: *mut c_void,
-            sub_key: *const u16,
-            value: *const u16,
-            flags: u32,
-            pdw_type: *mut u32,
-            pv_data: *mut c_void,
-            pcb_data: *mut u32,
-        ) -> i32;
+    let value = w::HKEY::CURRENT_USER.RegGetValue(
+        Some("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+        Some("AppsUseLightTheme"),
+        co::RRF::RT_REG_DWORD,
+    );
+    match value {
+        Ok(w::RegistryValue::Dword(v)) => v != 0,
+        _ => true,
     }
-    // HKEY_CURRENT_USER は (LONG)0x80000001 を符号拡張したハンドル定数。
-    let hkcu = 0x80000001u32 as i32 as isize as usize as *mut c_void;
-    const RRF_RT_REG_DWORD: u32 = 0x0000_0010;
-    let sub_key: Vec<u16> =
-        "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
-            .encode_utf16()
-            .collect();
-    let value: Vec<u16> = "AppsUseLightTheme\0".encode_utf16().collect();
-    let mut data: u32 = 1;
-    let mut cb: u32 = 4;
-    let rc = unsafe {
-        RegGetValueW(
-            hkcu,
-            sub_key.as_ptr(),
-            value.as_ptr(),
-            RRF_RT_REG_DWORD,
-            std::ptr::null_mut(),
-            &mut data as *mut u32 as *mut c_void,
-            &mut cb,
-        )
-    };
-    if rc == 0 { data != 0 } else { true }
 }
 
 /// 汎用バックグラウンドジョブの結果（型消去してワーカー → UI スレッドへ運ぶ）。
