@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::SystemTime;
 use rerics_core::{FileAttrs, NameCase, format_local, parse_local};
-use winsafe::{self as w, co, gui, prelude::*};
+use winsafe::{self as w, co, gui};
 use super::*;
 
 /// 名前・属性・作成/更新日時の変更ダイアログ。`single` が `Some` なら単一対象（名前編集可・

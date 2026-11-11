@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use winsafe::{co, gui, prelude::*};
+use winsafe::{co, gui};
 use super::*;
 
 /// 書庫への追加先に同名エントリがあるとき、追加方式を尋ねる。OK で選択を、

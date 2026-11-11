@@ -3,7 +3,7 @@ use std::rc::Rc;
 use std::time::{Duration, SystemTime};
 
 use rerics_core::{FindOptions, format_local, parse_local};
-use winsafe::{co, gui, prelude::*};
+use winsafe::{co, gui};
 use super::*;
 
 /// ファイル検索の条件ダイアログ（原作 frmFindFile の名前・日付・サイズ部のみ。内容検索＝

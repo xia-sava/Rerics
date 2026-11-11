@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use winsafe::{co, gui, prelude::*};
+use winsafe::{co, gui};
 use super::*;
 
 /// 圧縮の入力ダイアログ。書庫名（履歴コンボ）・形式（zip / 7z / xz）・「個別に圧縮する」

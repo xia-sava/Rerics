@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use winsafe::{self as w, co, gui, prelude::*};
+use winsafe::{self as w, co, gui};
 use super::*;
 
 /// 原作 `PluginMessage.Show` 相当。スタイルに応じてアイコン・ボタンを構成した

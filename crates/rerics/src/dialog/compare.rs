@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use rerics_core::{CompareCondition, CompareOptions};
-use winsafe::{co, gui, prelude::*};
+use winsafe::{co, gui};
 use super::*;
 
 /// 日付の比較条件ラジオ（原作 frmDirectoryCompare の並び）。既定は「不一致」。

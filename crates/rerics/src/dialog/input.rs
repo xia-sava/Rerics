@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use winsafe::msg::{cb, lb};
-use winsafe::{co, gui, prelude::*};
+use winsafe::{co, gui};
 use super::*;
 
 /// 原作 `PluginMessage.Input` 相当。メッセージ＋1行入力のモーダルを表示し、

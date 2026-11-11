@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use rerics_core::ConflictResolution;
-use winsafe::{self as w, co, gui, prelude::*};
+use winsafe::{self as w, co, gui};
 use super::*;
 
 /// 原作 `frmCopyOption`（「同名ファイルの処理」）相当。コピー/移動先に同名ファイルが

@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use rerics_core::SortType;
-use winsafe::{co, gui, prelude::*};
+use winsafe::{co, gui};
 use super::*;
 
 /// ソート設定ダイアログ。種別と昇順/降順を選ばせ、OK なら `(種別, 降順か)` を返す。
