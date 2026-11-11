@@ -171,3 +171,17 @@ pub fn cleanup_old_files_if_requested() {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// FIPS 180-2 の例（"abc"）の SHA-256 と照合し、大小文字の違いは許して不一致は弾く。
+    #[test]
+    fn verify_sha256_matches_known_digest() {
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert!(verify_sha256(b"abc", abc).is_ok());
+        assert!(verify_sha256(b"abc", &abc.to_ascii_uppercase()).is_ok());
+        assert!(verify_sha256(b"abd", abc).is_err());
+    }
+}
