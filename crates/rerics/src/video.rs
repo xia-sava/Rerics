@@ -42,6 +42,9 @@ pub struct VideoSource {
     stride: i32,
     duration_ms: u64,
     position_ms: u64,
+    /// `ReadSample` が一度失敗した。以後は読まずに終端として扱う（失敗した reader へ
+    /// 読み出しを重ねると応答が返らなくなることがある）。
+    read_failed: bool,
 }
 
 impl VideoSource {
@@ -104,22 +107,29 @@ impl VideoSource {
             }
         };
 
-        Ok(Self { reader, width, height, stride, duration_ms, position_ms: 0 })
+        Ok(Self { reader, width, height, stride, duration_ms, position_ms: 0, read_failed: false })
     }
 
-    /// 次のフレームを RGBA（top-down）で取り出す。`(rgba, delay_ms)`。終端は `None`。
+    /// 次のフレームを RGBA（top-down）で取り出す。`(rgba, delay_ms)`。終端と読み出しの失敗は
+    /// `None`。
     unsafe fn read_rgba(&mut self) -> Option<(Vec<u8>, u32)> {
+        if self.read_failed {
+            return None;
+        }
         let video = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
         // フォーマット変更等でサンプルが来ない回がある→数回までリトライ。
         for _ in 0..32 {
             let mut flags = 0u32;
             let mut ts = 0i64;
             let mut sample = None;
-            unsafe {
+            let read = unsafe {
                 self.reader
                     .ReadSample(video, 0, None, Some(&mut flags), Some(&mut ts), Some(&mut sample))
-                    .ok()?
             };
+            if read.is_err() {
+                self.read_failed = true;
+                return None;
+            }
             if flags & (MF_SOURCE_READERF_ENDOFSTREAM.0 as u32) != 0 {
                 return None;
             }
