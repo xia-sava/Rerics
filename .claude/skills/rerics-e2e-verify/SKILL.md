@@ -27,14 +27,14 @@ description: Rerics の GUI をデバッグ制御サーバ（--debug-server）�
    **検証が終わったら `./tools/dev.sh build`（plain）で実行用 exe に戻す**（戻し忘れると本番起動でサーバが生きたまま）。
    **戻ったことの確認に「起動」を使わない**——`--headless` は無視されるので窓が出る（事故あり）。
    `strings target/debug/rerics.exe | grep -c 'debug-server' || true`（0 件なら plain）で窓を出さずに見る。
-3. **停止は `netstat -ano`→`taskkill //PID`**。`/command/Quit` で正常終了すると **state.toml に現在地が
+3. **停止は `netstat -ano`→`taskkill //PID`**。`/command/quit` で正常終了すると **state.toml に現在地が
    保存**され次回起動の初期状態が変わる（＝テスト汚染）。`taskkill //F //IM rerics.exe` でも可だが、
    並列起動時はポートから PID を引いて個別に落とす（下記）。
 4. **生きた exe は `target` をロックする**。サーバを止めずに plain build すると
    「アクセスが拒否されました (os error 5)」。**ビルド前に必ず停止**。
-5. **headless でも `EnterDir` を“ファイル”に送ると `ShellExecute` が実デスクトップにダイアログを出す**
+5. **headless でも `enterDir` を“ファイル”に送ると `ShellExecute` が実デスクトップにダイアログを出す**
    （関連付け未設定だと「アプリを選ぶ」窓がユーザ画面に飛ぶ）。headless なのは Rerics 本体の窓だけ。
-   → ファイルを開くのは内蔵ビューア **`ViewFile`（V）だけ**。`EnterDir`（Enter）は**ディレクトリ/書庫だけ**に送る。
+   → ファイルを開くのは内蔵ビューア **`viewFile`（V）だけ**。`enterDir`（Enter）は**ディレクトリ/書庫だけ**に送る。
    カーソル位置を `/state/panes/<side>/cursor` で確認してから叩く。
 6. **ブロックし得る `/command` は `--max-time` 付き**か `run_in_background:true`。素の `curl ... &` は
    ツールがコマンド全体を背景化して扱いづらい。モーダルを開き得るコマンドは `MaybeModal` 化済で
@@ -95,9 +95,10 @@ RERICS_E2E_VISIBLE=1 ./tools/offscreen.sh dev test -p rerics --features debug-se
 
 ### 駆動（POST・実行後 `/state` を返す）
 - `POST /command/<Name>` … `Command` をアクティブ側ペインに実行。トークンは
-  `crates/rerics-core/src/input.rs` の `from_token`（例 `CursorDown`/`CursorUp`/`MarkToggle`/`SelectAll`/
-  `FocusLeft`/`FocusRight`/`EnterDir`/`ToParent`/`SortBySize`/`ViewFile`…）。未知/不可は 400。
-  書込み系（`MakeDirectory`/`Rename`/`Delete`/`Copy`/`Move`）は要 `--debug-allow-write`。
+  `crates/rerics-core/src/input.rs` の `from_token` が引く `ALL` の camelCase 名（例 `cursorDown`/`cursorUp`/
+  `markToggle`/`selectAll`/`focusLeft`/`focusRight`/`enterDir`/`toParent`/`sortBySize`/`viewFile`…）。
+  `Command` の列挙子名（`CursorDown` 等）は通らない。未知/不可は 400。
+  書込み系（`makeDirectoryDialog`/`renameDialog`/`delete`/`copy`/`move`）は要 `--debug-allow-write`。
 - `POST /view/key/<next|prev|close>` … 重ね表示ビューアの操作（`next`/`prev` は一覧の前後のファイルへ送る）。
   それ以外はキー名（`Tab`・`Space`・`Shift+Space`・`Right` 等）を渡すと、表示形式に応じた表→共通の表の順で
   キーを解決して実行する（実キー経路と同じ）。
@@ -142,15 +143,15 @@ sleep 2; curl -s --max-time 5 127.0.0.1:8755/state >/dev/null && echo up
 
 # ③ 駆動（POST！）。カーソルを実ファイルへ動かしてからマーク等。
 P=8755
-curl -s -X POST --max-time 5 "127.0.0.1:$P/command/CursorDown" >/dev/null   # ..→alpha
-curl -s -X POST --max-time 5 "127.0.0.1:$P/command/MarkToggle" >/dev/null
+curl -s -X POST --max-time 5 "127.0.0.1:$P/command/cursorDown" >/dev/null   # ..→alpha
+curl -s -X POST --max-time 5 "127.0.0.1:$P/command/markToggle" >/dev/null
 curl -s --max-time 5 "127.0.0.1:$P/state" | python3.12 -c \
   "import sys,json;p=json.load(sys.stdin)['panes']['left'];print(p['cursor'],[(i['name'],i.get('marked')) for i in p['items']])"
 
 # ④ 目視（PNG を保存して Read ツールで開く）
 curl -s --max-time 8 "127.0.0.1:$P/snapshot/list_left" -o /tmp/shot.png   # → Read /tmp/shot.png
 
-# ⑤ 停止（ポートから listening PID を引いて taskkill。/command/Quit は使わない）
+# ⑤ 停止（ポートから listening PID を引いて taskkill。/command/quit は使わない）
 PID=$(netstat -ano | grep "127.0.0.1:$P" | grep LISTENING | awk '{print $5}' | head -1 | tr -d '\r')
 taskkill //PID "$PID" //F
 sleep 1; curl -s --max-time 3 127.0.0.1:$P/state >/dev/null 2>&1 && echo STILL_UP || echo down
@@ -164,7 +165,7 @@ rm -rf "$D"
 
 - **手順**：`/snapshot/<要素>` を `-o x.png` で保存 → **Read ツールで PNG を開いて目視**。要素名は上記。
 - **左右で見比べる**：アクティブ/非アクティブの差（カーソル下線・マーク色など）は
-  `list_left` と `list_right` を2枚撮って並べる。先に `FocusLeft`/`FocusRight` で意図した側をアクティブにする。
+  `list_left` と `list_right` を2枚撮って並べる。先に `focusLeft`/`focusRight` で意図した側をアクティブにする。
 - **一瞬の状態（スピナー等）を撮る**：`/snapshot/pane_<side>` を ~150ms 間隔で 20〜30 連写し、PNG サイズ差
   （ほぼ黒の読込画面＝小・一覧＝大）で該当フレームを特定すると速い。
 - 実画面の地の証拠が要るとき、または **debug-server で撮れないモーダル**を撮るときは `tools/ui.ps1`
@@ -198,7 +199,7 @@ rm -rf "$D"
 必要回数送ってツリーカーソルを目的項目へ動かし、`/snapshot/modal` で撮る（**実窓不要・headless で完結**）。
 
 ```sh
-curl -s -X POST "127.0.0.1:$P/command/OpenSettings" >/dev/null; sleep 1
+curl -s -X POST "127.0.0.1:$P/command/openSettings" >/dev/null; sleep 1
 # 外観 → テーマ・フォント → 配色 → レイアウト → 一覧（down×4）。展開済みなので子も1行ずつ送られる。
 for i in 1 2 3 4; do curl -s -X POST "127.0.0.1:$P/modal/key/down" >/dev/null; sleep 0.2; done
 curl -s "127.0.0.1:$P/snapshot/modal" -o /tmp/page.png    # → Read /tmp/page.png
