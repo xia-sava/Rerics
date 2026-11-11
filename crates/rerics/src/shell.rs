@@ -232,8 +232,10 @@ fn parse_hdrop(bytes: &[u8]) -> Vec<PathBuf> {
         return Vec::new();
     }
     let units: Vec<u16> = bytes[p_files..]
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&c| u16::from_le_bytes(c))
         .collect();
     let mut paths = Vec::new();
     let mut cur: Vec<u16> = Vec::new();
@@ -344,8 +346,10 @@ pub fn clip_get_text(owner: &w::HWND) -> Result<Option<String>, String> {
         Err(_) => return Ok(None),
     };
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&c| u16::from_le_bytes(c))
         .take_while(|&u| u != 0)
         .collect();
     Ok(Some(String::from_utf16_lossy(&units)))
@@ -899,8 +903,10 @@ mod tests {
     /// null 終端までの UTF-16LE バイト列を文字列へ戻す（テスト検証用）。
     fn decode_utf16le(bytes: &[u8]) -> String {
         let units: Vec<u16> = bytes
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&c| u16::from_le_bytes(c))
             .collect();
         let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
         String::from_utf16(&units[..end]).unwrap()

@@ -247,7 +247,7 @@ impl FrameSource for AnimatedImage {
 pub fn composite_over_checker(bgra: &mut [u8], width: u32, sq: u32) {
     let w = width.max(1) as usize;
     let sq = sq.max(1) as usize;
-    for (i, px) in bgra.chunks_exact_mut(4).enumerate() {
+    for (i, px) in bgra.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let x = i % w;
         let y = i / w;
         let bg = if (x / sq + y / sq).is_multiple_of(2) { 0xFFu32 } else { 0xCCu32 };
@@ -467,7 +467,7 @@ pub fn rotate_rgba(rgba: &[u8], w: u32, h: u32, degrees: u32) -> (Vec<u8>, u32, 
 /// RGBA を Windows DIB 用の BGRA へ変換する（R と B を入れ替えるだけ）。
 pub fn rgba_to_bgra(rgba: &[u8]) -> Vec<u8> {
     let mut out = rgba.to_vec();
-    for px in out.chunks_exact_mut(4) {
+    for px in out.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
     }
     out

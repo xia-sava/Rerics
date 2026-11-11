@@ -165,7 +165,7 @@ impl VideoSource {
             }
             let src_line = &src[so..so + w * 4];
             let dst_line = &mut out[y * w * 4..(y + 1) * w * 4];
-            for (d, s) in dst_line.chunks_exact_mut(4).zip(src_line.chunks_exact(4)) {
+            for (d, s) in dst_line.as_chunks_mut::<4>().0.iter_mut().zip(src_line.as_chunks::<4>().0) {
                 d[0] = s[2]; // R
                 d[1] = s[1]; // G
                 d[2] = s[0]; // B

@@ -1658,10 +1658,11 @@ fn classify_link(ent: &std::fs::DirEntry, item: &FileItem) -> (LinkKind, Option<
             None => (LinkKind::OtherReparse, None),
         };
     }
-    if !item.is_dir && item.system {
-        if let Some(target) = cygwin_symlink_target(&ent.path(), item.size) {
-            return (LinkKind::CygwinSymlink, Some(target));
-        }
+    if !item.is_dir
+        && item.system
+        && let Some(target) = cygwin_symlink_target(&ent.path(), item.size)
+    {
+        return (LinkKind::CygwinSymlink, Some(target));
     }
     (LinkKind::None, None)
 }
@@ -1692,8 +1693,10 @@ fn cygwin_symlink_target(path: &Path, size: Option<u64>) -> Option<String> {
     let rest = bytes.strip_prefix(CYGWIN_SYMLINK_COOKIE.as_slice())?;
     let target = if let Some(utf16) = rest.strip_prefix(&[0xff, 0xfe][..]) {
         let units: Vec<u16> = utf16
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&c| u16::from_le_bytes(c))
             .take_while(|&u| u != 0)
             .collect();
         String::from_utf16(&units).ok()?

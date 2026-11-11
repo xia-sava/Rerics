@@ -98,6 +98,7 @@ mod tests {
     /// - `apply_config` の連鎖で配るなら `Live` に足し、`apply_config` への配線も行う
     /// - 使用時に config から都度読むだけなら `ReadAtUse` に足す
     /// - 起動時のみ反映なら `RestartOnly` に足す（設定画面の説明とも整合させる）
+    ///
     /// 分類だけ足して配線を忘れると「再起動するまで反映されない」事故になるので、
     /// `Live` に足すときは反映経路を必ず確認する。
     const LEDGER: &[(&str, Apply)] = &[
