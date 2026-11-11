@@ -14,12 +14,12 @@ toml = "0.8"
 unicode-width = "0.2.2"
 syntect = { version = "5.2", default-features = false, features = ["default-fancy"] }
 zip = { version = "9.0.5", default-features = false, features = ["deflate", "aes-crypto"] }
-sevenz-rust2 = "0.21"
+sevenz-rust2 = "0.25"
 tar = "0.4"
 # deflate 復号は zlib-rs バックエンド（純Rust・miniz_oxide より速い）。zip crate と同実装。
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 bzip2 = "0.6"
-lzma-rust2 = { version = "0.16", features = ["xz"] }
+lzma-rust2 = { version = "0.25", features = ["xz"] }
 # zstd 復号は本家 libzstd（zstd-sys＝cc ビルド・純Rust の ruzstd より大幅に速い）。
 zstd = "0.14"
 # rar 読取（vendored C++）。UnRAR は非free ライセンス（展開のみ許可）。
