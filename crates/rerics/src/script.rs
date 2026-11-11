@@ -1956,9 +1956,13 @@ pub struct Engine {
 impl Engine {
     /// ホスト API を結びつけた実行環境を作る。`globalThis.rerics` を即座に用意する。
     pub fn new(host: Host) -> Self {
+        // V8 の遅延タスクは、アイソレートを作った時点の tokio ランタイム上で時間待ちしてから
+        // 積まれる。時計を有効にしたランタイムを用意し、その中で JsRuntime を作る。
         let tokio_rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
             .build()
             .expect("current-thread tokio runtime");
+        let _runtime_context = tokio_rt.enter();
         let mut runtime = JsRuntime::new(RuntimeOptions {
             extensions: vec![rerics_ext::init()],
             ..Default::default()
