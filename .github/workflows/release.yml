@@ -91,11 +91,13 @@ jobs:
           } | ConvertTo-Json | Set-Content -Path manifest.json -Encoding utf8
 
       # 配布物を固めた後に走らせる。テストは feature 付きで exe を作り直すことがあるので、
-      # zip に入れる exe が差し替わらない位置に置く。落ちれば公開へ進まない。
-      - name: Test
-        run: |
-          cargo test --release --locked -p rerics-core --lib
-          cargo test --release --locked -p rerics --bin rerics
+      # zip に入れる exe が差し替わらない位置に置く。落ちれば公開へ進まない。pwsh は run の最後の
+      # コマンドの終了コードしか見ないので、コマンドごとに手順を分ける。
+      - name: Test (core)
+        run: cargo test --release --locked -p rerics-core --lib
+
+      - name: Test (bin)
+        run: cargo test --release --locked -p rerics --bin rerics
 
       # タグ以外からの手動実行は配布せず、zip を成果物として短期間だけ残す。
       - name: Upload artifact
