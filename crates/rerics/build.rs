@@ -102,27 +102,34 @@ fn copy_pdfium_dll() {
     const SRC: &str = "../../vendor/pdfium/pdfium.dll";
     println!("cargo:rerun-if-changed={SRC}");
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
-    // OUT_DIR = target/<profile>/build/<pkg>/out → 3 つ上が target/<profile>/。
-    let Some(profile_dir) = Path::new(&out_dir).ancestors().nth(3) else {
-        println!("cargo:warning=出力プロファイルのディレクトリを特定できませんでした");
+    let Some(profile_dir) = profile_dir_of(Path::new(&out_dir)) else {
+        println!(
+            "cargo:warning=出力プロファイルのディレクトリを特定できませんでした（OUT_DIR={out_dir}）"
+        );
         return;
     };
-    // 実行ファイル隣（配布・本番起動）とテストバイナリ隣（target/<profile>/deps）の両方へ置く。
-    // どちらも実行時に exe 同ディレクトリの pdfium.dll を探すため。
-    for dir in [profile_dir.to_path_buf(), profile_dir.join("deps")] {
-        let _ = std::fs::create_dir_all(&dir);
-        let dest = dir.join("pdfium.dll");
-        if let Err(e) = std::fs::copy(SRC, &dest) {
-            println!(
-                "cargo:warning=pdfium.dll のコピーに失敗しました（{}）: {e}",
-                dir.display()
-            );
-        }
+    if let Err(e) = std::fs::copy(SRC, profile_dir.join("pdfium.dll")) {
+        println!(
+            "cargo:warning=pdfium.dll のコピーに失敗しました（{}）: {e}",
+            profile_dir.display()
+        );
     }
 }
 
 #[cfg(not(windows))]
 fn copy_pdfium_dll() {}
+
+/// `OUT_DIR` から出力プロファイルのディレクトリ（`target/<profile>/`）を求める。`OUT_DIR` は
+/// `target/<profile>/build/` の下にあり、そこから先の階層は Cargo のバージョンで変わる
+/// （`<pkg>-<hash>/out` または `<pkg>/<hash>/out`）ので、`build` を上へ探してその親を返す。
+#[cfg(windows)]
+fn profile_dir_of(out_dir: &Path) -> Option<&Path> {
+    const BUILD_DIR_NAME: &str = "build";
+    out_dir
+        .ancestors()
+        .find(|dir| dir.file_name().is_some_and(|name| name == BUILD_DIR_NAME))
+        .and_then(Path::parent)
+}
 
 /// プレーンテキスト出力向けに最小限の HTML 実体参照を復元する。`&amp;` は二重復元を避けるため最後に。
 fn html_unescape(s: &str) -> String {

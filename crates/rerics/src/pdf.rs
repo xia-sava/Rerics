@@ -25,11 +25,22 @@ fn pdfium() -> Option<&'static Pdfium> {
     PDFIUM.get_or_init(init_pdfium).as_ref()
 }
 
-/// 実行ファイルと同じディレクトリの `pdfium.dll` を動的ロードする（`build.rs` が配置する）。
+/// [`pdfium_dir`] の `pdfium.dll` を動的ロードする。
 fn init_pdfium() -> Option<Pdfium> {
-    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    let dll = Pdfium::pdfium_platform_library_name_at_path(&dir);
+    let dll = Pdfium::pdfium_platform_library_name_at_path(&pdfium_dir()?);
     Pdfium::bind_to_library(&dll).ok().map(Pdfium::new)
+}
+
+/// `pdfium.dll` を探すディレクトリ。実行ファイルと同じ場所（`build.rs` が配置する）。
+#[cfg(not(test))]
+fn pdfium_dir() -> Option<std::path::PathBuf> {
+    Some(std::env::current_exe().ok()?.parent()?.to_path_buf())
+}
+
+/// `pdfium.dll` を探すディレクトリ。テストバイナリの置き場所は Cargo が決めるので、同梱元を直接指す。
+#[cfg(test)]
+fn pdfium_dir() -> Option<std::path::PathBuf> {
+    Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/pdfium"))
 }
 
 /// PDF のページ数を返す。開けない・PDFium 未ロードなら `Err`。
