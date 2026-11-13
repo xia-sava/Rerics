@@ -48,9 +48,9 @@ jobs:
           Add-Content -Path $env:GITHUB_OUTPUT -Value "name=$name"
           Write-Host "version=$name"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       # 警告が一つでも残っていれば止める。debug-server の有無で通るコードが変わるので両方見る。
       - name: Clippy
@@ -111,7 +111,7 @@ jobs:
       # バージョンごとのリリース。後からどのバージョンで何を配ったかを辿れる。
       - name: Publish versioned release
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ steps.version.outputs.name }}
@@ -126,7 +126,7 @@ jobs:
       # 動かさずに中身だけ差し替える。
       - name: Update latest release
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: latest
           name: "Latest build"
