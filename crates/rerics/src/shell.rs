@@ -150,9 +150,14 @@ pub fn launch_dir(target: &str, fallback: Option<&Path>) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// `target`（ファイル・フォルダ・URL）を関連付けで開く（非ブロッキング）。作業ディレクトリは
-/// [`launch_dir`] で決める。
-pub fn open_associated(owner: &w::HWND, target: &str, fallback_dir: Option<&Path>) -> Result<(), String> {
+/// `target`（ファイル・フォルダ・URL・PATH 上のコマンド名）を関連付けで開く（非ブロッキング）。
+/// `params` は起動先へそのまま渡す引数文字列（空なら無し）。作業ディレクトリは [`launch_dir`] で決める。
+pub fn open_associated(
+    owner: &w::HWND,
+    target: &str,
+    params: &str,
+    fallback_dir: Option<&Path>,
+) -> Result<(), String> {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
@@ -162,13 +167,15 @@ pub fn open_associated(owner: &w::HWND, target: &str, fallback_dir: Option<&Path
     const SHELL_EXECUTE_ERROR_MAX: usize = 32;
 
     let file: Vec<u16> = target.encode_utf16().chain(std::iter::once(0)).collect();
+    let params: Option<Vec<u16>> =
+        (!params.is_empty()).then(|| params.encode_utf16().chain(std::iter::once(0)).collect());
     let dir = launch_dir(target, fallback_dir).map(|d| wide(&d));
     let ret = unsafe {
         ShellExecuteW(
             Some(HWND(owner.ptr())),
             windows::core::w!("open"),
             PCWSTR(file.as_ptr()),
-            PCWSTR::null(),
+            params.as_ref().map_or(PCWSTR::null(), |p| PCWSTR(p.as_ptr())),
             dir.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr())),
             SW_SHOWNORMAL,
         )

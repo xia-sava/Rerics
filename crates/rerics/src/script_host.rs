@@ -60,7 +60,7 @@ pub enum HostCall {
         events: OpDone,
     },
     CancelOperation { token: u64 },
-    ShellOpen { path: String, cwd: String },
+    ShellOpen { path: String, params: String, cwd: String },
     FolderDialog(String),
     OpenDialog(String),
     SaveDialog(String),
@@ -467,12 +467,16 @@ impl HostApi for GuiHost {
         );
     }
 
-    fn open(&self, path: &str, cwd: &str) {
+    fn open(&self, path: &str, params: &str, cwd: &str) {
         let _ = ui_marshal::call(
             &self.queue,
             self.hwnd_ptr,
             SCRIPT_WAKE.raw(),
-            HostCall::ShellOpen { path: path.to_string(), cwd: cwd.to_string() },
+            HostCall::ShellOpen {
+                path: path.to_string(),
+                params: params.to_string(),
+                cwd: cwd.to_string(),
+            },
         );
     }
 
@@ -886,11 +890,13 @@ impl MainWindow {
                     self.cancel_script_operation(token);
                     let _ = tx.send(HostResp::Done);
                 }
-                HostCall::ShellOpen { path, cwd } => {
+                HostCall::ShellOpen { path, params, cwd } => {
                     let fallback = (!cwd.is_empty()).then(|| std::path::Path::new(&cwd));
                     if crate::shell::launch_suppressed() {
                         self.log.info(&crate::shell::launch_suppressed_line(&path));
-                    } else if let Err(e) = shell::open_associated(self.wnd.hwnd(), &path, fallback) {
+                    } else if let Err(e) =
+                        shell::open_associated(self.wnd.hwnd(), &path, &params, fallback)
+                    {
                         self.log.error(&format!("開けません: {path}: {e}"));
                     }
                     let _ = tx.send(HostResp::Done);

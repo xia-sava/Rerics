@@ -212,7 +212,7 @@ impl MainWindow {
             self.log.info(&crate::shell::launch_suppressed_line(&target));
             return;
         }
-        if let Err(e) = crate::shell::open_associated(self.wnd.hwnd(), &target, None) {
+        if let Err(e) = crate::shell::open_associated(self.wnd.hwnd(), &target, "", None) {
             self.log.error(&format!("リンク先を開けません: {target}: {e}"));
         }
     }

@@ -471,10 +471,16 @@ interface RericsApi {
   select(title: string, items: string[]): number | null;
 
   /**
-   * パスを OS の関連付けで開く（ファイル・フォルダ・URL）。起動を待たない。作業ディレクトリは
-   * パスの親ディレクトリ（URL などで無ければ現在地）。
+   * パスを OS の関連付けで開く（ファイル・フォルダ・URL・PATH 上のコマンド名）。起動を待たない。
+   * 実行ファイルなら `params` を引数文字列としてそのまま渡す。昇格を要求する実行ファイルも
+   * 起動できる。相対パスは現在地に実在すればそこを指し、無ければ OS に解決を任せる。
+   * 作業ディレクトリはパスの親ディレクトリ（URL などで無ければ現在地）。
+   *
+   * ```ts
+   * rerics.open("C:\\tmp\\setup.exe", '/D="C:\\app" /S');
+   * ```
    */
-  open(path: string): void;
+  open(path: string, params?: string): void;
 
   /** フォルダ選択ダイアログを出す。選んだパス、キャンセルなら null。 */
   folderDialog(title?: string): string | null;

@@ -169,8 +169,9 @@ pub trait HostApi {
     /// トークンで進行中の操作を中止する（未知のトークンは無視）。
     fn cancel_operation(&self, token: u64);
     /// パスを関連付けで開く（フォルダなら潜る／ファイルなら既定アプリ）。開きっぱなしで待たない。
-    /// 作業ディレクトリは `path` の親ディレクトリ、無ければ `cwd`（空ならプロセス既定）。
-    fn open(&self, path: &str, cwd: &str);
+    /// `params` は起動先へそのまま渡す引数文字列（空なら無し）。作業ディレクトリは `path` の
+    /// 親ディレクトリ、無ければ `cwd`（空ならプロセス既定）。
+    fn open(&self, path: &str, params: &str, cwd: &str);
     /// フォルダ選択ダイアログを開く（`title` 空なら既定見出し）。キャンセルは `None`。
     fn folder_dialog(&self, title: &str) -> Option<String>;
     /// ファイルを開くダイアログを開く（`title` 空なら既定見出し）。キャンセルは `None`。
@@ -933,10 +934,32 @@ async fn op_list_dir(#[string] path: String) -> Result<Vec<DirEntry>, deno_error
         .map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))
 }
 
-/// パスを関連付けで開く（GUI 経由・開きっぱなし）。`cwd` は親ディレクトリが無いときの作業ディレクトリ。
+/// `rerics.open` の対象を決める。相対パスは `base` 基準で解き、そこに実在すれば絶対パスにする。
+/// 実在しなければ（URL・PATH 上のコマンド名）渡された文字列のまま返し、解決をシェルに任せる。
+fn open_target(base: &std::path::Path, path: &str) -> String {
+    let p = std::path::Path::new(path);
+    if path.is_empty() || p.is_absolute() {
+        return path.to_string();
+    }
+    let resolved = rerics_core::resolve_path(base, p);
+    if resolved.exists() {
+        resolved.to_string_lossy().into_owned()
+    } else {
+        path.to_string()
+    }
+}
+
+/// パスを関連付けで開く（GUI 経由・開きっぱなし）。`params` は起動先へそのまま渡す引数文字列、
+/// `cwd` は親ディレクトリが無いときの作業ディレクトリ。
 #[op2(fast)]
-fn op_open(state: &mut OpState, #[string] path: &str, #[string] cwd: &str) {
-    state.borrow::<Host>().open(path, cwd);
+fn op_open(
+    state: &mut OpState,
+    #[string] path: &str,
+    #[string] params: &str,
+    #[string] cwd: &str,
+) {
+    let target = open_target(&state.borrow::<ScriptContext>().base_dir, path);
+    state.borrow::<Host>().open(&target, params, cwd);
 }
 
 /// フォルダ選択結果を `Vec` で包んで返す（`[]`＝キャンセル・`[s]`＝選んだパス）。理由は [`op_prompt`] と同じ。
@@ -1675,7 +1698,8 @@ const BOOTSTRAP: &str = r#"
       ops.op_rename_files((pairs || []).map((p) => [String(p.from), String(p.to)])),
     delete: (a, b) =>
       Array.isArray(a) ? startOp(2, a, "", b) : startOp(2, null, "", a),
-    open: (p) => ops.op_open(abs(p), ops.op_current_dir()),
+    open: (p, params) =>
+      ops.op_open(String(p), params == null ? "" : String(params), ops.op_current_dir()),
     folderDialog: (t) => {
       const r = ops.op_folder_dialog(t == null ? "" : String(t));
       return r.length ? r[0] : null;
@@ -2276,8 +2300,8 @@ mod tests {
         op_progress: Vec<String>,
         /// Some なら操作を失敗（中止）として完了させる（reject 検証用）。
         op_error: Option<String>,
-        /// `open` で開こうとしたパス（関連付け起動の検証用）。
-        opened: RefCell<Vec<(String, String)>>,
+        /// `open` で開こうとしたパス・引数文字列・作業ディレクトリ（関連付け起動の検証用）。
+        opened: RefCell<Vec<(String, String, String)>>,
         /// フォルダ/開く/保存ダイアログの戻り（None でキャンセル）。
         folder_reply: Option<String>,
         open_reply: Option<String>,
@@ -2413,8 +2437,8 @@ mod tests {
         fn cancel_operation(&self, token: u64) {
             self.cancelled.borrow_mut().push(token);
         }
-        fn open(&self, path: &str, cwd: &str) {
-            self.opened.borrow_mut().push((path.to_string(), cwd.to_string()));
+        fn open(&self, path: &str, params: &str, cwd: &str) {
+            self.opened.borrow_mut().push((path.to_string(), params.to_string(), cwd.to_string()));
         }
         fn folder_dialog(&self, _title: &str) -> Option<String> {
             self.folder_reply.clone()
@@ -2685,8 +2709,60 @@ mod tests {
             .unwrap();
         assert_eq!(
             *host.opened.borrow(),
-            vec![("C:\\tmp\\file.txt".to_string(), "C:\\work".to_string())]
+            vec![("C:\\tmp\\file.txt".to_string(), String::new(), "C:\\work".to_string())]
         );
+    }
+
+    #[test]
+    fn open_passes_params_verbatim_to_host() {
+        let host = Rc::new(MockHost { dir: "C:\\work".to_string(), ..Default::default() });
+        let mut eng = Engine::new(host.clone());
+        eng.run_to_completion(
+            "test:open-params",
+            r#"rerics.open("C:\\tmp\\setup.exe", '/D="C:\\a b" /S');"#.to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            *host.opened.borrow(),
+            vec![(
+                "C:\\tmp\\setup.exe".to_string(),
+                "/D=\"C:\\a b\" /S".to_string(),
+                "C:\\work".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn open_resolves_only_relative_paths_that_exist_under_the_base() {
+        let dir = std::env::temp_dir().join(format!("rerics-open-rel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("memo.txt"), "").unwrap();
+
+        let host = Rc::new(MockHost::default());
+        let mut eng = Engine::new(host.clone());
+        eng.set_context(ScriptContext { is_left: true, base_dir: dir.clone() });
+        eng.run_to_completion(
+            "test:open-relative",
+            r#"
+              rerics.open("memo.txt");
+              rerics.open("notepad");
+              rerics.open("https://example.com/page");
+            "#
+            .to_string(),
+        )
+        .unwrap();
+
+        let targets: Vec<String> = host.opened.borrow().iter().map(|o| o.0.clone()).collect();
+        assert_eq!(
+            targets,
+            vec![
+                dir.join("memo.txt").to_string_lossy().into_owned(),
+                "notepad".to_string(),
+                "https://example.com/page".to_string(),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
