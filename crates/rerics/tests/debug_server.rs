@@ -3089,6 +3089,35 @@ fn directory_information_shows_dir_size_in_list() {
     poll(&server, "/state/panes/left/items", |b| !b.contains("\"size\":1500"));
 }
 
+/// 更新監視による自動の再読込は、使用量計算で入れたディレクトリのサイズとマークを引き継ぐ。
+/// 中身を更新したばかりのディレクトリは、使用量計算で走査し終えたときに親へ変更が通知され、
+/// 結果の反映直後に自動の再読込が走ることがある。
+#[test]
+fn watch_reload_keeps_dir_size_and_marks() {
+    let server = Server::start(&["a.txt"], "[reload_watch]\nenabled = true\nwait_ms = 100\npoll_ms = 0\n");
+    let sbx = server.base.join("sbx");
+    std::fs::create_dir_all(sbx.join("sub")).unwrap();
+    std::fs::write(sbx.join("sub").join("f.bin"), vec![0u8; 1500]).unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"sub\""));
+
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"rerics.activePane().items.forEach((it)=>{ if(it.name==="sub"||it.name==="a.txt") it.selected=true; });"#,
+        )
+        .unwrap();
+    poll(&server, "/state/panes/left/items", |b| count_substr(b, "\"marked\":true") == 2);
+    server.req("POST", "/command/directoryInformation", "").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"size\":1500"));
+
+    // 外部からファイルを足して自動の再読込を起こす。
+    std::fs::write(sbx.join("b.txt"), b"x").unwrap();
+    let items = poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"b.txt\""));
+    assert!(items.contains("\"size\":1500"), "sub keeps its size across the watch reload: {items}");
+    assert_eq!(count_substr(&items, "\"marked\":true"), 2, "marks survive the watch reload: {items}");
+}
+
 /// renameSequenceDialog＝既定テンプレート（File<No:0000>.ext）で選択を連番リネームする。
 #[test]
 fn rename_sequence_template_default() {

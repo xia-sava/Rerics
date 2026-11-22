@@ -3,6 +3,7 @@
 //! `FileItem`（1エントリ）・`SortType`（ソート種別）・比較器・`FileListState`
 //! （カーソル/スクロール/選択/列を持つコントロール状態）・配色モデルを提供する。
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -1104,6 +1105,32 @@ impl FileListState {
         self.items = items;
         self.search.hidden.clear();
         self.search.applied = false;
+    }
+
+    /// 同じ場所を再読込した一覧へ差し替え、旧一覧のマークと、使用量計算でディレクトリに
+    /// 入れたサイズを同名の項目へ引き継ぐ。絞り込みで退避中の項目からも引き継ぐ。
+    /// 種別（ファイル/ディレクトリ）の変わった同名項目には引き継がない。
+    pub fn replace_items_carrying_over(&mut self, mut items: Vec<FileItem>) {
+        let carried: HashMap<&str, (bool, bool, Option<u64>)> = self
+            .items
+            .iter()
+            .chain(self.search.hidden.iter().map(|(_, it)| it))
+            .filter(|it| !it.is_parent)
+            .map(|it| (it.name.as_str(), (it.is_dir, it.selected, it.is_dir.then_some(it.size).flatten())))
+            .collect();
+        for it in items.iter_mut().filter(|it| !it.is_parent) {
+            let Some(&(was_dir, selected, dir_size)) = carried.get(it.name.as_str()) else {
+                continue;
+            };
+            if was_dir != it.is_dir {
+                continue;
+            }
+            it.selected = selected;
+            if it.is_dir && it.size.is_none() {
+                it.size = dir_size;
+            }
+        }
+        self.replace_items(items);
     }
 
     /// 検索状態に従って絞り込みを適用し直す共通口。まず全項目へ復元し、
@@ -2318,6 +2345,66 @@ mod tests {
         s.sort(SortType::FileName, false);
         assert_eq!(names(&s), ["..", "apps"]);
         assert_eq!(s.search.hidden_count(), 1);
+    }
+
+    #[test]
+    fn replace_items_carrying_over_keeps_marks_and_dir_sizes() {
+        let mut s = FileListState::new();
+        let mut sized = dir("sized");
+        sized.size = Some(2048);
+        sized.selected = true;
+        let mut marked = file("marked.txt");
+        marked.selected = true;
+        s.items = vec![FileItem::parent(), sized, dir("plain"), marked, file("gone.txt")];
+
+        let mut fresh_marked = file("marked.txt");
+        fresh_marked.size = Some(10);
+        s.replace_items_carrying_over(vec![
+            FileItem::parent(),
+            dir("sized"),
+            dir("plain"),
+            fresh_marked,
+            file("new.txt"),
+        ]);
+
+        let get = |name: &str| s.items.iter().find(|it| it.name == name).unwrap();
+        assert_eq!(get("sized").size, Some(2048));
+        assert!(get("sized").selected);
+        assert_eq!(get("plain").size, None);
+        assert!(!get("plain").selected);
+        // ファイルのサイズは新しい一覧の値のまま、マークだけ引き継ぐ。
+        assert_eq!(get("marked.txt").size, Some(10));
+        assert!(get("marked.txt").selected);
+        assert!(!get("new.txt").selected);
+        assert!(!s.items.iter().any(|it| it.name == "gone.txt"));
+    }
+
+    #[test]
+    fn replace_items_carrying_over_skips_kind_change_and_reads_hidden() {
+        let mut s = FileListState::new();
+        let mut was_dir = dir("swap");
+        was_dir.size = Some(512);
+        was_dir.selected = true;
+        let mut hidden = dir("apps");
+        hidden.size = Some(4096);
+        hidden.selected = true;
+        s.items = vec![FileItem::parent(), was_dir, hidden];
+        s.search.active = true;
+        s.search.filter = true;
+        s.search.query = "sw".to_owned();
+        s.apply_search();
+        assert_eq!(s.search.hidden_count(), 1);
+
+        s.replace_items_carrying_over(vec![FileItem::parent(), file("swap"), dir("apps")]);
+
+        let get = |name: &str| s.items.iter().find(|it| it.name == name).unwrap();
+        // 同名でもディレクトリからファイルに変わった項目には引き継がない。
+        assert!(!get("swap").selected);
+        assert_eq!(get("swap").size, None);
+        // 絞り込みで退避していた項目からも引き継ぐ。
+        assert!(get("apps").selected);
+        assert_eq!(get("apps").size, Some(4096));
+        assert_eq!(s.search.hidden_count(), 0);
     }
 
     #[test]

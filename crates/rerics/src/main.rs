@@ -545,6 +545,9 @@ struct LoadPlan {
     /// 読込開始時点の表示先ディレクトリの更新時刻（実ディレクトリ以外は `None`）。取り込み時に
     /// 控え、取りこぼし点検の基準にする。読む前に採るので、読込中に起きた変更は次の点検で拾う。
     dir_stamp: Option<std::time::SystemTime>,
+    /// 取り込み時に、旧一覧のマークと使用量計算で入れたディレクトリのサイズを引き継ぐか。
+    /// 更新監視・取りこぼし点検による自動の再読込で立てる（利用者の再読込・移動では捨てる）。
+    carry_over: bool,
 }
 
 impl MainWindow {
@@ -924,7 +927,7 @@ impl MainWindow {
         self.wnd.on().wm(reload_watch, move |p| {
             let is_left = p.wparam != 0;
             this.log_watch_event(is_left);
-            let _ = this.reload_side_impl(is_left, ReloadCursor::Keep, false);
+            let _ = this.reload_side_auto(is_left);
             Ok(0)
         });
 
@@ -2188,15 +2191,27 @@ impl MainWindow {
     /// 呼び出し元が記録を書き忘れる余地を無くす（各ラッパは意図を示す名前で `record` を固定
     /// 渡しするだけ）。
     fn reload_side_impl(&self, is_left: bool, mode: ReloadCursor, record: bool) -> w::AnyResult<()> {
+        self.reload_side_load(is_left, mode, record, false)
+    }
+
+    /// 更新監視・取りこぼし点検による自動の再読込。カーソルを保ち、マークと使用量計算で
+    /// 入れたディレクトリのサイズを引き継ぐ（利用者が再読込していないのに表示が消えない）。
+    fn reload_side_auto(&self, is_left: bool) -> w::AnyResult<()> {
+        self.reload_side_load(is_left, ReloadCursor::Keep, false, true)
+    }
+
+    /// 再読込の本体。`carry_over` は取り込み時に旧一覧のマークと計算済みのサイズを引き継ぐか。
+    fn reload_side_load(&self, is_left: bool, mode: ReloadCursor, record: bool, carry_over: bool) -> w::AnyResult<()> {
         if self.redirect_reload_to_research(is_left, &mode) {
             return Ok(());
         }
         if record {
             self.record_visit(is_left);
         }
-        let Some((read_loc, plan)) = self.prepare_reload(is_left, mode)? else {
+        let Some((read_loc, mut plan)) = self.prepare_reload(is_left, mode)? else {
             return Ok(());
         };
+        plan.carry_over = carry_over;
         self.spawn_job(
             move || read_loc.read().unwrap_or_default(),
             move |mw, items| mw.apply_loaded_items(is_left, items, plan),
@@ -2299,6 +2314,7 @@ impl MainWindow {
             mask,
             generation,
             dir_stamp,
+            carry_over: false,
         };
         Ok(Some((read_loc, plan)))
     }
@@ -2436,7 +2452,7 @@ impl MainWindow {
                 );
                 self.rearm_watch(is_left);
             }
-            self.reload_side_impl(is_left, ReloadCursor::Keep, false)?;
+            self.reload_side_auto(is_left)?;
         }
         Ok(())
     }
@@ -2563,7 +2579,12 @@ impl MainWindow {
                 self.find_query.borrow_mut()[if is_left { 0 } else { 1 }] = None;
                 left_find_result = true;
             }
-            s.replace_items(items);
+            // 引き継ぎは取り込みの時点の一覧から拾う。読込の最中に届いた使用量計算の結果も残る。
+            if plan.carry_over && !left_find_result {
+                s.replace_items_carrying_over(items);
+            } else {
+                s.replace_items(items);
+            }
             let sort = s.sort_type;
             let reverse = s.sort_reverse;
             s.sort(sort, reverse);
