@@ -17,7 +17,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # バージョンはタグ名から v を除いたもの。Cargo.toml の [workspace.package] の version と
       # 食い違えば止める（アプリが見せる版と配布物の版が合わなくなるため）。タグ以外からの
