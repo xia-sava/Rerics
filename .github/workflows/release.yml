@@ -111,7 +111,7 @@ jobs:
       # バージョンごとのリリース。後からどのバージョンで何を配ったかを辿れる。
       - name: Publish versioned release
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ steps.version.outputs.name }}
@@ -126,7 +126,7 @@ jobs:
       # 動かさずに中身だけ差し替える。
       - name: Update latest release
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: latest
           name: "Latest build"
