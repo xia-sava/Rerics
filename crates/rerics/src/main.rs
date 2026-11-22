@@ -546,7 +546,8 @@ struct LoadPlan {
     /// 控え、取りこぼし点検の基準にする。読む前に採るので、読込中に起きた変更は次の点検で拾う。
     dir_stamp: Option<std::time::SystemTime>,
     /// 取り込み時に、旧一覧のマークと使用量計算で入れたディレクトリのサイズを引き継ぐか。
-    /// 更新監視・取りこぼし点検による自動の再読込で立てる（利用者の再読込・移動では捨てる）。
+    /// 更新監視・取りこぼし点検・タブ復帰時の読み直しといった自動の再読込で立てる（利用者の
+    /// 再読込・移動では捨てる）。
     carry_over: bool,
 }
 
@@ -2194,8 +2195,9 @@ impl MainWindow {
         self.reload_side_load(is_left, mode, record, false)
     }
 
-    /// 更新監視・取りこぼし点検による自動の再読込。カーソルを保ち、マークと使用量計算で
-    /// 入れたディレクトリのサイズを引き継ぐ（利用者が再読込していないのに表示が消えない）。
+    /// 更新監視・取りこぼし点検・タブ復帰時の読み直しによる自動の再読込。カーソルを保ち、
+    /// マークと使用量計算で入れたディレクトリのサイズを引き継ぐ（利用者が再読込していないのに
+    /// 表示が消えない）。
     fn reload_side_auto(&self, is_left: bool) -> w::AnyResult<()> {
         self.reload_side_load(is_left, ReloadCursor::Keep, false, true)
     }
@@ -2390,7 +2392,7 @@ impl MainWindow {
             if watch::dir_stamp(&dir) == Some(seen) {
                 continue;
             }
-            let _ = self.reload_side_impl(is_left, ReloadCursor::Keep, false);
+            let _ = self.reload_side_auto(is_left);
         }
     }
 

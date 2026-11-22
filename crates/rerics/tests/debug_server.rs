@@ -2098,6 +2098,40 @@ fn tab_switch_reflects_change_made_while_inactive() {
     assert!(items.contains("\"name\":\"b.txt\""), "復帰時に離席中の変更が入る: {items}");
 }
 
+/// タブ復帰時の読み直しも自動の再読込なので、マークと使用量計算で入れたディレクトリの
+/// サイズを引き継ぐ。
+#[test]
+fn tab_switch_reload_keeps_dir_size_and_marks() {
+    let server = Server::start(&["a.txt"], "[reload_watch]\nenabled = true\nwait_ms = 100\npoll_ms = 0\n");
+    let sbx = server.base.join("sbx");
+    std::fs::create_dir_all(sbx.join("sub")).unwrap();
+    std::fs::write(sbx.join("sub").join("f.bin"), vec![0u8; 1500]).unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"sub\""));
+
+    server
+        .req(
+            "POST",
+            "/script/eval",
+            r#"rerics.activePane().items.forEach((it)=>{ if(it.name==="sub"||it.name==="a.txt") it.selected=true; });"#,
+        )
+        .unwrap();
+    poll(&server, "/state/panes/left/items", |b| count_substr(b, "\"marked\":true") == 2);
+    server.req("POST", "/command/directoryInformation", "").unwrap();
+    poll(&server, "/state/panes/left/items", |b| b.contains("\"size\":1500"));
+
+    // 別タブにいる間に外部からファイルを足し、元タブへ戻って読み直させる。
+    server.req("POST", "/command/newFiler", "").unwrap();
+    poll(&server, "/state/tabs/active", |b| b.trim() == "1");
+    std::fs::write(sbx.join("b.txt"), b"x").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    server.req("POST", "/command/pagePrevious", "").unwrap();
+    poll(&server, "/state/tabs/active", |b| b.trim() == "0");
+
+    let items = poll(&server, "/state/panes/left/items", |b| b.contains("\"name\":\"b.txt\""));
+    assert!(items.contains("\"size\":1500"), "sub keeps its size across the tab-return reload: {items}");
+    assert_eq!(count_substr(&items, "\"marked\":true"), 2, "marks survive the tab-return reload: {items}");
+}
+
 /// テキストビューア表示中はビューア用コマンドがビューア文脈で実行される。
 #[test]
 fn viewer_commands_dispatch_in_text_context() {
